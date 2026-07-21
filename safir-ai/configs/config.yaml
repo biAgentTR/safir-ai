@@ -1,0 +1,111 @@
+# =============================================================================
+# SAFIR - Saha Analiz ve Farkindalik Icin Yapay Zeka Destekli Karar Sistemi
+# Merkezi Konfigurasyon Dosyasi
+#
+# Bu dosya, mimarinin tum katmanlarinin (Adaptive Sampler, VLM, LLM/Agent,
+# API/vLLM servisleri) davranisini tek bir noktadan yonetir.
+# =============================================================================
+
+system:
+  name: "SAFIR"
+  environment: "production"          # development | staging | production
+  device: "cuda"                     # cuda | cpu
+  cuda_device_index: 0
+  log_level: "INFO"
+  random_seed: 42
+
+# -----------------------------------------------------------------------------
+# 02 - Hafif Suzgec Katmani (Adaptive Frame Sampler) - CPU ONLY
+# -----------------------------------------------------------------------------
+sampler:
+  idle_interval_sec: 10.0            # Sakin bolgelerde kare yakalama araligi (saniye/kare)
+  active_fps: 1.0                    # Hareket/degisim anlarinda aktif ornekleme hizi (fps)
+  noise_floor: 12.5                  # Piksel farki gurultu tabani (0-255 gri seviye araligi)
+  motion_threshold: 25.0             # Hareket olarak kabul edilecek fark yuzdesi esigi
+  scene_change_threshold: 0.45       # Histogram korelasyonuna dayali sahne degisimi esigi
+  resize_width: 640                  # Analiz oncesi kare kucultme genisligi (performans icin)
+  max_evidence_buffer: 256           # Bellekte tutulacak maksimum "Evidence Frame" sayisi
+  warmup_frames: 5                   # Baslangicta arka plan modelini olusturmak icin kare sayisi
+
+# -----------------------------------------------------------------------------
+# 03 - Gorsel Dil Modeli (VLM) Katmani - GPU / vLLM
+# -----------------------------------------------------------------------------
+vlm:
+  active_model: "qwen"               # qwen | gemma  (VLMFactory tarafindan okunur)
+  models:
+    qwen:
+      model_name: "Qwen/Qwen2.5-VL-7B-Instruct"
+      vllm_host: "0.0.0.0"
+      vllm_port: 8001
+      max_new_tokens: 512
+      temperature: 0.2
+      top_p: 0.9
+    gemma:
+      model_name: "google/gemma-3-vision-instruct"
+      vllm_host: "0.0.0.0"
+      vllm_port: 8002
+      max_new_tokens: 512
+      temperature: 0.2
+      top_p: 0.9
+
+# -----------------------------------------------------------------------------
+# 04 - Hibrit Bellek ve Baglam Olusturucu - CPU ONLY
+# -----------------------------------------------------------------------------
+memory:
+  sqlite:
+    db_path: "data/events.db"
+  faiss:
+    index_path: "data/faiss_index"
+    embedding_model: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    top_k: 5
+
+# -----------------------------------------------------------------------------
+# 05 - Ajan ve Muhakeme Katmani (LangGraph) - GPU / vLLM
+# -----------------------------------------------------------------------------
+llm:
+  active_model: "qwen3"              # qwen3 | gemma3 (VLM'den bagimsiz saf muhakeme modeli)
+  models:
+    qwen3:
+      model_name: "Qwen/Qwen3-8B-Instruct"
+      vllm_host: "0.0.0.0"
+      vllm_port: 8003
+      max_new_tokens: 1024
+      temperature: 0.1
+    gemma3:
+      model_name: "google/gemma-3-8b-it"
+      vllm_host: "0.0.0.0"
+      vllm_port: 8004
+      max_new_tokens: 1024
+      temperature: 0.1
+
+agent:
+  max_iterations: 6                  # LangGraph durum makinesinin maksimum dongu sayisi
+  risk_thresholds:
+    low: 25                          # 0-25       -> dusuk risk
+    medium: 50                       # 26-50      -> orta risk
+    high: 75                         # 51-75      -> yuksek risk
+    critical: 100                    # 76-100     -> kritik risk
+  tools:
+    sql_tool_enabled: true
+    rag_tool_enabled: true
+    timeline_tool_enabled: true
+
+# -----------------------------------------------------------------------------
+# API / Servis Katmani
+# -----------------------------------------------------------------------------
+api:
+  host: "0.0.0.0"
+  port: 8000
+  reload: false
+  cors_origins:
+    - "*"
+
+# -----------------------------------------------------------------------------
+# 06 - Cikti ve Karar Destek Katmani
+# -----------------------------------------------------------------------------
+output:
+  language: "tr"
+  json_report_dir: "outputs/reports"
+  timeline_export_dir: "outputs/timelines"
+  pdf_report_dir: "outputs/pdf"
+  streamlit_port: 8501
