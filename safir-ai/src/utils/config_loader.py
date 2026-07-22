@@ -74,16 +74,25 @@ class SQLiteMemoryConfig(BaseModel):
     db_path: str
 
 
+class EmbeddingConfig(BaseModel):
+    """Embedding & RAG Katmani icin sentence-transformers tabanli model ayarlari."""
+
+    provider: str                       # "sentence-transformers"
+    model_name: str                     # orn. "BAAI/bge-m3" veya "Qwen/Qwen3-VL-Embedding"
+    device: str                         # "cpu" | "cuda"
+    normalize_embeddings: bool = True
+
+
 class FaissMemoryConfig(BaseModel):
     index_path: str
-    embedding_model: str
     top_k: int
 
 
 class MemoryConfig(BaseModel):
-    """Yapilandirilmis olay bellegi (SQLite) ve anlamsal bellek (FAISS) ayarlari."""
+    """Yapilandirilmis olay bellegi (SQLite) ve anlamsal bellek (Embedding+FAISS) ayarlari."""
 
     sqlite: SQLiteMemoryConfig
+    embedding: EmbeddingConfig
     faiss: FaissMemoryConfig
 
 
@@ -98,7 +107,7 @@ class RiskThresholds(BaseModel):
 
 class AgentToolsConfig(BaseModel):
     sql_tool_enabled: bool
-    rag_tool_enabled: bool
+    retriever_tool_enabled: bool
     timeline_tool_enabled: bool
 
 

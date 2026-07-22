@@ -51,9 +51,13 @@ vlm:
 memory:
   sqlite:
     db_path: "data/events.db"
+  embedding:
+    provider: "sentence-transformers"
+    model_name: "BAAI/bge-m3"          # alternatif: "Qwen/Qwen3-VL-Embedding"
+    device: "cpu"                      # RAG embedding hesaplama CPU'da yapilir, GPU'yu VLM/LLM'e ayirir
+    normalize_embeddings: true
   faiss:
     index_path: "data/faiss_index"
-    embedding_model: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     top_k: 5
 
 # -----------------------------------------------------------------------------
@@ -84,7 +88,7 @@ agent:
     critical: 100                    # 76-100     -> kritik risk
   tools:
     sql_tool_enabled: true
-    rag_tool_enabled: true
+    retriever_tool_enabled: true
     timeline_tool_enabled: true
 
 # -----------------------------------------------------------------------------

@@ -2,9 +2,9 @@
 
 VLM'den bagimsiz, saf bir LLM (Qwen3 / Gemma3) uzerinde calisan bu durum
 makinesi; zenginlestirilmis baglami alir, gerektiginde `Dynamic Tool
-Router` uzerinden SQL/RAG/Timeline araclarini cagirir ve sonunda 0-100
-arasi bir risk skoru ile karar/aksiyon onerisi ureten `AgentDecision`
-dondurur.
+Router` uzerinden sql_tool/retriever_tool/timeline_tool araclarini cagirir
+ve sonunda 0-100 arasi bir risk skoru ile karar/aksiyon onerisi ureten
+`AgentDecision` dondurur.
 """
 
 from __future__ import annotations
@@ -21,15 +21,15 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
 from src.agent.tools import build_tool_registry
+from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
-from src.memory.semantic_memory import SemanticMemory
 from src.utils.config_loader import AgentConfig, LLMConfig
 
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = (
     "Sen SAFIR sisteminin saha guvenligi muhakeme ajanisin. Sana verilen "
-    "gozlem baglamini degerlendir; gerekirse sql_tool, rag_tool veya "
+    "gozlem baglamini degerlendir; gerekirse sql_tool, retriever_tool veya "
     "timeline_tool araclarini kullanarak gecmis olaylari ve ilgili mevzuati "
     "incele. Analizinin sonunda MUTLAKA su formatta bir sonuc satiri yaz:\n"
     "RISK_SKORU: <0-100 arasi tam sayi>\n"
@@ -78,7 +78,7 @@ class SafirAgent:
         llm_config: LLMConfig,
         agent_config: AgentConfig,
         event_store: Optional[EventStore] = None,
-        semantic_memory: Optional[SemanticMemory] = None,
+        rag_service: Optional[EmbeddingRAGService] = None,
     ) -> None:
         """SafirAgent'i LLM/ajan konfigurasyonu ve bellek bagimliliklariyla kurar.
 
@@ -86,12 +86,12 @@ class SafirAgent:
             llm_config: `configs/config.yaml` icindeki `llm` blogu (aktif model + uc noktalar).
             agent_config: `configs/config.yaml` icindeki `agent` blogu (esikler, arac anahtarlari).
             event_store: SQL/Timeline araclarinin kullanacagi olay deposu.
-            semantic_memory: RAG aracinin kullanacagi anlamsal bellek.
+            rag_service: `retriever_tool`'un kullanacagi Embedding & RAG servisi.
         """
         self._agent_config = agent_config
         endpoint = llm_config.active_endpoint()
 
-        self._tools: List[StructuredTool] = build_tool_registry(event_store, semantic_memory)
+        self._tools: List[StructuredTool] = build_tool_registry(event_store, rag_service)
 
         self._llm = ChatOpenAI(
             model=endpoint.model_name,
