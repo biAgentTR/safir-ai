@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import base64
 import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
-import cv2
 import httpx
 
-from src.sampler.adaptive_sampler import EvidenceFrame
+from src.sampler.adaptive_sampler import EventCluster
+from src.sampler.payload_builder import VLMPayloadBuilder
 from src.utils.config_loader import VLLMEndpointConfig
 
 logger = logging.getLogger(__name__)
@@ -58,13 +57,13 @@ class BaseVLM(ABC):
 
     @abstractmethod
     def describe_events(
-        self, evidence_frames: List[EvidenceFrame], prompt: str
+        self, clusters: List[EventCluster], prompt: str
     ) -> VLMResponse:
-        """Suzulmus kanit kareleri dizisini analiz edip dogal dil aciklama uretir.
+        """Olay Gruplarinin zirve karelerini analiz edip dogal dil aciklama uretir.
 
         Args:
-            evidence_frames: `AdaptiveSampler` tarafindan uretilen, zamansal
-                sirali kanit kareleri.
+            clusters: `AdaptiveFrameSampler.cluster_events` tarafindan uretilen,
+                zaman sirali Olay Gruplari (her biri bir zirve kare tasir).
             prompt: Modelin odaklanmasi istenen olay/soruyu tanimlayan istem.
 
         Returns:
@@ -84,41 +83,23 @@ class BaseVLM(ABC):
         """
         raise NotImplementedError
 
-    def _frame_to_data_uri(self, frame) -> str:
-        """Bir OpenCV karesini base64 kodlu JPEG data URI'sine cevirir.
-
-        Args:
-            frame: BGR formatinda numpy dizisi olarak video karesi.
-
-        Returns:
-            `data:image/jpeg;base64,...` formatinda data URI.
-        """
-        success, buffer = cv2.imencode(".jpg", frame)
-        if not success:
-            raise RuntimeError("Kare JPEG formatina kodlanamadi.")
-        encoded = base64.b64encode(buffer).decode("utf-8")
-        return f"data:image/jpeg;base64,{encoded}"
-
     def _build_chat_payload(
-        self, evidence_frames: List[EvidenceFrame], prompt: str
+        self, clusters: List[EventCluster], prompt: str
     ) -> Dict[str, Any]:
         """vLLM'in OpenAI-uyumlu `/chat/completions` uc noktasi icin istek govdesi kurar.
 
+        Icerik bloklari (zirve karelerin base64 goruntusu + olay metadatasi)
+        `VLMPayloadBuilder` tarafindan uretilir; bu metod yalnizca model-ozel
+        alanlarla (model adi, sicaklik, token siniri) sarmalar.
+
         Args:
-            evidence_frames: Modele gonderilecek kanit kareleri.
+            clusters: Modele gonderilecek Olay Gruplari.
             prompt: Kullanici/istem metni.
 
         Returns:
             `/v1/chat/completions` icin JSON-serilestirilebilir istek govdesi.
         """
-        content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
-        for evidence in evidence_frames:
-            content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": self._frame_to_data_uri(evidence.frame)},
-                }
-            )
+        content = VLMPayloadBuilder.build_content_blocks(clusters, prompt)
 
         return {
             "model": self._endpoint.model_name,

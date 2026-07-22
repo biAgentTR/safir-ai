@@ -15,17 +15,14 @@ system:
   random_seed: 42
 
 # -----------------------------------------------------------------------------
-# 02 - Hafif Suzgec Katmani (Adaptive Frame Sampler) - CPU ONLY
+# 02 - VLM Oncesi Katman (Adaptive Frame Sampler) - CPU ONLY
 # -----------------------------------------------------------------------------
 sampler:
-  idle_interval_sec: 10.0            # Sakin bolgelerde kare yakalama araligi (saniye/kare)
-  active_fps: 1.0                    # Hareket/degisim anlarinda aktif ornekleme hizi (fps)
-  noise_floor: 12.5                  # Piksel farki gurultu tabani (0-255 gri seviye araligi)
-  motion_threshold: 25.0             # Hareket olarak kabul edilecek fark yuzdesi esigi
-  scene_change_threshold: 0.45       # Histogram korelasyonuna dayali sahne degisimi esigi
-  resize_width: 640                  # Analiz oncesi kare kucultme genisligi (performans icin)
-  max_evidence_buffer: 256           # Bellekte tutulacak maksimum "Evidence Frame" sayisi
-  warmup_frames: 5                   # Baslangicta arka plan modelini olusturmak icin kare sayisi
+  min_change_threshold: 0.011        # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani
+  blur_kernel_size: [21, 21]         # Gauss bulaniklastirma cekirdek boyutu (tek sayilar)
+  history_window: 30                 # Dinamik gurultu tabani (medyan) icin tutulan kare gecmisi
+  min_event_interval_sec: 2.0        # Ardisik kareleri ayni Olay Grubuna dahil etme zaman araligi (sn)
+  sample_fps: 5                      # Videonun kac saniyede bir kare kontrol edilecegini belirleyen hiz
 
 # -----------------------------------------------------------------------------
 # 03 - Gorsel Dil Modeli (VLM) Katmani - GPU / vLLM
