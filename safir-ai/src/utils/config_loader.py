@@ -24,13 +24,31 @@ class SystemConfig(BaseModel):
 
 
 class SamplerConfig(BaseModel):
-    """Adaptive Frame Sampler (CPU) esik, pencere ve kumeleme ayarlari."""
+    """Adaptive Frame Sampler (CPU) esik, pencere ve kumeleme ayarlari.
+
+    `min_change_threshold`/`blur_kernel_size`/`history_window`/
+    `min_event_interval_sec`/`sample_fps` `AdaptiveFrameSampler` tarafindan
+    dogrudan kullanilan aktif parametrelerdir (bkz. `sampler_from_config`).
+    Geri kalan alanlar (idle_interval_sec, active_fps, noise_floor,
+    motion_threshold, scene_change_threshold, resize_width,
+    max_evidence_buffer, warmup_frames), sahadaki alternatif/eski sampler
+    konfigurasyonlariyla geriye donuk uyumluluk ve ince ayar icin saklanir.
+    """
 
     min_change_threshold: float
     blur_kernel_size: List[int]
     history_window: int
     min_event_interval_sec: float
     sample_fps: int
+
+    idle_interval_sec: float
+    active_fps: float
+    noise_floor: float
+    motion_threshold: float
+    scene_change_threshold: float
+    resize_width: int
+    max_evidence_buffer: int
+    warmup_frames: int
 
 
 class VLLMEndpointConfig(BaseModel):
@@ -85,6 +103,7 @@ class EmbeddingConfig(BaseModel):
 
 class FaissMemoryConfig(BaseModel):
     index_path: str
+    embedding_model: str                # bkz. memory.embedding.model_name (ayni deger, senkron tutulmali)
     top_k: int
 
 
@@ -109,6 +128,7 @@ class AgentToolsConfig(BaseModel):
     sql_tool_enabled: bool
     retriever_tool_enabled: bool
     timeline_tool_enabled: bool
+    verification_tool_enabled: bool
 
 
 class AgentConfig(BaseModel):
