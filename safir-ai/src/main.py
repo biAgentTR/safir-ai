@@ -16,8 +16,8 @@ from pydantic import BaseModel
 
 from src.agent.langgraph_agent import SafirAgent
 from src.memory.context_builder import ContextBuilder
+from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
-from src.memory.semantic_memory import SemanticMemory
 from src.sampler.adaptive_sampler import EventCluster, EvidenceFrame, sampler_from_config
 from src.schemas.report import SafirReport, TimelineEntry
 from src.utils.config_loader import SafirConfig, load_config
@@ -50,13 +50,13 @@ class SafirPipeline:
         self._sample_fps = config.sampler.sample_fps
         self._vlm = VLMFactory.create(config.vlm)
         self._event_store = EventStore(config.memory.sqlite)
-        self._semantic_memory = SemanticMemory(config.memory.faiss)
-        self._context_builder = ContextBuilder(self._event_store, self._semantic_memory)
+        self._rag_service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss)
+        self._context_builder = ContextBuilder(self._event_store, self._rag_service)
         self._agent = SafirAgent(
             llm_config=config.llm,
             agent_config=config.agent,
             event_store=self._event_store,
-            semantic_memory=self._semantic_memory,
+            rag_service=self._rag_service,
         )
 
     def run(self, video_source: str, user_prompt: str) -> SafirReport:
