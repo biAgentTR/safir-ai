@@ -5,16 +5,16 @@ from __future__ import annotations
 import logging
 from typing import List
 
-from src.sampler.adaptive_sampler import EvidenceFrame
+from src.sampler.adaptive_sampler import EventCluster
 from src.vlm.base_vlm import BaseVLM, VLMResponse
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_SYSTEM_PROMPT = (
-    "Sen bir saha guvenlik analistisin. Sana verilen ardisik kanit karelerini "
-    "zaman sirasina gore analiz ederek sahnede olan olaylari, riskli "
-    "davranislari ve dikkat cekici degisimleri Turkce, ayrintili ve nesnel "
-    "bir sekilde tarif et."
+    "Sen bir saha guvenlik analistisin. Sana verilen Olay Gruplarinin zirve "
+    "karelerini zaman sirasina gore analiz ederek sahnede olan olaylari, "
+    "riskli davranislari ve dikkat cekici degisimleri Turkce, ayrintili ve "
+    "nesnel bir sekilde tarif et."
 )
 
 
@@ -22,12 +22,12 @@ class QwenVLM(BaseVLM):
     """Qwen2.5-VL modelini yerel vLLM servisi uzerinden kullanan VLM implementasyonu."""
 
     def describe_events(
-        self, evidence_frames: List[EvidenceFrame], prompt: str
+        self, clusters: List[EventCluster], prompt: str
     ) -> VLMResponse:
-        """Kanit karelerini Qwen2.5-VL'e gonderip zamansal olay aciklamasi uretir.
+        """Olay Gruplarinin zirve karelerini Qwen2.5-VL'e gonderip aciklama uretir.
 
         Args:
-            evidence_frames: `AdaptiveSampler` ciktisi kanit kareleri.
+            clusters: `AdaptiveFrameSampler.cluster_events` ciktisi Olay Gruplari.
             prompt: Analiz odagini belirten ek istem (bos olabilir).
 
         Returns:
@@ -35,16 +35,16 @@ class QwenVLM(BaseVLM):
             `VLMResponse`.
 
         Raises:
-            RuntimeError: vLLM servisine erisilemezse.
+            RuntimeError: vLLM servisine erisilemezse veya Olay Grubu bulunamazsa.
         """
-        if not evidence_frames:
-            raise RuntimeError("Qwen2.5-VL'e gonderilecek kanit karesi bulunamadi.")
+        if not clusters:
+            raise RuntimeError("Qwen2.5-VL'e gonderilecek Olay Grubu bulunamadi.")
 
         full_prompt = f"{_DEFAULT_SYSTEM_PROMPT}\n\nEk istem: {prompt}".strip()
-        payload = self._build_chat_payload(evidence_frames, full_prompt)
+        payload = self._build_chat_payload(clusters, full_prompt)
         logger.info(
-            "Qwen2.5-VL cagrisi yapiliyor: %d kare, model=%s",
-            len(evidence_frames),
+            "Qwen2.5-VL cagrisi yapiliyor: %d olay grubu, model=%s",
+            len(clusters),
             self.model_name,
         )
         return self._post_chat_completion(payload)

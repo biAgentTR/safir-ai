@@ -24,16 +24,13 @@ class SystemConfig(BaseModel):
 
 
 class SamplerConfig(BaseModel):
-    """Adaptive Frame Sampler (CPU) esik ve zamanlama ayarlari."""
+    """Adaptive Frame Sampler (CPU) esik, pencere ve kumeleme ayarlari."""
 
-    idle_interval_sec: float
-    active_fps: float
-    noise_floor: float
-    motion_threshold: float
-    scene_change_threshold: float
-    resize_width: int
-    max_evidence_buffer: int
-    warmup_frames: int
+    min_change_threshold: float
+    blur_kernel_size: List[int]
+    history_window: int
+    min_event_interval_sec: float
+    sample_fps: int
 
 
 class VLLMEndpointConfig(BaseModel):

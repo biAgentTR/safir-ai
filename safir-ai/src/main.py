@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import time
 from typing import List
 
 from fastapi import FastAPI, HTTPException
@@ -17,7 +18,7 @@ from src.agent.langgraph_agent import SafirAgent
 from src.memory.context_builder import ContextBuilder
 from src.memory.event_store import EventStore
 from src.memory.semantic_memory import SemanticMemory
-from src.sampler.adaptive_sampler import AdaptiveSampler, EvidenceFrame
+from src.sampler.adaptive_sampler import EventCluster, EvidenceFrame, sampler_from_config
 from src.schemas.report import SafirReport, TimelineEntry
 from src.utils.config_loader import SafirConfig, load_config
 from src.vlm.vlm_factory import VLMFactory
@@ -45,7 +46,8 @@ class SafirPipeline:
             config: `load_config()` ile uretilmis dogrulanmis `SafirConfig`.
         """
         self._config = config
-        self._sampler = AdaptiveSampler(config.sampler)
+        self._sampler = sampler_from_config(config.sampler)
+        self._sample_fps = config.sampler.sample_fps
         self._vlm = VLMFactory.create(config.vlm)
         self._event_store = EventStore(config.memory.sqlite)
         self._semantic_memory = SemanticMemory(config.memory.faiss)
@@ -68,15 +70,29 @@ class SafirPipeline:
             Doga dil ozeti, risk skoru/seviyesi ve zaman cizelgesini iceren rapor.
 
         Raises:
-            RuntimeError: Video kaynagindan hic Evidence Frame uretilemezse.
+            RuntimeError: Video kaynagindan hic Evidence Frame/Olay Grubu uretilemezse.
         """
-        evidence_frames: List[EvidenceFrame] = list(self._sampler.process_video(video_source))
+        pipeline_started_at = time.perf_counter()
+
+        evidence_frames: List[EvidenceFrame] = self._sampler.process_video(
+            video_source, sample_fps=self._sample_fps
+        )
         if not evidence_frames:
             raise RuntimeError(f"Video kaynagindan kanit karesi uretilemedi: {video_source}")
 
-        vlm_response = self._vlm.describe_events(evidence_frames, prompt=user_prompt)
+        clusters: List[EventCluster] = self._sampler.cluster_events(evidence_frames)
+        if not clusters:
+            raise RuntimeError(f"Kanit karelerinden Olay Grubu uretilemedi: {video_source}")
 
-        latest_timestamp = evidence_frames[-1].timestamp
+        logger.info(
+            "VLM oncesi katman ozeti: %d Kanit Karesi -> %d Olay Grubu (peak kareler VLM'e gonderiliyor)",
+            len(evidence_frames),
+            len(clusters),
+        )
+
+        vlm_response = self._vlm.describe_events(clusters, prompt=user_prompt)
+
+        latest_timestamp = clusters[-1].end_time
         context = self._context_builder.build(
             vlm_description=vlm_response.description,
             user_prompt=user_prompt,
@@ -94,7 +110,16 @@ class SafirPipeline:
         )
 
         timeline = self._event_store.get_timeline(
-            start_ts=evidence_frames[0].timestamp, end_ts=latest_timestamp
+            start_ts=clusters[0].start_time, end_ts=latest_timestamp
+        )
+
+        elapsed_sec = time.perf_counter() - pipeline_started_at
+        logger.info(
+            "SAFIR pipeline tamamlandi: video=%s risk=%d(%s) sure=%.3fs",
+            video_source,
+            decision.risk_score,
+            decision.risk_level,
+            elapsed_sec,
         )
 
         return SafirReport(
