@@ -303,7 +303,7 @@ class SafirPipeline:
                 else None
             ),
             vlm_model=vlm_response.model_name,
-            llm_model=self._config.llm.active_endpoint().model_name,
+            llm_model=self._agent.model_name,
         )
 
     def record_feedback(self, event_id: int, feedback: str) -> None:
