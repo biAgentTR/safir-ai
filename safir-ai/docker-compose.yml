@@ -18,7 +18,7 @@ services:
     volumes:
       - ./configs:/app/configs:ro
       - ./data:/app/data
-      - safir-outputs:/app/outputs
+      - ./outputs:/app/outputs
     environment:
       - SAFIR_ENV=production
       - VLM_ENDPOINT=http://vllm-vlm:8001/v1
@@ -26,6 +26,26 @@ services:
     depends_on:
       - vllm-vlm
       - vllm-llm
+    restart: unless-stopped
+    networks:
+      - safir-net
+
+  safir-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    image: safir-dashboard:latest
+    container_name: safir-dashboard
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+    environment:
+      - SAFIR_API_URL=http://safir-api:8000
+      - SAFIR_DATA_DIR=/app/data
+    depends_on:
+      - safir-api
     restart: unless-stopped
     networks:
       - safir-net
@@ -91,7 +111,6 @@ services:
       - safir-net
 
 volumes:
-  safir-outputs:
   hf-cache:
 
 networks:

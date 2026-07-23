@@ -19,7 +19,7 @@ system:
 # -----------------------------------------------------------------------------
 sampler:
   # --- AdaptiveFrameSampler tarafindan aktif olarak kullanilan parametreler ---
-  min_change_threshold: 0.011        # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani
+  min_change_threshold: 0.001        # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani (yuksek hassasiyet)
   blur_kernel_size: [21, 21]         # Gauss bulaniklastirma cekirdek boyutu (tek sayilar)
   history_window: 30                 # Dinamik gurultu tabani (medyan) icin tutulan kare gecmisi
   min_event_interval_sec: 2.0        # Ardisik kareleri ayni Olay Grubuna dahil etme zaman araligi (sn)

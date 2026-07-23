@@ -14,6 +14,18 @@ class TimelineEntry(BaseModel):
     description: str = Field(description="Olayin dogal dil aciklamasi.")
 
 
+class EvidenceFrameOut(BaseModel):
+    """UI'da gorsel kanit karti olarak gosterilecek bir Olay Grubu zirve karesi."""
+
+    event_id: int = Field(description="Bu karenin ait oldugu Olay Grubu kimligi.")
+    timestamp_sec: float = Field(description="Karenin saniye cinsinden zaman damgasi.")
+    timestamp_str: str = Field(description="`MM:SS` formatinda okunabilir zaman damgasi.")
+    change_score: float = Field(description="Gurultu-tabani-dusulmus degisim skoru.")
+    base64_image: str = Field(description="`data:image/jpeg;base64,...` formatinda goruntu.")
+    saved_path: Optional[str] = Field(default=None, description="Karenin diskte kayitli oldugu yol.")
+    is_fallback: bool = Field(default=False, description="Esik gecilemedigi icin frame 0 fallback'i mi.")
+
+
 class SafirReport(BaseModel):
     """Sistemler arasi entegrasyona hazir, mock semayla uyumlu nihai rapor.
 
@@ -28,6 +40,12 @@ class SafirReport(BaseModel):
     risk_level: str = Field(description="dusuk | orta | yuksek | kritik")
     recommended_action: str = Field(description="Saha operatorune yonelik somut aksiyon onerisi.")
     timeline: List[TimelineEntry] = Field(default_factory=list, description="Kronolojik olay cizelgesi.")
+    evidence_frames: List[EvidenceFrameOut] = Field(
+        default_factory=list, description="Her Olay Grubunun zirve karesi (goruntu + metadata)."
+    )
+    relevant_regulations: List[str] = Field(
+        default_factory=list, description="FAISS RAG'dan getirilen ilgili ISG mevzuat maddeleri."
+    )
     vlm_model: Optional[str] = Field(default=None, description="Aciklamayi ureten aktif VLM adi.")
     llm_model: Optional[str] = Field(default=None, description="Karari ureten aktif LLM adi.")
 

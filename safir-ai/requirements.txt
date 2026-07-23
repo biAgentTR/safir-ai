@@ -22,6 +22,6 @@ langchain-openai==0.1.17
 faiss-cpu==1.8.0.post1
 sentence-transformers==3.0.1
 
-# --- Cikti Katmani ---
-streamlit==1.36.0
-reportlab==4.2.2
+# Not: Operator Paneli (Streamlit) artik ayri bir imajda calisir
+# (bkz. Dockerfile.dashboard / requirements-dashboard.txt) — bu servis
+# imajini gereksiz yere buyutmemek icin streamlit/reportlab burada tutulmaz.

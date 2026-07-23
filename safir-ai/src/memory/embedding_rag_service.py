@@ -21,6 +21,25 @@ from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_ISG_REGULATIONS: List[str] = [
+    "ISG Yonetmeligi Madde 12: Yuksekte calisma alanlarinda dusme onleyici ekipman (emniyet kemeri, "
+    "yasam hatti) zorunludur; 2 metre ve uzerindeki calismalarda korkuluk veya guvenlik agi bulunmalidir.",
+    "ISG Yonetmeligi Madde 24: Kisisel Koruyucu Donanim (baret, is ayakkabisi, yansitici yelek) sahaya "
+    "giren tum personel ve ziyaretciler icin zorunludur; eksik KKD ile sahaya giris yasaktir.",
+    "Operasyonel Kural OK-07: Forklift ve is makinesi trafiginde yaya gecitleri her zaman acik "
+    "tutulmali, arac-yaya ayrimi sarrafiye/bariyerle saglanmalidir.",
+    "ISG Yonetmeligi Madde 31: Yanici/patlayici madde bulunan alanlarda ates, kivilcim ve sicak yuzey "
+    "kaynakli islemler icin sicak calisma izni (hot work permit) alinmadan calisma baslatilamaz.",
+    "Yangin Guvenligi Talimati YG-03: Duman veya alev tespit edilen alanlarda calisma derhal "
+    "durdurulmali, en yakin tahliye noktasindan sahadan cikilmali ve yangin ekibi bilgilendirilmelidir.",
+    "ISG Yonetmeligi Madde 45: Kapali/dar alan calismalarinda gaz olcumu yapilmadan ve gozetmen "
+    "atanmadan alana giris yasaktir.",
+    "Operasyonel Kural OK-15: Elektrik pano ve hatlarina yakin calismalarda enerji kesme/kilitleme "
+    "(LOTO - Lockout/Tagout) prosedurune uyulmadan mudahale edilemez.",
+    "ISG Yonetmeligi Madde 52: Agir yuk kaldirma ekipmanlari (vinc, kren) calisma alaninda, operatorun "
+    "gorus alani disindaki bolgelerde sinyalman gorevlendirilmesi zorunludur.",
+]
+
 
 @dataclass
 class RetrievedDocument:
@@ -74,6 +93,27 @@ class EmbeddingRAGService:
     def dimension(self) -> int:
         """Embedding modelinin urettigi vektor boyutunu dondurur."""
         return self._dimension
+
+    def document_count(self) -> int:
+        """FAISS indeksine su ana kadar eklenmis dokuman sayisini dondurur."""
+        return len(self._documents)
+
+    def seed_default_regulations(self) -> None:
+        """Indeks bossa `DEFAULT_ISG_REGULATIONS` varsayilan mevzuat setini ekler.
+
+        Indeks zaten dokuman iceriyorsa hicbir sey yapmaz (idempotent); boylece
+        uygulama her yeniden baslatildiginda ayni maddeler tekrar tekrar
+        eklenmez.
+        """
+        if self.document_count() > 0:
+            logger.info(
+                "EmbeddingRAGService zaten %d dokuman iceriyor; varsayilan ISG mevzuati atlandi.",
+                self.document_count(),
+            )
+            return
+
+        self.add_documents(DEFAULT_ISG_REGULATIONS)
+        logger.info("EmbeddingRAGService: %d varsayilan ISG mevzuat maddesi yuklendi.", len(DEFAULT_ISG_REGULATIONS))
 
     def _embed(self, texts: List[str]) -> np.ndarray:
         """Metin listesini embedding modeliyle vektorlere cevirir.
