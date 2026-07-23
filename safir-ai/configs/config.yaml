@@ -6,6 +6,21 @@
 # API/vLLM servisleri) davranisini tek bir noktadan yonetir.
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+# 00 - Uygulama Kimligi & Mock Mod Anahtarlari
+# -----------------------------------------------------------------------------
+# use_mock_vlm / use_mock_llm: true yapildiginda src/vlm/factory.py gercek
+# vLLM GPU servislerine hic baglanmadan sahte (mock) istemcileri dondurur.
+# GPU'su olmayan gelistiriciler bunlari kendi ortamlarinda/local config
+# kopyalarinda true'ya cevirerek tum pipeline'i uctan uca test edebilir.
+# Repo varsayilani, mevcut GPU/vLLM tabanli production akisini korumak icin
+# false'tur.
+app:
+  name: "SAFIR"
+  version: "2.0.0"
+  use_mock_vlm: false
+  use_mock_llm: false
+
 system:
   name: "SAFIR"
   environment: "production"          # development | staging | production

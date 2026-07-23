@@ -14,6 +14,34 @@ class TimelineEntry(BaseModel):
     description: str = Field(description="Olayin dogal dil aciklamasi.")
 
 
+class TimelineEvent(BaseModel):
+    """Modul 4 spesifikasyonundaki ortak sema: siddet (severity) alani eklenmis olay girisi.
+
+    `TimelineEntry` ile ayni bilgiyi tasir ve mevcut pipeline/UI tarafindan
+    uretilen JSON alanlarini degistirmez; `severity` ekleyen tuketiciler
+    (orn. gelecekteki bir siddet-siniflandirici) icin ayrica sunulur.
+    """
+
+    timestamp: float = Field(description="Olayin saniye cinsinden zaman damgasi.")
+    description: str = Field(description="Olayin dogal dil aciklamasi.")
+    severity: Optional[str] = Field(
+        default=None, description="Olayin siddet seviyesi (orn. dusuk/orta/yuksek/kritik), bilinmiyorsa None."
+    )
+
+
+class RagContext(BaseModel):
+    """Modul 4 spesifikasyonundaki ortak sema: FAISS RAG'dan gelen tek bir mevzuat sonucu.
+
+    `SafirReport.relevant_regulations` (duz metin listesi) ile ayni veriyi,
+    kural basligi/skor gibi yapilandirilmis alanlarla birlikte sunmak isteyen
+    tuketiciler icin kullanilir (bkz. `EmbeddingRAGService.search_laws`).
+    """
+
+    rule_title: str = Field(description="Mevzuat/kural maddesinin kisa basligi (orn. 'ISG Yonetmeligi Madde 12').")
+    content: str = Field(description="Maddenin tam metni.")
+    score: float = Field(description="FAISS benzerlik skoru.")
+
+
 class EvidenceFrameOut(BaseModel):
     """UI'da gorsel kanit karti olarak gosterilecek bir Olay Grubu zirve karesi."""
 

@@ -181,8 +181,43 @@ class EmbeddingRAGService:
             if idx != -1
         ]
 
+    def search_laws(self, query: str, top_k: Optional[int] = None) -> List[RetrievedDocument]:
+        """Modul 3 spesifikasyonundaki isim: `query()` metoduna dogrudan devreder.
+
+        Args:
+            query: Dogal dil sorgusu (orn. bir ISG mevzuat sorusu).
+            top_k: Dondurulecek maksimum sonuc sayisi; verilmezse config degeri kullanilir.
+
+        Returns:
+            `query(query, top_k)` ile aynı sonuc.
+        """
+        return self.query(query, top_k)
+
     def persist(self) -> None:
         """FAISS indeksini diske yazar (kalicilik icin)."""
         self._index_path.parent.mkdir(parents=True, exist_ok=True)
         faiss.write_index(self._index, str(self._index_path))
         logger.info("FAISS indeksi kaydedildi: %s", self._index_path)
+
+
+# Modul 3 spesifikasyonundaki isim: ayni sinifa isaret eden alias (geriye
+# donuk uyumluluk icin `EmbeddingRAGService` adi da tum cagiran kodda aynen
+# kullanilmaya devam eder).
+FAISSRagService = EmbeddingRAGService
+
+
+if __name__ == "__main__":
+    # Modul 3'un bagimsiz calistirilabilirlik testi:
+    #   python -m src.memory.embedding_rag_service
+    from src.utils.config_loader import load_config
+
+    logging.basicConfig(level=logging.INFO)
+
+    demo_config = load_config()
+    demo_service = FAISSRagService(demo_config.memory.embedding, demo_config.memory.faiss)
+    demo_service.seed_default_regulations()
+
+    demo_query = "Yuksekte calisirken hangi ekipmanlar zorunlu?"
+    print(f"Sorgu: {demo_query}\n")
+    for i, result in enumerate(demo_service.search_laws(demo_query, top_k=3), start=1):
+        print(f"{i}. (skor={result.score:.4f}) {result.text}")

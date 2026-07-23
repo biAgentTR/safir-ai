@@ -22,37 +22,12 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 
+from src.sampler.schema import EventCluster, EvidenceFrame
 from src.utils.config_loader import SamplerConfig
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_EVIDENCE_OUTPUT_DIR = "outputs/evidence_frames"
-
-
-@dataclass
-class EvidenceFrame:
-    """VLM'e gonderilecek Kanit Karesi veri modeli."""
-
-    frame_id: int
-    timestamp_sec: float
-    timestamp_str: str
-    change_score: float
-    image_bytes: bytes
-    base64_image: str
-    image_shape: Tuple[int, int, int]
-    saved_path: Optional[str] = None
-    is_fallback: bool = False
-
-
-@dataclass
-class EventCluster:
-    """Arka arkaya gerceklesen degisim karelerinin kumelenmis olay grubu."""
-
-    event_id: int
-    start_time: float
-    end_time: float
-    peak_frame: EvidenceFrame
-    total_candidate_frames: int
 
 
 @dataclass
@@ -380,3 +355,69 @@ def sampler_from_config(
         history_window=config.history_window,
         min_event_interval_sec=config.min_event_interval_sec,
     )
+
+
+if __name__ == "__main__":
+    # Modul 1'in bagimsiz calistirilabilirlik testi:
+    #   python -m src.sampler.adaptive_sampler [video_yolu]
+    # Varsayilan olarak data/test.mp4 uzerinde calisir; VLM/GPU'ya veya
+    # projenin geri kalanina hicbir bagimliligi yoktur.
+    import json
+    import sys
+
+    logging.basicConfig(level=logging.INFO)
+
+    demo_video_path = sys.argv[1] if len(sys.argv) > 1 else "data/test.mp4"
+    if not Path(demo_video_path).exists():
+        print(
+            f"Video bulunamadi: {demo_video_path}\n"
+            "Kullanim: python -m src.sampler.adaptive_sampler [video_yolu]\n"
+            "(Varsayilan olarak 'data/test.mp4' aranir.)"
+        )
+        sys.exit(1)
+
+    demo_sampler = AdaptiveFrameSampler()
+    demo_evidence_frames = demo_sampler.process_video(demo_video_path)
+    demo_clusters = demo_sampler.cluster_events(demo_evidence_frames)
+    demo_stats = demo_sampler.last_run_stats
+
+    print(f"Video: {demo_video_path}")
+    print(f"Taranan ham kare: {demo_stats.total_frames_scanned}")
+    print(f"Degerlendirilen ornek kare: {demo_stats.sampled_frames_evaluated}")
+    print(f"Uretilen Kanit Karesi: {demo_stats.evidence_frame_count}")
+    print(
+        f"Elenen kare sayisi: {demo_stats.eliminated_frame_count} "
+        f"(%{demo_stats.eliminated_ratio_pct:.1f} eleme orani)"
+    )
+    print(f"Olusan Olay Grubu sayisi: {len(demo_clusters)}")
+
+    demo_output_path = Path("data/mock_evidence.json")
+    demo_output_path.parent.mkdir(parents=True, exist_ok=True)
+    demo_payload = {
+        "video_source": demo_video_path,
+        "stats": {
+            "total_frames_scanned": demo_stats.total_frames_scanned,
+            "sampled_frames_evaluated": demo_stats.sampled_frames_evaluated,
+            "evidence_frame_count": demo_stats.evidence_frame_count,
+            "eliminated_frame_count": demo_stats.eliminated_frame_count,
+            "eliminated_ratio_pct": demo_stats.eliminated_ratio_pct,
+            "elapsed_sec": demo_stats.elapsed_sec,
+        },
+        "evidence_frames": [
+            ef.model_dump(exclude={"image_bytes"}) for ef in demo_evidence_frames
+        ],
+        "clusters": [
+            {
+                "event_id": cluster.event_id,
+                "start_time": cluster.start_time,
+                "end_time": cluster.end_time,
+                "total_candidate_frames": cluster.total_candidate_frames,
+                "peak_frame": cluster.peak_frame.model_dump(exclude={"image_bytes"}),
+            }
+            for cluster in demo_clusters
+        ],
+    }
+    demo_output_path.write_text(
+        json.dumps(demo_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"Kanit verisi yazildi: {demo_output_path}")

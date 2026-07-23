@@ -16,7 +16,6 @@ from typing import Annotated, List, Optional, Sequence, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
@@ -24,6 +23,7 @@ from src.agent.tools import build_tool_registry
 from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
 from src.utils.config_loader import AgentConfig, LLMConfig
+from src.vlm.factory import get_llm_client
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +79,7 @@ class SafirAgent:
         agent_config: AgentConfig,
         event_store: Optional[EventStore] = None,
         rag_service: Optional[EmbeddingRAGService] = None,
+        use_mock_llm: bool = False,
     ) -> None:
         """SafirAgent'i LLM/ajan konfigurasyonu ve bellek bagimliliklariyla kurar.
 
@@ -87,19 +88,14 @@ class SafirAgent:
             agent_config: `configs/config.yaml` icindeki `agent` blogu (esikler, arac anahtarlari).
             event_store: SQL/Timeline araclarinin kullanacagi olay deposu.
             rag_service: `retriever_tool`'un kullanacagi Embedding & RAG servisi.
+            use_mock_llm: `True` ise gercek vLLM'e hic baglanmadan `MockLLMClient`
+                kullanilir (GPU'suz gelistirme icin, bkz. `configs/config.yaml`
+                `app.use_mock_llm`).
         """
         self._agent_config = agent_config
-        endpoint = llm_config.active_endpoint()
 
         self._tools: List[StructuredTool] = build_tool_registry(event_store, rag_service)
-
-        self._llm = ChatOpenAI(
-            model=endpoint.model_name,
-            base_url=f"http://{endpoint.vllm_host}:{endpoint.vllm_port}/v1",
-            api_key="EMPTY",
-            temperature=endpoint.temperature,
-            max_tokens=endpoint.max_new_tokens,
-        ).bind_tools(self._tools)
+        self._llm = get_llm_client(llm_config, use_mock=use_mock_llm).bind_tools(self._tools)
 
         self._tools_by_name = {tool.name: tool for tool in self._tools}
         self._graph = self._build_graph()
