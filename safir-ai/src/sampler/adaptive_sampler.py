@@ -16,7 +16,8 @@ import base64
 import logging
 import time
 from dataclasses import dataclass
-from typing import List, Tuple
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -24,6 +25,8 @@ import numpy as np
 from src.utils.config_loader import SamplerConfig
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_EVIDENCE_OUTPUT_DIR = "outputs/evidence_frames"
 
 
 @dataclass
@@ -37,6 +40,8 @@ class EvidenceFrame:
     image_bytes: bytes
     base64_image: str
     image_shape: Tuple[int, int, int]
+    saved_path: Optional[str] = None
+    is_fallback: bool = False
 
 
 @dataclass
@@ -60,10 +65,11 @@ class AdaptiveFrameSampler:
 
     def __init__(
         self,
-        min_change_threshold: float = 0.011,
+        min_change_threshold: float = 0.001,
         blur_kernel_size: Tuple[int, int] = (21, 21),
         history_window: int = 30,
         min_event_interval_sec: float = 2.0,
+        evidence_output_dir: str = _DEFAULT_EVIDENCE_OUTPUT_DIR,
     ) -> None:
         """AdaptiveFrameSampler'i esik ve pencere parametreleriyle baslatir.
 
@@ -76,11 +82,14 @@ class AdaptiveFrameSampler:
                 tutulan son degisim orani sayisi.
             min_event_interval_sec: Ardisik Kanit Karelerini ayni Olay Grubuna
                 dahil etmek icin izin verilen maksimum zaman farki (saniye).
+            evidence_output_dir: Her Kanit Karesinin `.jpg` olarak diske
+                yazilacagi klasor (UI ve denetim/log amacli kalicilik icin).
         """
         self.min_change_threshold = min_change_threshold
         self.blur_kernel_size = blur_kernel_size
         self.history_window = history_window
         self.min_event_interval_sec = min_event_interval_sec
+        self.evidence_output_dir = Path(evidence_output_dir)
 
         self.prev_gray: np.ndarray | None = None
         self.noise_floor_history: List[float] = []
@@ -115,6 +124,23 @@ class AdaptiveFrameSampler:
             raise RuntimeError("Kare JPEG formatina kodlanamadi.")
         return base64.b64encode(buffer).decode("utf-8")
 
+    def _persist_frame(self, frame_id: int, time_str: str, image_bytes: bytes) -> str:
+        """Bir Kanit Karesini `evidence_output_dir` altina `.jpg` olarak yazar.
+
+        Args:
+            frame_id: Karenin video icindeki sirasi (dosya adi icin kullanilir).
+            time_str: `MM:SS` formatinda zaman damgasi (dosya adinda `-` ile).
+            image_bytes: JPEG-kodlu ham kare baytlari.
+
+        Returns:
+            Yazilan dosyanin yolu (string).
+        """
+        self.evidence_output_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"evt_{frame_id:06d}_{time_str.replace(':', '-')}.jpg"
+        path = self.evidence_output_dir / filename
+        path.write_bytes(image_bytes)
+        return str(path)
+
     def process_video(self, video_path: str, sample_fps: int = 5) -> List[EvidenceFrame]:
         """Videoyu okur, kare farklarini hesaplar ve suzulmus Kanit Karelerini dondurur.
 
@@ -140,6 +166,8 @@ class AdaptiveFrameSampler:
         evidence_frames: List[EvidenceFrame] = []
         frame_id = 0
         sampled_frame_count = 0
+        first_frame_raw: Optional[np.ndarray] = None
+        first_frame_timestamp: float = 0.0
 
         try:
             while cap.isOpened():
@@ -155,6 +183,10 @@ class AdaptiveFrameSampler:
                 timestamp_sec = frame_id / native_fps
                 curr_gray = self._preprocess_frame(frame)
 
+                if first_frame_raw is None:
+                    first_frame_raw = frame.copy()
+                    first_frame_timestamp = timestamp_sec
+
                 if self.prev_gray is not None:
                     frame_diff = cv2.absdiff(curr_gray, self.prev_gray)
                     _, thresh = cv2.threshold(frame_diff, 25, 255, cv2.THRESH_BINARY)
@@ -168,25 +200,28 @@ class AdaptiveFrameSampler:
                     net_change_score = max(0.0, change_ratio - adaptive_noise_floor)
 
                     if net_change_score >= self.min_change_threshold:
-                        base64_str = self._frame_to_base64(frame)
-                        minutes, seconds = divmod(int(timestamp_sec), 60)
-                        time_str = f"{minutes:02d}:{seconds:02d}"
-
-                        evidence = EvidenceFrame(
-                            frame_id=frame_id,
-                            timestamp_sec=round(timestamp_sec, 2),
-                            timestamp_str=time_str,
-                            change_score=round(net_change_score, 4),
-                            image_bytes=cv2.imencode(".jpg", frame)[1].tobytes(),
-                            base64_image=f"data:image/jpeg;base64,{base64_str}",
-                            image_shape=frame.shape,
+                        evidence_frames.append(
+                            self._build_evidence_frame(frame, frame_id, timestamp_sec, net_change_score)
                         )
-                        evidence_frames.append(evidence)
 
                 self.prev_gray = curr_gray
                 frame_id += 1
         finally:
             cap.release()
+
+        if not evidence_frames:
+            if first_frame_raw is None:
+                raise ValueError(f"Video kaynagindan hic kare okunamadi: {video_path}")
+
+            logger.warning(
+                "Esigi gecen Kanit Karesi bulunamadi; sistemin cokmemesi icin frame 0 "
+                "varsayilan Kanit Karesi olarak kabul ediliyor (fallback)."
+            )
+            fallback = self._build_evidence_frame(
+                first_frame_raw, frame_id=0, timestamp_sec=first_frame_timestamp, change_score=0.0
+            )
+            fallback.is_fallback = True
+            evidence_frames.append(fallback)
 
         elapsed_sec = time.perf_counter() - started_at
         eliminated = sampled_frame_count - len(evidence_frames)
@@ -203,6 +238,37 @@ class AdaptiveFrameSampler:
             elapsed_sec,
         )
         return evidence_frames
+
+    def _build_evidence_frame(
+        self, frame: np.ndarray, frame_id: int, timestamp_sec: float, change_score: float
+    ) -> EvidenceFrame:
+        """Bir kareden `EvidenceFrame` uretir; JPEG/base64'e cevirir ve diske kaydeder.
+
+        Args:
+            frame: BGR formatinda ham video karesi.
+            frame_id: Karenin video icindeki sirasi.
+            timestamp_sec: Karenin saniye cinsinden zaman damgasi.
+            change_score: Hesaplanan (gurultu-tabani-dusulmus) degisim skoru.
+
+        Returns:
+            `image_bytes`/`base64_image` doldurulmus ve diske yazilmis `EvidenceFrame`.
+        """
+        base64_str = self._frame_to_base64(frame)
+        minutes, seconds = divmod(int(timestamp_sec), 60)
+        time_str = f"{minutes:02d}:{seconds:02d}"
+        image_bytes = cv2.imencode(".jpg", frame)[1].tobytes()
+        saved_path = self._persist_frame(frame_id, time_str, image_bytes)
+
+        return EvidenceFrame(
+            frame_id=frame_id,
+            timestamp_sec=round(timestamp_sec, 2),
+            timestamp_str=time_str,
+            change_score=round(change_score, 4),
+            image_bytes=image_bytes,
+            base64_image=f"data:image/jpeg;base64,{base64_str}",
+            image_shape=frame.shape,
+            saved_path=saved_path,
+        )
 
     def cluster_events(self, evidence_frames: List[EvidenceFrame]) -> List[EventCluster]:
         """Suzulen kareleri zaman araligina gore kumeleyip zirve karelerini secer.
