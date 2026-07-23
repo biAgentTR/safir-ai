@@ -26,6 +26,16 @@ class EvidenceFrameOut(BaseModel):
     is_fallback: bool = Field(default=False, description="Esik gecilemedigi icin frame 0 fallback'i mi.")
 
 
+class SamplerStats(BaseModel):
+    """VLM Oncesi Katman (CPU Adaptive Frame Sampler) icin GPU tasarruf istatistikleri."""
+
+    total_frames_scanned: int = Field(description="Videodan okunan toplam ham kare sayisi.")
+    sampled_frames_evaluated: int = Field(description="Ornekleme adimina gore degerlendirilen kare sayisi.")
+    evidence_frame_count: int = Field(description="Esigi gecip Kanit Karesi sayilan kare sayisi.")
+    eliminated_frame_count: int = Field(description="Elenen (VLM'e gonderilmeyen) kare sayisi.")
+    gpu_savings_ratio_pct: float = Field(description="Elenen karelerin yuzdesi (GPU tasarruf orani, 0-100).")
+
+
 class SafirReport(BaseModel):
     """Sistemler arasi entegrasyona hazir, mock semayla uyumlu nihai rapor.
 
@@ -45,6 +55,9 @@ class SafirReport(BaseModel):
     )
     relevant_regulations: List[str] = Field(
         default_factory=list, description="FAISS RAG'dan getirilen ilgili ISG mevzuat maddeleri."
+    )
+    sampler_stats: Optional[SamplerStats] = Field(
+        default=None, description="CPU suzgec katmaninin GPU tasarruf istatistikleri."
     )
     vlm_model: Optional[str] = Field(default=None, description="Aciklamayi ureten aktif VLM adi.")
     llm_model: Optional[str] = Field(default=None, description="Karari ureten aktif LLM adi.")

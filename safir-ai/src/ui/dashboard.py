@@ -1,14 +1,17 @@
 """SAFIR Operator Paneli: Streamlit tabanli gorsel destekli gercek zamanli arayuz.
 
-Bu panel, `src/main.py` FastAPI servisinin `/analyze/jobs` (asenkron is
-kuyrugu), `/analyze/jobs/{job_id}` (canli asama sorgulama) ve `/alerts/trigger`
-(Human-in-the-Loop saha alarmi) uc noktalarini tuketir. Operator; bir video
-dosyasi yukleyebilir veya bir RTSP/HTTP canli yayin adresi girebilir,
-ozellestirilmis bir inceleme istemi yazabilir, VLM Oncesi Katman -> VLM ->
-LangGraph Ajan asamalarinin canli ilerlemesini izleyebilir, zirve kanit
-karelerini ve FAISS RAG'dan gelen ilgili ISG mevzuatini gorebilir, yuksek
-riskli durumlari onaylayip saha alarmini tetikleyebilir ve nihai raporu JSON
-olarak indirebilir.
+Bu panel, `src/main.py` FastAPI servisinin `/health`, `/analyze/jobs`
+(asenkron is kuyrugu), `/analyze/jobs/{job_id}` (canli asama sorgulama) ve
+`/alerts/trigger` (Human-in-the-Loop saha alarmi) uc noktalarini tuketir.
+
+Yan menude operator; saha veri kaynagini (dosya/canli yayin) secer, CPU
+Sampler'in ornekleme FPS ve hassasiyet esigini slider'larla ayarlar ve
+backend saglik durumunu canli izler. Ana panelde video/istem girdisini verip
+analizi baslatir; `st.status` ile ajanin 5 adimli akil yurutme surecini canli
+izler (backend'in gercek 3 asamali ilerleme sinyaline baglidir). Sonuclar;
+CPU Filtre/GPU Tasarruf banner'i + renkli risk rozetiyle ozetlenir ve 4
+sekmeli bir panelde (Kanit Galerisi, Ajan Dusunme & RAG, Olay Cizelgesi &
+Alarm, Sartname JSON Raporu) detaylandirilir.
 
 Calistirma:
     streamlit run src/ui/dashboard.py
@@ -21,7 +24,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 import streamlit as st
@@ -32,7 +35,57 @@ ALLOWED_VIDEO_EXTENSIONS = ["mp4", "avi", "mkv"]
 POLL_INTERVAL_SEC = 1.0
 HTTP_TIMEOUT_SEC = 30.0
 
+# Risk seviyesi (backend: dusuk/orta/yuksek/kritik) -> rozet etiketi ve rengi.
+_RISK_BADGE_MAP = {
+    "kritik": ("CRITICAL", "#dc2626"),
+    "yuksek": ("HIGH", "#ea580c"),
+    "orta": ("MEDIUM", "#d97706"),
+    "dusuk": ("LOW", "#2563eb"),
+}
+_NORMAL_BADGE = ("NORMAL", "#16a34a")
+
+# Backend'in gercek 3 asamali ilerleme adimlarini, panelde istenen 5 adimli
+# akil yurutme anlatimina esler. Anahtar = JobStatusResponse.step (1..3).
+_STAGE_NARRATION: Dict[int, List[str]] = {
+    1: [
+        "**Adim 1:** CPU Adaptive Sampler Calistiriliyor...",
+        "**Adim 2:** Hareket & Degisim Kontrolu (Noise Floor Filter)...",
+    ],
+    2: [
+        "**Adim 3:** Multimodal vLLM (Qwen2.5-VL) Gorsel Anlama...",
+    ],
+    3: [
+        "**Adim 4:** FAISS ISG Mevzuat RAG Sorgulamasi...",
+        "**Adim 5:** Nihai Risk Skoru & Sartname JSON Ciktisi...",
+    ],
+}
+
 st.set_page_config(page_title="SAFIR Operator Paneli", page_icon="🛡️", layout="wide")
+
+st.markdown(
+    """
+    <style>
+    .filter-banner {
+        background: linear-gradient(90deg, #0f172a 0%, #1e3a5f 100%);
+        border: 1px solid #2563eb;
+        border-radius: 10px;
+        padding: 1rem 1.25rem;
+        color: #e2e8f0;
+        margin-bottom: 1rem;
+    }
+    .filter-banner b { color: #93c5fd; }
+    .risk-badge {
+        display: inline-block;
+        padding: 0.35rem 0.9rem;
+        border-radius: 999px;
+        font-weight: 700;
+        color: white;
+        letter-spacing: 0.03em;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 def _check_backend_health() -> bool:
@@ -63,12 +116,16 @@ def _save_uploaded_file(uploaded_file) -> str:
     return uploaded_file.name
 
 
-def _create_analyze_job(video_source: str, user_prompt: str) -> str:
+def _create_analyze_job(
+    video_source: str, user_prompt: str, sample_fps: int, min_change_threshold: float
+) -> str:
     """`/analyze/jobs` uc noktasina POST atarak arka planda bir analiz isi baslatir.
 
     Args:
         video_source: Video dosya adi/yolu veya canli yayin URI'si.
         user_prompt: Operatorun ozel inceleme istemi.
+        sample_fps: Yan menudeki slider'dan gelen ornekleme FPS degeri.
+        min_change_threshold: Yan menudeki slider'dan gelen hassasiyet esigi.
 
     Returns:
         Olusturulan isin kimligi.
@@ -78,52 +135,135 @@ def _create_analyze_job(video_source: str, user_prompt: str) -> str:
     """
     response = httpx.post(
         f"{API_BASE_URL}/analyze/jobs",
-        json={"video_source": video_source, "user_prompt": user_prompt},
+        json={
+            "video_source": video_source,
+            "user_prompt": user_prompt,
+            "sample_fps": sample_fps,
+            "min_change_threshold": min_change_threshold,
+        },
         timeout=HTTP_TIMEOUT_SEC,
     )
     response.raise_for_status()
     return response.json()["job_id"]
 
 
-def _poll_analyze_job(job_id: str, progress_bar, stage_placeholder) -> Optional[Dict[str, Any]]:
-    """Bir analiz isini tamamlanana kadar sorgulayip ilerleme cubugunu gunceller.
+def _get_job_status(job_id: str) -> Dict[str, Any]:
+    """`/analyze/jobs/{job_id}` uzerinden bir isin guncel durumunu getirir.
 
     Args:
         job_id: `_create_analyze_job` tarafindan donen is kimligi.
-        progress_bar: Guncellenecek `st.progress` bileseni.
-        stage_placeholder: Asama metninin yazilacagi `st.empty` bilesigi.
 
     Returns:
-        Basariliysa nihai `SafirReport` sozlugu, hata olursa `None`.
+        `JobStatusResponse` sozlugu.
     """
-    while True:
-        response = httpx.get(f"{API_BASE_URL}/analyze/jobs/{job_id}", timeout=HTTP_TIMEOUT_SEC)
-        response.raise_for_status()
-        data = response.json()
-
-        step, total = data["step"], data["total_steps"] or 3
-        pct = int(100 * step / total) if total else 0
-        label = f"{step}/{total} - {data['stage_name'] or 'Kuyrukta bekleniyor...'}"
-        progress_bar.progress(min(max(pct, 0), 100), text=label)
-        stage_placeholder.caption(f"Durum: `{data['status']}`")
-
-        if data["status"] == "done":
-            progress_bar.progress(100, text=f"{total}/{total} - Tamamlandi")
-            return data["result"]
-        if data["status"] == "error":
-            st.error(f"Analiz basarisiz oldu: {data['error']}")
-            return None
-
-        time.sleep(POLL_INTERVAL_SEC)
+    response = httpx.get(f"{API_BASE_URL}/analyze/jobs/{job_id}", timeout=HTTP_TIMEOUT_SEC)
+    response.raise_for_status()
+    return response.json()
 
 
-def _render_evidence_frames(evidence_frames: list) -> None:
-    """Zirve kanit karelerini resim kartlari olarak (zaman damgasi + skorla) gosterir.
+def _run_pipeline_with_live_status(
+    video_source: str, user_prompt: str, sample_fps: int, min_change_threshold: float
+) -> None:
+    """Analiz isini baslatir ve `st.status` ile 5 adimli canli akil yurutme surecini gosterir.
+
+    Anlatim adimlari, backend'in gercek 3 asamali ilerleme sinyaline
+    (`JobStatusResponse.step`) baglidir; ilerleme sahte bir zamanlayici
+    degil, `/analyze/jobs/{job_id}` sorgulamasindan gelen gercek durumdur.
+
+    Args:
+        video_source: Video dosya adi/yolu veya canli yayin URI'si.
+        user_prompt: Operatorun ozel inceleme istemi.
+        sample_fps: Yan menudeki slider'dan gelen ornekleme FPS degeri.
+        min_change_threshold: Yan menudeki slider'dan gelen hassasiyet esigi.
+    """
+    with st.status("🧠 Ajan Dusunme Sureci Baslatiliyor...", expanded=True) as status:
+        try:
+            job_id = _create_analyze_job(video_source, user_prompt, sample_fps, min_change_threshold)
+        except httpx.HTTPError as exc:
+            status.update(label="❌ Pipeline baslatilamadi", state="error")
+            st.error(f"Analiz baslatilamadi: {exc}")
+            return
+
+        narrated_steps: set = set()
+        while True:
+            try:
+                data = _get_job_status(job_id)
+            except httpx.HTTPError as exc:
+                status.update(label="❌ Durum sorgulanamadi", state="error")
+                st.error(f"Is durumu alinamadi: {exc}")
+                return
+
+            backend_step = data["step"]
+            if backend_step not in narrated_steps and backend_step in _STAGE_NARRATION:
+                for line in _STAGE_NARRATION[backend_step]:
+                    st.write(line)
+                narrated_steps.add(backend_step)
+
+            status.update(
+                label=f"{data['stage_name'] or 'Kuyrukta bekleniyor...'} "
+                f"({backend_step}/{data['total_steps']})"
+            )
+
+            if data["status"] == "done":
+                status.update(label="✅ Analiz tamamlandi", state="complete", expanded=False)
+                st.session_state.last_report = data["result"]
+                return
+            if data["status"] == "error":
+                status.update(label="❌ Analiz basarisiz oldu", state="error")
+                st.error(f"Analiz basarisiz oldu: {data['error']}")
+                return
+
+            time.sleep(POLL_INTERVAL_SEC)
+
+
+def _risk_badge_html(risk_level: str, risk_score: int) -> str:
+    """Risk seviyesine gore renkli bir HTML rozet dondurur.
+
+    Args:
+        risk_level: Backend risk seviyesi (`dusuk`/`orta`/`yuksek`/`kritik`).
+        risk_score: 0-100 arasi risk skoru (NORMAL esigini belirlemek icin).
+
+    Returns:
+        `st.markdown(..., unsafe_allow_html=True)` ile basilabilecek HTML.
+    """
+    if risk_score <= 5:
+        label, color = _NORMAL_BADGE
+    else:
+        label, color = _RISK_BADGE_MAP.get(risk_level, _NORMAL_BADGE)
+    return f'<span class="risk-badge" style="background-color:{color};">{label}</span>'
+
+
+def _render_filter_banner(stats: Optional[Dict[str, Any]]) -> None:
+    """CPU suzgec (Adaptive Sampler) GPU tasarruf istatistiklerini banner olarak gosterir.
+
+    Args:
+        stats: `SafirReport.sampler_stats` sozlugu (yoksa banner atlanir).
+    """
+    if not stats:
+        st.info("Bu analiz icin suzgec istatistigi bulunamadi.")
+        return
+
+    st.markdown(
+        f"""
+        <div class="filter-banner">
+            <b>⚡ CPU Suzgec & GPU Tasarruf Panosu</b><br/>
+            Taranan ham kare: <b>{stats['total_frames_scanned']}</b> &nbsp;|&nbsp;
+            Degerlendirilen ornek kare: <b>{stats['sampled_frames_evaluated']}</b> &nbsp;|&nbsp;
+            Suzulen Kanit Karesi: <b>{stats['evidence_frame_count']}</b> &nbsp;|&nbsp;
+            Elenen kare: <b>{stats['eliminated_frame_count']}</b><br/>
+            <b>GPU Tasarruf Orani: %{stats['gpu_savings_ratio_pct']:.1f}</b>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_evidence_gallery(evidence_frames: list) -> None:
+    """Zirve kanit karelerini resim galerisi olarak (zaman damgasi + skorla) gosterir.
 
     Args:
         evidence_frames: `SafirReport.evidence_frames` listesi (dict olarak).
     """
-    st.subheader("🖼️ Gorsel Kanit Kareleri (Zirve Kareler)")
     if not evidence_frames:
         st.info("Bu analiz icin kanit karesi uretilmedi.")
         return
@@ -148,29 +288,43 @@ def _render_evidence_frames(evidence_frames: list) -> None:
                 st.warning(f"Kare goruntulenemedi: {exc}")
 
 
-def _render_rag_card(relevant_regulations: list) -> None:
-    """FAISS RAG'dan getirilen ilgili ISG mevzuat maddelerini seffaf bir kartta gosterir.
-
-    Args:
-        relevant_regulations: `SafirReport.relevant_regulations` listesi.
-    """
-    st.subheader("📚 RAG & Mevzuat Karti (FAISS)")
-    with st.container(border=True):
-        if not relevant_regulations:
-            st.caption("Bu analiz icin ilgili mevzuat maddesi bulunamadi.")
-        else:
-            st.caption("LangGraph Ajaninin `retriever_tool` uzerinden FAISS'ten getirdigi maddeler:")
-            for regulation in relevant_regulations:
-                st.markdown(f"- {regulation}")
-
-
-def _render_human_in_the_loop(report: Dict[str, Any]) -> None:
-    """Operatorun riski onaylayip saha alarmini tetikleyebilecegi bolumu render eder.
+def _render_agent_rag_tab(report: Dict[str, Any]) -> None:
+    """VLM'in Turkce sahne tasvirini ve FAISS RAG mevzuat maddelerini gosterir.
 
     Args:
         report: Guncel `SafirReport` sozlugu.
     """
-    st.subheader("🚨 Human-in-the-Loop: Karar Onayi")
+    st.subheader("🧠 vLLM Gorsel Anlama Ciktisi (Turkce)")
+    st.write(report["natural_language_summary"])
+
+    st.subheader("📚 RAG & Mevzuat Karti (FAISS)")
+    with st.container(border=True):
+        regulations = report.get("relevant_regulations", [])
+        if not regulations:
+            st.caption("Bu analiz icin ilgili mevzuat maddesi bulunamadi.")
+        else:
+            st.caption("LangGraph Ajaninin `retriever_tool` uzerinden FAISS'ten getirdigi maddeler:")
+            for regulation in regulations:
+                st.markdown(f"- {regulation}")
+
+
+def _render_timeline_alert_tab(report: Dict[str, Any]) -> None:
+    """Olay zaman cizelgesini ve Human-in-the-Loop alarm tetikleme bolumunu gosterir.
+
+    Args:
+        report: Guncel `SafirReport` sozlugu.
+    """
+    st.subheader("🕒 Olay Zaman Cizelgesi")
+    timeline = report.get("timeline", [])
+    if not timeline:
+        st.caption("Zaman cizelgesinde kayit yok.")
+    else:
+        for entry in timeline:
+            with st.container(border=True):
+                st.write(f"`[{entry['timestamp']:.1f}s]` {entry['description']}")
+
+    st.divider()
+    st.subheader("🚨 Human-in-the-Loop: Saha Alarmi")
     risk_level = report["risk_level"]
     risk_score = report["risk_score"]
 
@@ -199,8 +353,25 @@ def _render_human_in_the_loop(report: Dict[str, Any]) -> None:
             st.error(f"Alarm tetiklenemedi: {exc}")
 
 
+def _render_json_report_tab(report: Dict[str, Any]) -> None:
+    """Sartname uyumlu JSON raporunun onizlemesini ve indirme butonunu gosterir.
+
+    Args:
+        report: Guncel `SafirReport` sozlugu.
+    """
+    st.subheader("📄 Sartname Uyumlu JSON Raporu")
+    report_json = json.dumps(report, ensure_ascii=False, indent=2)
+    st.code(report_json, language="json")
+    st.download_button(
+        "⬇️ JSON Raporu Indir",
+        data=report_json,
+        file_name=f"safir_report_{report['video_source'].replace('/', '_')}.json",
+        mime="application/json",
+    )
+
+
 def _render_report(report: Dict[str, Any]) -> None:
-    """Tamamlanmis bir `SafirReport`'u tum bolumleriyle (ozet, kanitlar, RAG, HITL, indirme) render eder.
+    """Tamamlanmis bir `SafirReport`'u banner + rozet + 4 sekmeli panel olarak render eder.
 
     Args:
         report: `/analyze/jobs/{job_id}` uzerinden gelen nihai rapor sozlugu.
@@ -208,63 +379,90 @@ def _render_report(report: Dict[str, Any]) -> None:
     st.divider()
     st.header("📋 Analiz Sonucu")
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Risk Skoru", f"{report['risk_score']}/100")
-    col2.metric("Risk Seviyesi", report["risk_level"].upper())
-    col3.metric("VLM / LLM", f"{report.get('vlm_model', '-')} / {report.get('llm_model', '-')}")
+    _render_filter_banner(report.get("sampler_stats"))
 
-    st.markdown("**Turkce Dogal Dil Ozeti**")
-    st.write(report["natural_language_summary"])
+    col1, col2, col3 = st.columns([1, 1, 2])
+    col1.metric("Risk Skoru", f"{report['risk_score']}/100")
+    with col2:
+        st.markdown("**Risk Seviyesi**")
+        st.markdown(_risk_badge_html(report["risk_level"], report["risk_score"]), unsafe_allow_html=True)
+    col3.metric("VLM / LLM", f"{report.get('vlm_model', '-')} / {report.get('llm_model', '-')}")
 
     st.markdown("**Onerilen Aksiyon**")
     st.info(report["recommended_action"])
 
-    _render_evidence_frames(report.get("evidence_frames", []))
-    _render_rag_card(report.get("relevant_regulations", []))
-
-    st.subheader("🕒 Zaman Cizelgesi")
-    timeline = report.get("timeline", [])
-    if not timeline:
-        st.caption("Zaman cizelgesinde kayit yok.")
-    else:
-        for entry in timeline:
-            st.write(f"`[{entry['timestamp']:.1f}s]` {entry['description']}")
-
-    _render_human_in_the_loop(report)
-
-    st.subheader("⬇️ Rapor Indirme")
-    report_json = json.dumps(report, ensure_ascii=False, indent=2)
-    st.download_button(
-        "JSON Raporu Indir",
-        data=report_json,
-        file_name=f"safir_report_{report['video_source'].replace('/', '_')}.json",
-        mime="application/json",
+    tab1, tab2, tab3, tab4 = st.tabs(
+        [
+            "📸 Süzülen Kanıt Kareleri",
+            "🧠 Ajan Düşünme & İSG RAG Bağlamı",
+            "📊 Olay Çizelgesi & Saha Alarmı",
+            "📄 Şartname JSON Raporu",
+        ]
     )
+    with tab1:
+        _render_evidence_gallery(report.get("evidence_frames", []))
+    with tab2:
+        _render_agent_rag_tab(report)
+    with tab3:
+        _render_timeline_alert_tab(report)
+    with tab4:
+        _render_json_report_tab(report)
+
+
+def _render_sidebar() -> Dict[str, Any]:
+    """Yan menudeki veri kaynagi secimi, sampler slider'lari ve saglik durumunu render eder.
+
+    Returns:
+        `{"input_mode": str, "sample_fps": int, "min_change_threshold": float}` sozlugu.
+    """
+    with st.sidebar:
+        st.header("⚙️ Ayarlar")
+
+        st.subheader("Saha Veri Kaynagi")
+        input_mode = st.radio(
+            "Kaynak",
+            ["📹 Video Dosyası Sürükle", "🔴 RTSP / Canlı Kamera Akışı"],
+            label_visibility="collapsed",
+        )
+
+        st.subheader("CPU Sampler Esik Ayarlari")
+        sample_fps = st.slider("Ornekleme FPS (sample_fps)", min_value=1, max_value=10, value=5)
+        min_change_threshold = st.slider(
+            "Hassasiyet Esigi (min_change_threshold)",
+            min_value=0.001,
+            max_value=0.050,
+            value=0.011,
+            step=0.001,
+            format="%.3f",
+        )
+
+        st.subheader("Backend Servis Sagligi")
+        if _check_backend_health():
+            st.success(f"API & vLLM ayakta: `{API_BASE_URL}`")
+        else:
+            st.error(f"Backend'e ulasilamiyor: `{API_BASE_URL}`")
+
+        return {
+            "input_mode": input_mode,
+            "sample_fps": sample_fps,
+            "min_change_threshold": min_change_threshold,
+        }
 
 
 def main() -> None:
     """Streamlit operator panelinin ana giris noktasi."""
-    st.title("🛡️ SAFIR — Saha Analiz ve Farkindalik Operator Paneli")
-
-    if _check_backend_health():
-        st.caption("🟢 Backend baglantisi: `%s` (saglikli)" % API_BASE_URL)
-    else:
-        st.caption("🔴 Backend'e ulasilamiyor: `%s`" % API_BASE_URL)
+    st.title("🛡️ SAFIR — Saha Analiz ve Farkındalık Operatör Paneli")
 
     if "last_report" not in st.session_state:
         st.session_state.last_report = None
 
-    st.header("1️⃣ Video Girdisi")
-    input_mode = st.radio(
-        "Girdi Modu",
-        ["📁 Dosya Yukle", "📡 Canli Yayin (RTSP/HTTP)"],
-        horizontal=True,
-    )
+    sidebar = _render_sidebar()
 
+    st.header("📥 Girdi Paneli")
     video_source: Optional[str] = None
-    if input_mode == "📁 Dosya Yukle":
+    if sidebar["input_mode"] == "📹 Video Dosyası Sürükle":
         uploaded_file = st.file_uploader(
-            "Video dosyasi sec", type=ALLOWED_VIDEO_EXTENSIONS
+            "Video dosyasini surukle veya sec", type=ALLOWED_VIDEO_EXTENSIONS
         )
         if uploaded_file is not None:
             video_source = _save_uploaded_file(uploaded_file)
@@ -275,24 +473,20 @@ def main() -> None:
             placeholder="rtsp://192.168.1.10:554/stream veya http://kamera-ip/video",
         )
 
-    st.header("2️⃣ Operator Istemi")
     user_prompt = st.text_area(
-        "Ozellestirilmis inceleme istemi",
+        "Sahaya ozel ISG talimati / inceleme istemi",
         value="Sahnede baret veya yelek takmayan personel ya da duman tespiti yap.",
         height=80,
     )
 
-    st.header("3️⃣ Analiz")
     start_disabled = not video_source
-    if st.button("🔍 Analizi Baslat", type="primary", disabled=start_disabled):
-        progress_bar = st.progress(0, text="Kuyruga aliniyor...")
-        stage_placeholder = st.empty()
-        try:
-            job_id = _create_analyze_job(video_source, user_prompt)
-            result = _poll_analyze_job(job_id, progress_bar, stage_placeholder)
-            st.session_state.last_report = result
-        except httpx.HTTPError as exc:
-            st.error(f"Analiz baslatilamadi: {exc}")
+    if st.button("🚀 Pipeline & Ajan Düşünme Sürecini Başlat", type="primary", disabled=start_disabled):
+        _run_pipeline_with_live_status(
+            video_source,
+            user_prompt,
+            sidebar["sample_fps"],
+            sidebar["min_change_threshold"],
+        )
 
     if st.session_state.last_report:
         _render_report(st.session_state.last_report)
