@@ -23,6 +23,21 @@ class SystemConfig(BaseModel):
     random_seed: int
 
 
+class AppConfig(BaseModel):
+    """Uygulama kimligi ve GPU'suz gelistirme icin Mock mod anahtarlari.
+
+    `use_mock_vlm`/`use_mock_llm` `true` oldugunda `src/vlm/factory.py`
+    (`get_vlm_client`/`get_llm_client`) gercek vLLM GPU servislerine hic
+    baglanmadan sahte (mock) istemcileri dondurur; boylece GPU'su olmayan
+    gelistiriciler tum pipeline'i uctan uca calistirabilir.
+    """
+
+    name: str = "SAFIR"
+    version: str = "2.0.0"
+    use_mock_vlm: bool = False
+    use_mock_llm: bool = False
+
+
 class SamplerConfig(BaseModel):
     """Adaptive Frame Sampler (CPU) esik, pencere ve kumeleme ayarlari.
 
@@ -158,6 +173,7 @@ class OutputConfig(BaseModel):
 class SafirConfig(BaseModel):
     """SAFIR sisteminin butun katmanlarini kapsayan kok konfigurasyon modeli."""
 
+    app: AppConfig = Field(default_factory=AppConfig)
     system: SystemConfig
     sampler: SamplerConfig
     vlm: VLMConfig

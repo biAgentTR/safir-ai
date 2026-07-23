@@ -142,3 +142,36 @@ class EventStore:
     def close(self) -> None:
         """Veritabani baglantisini kapatir."""
         self._connection.close()
+
+
+# Modul 3 spesifikasyonundaki isim: ayni sinifa isaret eden alias (geriye
+# donuk uyumluluk icin `EventStore` adi da tum cagiran kodda aynen kullanilmaya
+# devam eder).
+SQLiteEventStore = EventStore
+
+
+if __name__ == "__main__":
+    # Modul 3'un bagimsiz calistirilabilirlik testi:
+    #   python -m src.memory.event_store
+    import tempfile
+    import time
+
+    logging.basicConfig(level=logging.INFO)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        demo_store = SQLiteEventStore(SQLiteMemoryConfig(db_path=f"{tmp_dir}/demo_events.db"))
+
+        now = time.time()
+        demo_store.add_event(timestamp=now, description="Personel korumasiz alanda tespit edildi.", risk_score=60, risk_level="yuksek")
+        demo_store.add_event(timestamp=now + 5, description="Forklift yaya gecidine yaklasti.", risk_score=75, risk_level="yuksek")
+        demo_store.add_event(timestamp=now + 10, description="Sahada normal calisma gozlemlendi.", risk_score=10, risk_level="dusuk")
+
+        print("En son 5 olay:")
+        for event in demo_store.query_recent(limit=5):
+            print(f"  [{event['timestamp']:.1f}] {event['description']} (risk={event['risk_level']})")
+
+        print("\nZaman cizelgesi (get_timeline):")
+        for event in demo_store.get_timeline(start_ts=now, end_ts=now + 10):
+            print(f"  [{event['timestamp']:.1f}] {event['description']}")
+
+        demo_store.close()

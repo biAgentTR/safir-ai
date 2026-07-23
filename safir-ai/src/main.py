@@ -29,7 +29,7 @@ from src.memory.event_store import EventStore
 from src.sampler.adaptive_sampler import EventCluster, EvidenceFrame, sampler_from_config
 from src.schemas.report import EvidenceFrameOut, SafirReport, SamplerStats, TimelineEntry
 from src.utils.config_loader import SafirConfig, load_config
-from src.vlm.vlm_factory import VLMFactory
+from src.vlm.factory import get_vlm_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -144,7 +144,7 @@ class SafirPipeline:
         """
         self._config = config
         self._default_sample_fps = config.sampler.sample_fps
-        self._vlm = VLMFactory.create(config.vlm)
+        self._vlm = get_vlm_client(config.vlm, use_mock=config.app.use_mock_vlm)
         self._event_store = EventStore(config.memory.sqlite)
         self._rag_service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss)
         self._rag_service.seed_default_regulations()
@@ -154,6 +154,7 @@ class SafirPipeline:
             agent_config=config.agent,
             event_store=self._event_store,
             rag_service=self._rag_service,
+            use_mock_llm=config.app.use_mock_llm,
         )
 
     def run(
