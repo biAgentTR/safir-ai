@@ -45,6 +45,8 @@ services:
       - "4096"
     ports:
       - "8001:8001"
+    environment:
+      - HF_HUB_ENABLE_HF_TRANSFER=0
     volumes:
       - hf-cache:/root/.cache/huggingface
     deploy:
@@ -73,6 +75,8 @@ services:
       - "4096"
     ports:
       - "8003:8003"
+    environment:
+      - HF_HUB_ENABLE_HF_TRANSFER=0
     volumes:
       - hf-cache:/root/.cache/huggingface
     deploy:
