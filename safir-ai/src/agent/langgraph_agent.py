@@ -100,6 +100,16 @@ class SafirAgent:
         self._tools_by_name = {tool.name: tool for tool in self._tools}
         self._graph = self._build_graph()
 
+    @property
+    def model_name(self) -> str:
+        """Karari fiilen ureten LLM'in adini dondurur (mock modda `"mock-llm"`).
+
+        Config'te tanimli model adini degil, `get_llm_client` tarafindan
+        gercekten secilen istemcinin adini yansitir; boylece `SafirReport.llm_model`
+        mock mod aktifken yaniltici bicimde gercek model adini gostermez.
+        """
+        return self._llm.model_name
+
     def _build_graph(self):
         """LangGraph `StateGraph`'ini dugum ve kenarlariyla insa eder ve derler.
 

@@ -1,0 +1,10 @@
+# Test/gelistirme bagimliliklari. `requirements.txt` (tam API/backend
+# bagimliliklari, GPU gerektirmez) uzerine pytest ekler.
+#
+# Kurulum:
+#   pip install -r requirements-dev.txt
+#
+# Calistirma (repo kokunden, safir-ai/):
+#   pytest
+-r requirements.txt
+pytest==8.2.2
