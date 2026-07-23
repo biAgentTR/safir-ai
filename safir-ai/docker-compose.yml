@@ -17,7 +17,7 @@ services:
       - "8000:8000"
     volumes:
       - ./configs:/app/configs:ro
-      - safir-data:/app/data
+      - ./data:/app/data
       - safir-outputs:/app/outputs
     environment:
       - SAFIR_ENV=production
@@ -87,7 +87,6 @@ services:
       - safir-net
 
 volumes:
-  safir-data:
   safir-outputs:
   hf-cache:
 
