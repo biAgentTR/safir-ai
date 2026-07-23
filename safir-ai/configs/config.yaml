@@ -100,6 +100,7 @@ agent:
     critical: 100                    # 76-100     -> kritik risk
   tools:
     sql_tool_enabled: true
+    rag_tool_enabled: true
     retriever_tool_enabled: true
     timeline_tool_enabled: true
     verification_tool_enabled: true

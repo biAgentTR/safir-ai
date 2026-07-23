@@ -126,6 +126,7 @@ class RiskThresholds(BaseModel):
 
 class AgentToolsConfig(BaseModel):
     sql_tool_enabled: bool
+    rag_tool_enabled: bool              # bkz. retriever_tool_enabled (ayni RAG aracina isaret eder)
     retriever_tool_enabled: bool
     timeline_tool_enabled: bool
     verification_tool_enabled: bool
