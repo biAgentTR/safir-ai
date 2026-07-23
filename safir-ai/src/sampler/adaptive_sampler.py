@@ -55,6 +55,18 @@ class EventCluster:
     total_candidate_frames: int
 
 
+@dataclass
+class SamplerRunStats:
+    """Tek bir `process_video` cagrisi icin CPU suzgec/GPU tasarruf istatistikleri."""
+
+    total_frames_scanned: int
+    sampled_frames_evaluated: int
+    evidence_frame_count: int
+    eliminated_frame_count: int
+    eliminated_ratio_pct: float
+    elapsed_sec: float
+
+
 class AdaptiveFrameSampler:
     """OpenCV tabanli, CPU uzerinde ultra hizli calisan Uyarlanabilir Kare Ornekleyici.
 
@@ -93,6 +105,7 @@ class AdaptiveFrameSampler:
 
         self.prev_gray: np.ndarray | None = None
         self.noise_floor_history: List[float] = []
+        self.last_run_stats: Optional[SamplerRunStats] = None
 
     def _preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
         """Goruntuyu gri tonlamaya cevirip Gauss bulaniklastirma ile gurultuyu yumusatir.
@@ -226,6 +239,14 @@ class AdaptiveFrameSampler:
         elapsed_sec = time.perf_counter() - started_at
         eliminated = sampled_frame_count - len(evidence_frames)
         eliminated_ratio = (100.0 * eliminated / sampled_frame_count) if sampled_frame_count else 0.0
+        self.last_run_stats = SamplerRunStats(
+            total_frames_scanned=frame_id,
+            sampled_frames_evaluated=sampled_frame_count,
+            evidence_frame_count=len(evidence_frames),
+            eliminated_frame_count=eliminated,
+            eliminated_ratio_pct=round(eliminated_ratio, 2),
+            elapsed_sec=round(elapsed_sec, 3),
+        )
         logger.info(
             "AdaptiveFrameSampler tamamlandi: %d ham kare tarandi, %d kare ornekleme icin "
             "degerlendirildi, %d Kanit Karesi uretildi (%d kare elendi, %%%.1f eleme orani), "
@@ -330,17 +351,31 @@ class AdaptiveFrameSampler:
         )
 
 
-def sampler_from_config(config: SamplerConfig) -> AdaptiveFrameSampler:
+def sampler_from_config(
+    config: SamplerConfig, min_change_threshold_override: Optional[float] = None
+) -> AdaptiveFrameSampler:
     """`configs/config.yaml` icindeki `sampler` blogundan bir `AdaptiveFrameSampler` uretir.
+
+    Her cagri taze bir `AdaptiveFrameSampler` orneği doner (paylasimli/kalici
+    durum tutmaz); boylece operator panelinden gelen ayarlar cagrilar arasinda
+    birbirine karismaz ve her analiz temiz bir `prev_gray`/gurultu gecmisiyle
+    baslar.
 
     Args:
         config: Dogrulanmis `SamplerConfig` nesnesi.
+        min_change_threshold_override: Verilirse, config degeri yerine bu
+            hassasiyet esigi kullanilir (operator panelindeki slider icin).
 
     Returns:
-        Config parametreleriyle ilklendirilmis `AdaptiveFrameSampler`.
+        Config (ve varsa override) parametreleriyle ilklendirilmis, taze
+        `AdaptiveFrameSampler` orneği.
     """
     return AdaptiveFrameSampler(
-        min_change_threshold=config.min_change_threshold,
+        min_change_threshold=(
+            min_change_threshold_override
+            if min_change_threshold_override is not None
+            else config.min_change_threshold
+        ),
         blur_kernel_size=tuple(config.blur_kernel_size),
         history_window=config.history_window,
         min_event_interval_sec=config.min_event_interval_sec,

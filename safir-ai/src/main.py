@@ -20,14 +20,14 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.agent.langgraph_agent import SafirAgent
 from src.memory.context_builder import ContextBuilder
 from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
 from src.sampler.adaptive_sampler import EventCluster, EvidenceFrame, sampler_from_config
-from src.schemas.report import EvidenceFrameOut, SafirReport, TimelineEntry
+from src.schemas.report import EvidenceFrameOut, SafirReport, SamplerStats, TimelineEntry
 from src.utils.config_loader import SafirConfig, load_config
 from src.vlm.vlm_factory import VLMFactory
 
@@ -76,6 +76,15 @@ class AnalyzeRequest(BaseModel):
 
     video_source: str
     user_prompt: str = "Sahnede riskli bir durum var mi degerlendir."
+    sample_fps: Optional[int] = Field(
+        default=None, ge=1, le=10, description="Operator panelinden gelen ornekleme FPS override'i (1-10)."
+    )
+    min_change_threshold: Optional[float] = Field(
+        default=None,
+        ge=0.001,
+        le=0.050,
+        description="Operator panelinden gelen hassasiyet esigi override'i (0.001-0.050).",
+    )
 
 
 class AlertTriggerRequest(BaseModel):
@@ -134,8 +143,7 @@ class SafirPipeline:
             config: `load_config()` ile uretilmis dogrulanmis `SafirConfig`.
         """
         self._config = config
-        self._sampler = sampler_from_config(config.sampler)
-        self._sample_fps = config.sampler.sample_fps
+        self._default_sample_fps = config.sampler.sample_fps
         self._vlm = VLMFactory.create(config.vlm)
         self._event_store = EventStore(config.memory.sqlite)
         self._rag_service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss)
@@ -153,8 +161,14 @@ class SafirPipeline:
         video_source: str,
         user_prompt: str,
         on_stage: Optional[OnStageCallback] = None,
+        sample_fps_override: Optional[int] = None,
+        min_change_threshold_override: Optional[float] = None,
     ) -> SafirReport:
         """Video kaynagindan nihai `SafirReport`'a kadar tum pipeline'i calistirir.
+
+        Her cagri icin `configs/config.yaml` (ve varsa override'lar) ile taze
+        bir `AdaptiveFrameSampler` orneği kurulur; boylece ardisik analizler
+        birbirinin `prev_gray`/gurultu gecmisi durumunu paylasmaz.
 
         Args:
             video_source: `.mp4` dosya yolu veya RTSP/HTTP URI'si.
@@ -162,10 +176,14 @@ class SafirPipeline:
             on_stage: Her ana asamadan once cagrilan, operator paneli icin
                 canli ilerleme bildiren istege bagli geri cagirma
                 (`(asama_adi, adim, toplam_adim)`).
+            sample_fps_override: Operator panelindeki slider'dan gelen
+                ornekleme FPS degeri; verilmezse config degeri kullanilir.
+            min_change_threshold_override: Operator panelindeki slider'dan
+                gelen hassasiyet esigi; verilmezse config degeri kullanilir.
 
         Returns:
-            Doga dil ozeti, risk skoru/seviyesi, kanit kareleri ve ilgili
-            mevzuati iceren rapor.
+            Doga dil ozeti, risk skoru/seviyesi, kanit kareleri, ilgili
+            mevzuat ve CPU suzgec istatistiklerini iceren rapor.
 
         Raises:
             RuntimeError: Video kaynagindan hic Evidence Frame/Olay Grubu uretilemezse.
@@ -175,13 +193,16 @@ class SafirPipeline:
         if on_stage:
             on_stage(*STAGE_SAMPLER)
 
-        evidence_frames: List[EvidenceFrame] = self._sampler.process_video(
-            video_source, sample_fps=self._sample_fps
+        sampler = sampler_from_config(self._config.sampler, min_change_threshold_override)
+        sample_fps = sample_fps_override or self._default_sample_fps
+
+        evidence_frames: List[EvidenceFrame] = sampler.process_video(
+            video_source, sample_fps=sample_fps
         )
         if not evidence_frames:
             raise RuntimeError(f"Video kaynagindan kanit karesi uretilemedi: {video_source}")
 
-        clusters: List[EventCluster] = self._sampler.cluster_events(evidence_frames)
+        clusters: List[EventCluster] = sampler.cluster_events(evidence_frames)
         if not clusters:
             raise RuntimeError(f"Kanit karelerinden Olay Grubu uretilemedi: {video_source}")
 
@@ -253,6 +274,17 @@ class SafirPipeline:
                 for cluster in clusters
             ],
             relevant_regulations=context.relevant_regulations,
+            sampler_stats=(
+                SamplerStats(
+                    total_frames_scanned=sampler.last_run_stats.total_frames_scanned,
+                    sampled_frames_evaluated=sampler.last_run_stats.sampled_frames_evaluated,
+                    evidence_frame_count=sampler.last_run_stats.evidence_frame_count,
+                    eliminated_frame_count=sampler.last_run_stats.eliminated_frame_count,
+                    gpu_savings_ratio_pct=sampler.last_run_stats.eliminated_ratio_pct,
+                )
+                if sampler.last_run_stats
+                else None
+            ),
             vlm_model=vlm_response.model_name,
             llm_model=self._config.llm.active_endpoint().model_name,
         )
@@ -275,13 +307,21 @@ def get_pipeline() -> SafirPipeline:
     return _pipeline
 
 
-def _run_job(job_id: str, video_source: str, user_prompt: str) -> None:
+def _run_job(
+    job_id: str,
+    video_source: str,
+    user_prompt: str,
+    sample_fps_override: Optional[int] = None,
+    min_change_threshold_override: Optional[float] = None,
+) -> None:
     """Arka plan thread'inde pipeline'i calistirip `JobState`'i gunceller.
 
     Args:
         job_id: `_jobs` sozlugundeki hedef isin kimligi.
         video_source: Ham (henuz normalize edilmemis) video kaynagi.
         user_prompt: Ajanin odaklanmasi istenen kullanici istemi.
+        sample_fps_override: Operator panelinden gelen ornekleme FPS override'i.
+        min_change_threshold_override: Operator panelinden gelen hassasiyet esigi override'i.
     """
 
     def on_stage(stage_name: str, step: int, total: int) -> None:
@@ -295,7 +335,13 @@ def _run_job(job_id: str, video_source: str, user_prompt: str) -> None:
     try:
         pipeline = get_pipeline()
         normalized_source = normalize_video_source(video_source)
-        report = pipeline.run(normalized_source, user_prompt, on_stage=on_stage)
+        report = pipeline.run(
+            normalized_source,
+            user_prompt,
+            on_stage=on_stage,
+            sample_fps_override=sample_fps_override,
+            min_change_threshold_override=min_change_threshold_override,
+        )
         with _jobs_lock:
             job = _jobs[job_id]
             job.status = "done"
@@ -331,7 +377,12 @@ def analyze(request: AnalyzeRequest) -> SafirReport:
     try:
         pipeline = get_pipeline()
         normalized_source = normalize_video_source(request.video_source)
-        return pipeline.run(normalized_source, request.user_prompt)
+        return pipeline.run(
+            normalized_source,
+            request.user_prompt,
+            sample_fps_override=request.sample_fps,
+            min_change_threshold_override=request.min_change_threshold,
+        )
     except Exception as exc:  # noqa: BLE001 - API tuketicisine anlamli hata donmek icin
         logger.exception("Analiz pipeline hatasi")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -356,7 +407,13 @@ def create_analyze_job(request: AnalyzeRequest) -> AnalyzeJobResponse:
 
     thread = threading.Thread(
         target=_run_job,
-        args=(job_id, request.video_source, request.user_prompt),
+        args=(
+            job_id,
+            request.video_source,
+            request.user_prompt,
+            request.sample_fps,
+            request.min_change_threshold,
+        ),
         daemon=True,
     )
     thread.start()
