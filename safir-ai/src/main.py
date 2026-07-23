@@ -104,6 +104,20 @@ class AlertTriggerResponse(BaseModel):
     message: str
 
 
+class FeedbackRequest(BaseModel):
+    """`/events/{event_id}/feedback` icin istek govdesi (Human-in-the-Loop dogrulamasi)."""
+
+    feedback: str = Field(description="'true_positive' veya 'false_positive'.")
+
+
+class FeedbackResponse(BaseModel):
+    """`/events/{event_id}/feedback` yaniti."""
+
+    event_id: int
+    feedback: str
+    message: str
+
+
 @dataclass
 class JobState:
     """Bir `/analyze/jobs` isinin canli durumu (asama, sonuc, hata)."""
@@ -230,7 +244,7 @@ class SafirPipeline:
 
         decision = self._agent.run(context.to_prompt_block())
 
-        self._event_store.add_event(
+        event_id = self._event_store.add_event(
             timestamp=latest_timestamp,
             description=vlm_response.description,
             risk_score=decision.risk_score,
@@ -252,6 +266,7 @@ class SafirPipeline:
         )
 
         return SafirReport(
+            event_id=event_id,
             video_source=video_source,
             generated_at=datetime.datetime.utcnow().isoformat() + "Z",
             natural_language_summary=vlm_response.description,
@@ -282,6 +297,7 @@ class SafirPipeline:
                     evidence_frame_count=sampler.last_run_stats.evidence_frame_count,
                     eliminated_frame_count=sampler.last_run_stats.eliminated_frame_count,
                     gpu_savings_ratio_pct=sampler.last_run_stats.eliminated_ratio_pct,
+                    elapsed_sec=sampler.last_run_stats.elapsed_sec,
                 )
                 if sampler.last_run_stats
                 else None
@@ -289,6 +305,18 @@ class SafirPipeline:
             vlm_model=vlm_response.model_name,
             llm_model=self._config.llm.active_endpoint().model_name,
         )
+
+    def record_feedback(self, event_id: int, feedback: str) -> None:
+        """Operatorun Human-in-the-Loop dogrulamasini SQLite'a isler.
+
+        Args:
+            event_id: `SafirReport.event_id` (bu analizin SQLite kaydi).
+            feedback: `"true_positive"` veya `"false_positive"`.
+
+        Raises:
+            ValueError: `feedback` gecersiz bir deger olursa veya `event_id` bulunamazsa.
+        """
+        self._event_store.record_feedback(event_id, feedback)
 
 
 _pipeline: SafirPipeline | None = None
@@ -477,6 +505,37 @@ def trigger_alert(request: AlertTriggerRequest) -> AlertTriggerResponse:
         acknowledged=True,
         alert_id=alert_id,
         message="Saha alarmi operator onayiyla tetiklendi ve kayit altina alindi.",
+    )
+
+
+@app.post("/events/{event_id}/feedback", response_model=FeedbackResponse)
+def submit_event_feedback(event_id: int, request: FeedbackRequest) -> FeedbackResponse:
+    """Operatorun bir analiz sonucuna verdigi Human-in-the-Loop geri bildirimini kaydeder.
+
+    Bu, otomatik bir RLHF/ince-ayar dongusunu tetiklemez; yalnizca
+    `true_positive`/`false_positive` etiketini SQLite'a kalici olarak yazar.
+
+    Args:
+        event_id: `SafirReport.event_id` (analiz sonucundaki SQLite kaydi).
+        request: `"true_positive"` veya `"false_positive"` iceren istek govdesi.
+
+    Returns:
+        Kaydin basariyla islendigini bildiren yanit.
+
+    Raises:
+        HTTPException: `feedback` gecersizse (422) veya `event_id` bulunamazsa (404).
+    """
+    try:
+        pipeline = get_pipeline()
+        pipeline.record_feedback(event_id, request.feedback)
+    except ValueError as exc:
+        status_code = 404 if "bulunamadi" in str(exc).lower() else 422
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    return FeedbackResponse(
+        event_id=event_id,
+        feedback=request.feedback,
+        message="Geri bildiriminiz kaydedildi.",
     )
 
 

@@ -62,6 +62,7 @@ class SamplerStats(BaseModel):
     evidence_frame_count: int = Field(description="Esigi gecip Kanit Karesi sayilan kare sayisi.")
     eliminated_frame_count: int = Field(description="Elenen (VLM'e gonderilmeyen) kare sayisi.")
     gpu_savings_ratio_pct: float = Field(description="Elenen karelerin yuzdesi (GPU tasarruf orani, 0-100).")
+    elapsed_sec: float = Field(description="Sampler'in videoyu taramasi icin gecen sure (saniye).")
 
 
 class SafirReport(BaseModel):
@@ -71,6 +72,9 @@ class SafirReport(BaseModel):
     onerisi ve zaman cizelgesini tek bir yapida birlestirir.
     """
 
+    event_id: Optional[int] = Field(
+        default=None, description="Bu analizin SQLite'a yazildigi olay kaydinin kimligi (Human-in-the-Loop geri bildirimi icin)."
+    )
     video_source: str = Field(description="Analiz edilen video/kamera akisinin kaynagi.")
     generated_at: str = Field(description="Raporun ISO-8601 formatinda uretim zamani.")
     natural_language_summary: str = Field(description="Turkce, sade karar ozeti.")
