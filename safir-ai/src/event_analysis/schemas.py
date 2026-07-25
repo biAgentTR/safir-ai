@@ -131,6 +131,39 @@ class DetectedEvent(BaseModel):
     source_model: Optional[str] = Field(default=None, description="Aciklamayi ureten VLM'in model adi.")
 
 
+class TemporalEvent(BaseModel):
+    """T009 Temporal Reasoning ciktisi: zaman ekseninde gruplanmis/iliskilendirilmis olay.
+
+    `TemporalReasoner`, ayni `event_type`e sahip ve birbirine yakin zamanli
+    `DetectedEvent`leri tek bir `TemporalEvent`e (bir "suregelen olay") indirger
+    (`occurrence_count > 1`, `duration > 0`); tek basina kalan `DetectedEvent`ler
+    `occurrence_count == 1`, `duration == 0.0` ile birebir bir `TemporalEvent`e
+    doner. `related_events`, zaman ekseninde yakin duran (ayni ya da farkli
+    tipte) diger `TemporalEvent`lerin `event_id`lerini tasir.
+    """
+
+    event_id: str = Field(description="Bu `TemporalEvent`e ozgu kimlik (orn. 'evt_0').")
+    event_type: str = Field(description="Olay kategorisi (bkz. `EventType`).")
+    description: str = Field(description="Temsili aciklama (gruptaki en son `DetectedEvent`den alinir).")
+    start_timestamp: float = Field(description="Gruptaki en erken olayin zaman damgasi (saniye).")
+    end_timestamp: float = Field(description="Gruptaki en son olayin zaman damgasi (saniye).")
+    duration: float = Field(
+        ge=0.0, description="`end_timestamp - start_timestamp`; tek olay icin 0.0."
+    )
+    confidence: float = Field(
+        ge=0.0, le=1.0, description="Gruptaki en yuksek guven skoru, tekrar eden tespitler icin hafifce artirilmis."
+    )
+    occurrence_count: int = Field(ge=1, description="Bu `TemporalEvent`e birlesen `DetectedEvent` sayisi.")
+    matched_keywords: List[str] = Field(
+        default_factory=list, description="Gruptaki tum tespitlerden gelen anahtar kelimelerin birlesimi."
+    )
+    source_model: Optional[str] = Field(default=None, description="Aciklamayi ureten VLM'in model adi.")
+    related_events: List[str] = Field(
+        default_factory=list,
+        description="Zaman ekseninde yakin duran diger `TemporalEvent`lerin `event_id` listesi.",
+    )
+
+
 class RuleMatch(BaseModel):
     """Rule Engine'in (T010) bir `DetectedEvent`e karsi eslestirdigi ISG/saha kurali.
 
