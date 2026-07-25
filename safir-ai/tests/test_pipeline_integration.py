@@ -28,7 +28,6 @@ import pytest
 
 from src.main import SafirPipeline
 from src.utils.config_loader import SafirConfig
-from src.vlm.base_vlm import VLMResponse
 
 
 @dataclass
@@ -54,31 +53,6 @@ class _FakeRagService:
     def query(self, question: str, top_k: Optional[int] = None) -> List[_FakeRetrievedDocument]:
         self.queries.append(question)
         return [_FakeRetrievedDocument(text=f"[FAKE-RAG] {question}")]
-
-
-class _SingleCategoryVLMClient:
-    """Sabit, TEK kategori (`arac_yaya_yakinligi`, 'forklift') tetikleyen sahte VLM istemcisi.
-
-    `MockVLMClient`in gercek sabit metni ayni anda 2 kategori tetikler
-    (bkz. `test_run_writes_structured_event_to_real_event_store`); bu, cok
-    kategorili tek-cagri davranisini test etmek icin dogru, ama cagrilar
-    arasi AYNI TIPTEKI birlesmeyi (T009) izole test etmek icin karisiklik
-    yaratir (2 kategori de her cagrida tekrarlanir ve buffer'da ic ice
-    girer). Bu sahte istemci, `BaseVLM` sozlesmesine (`describe_events`,
-    `health_check`) uyar ve yalnizca `_event_buffer_persistence` testinde
-    `pipeline._vlm` yerine gecirilir.
-    """
-
-    def describe_events(self, clusters: list, prompt: str) -> VLMResponse:
-        return VLMResponse(
-            description="Forklift yaya gecidine yaklasiyor.",
-            model_name="fake-single-category-vlm",
-            frame_count=len(clusters),
-            latency_ms=0.0,
-        )
-
-    def health_check(self) -> bool:
-        return True
 
 
 def _write_video(path: Path, frames: list) -> None:
@@ -215,15 +189,15 @@ def test_pipeline_wires_event_analysis_dependencies(pipeline: SafirPipeline) -> 
 def test_run_writes_structured_event_to_real_event_store(
     pipeline: SafirPipeline, motion_video: str
 ) -> None:
-    """Tek bir `run()` cagrisi: VLM -> EventEngine -> TemporalReasoner -> RuleEngine -> EventBuilder -> EventHistory zincirinin gercekten calistigini, SQLite'a yazilan satirlarla dogrular.
+    """Tek bir `run()` cagrisi: VLM -> EventEngine -> TemporalReasoner -> RuleEngine -> EventBuilder -> EventHistory zincirinin gercekten calistigini, SQLite'a yazilan satirla dogrular.
 
-    MockVLMClient'in sabit aciklamasi hem "forklift" (`arac_yaya_yakinligi`)
-    hem de "duman"/"yangin" (`yangin_duman` - cumle aslinda bunlarin
-    OLMADIGINI soylese de, T008'in kural-tabanli eslestirmesi olumsuzlamayi
-    anlamaz; bu, o katmanin bilinen bir sinirlamasidir) kelimelerini icerir;
-    bu yuzden TEK bir VLM cikisi 2 ayri kategoriyi tetikler ve `run()` 2
-    ayri `StructuredEvent` kaydetmelidir (T013'un C-adimi geregi, sadece
-    "birincil" olani degil).
+    MockVLMClient'in sabit aciklamasi "forklift" (`arac_yaya_yakinligi`)
+    kelimesini icerir; bu SQLite'a yazilan aciklamada OK-07 kural ozetiyle
+    gorunmelidir. Aciklama ayrica "Herhangi bir duman veya yangin belirtisi
+    tespit edilmedi." cumlesini de icerir - T014'un olumsuzlama tespiti
+    sayesinde bu artik YANLIS POZITIF bir `yangin_duman` tespiti URETMEZ
+    (T013 sirasinda bu testin ilk hali tam da bu hatayi yakalamisti; bkz.
+    T014 commit'i).
     """
     report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
 
@@ -231,16 +205,13 @@ def test_run_writes_structured_event_to_real_event_store(
     assert len(pipeline._event_history_buffer) >= 1
 
     rows = pipeline._event_store.query_recent(limit=10)
-    assert len(rows) == 2
-    row_ids = {row["id"] for row in rows}
-    assert report.event_id in row_ids
-    for row in rows:
-        assert row["risk_score"] == report.risk_score
-        assert row["risk_level"] == report.risk_level
-
-    descriptions = " ".join(row["description"] for row in rows)
-    assert "OK-07" in descriptions
-    assert "YG-03" in descriptions
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == report.event_id
+    assert row["risk_score"] == report.risk_score
+    assert row["risk_level"] == report.risk_level
+    assert "OK-07" in row["description"]
+    assert "YG-03" not in row["description"]
 
 
 def test_event_buffer_persists_across_pipeline_calls(
@@ -248,24 +219,17 @@ def test_event_buffer_persists_across_pipeline_calls(
 ) -> None:
     """Buffer, pipeline cagrilari arasinda SIFIRLANMAZ: ayni videoyu iki kez analiz etmek tekrar-tespitini uretmeli.
 
-    Tek-kategori sahte VLM istemcisi (`_SingleCategoryVLMClient`) kullanilir;
-    boylece ayni video ikinci kez analiz edildiginde ayni tip + ayni zaman
-    damgasi uretilir, T009 bunu ilk cagrinin olayiyla BIRLESTIRIR
-    (`occurrence_count=2`) ve EventBuilder bunu "ardisik gozlemde" notuyla
-    ikinci cagrinin SQLite satirina yazar; ilk cagrinin satiri degismeden
-    kalir (EventStore'da UPDATE yok - T012'nin bilinen kisiti).
-
-    Not: `MockVLMClient`in gercek sabit metniyle (2 kategori, bkz.
-    `test_run_writes_structured_event_to_real_event_store`) bu senaryo
-    tekrarlandiginda, T009'un "yalnizca dogrudan ARDISIK ayni-tip olaylari
-    birlestirme" kurali, buffer'da ic ice giren farkli kategoriler yuzunden
-    birlesmeyi engelliyor (COMBO/merge, iki kategori sirayla degil,
-    kategoriler arasinda gecis yaparak eklendigi icin "ardisik" sayilmiyor).
-    Bu, T009'un bilinen bir sinirlamasi olarak ayrica raporlandi; bu test
-    onu degil, T013'un buffer-kalicilik davranisini izole test eder.
+    T014 (olumsuzlama tespiti) sayesinde `MockVLMClient`in gercek sabit
+    metni artik TEK kategori (`arac_yaya_yakinligi`, "forklift") tetikliyor
+    (bkz. `test_run_writes_structured_event_to_real_event_store`); bu
+    yuzden ek bir sahte VLM istemcisine gerek kalmadan gercek `pipeline`
+    kullanilabilir. Ayni video ikinci kez analiz edildiginde ayni tip +
+    ayni zaman damgasi uretilir, T009 bunu ilk cagrinin olayiyla
+    BIRLESTIRIR (`occurrence_count=2`) ve EventBuilder bunu "ardisik
+    gozlemde" notuyla ikinci cagrinin SQLite satirina yazar; ilk cagrinin
+    satiri degismeden kalir (EventStore'da UPDATE yok - T012'nin bilinen
+    kisiti).
     """
-    pipeline._vlm = _SingleCategoryVLMClient()
-
     first_report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
     first_row_ids = {row["id"] for row in pipeline._event_store.query_recent(limit=10)}
 

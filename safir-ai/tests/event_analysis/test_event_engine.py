@@ -140,3 +140,78 @@ def test_event_type_regulation_map_has_no_regulation_for_operational_only_catego
 
 def test_event_type_regulation_map_covers_every_enum_member() -> None:
     assert set(EVENT_TYPE_REGULATION_MAP.keys()) == set(EventType)
+
+
+# --- T014: Olumsuzlama tespiti ---------------------------------------------
+
+
+def test_negated_keyword_at_clause_end_falls_back_to_genel_gozlem() -> None:
+    """Turkce SOV sozdiziminde olumsuzlama yuklemi (`tespit edilmedi`) klanuzun SONUNDA olabilir."""
+    events = EventEngine().detect(_input("Sahada duman veya yangin belirtisi tespit edilmedi."))
+
+    assert len(events) == 1
+    assert events[0].event_type == EventType.GENEL_GOZLEM.value
+    assert events[0].matched_keywords == []
+
+
+def test_negation_only_suppresses_the_negated_clause_not_the_whole_description() -> None:
+    """Bir klanuzdaki olumsuzlama, farkli bir klanuzdaki gercek pozitif tespiti bastirmamali."""
+    events = EventEngine().detect(
+        _input(
+            "Yakin cevrede forklift trafiginin oldugu gozlemleniyor. "
+            "Herhangi bir duman veya yangin belirtisi tespit edilmedi."
+        )
+    )
+
+    assert len(events) == 1
+    assert events[0].event_type == EventType.ARAC_YAYA_YAKINLIGI.value
+    assert events[0].matched_keywords == ["forklift"]
+
+
+def test_non_negated_keyword_still_detected() -> None:
+    """Olumsuzlama kontrolu, olumsuzlanmamis gercek pozitifleri bastirmamali (regresyon guvencesi)."""
+    events = EventEngine().detect(_input("Sahada duman gorunuyor."))
+
+    assert len(events) == 1
+    assert events[0].event_type == EventType.YANGIN_DUMAN.value
+    assert events[0].matched_keywords == ["duman"]
+
+
+@pytest.mark.parametrize(
+    "description",
+    [
+        "Sahada duman yok.",
+        "Yanginla ilgili bir belirti gorulmedi.",
+        "Duman tespit edilmedi.",
+        "Alev gozlemlenmedi.",
+        "Yangin riski bulunmuyor.",
+    ],
+)
+def test_various_negation_cues_suppress_the_match(description: str) -> None:
+    events = EventEngine().detect(_input(description))
+
+    assert len(events) == 1
+    assert events[0].event_type == EventType.GENEL_GOZLEM.value
+
+
+def test_negation_word_window_does_not_reach_across_clause_boundary() -> None:
+    """Bir klanuzdaki olumsuzlama ifadesi, NOKTAYLA ayrilmis bir SONRAKI klanuzdaki eslesmeyi etkilememeli."""
+    events = EventEngine().detect(
+        _input("Baret eksikligi gorulmedi. Forklift yaya gecidine yaklasiyor.")
+    )
+
+    event_types = {e.event_type for e in events}
+    assert EventType.ARAC_YAYA_YAKINLIGI.value in event_types
+    arac_yaya_event = next(e for e in events if e.event_type == EventType.ARAC_YAYA_YAKINLIGI.value)
+    assert "forklift" in arac_yaya_event.matched_keywords
+
+
+def test_multiple_categories_one_negated_one_not() -> None:
+    """Ayni metinde bir kategori olumsuzlanirken digeri gercek pozitif olarak kalabilmeli."""
+    events = EventEngine().detect(
+        _input("Personel baretsiz calisiyor. Forklift yaya gecidine yaklastigi gorulmedi.")
+    )
+
+    event_types = {e.event_type for e in events}
+    assert EventType.KKD_IHLALI.value in event_types
+    assert EventType.ARAC_YAYA_YAKINLIGI.value not in event_types

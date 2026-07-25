@@ -42,11 +42,44 @@ tespitlerini iyilestirmek icin `src.vlm.llm_client.LLMClient` ile ayni
 `invoke(messages) -> AIMessage` sozlesmesine sahip opsiyonel bir siniflandirici
 enjekte etme imkani birakir; varsayilan `None` ile devre disidir ve `vlm/`
 katmanina hicbir bagimlilik eklemez.
+
+T014 - Olumsuzlama tespiti (ve sinirlari)
+-------------------------------------------
+Yukaridaki (-) maddesinde belirtilen "olumsuzlama" zayifligi, T013'un gercek
+pipeline entegrasyonunda somut olarak gozlemlendi: `MockVLMClient`in sabit
+aciklamasindaki "Herhangi bir duman veya yangin belirtisi tespit edilmedi."
+cumlesi (duman/yangin OLMADIGINI soyluyor), salt substring eslestirmesiyle
+`yangin_duman` olarak YANLIS POZITIF tespit ediliyordu. Bunu gidermek icin
+`_is_negated()` ile basit bir kelime-penceresi sezgiseli eklendi: bir anahtar
+kelime, ayni klanuz (cumle) icinde, kelimenin oncesindeki VE sonrasindaki
+`_NEGATION_WINDOW_WORDS` kelime icinde `_NEGATION_CUES`'ten biri geciyorsa
+"olumsuzlanmis" sayilir ve o eslesme atlanir. Pencere hem geriye hem ileriye
+tarandi, cunku Turkce SOV (Ozne-Nesne-Yuklem) sozdiziminde olumsuzlama eki
+genellikle klanuzun SONUNDAKI yuklemde bulunur (yukaridaki "tespit edilmedi"
+ornegindeki gibi) - yalnizca geriye bakan bir pencere bu yaygin durumu
+kacirirdi.
+
+Bu, TAM bir NLP/bagimlilik ayristirma (dependency parsing) cozumu DEGILDIR;
+bilinen sinirlamalari:
+- Cok cumlecikli/ic ice gecmis olumsuzlamalari (orn. "X olmadigini soylemek
+  yanlis olmaz" gibi cift olumsuzlama) ayirt edemez.
+- Pencere disina tasan (uzun ana cumleler, ara cumlecikler) olumsuzlamalari
+  kacirabilir.
+- `_NEGATION_CUES` listesi kapsamli degildir; yeni olumsuzlama ifadeleri
+  (esanlamlilar) elle eklenmelidir.
+- Klanuz icinde AYNI anahtar kelimenin birden fazla gectigi durumlarda,
+  yalnizca ILK gecislerin klanuzu kontrol edilir (`str.find` tabanli).
+
+Bu sinirlamalar, T008'de zaten belgelenen "kural tabanli yaklasimin ifade
+cesitliligine kirilganligi" zayifliginin bir devami/kismi iyilestirmesidir;
+tam giderilmesi icin (2) numarali LLM-tabanli alternatif (veya gercek bir
+NLP kutuphanesi) gerekir.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 from src.event_analysis.schemas import DetectedEvent, EventEngineInput, EventType
@@ -116,6 +149,78 @@ _KEYWORD_RULES: Dict[EventType, List[str]] = {
 _BASE_CONFIDENCE = 0.5
 _CONFIDENCE_STEP_PER_EXTRA_MATCH = 0.1
 
+_NEGATION_CUES: List[str] = [
+    "degil",
+    "yok",
+    "yoktur",
+    "olmadi",
+    "bulunmuyor",
+    "gorulmedi",
+    "gozlemlenmedi",
+    "gozlenmedi",
+    "tespit edilmedi",
+    "rastlanmadi",
+]
+"""Olumsuzlama ifadeleri (TR, kod tabaninin geri kalaniyla tutarli ASCII
+harflerle). Kapsamli DEGILDIR; bkz. modul dokustringindeki T014 bolumu."""
+
+_NEGATION_WINDOW_WORDS = 5
+"""Bir anahtar kelimenin olumsuzlanmis sayilmasi icin, kelimenin basladigi/
+bittigi konumdan ONCE ve SONRA (ayni klanuz icinde) taranacak kelime sayisi."""
+
+_CLAUSE_SPLIT_PATTERN = re.compile(r"[.!?;]+")
+
+
+def _split_into_clauses(text: str) -> List[str]:
+    """Metni cumle/klanuz sinirlarina (`. ! ? ;`) gore ayri parcalara boler.
+
+    Olumsuzlama kontrolu, bir anahtar kelimenin yalnizca KENDI klanuzu
+    icindeki baglamini dikkate almalidir (baska bir cumledeki olumsuzlama
+    bu kelimeyi etkilememeli).
+
+    Args:
+        text: Kucuk harfe cevrilmis VLM aciklama metni.
+
+    Returns:
+        Bos olmayan, bas/son bosluklari temizlenmis klanuz listesi. Hicbir
+        ayirici bulunmazsa, tum metni tek elemanli liste olarak dondurur.
+    """
+    return [clause.strip() for clause in _CLAUSE_SPLIT_PATTERN.split(text) if clause.strip()]
+
+
+def _is_negated(clause: str, keyword: str, window_words: int = _NEGATION_WINDOW_WORDS) -> bool:
+    """Bir anahtar kelimenin, bulundugu klanuz icinde olumsuzlanip olumsuzlanmadigini kontrol eder.
+
+    Basit bir kelime-penceresi sezgiseli kullanir: anahtar kelimenin
+    basladigi kelime konumundan `window_words` kadar ONCESI ve bittigi
+    konumdan `window_words` kadar SONRASI (ayni klanuz icinde) taranir; bu
+    pencerede `_NEGATION_CUES`'ten biri geciyorsa anahtar kelime
+    olumsuzlanmis sayilir. Bkz. modul dokustringindeki T014 bolumu icin
+    bu yaklasimin (SOV sozdizimi nedeniyle iki yonlu tarama) gerekcesi ve
+    bilinen sinirlamalari.
+
+    Args:
+        clause: Anahtar kelimeyi iceren, kucuk harfli klanuz metni.
+        keyword: Kontrol edilecek anahtar kelime (tek veya cok kelimeli).
+        window_words: Her iki yonde taranacak kelime sayisi.
+
+    Returns:
+        Pencere icinde bir olumsuzlama ifadesi geciyorsa `True`.
+    """
+    start_char = clause.find(keyword)
+    if start_char == -1:
+        return False
+
+    words = clause.split()
+    prefix_word_count = len(clause[:start_char].split())
+    keyword_word_count = len(keyword.split())
+
+    window_start = max(0, prefix_word_count - window_words)
+    window_end = min(len(words), prefix_word_count + keyword_word_count + window_words)
+    context = " ".join(words[window_start:window_end])
+
+    return any(cue in context for cue in _NEGATION_CUES)
+
 
 class EventEngine:
     """VLM aciklama metnini tarayip yapilandirilmis `DetectedEvent` listesi ureten katman.
@@ -157,10 +262,11 @@ class EventEngine:
             Guven skoruna gore azalan sirali `DetectedEvent` listesi.
         """
         text_lower = engine_input.vlm_description.lower()
+        clauses = _split_into_clauses(text_lower)
         detections: List[DetectedEvent] = []
 
         for event_type, keywords in _KEYWORD_RULES.items():
-            matched = [kw for kw in keywords if kw in text_lower]
+            matched = self._match_keywords_excluding_negated(keywords, text_lower, clauses)
             if not matched:
                 continue
 
@@ -199,6 +305,33 @@ class EventEngine:
             ", ".join(d.event_type for d in detections),
         )
         return detections
+
+    @staticmethod
+    def _match_keywords_excluding_negated(
+        keywords: List[str], text_lower: str, clauses: List[str]
+    ) -> List[str]:
+        """Metinde gecen ama olumsuzlanmamis anahtar kelimeleri dondurur (bkz. T014, `_is_negated`).
+
+        Args:
+            keywords: Bu kategori icin tanimli anahtar kelime listesi.
+            text_lower: Kucuk harfli tam VLM aciklamasi (hizli on-filtre icin).
+            clauses: `text_lower`in klanuzlara bolunmus hali.
+
+        Returns:
+            Metinde gecen VE olumsuzlanmamis anahtar kelimelerin listesi
+            (orijinal `keywords` sirasi korunur).
+        """
+        matched: List[str] = []
+        for keyword in keywords:
+            if keyword not in text_lower:
+                continue
+
+            containing_clause = next((clause for clause in clauses if keyword in clause), None)
+            if containing_clause is not None and _is_negated(containing_clause, keyword):
+                continue
+
+            matched.append(keyword)
+        return matched
 
     @staticmethod
     def _compute_confidence(matched: List[str], keywords: List[str]) -> float:
