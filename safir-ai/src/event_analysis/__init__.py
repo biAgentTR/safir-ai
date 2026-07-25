@@ -4,6 +4,7 @@ Event Engine (T008), Temporal Reasoning, Rule Engine (T010) ve Event Gecmisi
 (T012) modullerini barindirir.
 """
 
+from src.event_analysis.event_builder import EventBuilder
 from src.event_analysis.event_engine import EventEngine
 from src.event_analysis.rule_engine import RegulationRetriever, RuleEngine
 from src.event_analysis.schemas import (
@@ -12,6 +13,7 @@ from src.event_analysis.schemas import (
     EventEngineInput,
     EventType,
     RuleMatch,
+    StructuredEvent,
     TemporalEvent,
 )
 from src.event_analysis.temporal_reasoner import TemporalReasoner
@@ -27,4 +29,6 @@ __all__ = [
     "TemporalReasoner",
     "RuleEngine",
     "RegulationRetriever",
+    "EventBuilder",
+    "StructuredEvent",
 ]

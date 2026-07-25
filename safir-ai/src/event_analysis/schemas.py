@@ -189,3 +189,58 @@ class RuleMatch(BaseModel):
         default_factory=list,
         description="Kombinasyon kurallarinda katilan diger `TemporalEvent.event_id`leri; tekli kurallarda bos.",
     )
+
+
+class StructuredEvent(BaseModel):
+    """T011 Event Builder ciktisi: `TemporalEvent` + ilgili `RuleMatch`lerin birlestirilmis, nihai temsili.
+
+    Iki hedefi ayni anda karsilar:
+    - `timestamp`/`description`/`risk_score`/`risk_level`/`source_model`
+      alanlari, `src/memory/event_store.py::EventStore.add_event(...)`
+      imzasiyla birebir isim eslesir (bkz. `to_event_store_kwargs`);
+      `risk_score`/`risk_level` bu asamada henuz bilinmez (05 LangGraph
+      Ajaninin karari sonrasi doldurulur), varsayilan `None`'dir.
+    - `event_type`/`confidence`/`temporal_event_id`/`related_rule_matches`
+      alanlari, `05 LangGraph Agentic Loop`a giden ek baglami tasir.
+    """
+
+    # --- src/memory/event_store.py::EventStore.add_event(...) ile birebir isim eslesen alanlar ---
+    timestamp: float = Field(description="Olayin saniye cinsinden zaman damgasi (`TemporalEvent.end_timestamp`).")
+    description: str = Field(
+        description="Insan-okunur, VLM aciklamasi + tetiklenen kural(lar)in ozetiyle birlesik metin."
+    )
+    risk_score: Optional[int] = Field(
+        default=None, ge=0, le=100, description="Henuz bilinmiyor; 05 LangGraph Ajaninin karari sonrasi doldurulur."
+    )
+    risk_level: Optional[str] = Field(
+        default=None, description="Henuz bilinmiyor; 05 LangGraph Ajaninin karari sonrasi doldurulur."
+    )
+    source_model: Optional[str] = Field(default=None, description="Aciklamayi ureten VLM'in model adi.")
+
+    # --- 05 LangGraph Agentic Loop'a giden ek baglam alanlari ---
+    event_type: str = Field(description="Olay kategorisi (bkz. `EventType`).")
+    confidence: float = Field(ge=0.0, le=1.0, description="`TemporalEvent.confidence` (tekrar-duzeltilmis guven skoru).")
+    temporal_event_id: str = Field(description="Bu olayin turedigi `TemporalEvent.event_id`.")
+    related_rule_matches: List[RuleMatch] = Field(
+        default_factory=list, description="Bu olaya (tekli veya kombinasyon olarak) uygulanan `RuleMatch` listesi."
+    )
+    occurrence_count: int = Field(
+        default=1, ge=1, description="`TemporalEvent.occurrence_count` (birlesen tespit sayisi)."
+    )
+    duration: float = Field(default=0.0, ge=0.0, description="`TemporalEvent.duration` (saniye).")
+
+    def to_event_store_kwargs(self) -> Dict[str, object]:
+        """`EventStore.add_event(...)`e dogrudan `**kwargs` olarak verilebilecek sozluk uretir.
+
+        Returns:
+            `timestamp`, `description`, `risk_score`, `risk_level`,
+            `source_model` anahtarlarini iceren, `EventStore.add_event`
+            imzasiyla birebir eslesen sozluk.
+        """
+        return {
+            "timestamp": self.timestamp,
+            "description": self.description,
+            "risk_score": self.risk_score,
+            "risk_level": self.risk_level,
+            "source_model": self.source_model,
+        }
