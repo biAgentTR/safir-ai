@@ -6,6 +6,21 @@
 # API/vLLM servisleri) davranisini tek bir noktadan yonetir.
 # =============================================================================
 
+# -----------------------------------------------------------------------------
+# 00 - Uygulama Kimligi & Mock Mod Anahtarlari
+# -----------------------------------------------------------------------------
+# use_mock_vlm / use_mock_llm: true yapildiginda src/vlm/factory.py gercek
+# vLLM GPU servislerine hic baglanmadan sahte (mock) istemcileri dondurur.
+# GPU'su olmayan gelistiriciler bunlari kendi ortamlarinda/local config
+# kopyalarinda true'ya cevirerek tum pipeline'i uctan uca test edebilir.
+# Repo varsayilani, mevcut GPU/vLLM tabanli production akisini korumak icin
+# false'tur.
+app:
+  name: "SAFIR"
+  version: "2.0.0"
+  use_mock_vlm: false
+  use_mock_llm: false
+
 system:
   name: "SAFIR"
   environment: "production"          # development | staging | production
@@ -18,11 +33,22 @@ system:
 # 02 - VLM Oncesi Katman (Adaptive Frame Sampler) - CPU ONLY
 # -----------------------------------------------------------------------------
 sampler:
-  min_change_threshold: 0.011        # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani
+  # --- AdaptiveFrameSampler tarafindan aktif olarak kullanilan parametreler ---
+  min_change_threshold: 0.001        # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani (yuksek hassasiyet)
   blur_kernel_size: [21, 21]         # Gauss bulaniklastirma cekirdek boyutu (tek sayilar)
   history_window: 30                 # Dinamik gurultu tabani (medyan) icin tutulan kare gecmisi
   min_event_interval_sec: 2.0        # Ardisik kareleri ayni Olay Grubuna dahil etme zaman araligi (sn)
   sample_fps: 5                      # Videonun kac saniyede bir kare kontrol edilecegini belirleyen hiz
+
+  # --- Geriye donuk uyumluluk / alternatif sampler ince ayarlari ---
+  idle_interval_sec: 2.0             # Sakin bolgelerde kare yakalama araligi (saniye/kare)
+  active_fps: 5                      # Hareket/degisim anlarinda aktif ornekleme hizi (fps)
+  noise_floor: 0.011                 # Piksel farki gurultu tabani
+  motion_threshold: 0.02             # Hareket olarak kabul edilecek fark orani esigi
+  scene_change_threshold: 0.15       # Sahne degisimi esigi
+  resize_width: 640                  # Analiz oncesi kare kucultme genisligi (performans icin)
+  max_evidence_buffer: 100           # Bellekte tutulacak maksimum "Evidence Frame" sayisi
+  warmup_frames: 30                  # Baslangicta arka plan modelini olusturmak icin kare sayisi
 
 # -----------------------------------------------------------------------------
 # 03 - Gorsel Dil Modeli (VLM) Katmani - GPU / vLLM
@@ -51,9 +77,14 @@ vlm:
 memory:
   sqlite:
     db_path: "data/events.db"
+  embedding:
+    provider: "sentence-transformers"
+    model_name: "BAAI/bge-m3"          # alternatif: "Qwen/Qwen3-VL-Embedding"
+    device: "cpu"                      # RAG embedding hesaplama CPU'da yapilir, GPU'yu VLM/LLM'e ayirir
+    normalize_embeddings: true
   faiss:
     index_path: "data/faiss_index"
-    embedding_model: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    embedding_model: "BAAI/bge-m3"     # alternatif: "Qwen/Qwen3-VL-Embedding" (memory.embedding.model_name ile senkron)
     top_k: 5
 
 # -----------------------------------------------------------------------------
@@ -85,7 +116,9 @@ agent:
   tools:
     sql_tool_enabled: true
     rag_tool_enabled: true
+    retriever_tool_enabled: true
     timeline_tool_enabled: true
+    verification_tool_enabled: true
 
 # -----------------------------------------------------------------------------
 # API / Servis Katmani

@@ -14,6 +14,57 @@ class TimelineEntry(BaseModel):
     description: str = Field(description="Olayin dogal dil aciklamasi.")
 
 
+class TimelineEvent(BaseModel):
+    """Modul 4 spesifikasyonundaki ortak sema: siddet (severity) alani eklenmis olay girisi.
+
+    `TimelineEntry` ile ayni bilgiyi tasir ve mevcut pipeline/UI tarafindan
+    uretilen JSON alanlarini degistirmez; `severity` ekleyen tuketiciler
+    (orn. gelecekteki bir siddet-siniflandirici) icin ayrica sunulur.
+    """
+
+    timestamp: float = Field(description="Olayin saniye cinsinden zaman damgasi.")
+    description: str = Field(description="Olayin dogal dil aciklamasi.")
+    severity: Optional[str] = Field(
+        default=None, description="Olayin siddet seviyesi (orn. dusuk/orta/yuksek/kritik), bilinmiyorsa None."
+    )
+
+
+class RagContext(BaseModel):
+    """Modul 4 spesifikasyonundaki ortak sema: FAISS RAG'dan gelen tek bir mevzuat sonucu.
+
+    `SafirReport.relevant_regulations` (duz metin listesi) ile ayni veriyi,
+    kural basligi/skor gibi yapilandirilmis alanlarla birlikte sunmak isteyen
+    tuketiciler icin kullanilir (bkz. `EmbeddingRAGService.search_laws`).
+    """
+
+    rule_title: str = Field(description="Mevzuat/kural maddesinin kisa basligi (orn. 'ISG Yonetmeligi Madde 12').")
+    content: str = Field(description="Maddenin tam metni.")
+    score: float = Field(description="FAISS benzerlik skoru.")
+
+
+class EvidenceFrameOut(BaseModel):
+    """UI'da gorsel kanit karti olarak gosterilecek bir Olay Grubu zirve karesi."""
+
+    event_id: int = Field(description="Bu karenin ait oldugu Olay Grubu kimligi.")
+    timestamp_sec: float = Field(description="Karenin saniye cinsinden zaman damgasi.")
+    timestamp_str: str = Field(description="`MM:SS` formatinda okunabilir zaman damgasi.")
+    change_score: float = Field(description="Gurultu-tabani-dusulmus degisim skoru.")
+    base64_image: str = Field(description="`data:image/jpeg;base64,...` formatinda goruntu.")
+    saved_path: Optional[str] = Field(default=None, description="Karenin diskte kayitli oldugu yol.")
+    is_fallback: bool = Field(default=False, description="Esik gecilemedigi icin frame 0 fallback'i mi.")
+
+
+class SamplerStats(BaseModel):
+    """VLM Oncesi Katman (CPU Adaptive Frame Sampler) icin GPU tasarruf istatistikleri."""
+
+    total_frames_scanned: int = Field(description="Videodan okunan toplam ham kare sayisi.")
+    sampled_frames_evaluated: int = Field(description="Ornekleme adimina gore degerlendirilen kare sayisi.")
+    evidence_frame_count: int = Field(description="Esigi gecip Kanit Karesi sayilan kare sayisi.")
+    eliminated_frame_count: int = Field(description="Elenen (VLM'e gonderilmeyen) kare sayisi.")
+    gpu_savings_ratio_pct: float = Field(description="Elenen karelerin yuzdesi (GPU tasarruf orani, 0-100).")
+    elapsed_sec: float = Field(description="Sampler'in videoyu taramasi icin gecen sure (saniye).")
+
+
 class SafirReport(BaseModel):
     """Sistemler arasi entegrasyona hazir, mock semayla uyumlu nihai rapor.
 
@@ -21,6 +72,9 @@ class SafirReport(BaseModel):
     onerisi ve zaman cizelgesini tek bir yapida birlestirir.
     """
 
+    event_id: Optional[int] = Field(
+        default=None, description="Bu analizin SQLite'a yazildigi olay kaydinin kimligi (Human-in-the-Loop geri bildirimi icin)."
+    )
     video_source: str = Field(description="Analiz edilen video/kamera akisinin kaynagi.")
     generated_at: str = Field(description="Raporun ISO-8601 formatinda uretim zamani.")
     natural_language_summary: str = Field(description="Turkce, sade karar ozeti.")
@@ -28,6 +82,15 @@ class SafirReport(BaseModel):
     risk_level: str = Field(description="dusuk | orta | yuksek | kritik")
     recommended_action: str = Field(description="Saha operatorune yonelik somut aksiyon onerisi.")
     timeline: List[TimelineEntry] = Field(default_factory=list, description="Kronolojik olay cizelgesi.")
+    evidence_frames: List[EvidenceFrameOut] = Field(
+        default_factory=list, description="Her Olay Grubunun zirve karesi (goruntu + metadata)."
+    )
+    relevant_regulations: List[str] = Field(
+        default_factory=list, description="FAISS RAG'dan getirilen ilgili ISG mevzuat maddeleri."
+    )
+    sampler_stats: Optional[SamplerStats] = Field(
+        default=None, description="CPU suzgec katmaninin GPU tasarruf istatistikleri."
+    )
     vlm_model: Optional[str] = Field(default=None, description="Aciklamayi ureten aktif VLM adi.")
     llm_model: Optional[str] = Field(default=None, description="Karari ureten aktif LLM adi.")
 
