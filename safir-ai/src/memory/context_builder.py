@@ -6,8 +6,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
-from src.memory.semantic_memory import SemanticMemory
 
 logger = logging.getLogger(__name__)
 
@@ -49,19 +49,19 @@ class ContextBuilder:
     """VLM metnini, kullanici istemini ve gecmis bellek erisimini birlestiren katman.
 
     Yapilandirilmis olay bellegi (`EventStore`) ve anlamsal bellek
-    (`SemanticMemory`) birlesimini kullanarak ajan katmani icin
+    (`EmbeddingRAGService`) birlesimini kullanarak ajan katmani icin
     zenginlestirilmis bir baglam uretir.
     """
 
-    def __init__(self, event_store: EventStore, semantic_memory: SemanticMemory) -> None:
+    def __init__(self, event_store: EventStore, rag_service: EmbeddingRAGService) -> None:
         """ContextBuilder'i olay ve anlamsal bellek bagimliliklariyla baslatir.
 
         Args:
             event_store: Gecmis olaylari sorgulamak icin SQLite tabanli depo.
-            semantic_memory: Operasyonel kurallari sorgulamak icin FAISS tabanli depo.
+            rag_service: Operasyonel kurallari sorgulamak icin embedding+FAISS tabanli servis.
         """
         self._event_store = event_store
-        self._semantic_memory = semantic_memory
+        self._rag_service = rag_service
 
     def build(
         self,
@@ -86,7 +86,7 @@ class ContextBuilder:
         recent_events = self._event_store.query_recent(limit=recent_event_limit)
         regulations = [
             doc.text
-            for doc in self._semantic_memory.query(vlm_description, top_k=regulation_top_k)
+            for doc in self._rag_service.query(vlm_description, top_k=regulation_top_k)
         ]
 
         context = EnrichedContext(

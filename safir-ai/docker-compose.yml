@@ -17,10 +17,12 @@ services:
       - "8000:8000"
     volumes:
       - ./configs:/app/configs:ro
-      - safir-data:/app/data
-      - safir-outputs:/app/outputs
+      - ./data:/app/data
+      - ./outputs:/app/outputs
     environment:
       - SAFIR_ENV=production
+      - VLM_ENDPOINT=http://vllm-vlm:8001/v1
+      - LLM_ENDPOINT=http://vllm-llm:8003/v1
     depends_on:
       - vllm-vlm
       - vllm-llm
@@ -28,17 +30,43 @@ services:
     networks:
       - safir-net
 
+  safir-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    image: safir-dashboard:latest
+    container_name: safir-dashboard
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./outputs:/app/outputs
+    environment:
+      - SAFIR_API_URL=http://safir-api:8000
+      - SAFIR_DATA_DIR=/app/data
+    depends_on:
+      - safir-api
+    restart: unless-stopped
+    networks:
+      - safir-net
+
   vllm-vlm:
-    image: vllm/vllm-openai:v0.5.4
+    image: vllm/vllm-openai:v0.7.3
     container_name: safir-vllm-vlm
     command:
       - "--model"
-      - "Qwen/Qwen2.5-VL-7B-Instruct"
+      - "Qwen/Qwen2.5-VL-3B-Instruct"
       - "--port"
       - "8001"
       - "--trust-remote-code"
+      - "--gpu-memory-utilization"
+      - "0.45"
+      - "--max-model-len"
+      - "4096"
     ports:
       - "8001:8001"
+    environment:
+      - HF_HUB_ENABLE_HF_TRANSFER=0
     volumes:
       - hf-cache:/root/.cache/huggingface
     deploy:
@@ -53,16 +81,22 @@ services:
       - safir-net
 
   vllm-llm:
-    image: vllm/vllm-openai:v0.5.4
+    image: vllm/vllm-openai:v0.7.3
     container_name: safir-vllm-llm
     command:
       - "--model"
-      - "Qwen/Qwen3-8B-Instruct"
+      - "Qwen/Qwen2.5-3B-Instruct"
       - "--port"
       - "8003"
       - "--trust-remote-code"
+      - "--gpu-memory-utilization"
+      - "0.45"
+      - "--max-model-len"
+      - "4096"
     ports:
       - "8003:8003"
+    environment:
+      - HF_HUB_ENABLE_HF_TRANSFER=0
     volumes:
       - hf-cache:/root/.cache/huggingface
     deploy:
@@ -77,8 +111,6 @@ services:
       - safir-net
 
 volumes:
-  safir-data:
-  safir-outputs:
   hf-cache:
 
 networks:

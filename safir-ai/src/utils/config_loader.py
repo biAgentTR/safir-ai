@@ -23,14 +23,47 @@ class SystemConfig(BaseModel):
     random_seed: int
 
 
+class AppConfig(BaseModel):
+    """Uygulama kimligi ve GPU'suz gelistirme icin Mock mod anahtarlari.
+
+    `use_mock_vlm`/`use_mock_llm` `true` oldugunda `src/vlm/factory.py`
+    (`get_vlm_client`/`get_llm_client`) gercek vLLM GPU servislerine hic
+    baglanmadan sahte (mock) istemcileri dondurur; boylece GPU'su olmayan
+    gelistiriciler tum pipeline'i uctan uca calistirabilir.
+    """
+
+    name: str = "SAFIR"
+    version: str = "2.0.0"
+    use_mock_vlm: bool = False
+    use_mock_llm: bool = False
+
+
 class SamplerConfig(BaseModel):
-    """Adaptive Frame Sampler (CPU) esik, pencere ve kumeleme ayarlari."""
+    """Adaptive Frame Sampler (CPU) esik, pencere ve kumeleme ayarlari.
+
+    `min_change_threshold`/`blur_kernel_size`/`history_window`/
+    `min_event_interval_sec`/`sample_fps` `AdaptiveFrameSampler` tarafindan
+    dogrudan kullanilan aktif parametrelerdir (bkz. `sampler_from_config`).
+    Geri kalan alanlar (idle_interval_sec, active_fps, noise_floor,
+    motion_threshold, scene_change_threshold, resize_width,
+    max_evidence_buffer, warmup_frames), sahadaki alternatif/eski sampler
+    konfigurasyonlariyla geriye donuk uyumluluk ve ince ayar icin saklanir.
+    """
 
     min_change_threshold: float
     blur_kernel_size: List[int]
     history_window: int
     min_event_interval_sec: float
     sample_fps: int
+
+    idle_interval_sec: float
+    active_fps: float
+    noise_floor: float
+    motion_threshold: float
+    scene_change_threshold: float
+    resize_width: int
+    max_evidence_buffer: int
+    warmup_frames: int
 
 
 class VLLMEndpointConfig(BaseModel):
@@ -74,16 +107,26 @@ class SQLiteMemoryConfig(BaseModel):
     db_path: str
 
 
+class EmbeddingConfig(BaseModel):
+    """Embedding & RAG Katmani icin sentence-transformers tabanli model ayarlari."""
+
+    provider: str                       # "sentence-transformers"
+    model_name: str                     # orn. "BAAI/bge-m3" veya "Qwen/Qwen3-VL-Embedding"
+    device: str                         # "cpu" | "cuda"
+    normalize_embeddings: bool = True
+
+
 class FaissMemoryConfig(BaseModel):
     index_path: str
-    embedding_model: str
+    embedding_model: str                # bkz. memory.embedding.model_name (ayni deger, senkron tutulmali)
     top_k: int
 
 
 class MemoryConfig(BaseModel):
-    """Yapilandirilmis olay bellegi (SQLite) ve anlamsal bellek (FAISS) ayarlari."""
+    """Yapilandirilmis olay bellegi (SQLite) ve anlamsal bellek (Embedding+FAISS) ayarlari."""
 
     sqlite: SQLiteMemoryConfig
+    embedding: EmbeddingConfig
     faiss: FaissMemoryConfig
 
 
@@ -98,8 +141,10 @@ class RiskThresholds(BaseModel):
 
 class AgentToolsConfig(BaseModel):
     sql_tool_enabled: bool
-    rag_tool_enabled: bool
+    rag_tool_enabled: bool              # bkz. retriever_tool_enabled (ayni RAG aracina isaret eder)
+    retriever_tool_enabled: bool
     timeline_tool_enabled: bool
+    verification_tool_enabled: bool
 
 
 class AgentConfig(BaseModel):
@@ -128,6 +173,7 @@ class OutputConfig(BaseModel):
 class SafirConfig(BaseModel):
     """SAFIR sisteminin butun katmanlarini kapsayan kok konfigurasyon modeli."""
 
+    app: AppConfig = Field(default_factory=AppConfig)
     system: SystemConfig
     sampler: SamplerConfig
     vlm: VLMConfig
