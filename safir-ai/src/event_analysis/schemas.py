@@ -165,13 +165,27 @@ class TemporalEvent(BaseModel):
 
 
 class RuleMatch(BaseModel):
-    """Rule Engine'in (T010) bir `DetectedEvent`e karsi eslestirdigi ISG/saha kurali.
+    """Rule Engine'in (T010) bir `TemporalEvent`e karsi eslestirdigi ISG/saha kurali.
 
-    Bu model burada yalnizca sozlesme olarak tanimlanir; eslestirme mantigi
-    T010'da `retriever_tool`/`EmbeddingRAGService` uzerinden implemente edilecektir.
+    Iki kural turu uretir:
+    - Tekli kural (deterministik mevzuat eslestirmesi): `event_type`,
+      eslesen `TemporalEvent`in tipiyle birebir aynidir; `related_event_ids`
+      bostur.
+    - Kombinasyon kurali (bilesik ihlal, `src/event_analysis/rules/isg_rules.yaml`
+      icinde tanimli): `event_type`, kuralin gerektirdigi tum tiplerin `+`
+      ile birlesimidir (orn. `"kkd_ihlali+arac_yaya_yakinligi"`);
+      `related_event_ids`, `source_event_id` disindaki katilimci
+      `TemporalEvent.event_id`lerini tasir.
     """
 
-    rule_id: str = Field(description="Kural kimligi (orn. 'ISG-M12').")
+    rule_id: str = Field(description="Kural kimligi (orn. 'ISG-M12' veya 'COMBO-01').")
     rule_description: str = Field(description="Kuralin kisa aciklamasi.")
-    event_type: str = Field(description="Bu kuralin uygulandigi olay kategorisi (bkz. `EventType`).")
+    event_type: str = Field(
+        description="Kuralin uygulandigi olay kategorisi; kombinasyon kurallarinda '+' ile birlesik tipler."
+    )
     severity: str = Field(description="Kural ihlalinin siddet seviyesi (dusuk/orta/yuksek/kritik).")
+    source_event_id: str = Field(description="Bu eslesmeyi tetikleyen `TemporalEvent.event_id`.")
+    related_event_ids: List[str] = Field(
+        default_factory=list,
+        description="Kombinasyon kurallarinda katilan diger `TemporalEvent.event_id`leri; tekli kurallarda bos.",
+    )
