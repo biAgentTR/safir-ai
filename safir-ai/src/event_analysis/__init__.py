@@ -11,7 +11,9 @@ from src.event_analysis.schemas import (
     EventEngineInput,
     EventType,
     RuleMatch,
+    TemporalEvent,
 )
+from src.event_analysis.temporal_reasoner import TemporalReasoner
 
 __all__ = [
     "EventEngine",
@@ -20,4 +22,6 @@ __all__ = [
     "EventType",
     "EVENT_TYPE_REGULATION_MAP",
     "RuleMatch",
+    "TemporalEvent",
+    "TemporalReasoner",
 ]
