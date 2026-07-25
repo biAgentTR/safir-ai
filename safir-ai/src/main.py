@@ -16,13 +16,21 @@ import os
 import threading
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Deque, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from src.agent.langgraph_agent import SafirAgent
+from src.agent.tools import RetrieverTool
+from src.event_analysis.event_builder import EventBuilder
+from src.event_analysis.event_engine import EventEngine
+from src.event_analysis.event_history import EventHistory
+from src.event_analysis.rule_engine import RuleEngine
+from src.event_analysis.schemas import DetectedEvent, EventEngineInput, RuleMatch, TemporalEvent
+from src.event_analysis.temporal_reasoner import DEFAULT_RELATION_WINDOW_SEC, TemporalReasoner
 from src.memory.context_builder import ContextBuilder
 from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
@@ -44,6 +52,83 @@ STAGE_VLM = ("Gorsel Dil Modeli (vLLM Gorsel Anlama)", 2, 3)
 STAGE_AGENT = ("LangGraph Ajan (RAG & Karar)", 3, 3)
 
 OnStageCallback = Callable[[str, int, int], None]
+
+# `TemporalEvent.end_timestamp`i bu pipeline cagrisinin `latest_timestamp`ina
+# esitlerken kullanilan tolerans (kayan nokta karsilastirmasi icin).
+_CURRENT_CALL_TIMESTAMP_TOLERANCE = 1e-6
+
+
+def _prune_stale_events(
+    buffer: "Deque[DetectedEvent]", latest_timestamp: float, retention_sec: float
+) -> None:
+    """Buffer'daki, en yeni zaman damgasindan `retention_sec`den daha eski olaylari yerinde (in-place) atar.
+
+    `SafirPipeline._event_history_buffer`, pipeline cagrilari arasinda
+    SIFIRLANMAZ (Temporal Reasoning'in gecmis baglama ihtiyaci vardir); bu
+    fonksiyon, buffer'in saatlerce calisan bir sistemde sinirsiz buyumesini
+    zaman bazli bir budama ile engeller. Sayi bazli bir `maxlen` yerine zaman
+    bazli budama secilmistir; boylece VLM cagri sikligindan bagimsiz olarak
+    `TemporalReasoner`in ihtiyac duyabilecegi tum gecmis (varsayilan
+    `relation_window_sec=30s`in birkaç kati) her zaman buffer'da kalir.
+
+    Args:
+        buffer: `EventEngine.detect(...)` ciktilarinin biriktigi, zaman
+            sirali (soldan sagizli - en eski solda) `deque`.
+        latest_timestamp: Bu pipeline cagrisinin gozlem zaman damgasi.
+        retention_sec: Bu zaman damgasindan ne kadar eski olaylarin
+            tutulacagi (saniye); daha eskiler atilir.
+    """
+    cutoff = latest_timestamp - retention_sec
+    while buffer and buffer[0].timestamp < cutoff:
+        buffer.popleft()
+
+
+def _select_current_call_events(
+    temporal_events: List[TemporalEvent], latest_timestamp: float
+) -> List[TemporalEvent]:
+    """Bu pipeline cagrisinda uretilen/guncellenen TUM `TemporalEvent`leri secer.
+
+    Bir VLM ciktisi ayni anda birden fazla kategori (orn. `kkd_ihlali` +
+    `arac_yaya_yakinligi`) tetikleyebilir; bu durumda `TemporalReasoner`
+    birden fazla grup uretir ve bunlarin HEPSİ bu cagriya aittir (hepsinin
+    `end_timestamp`i `latest_timestamp`a esittir, cunku bu cagrinin
+    `DetectedEvent`leri her zaman en yeni zaman damgasini tasir). Guven
+    skoruna gore azalan sirali dondurulur; boylece cagiran taraf, ilk
+    elemani "birincil" olay olarak kullanabilir (orn. `SafirReport.event_id`).
+
+    Args:
+        temporal_events: `TemporalReasoner.reason(...)` ciktisi (tum buffer
+            uzerinden hesaplanmis, bu cagriya ozel olmayan tam liste).
+        latest_timestamp: Bu pipeline cagrisinin gozlem zaman damgasi.
+
+    Returns:
+        `end_timestamp`i `latest_timestamp`a (tolerans dahilinde) esit olan
+        `TemporalEvent`lerin, guvene gore azalan sirali listesi. Bos olabilir
+        (teorik olarak; `EventEngine` her zaman en az bir `DetectedEvent`
+        urettigi icin pratikte bos donmez).
+    """
+    current_call_events = [
+        te
+        for te in temporal_events
+        if abs(te.end_timestamp - latest_timestamp) <= _CURRENT_CALL_TIMESTAMP_TOLERANCE
+    ]
+    current_call_events.sort(key=lambda te: te.confidence, reverse=True)
+    return current_call_events
+
+
+def _summarize_rule_matches(rule_matches: List[RuleMatch]) -> str:
+    """Tetiklenen `RuleMatch`leri, ajan istemine eklenebilecek kisa bir madde listesine cevirir.
+
+    Args:
+        rule_matches: `RuleEngine.evaluate(...)` ciktisi (bu cagriya kadar
+            biriken tum buffer uzerinden hesaplanmis).
+
+    Returns:
+        Her satiri bir kural olan madde listesi; `rule_matches` bossa bos string.
+    """
+    if not rule_matches:
+        return ""
+    return "\n".join(f"- [{match.rule_id}] ({match.severity}) {match.rule_description}" for match in rule_matches)
 
 
 def normalize_video_source(video_source: str) -> str:
@@ -171,6 +256,22 @@ class SafirPipeline:
             use_mock_llm=config.app.use_mock_llm,
         )
 
+        # 07 - Olay Analizi Katmani (T008-T012): Context Builder ile LangGraph
+        # Ajani arasindaki ara katman. `RetrieverTool`, `rag_service` None
+        # olsa bile guvenlidir (mock veriye duser); `RuleEngine`in kendi
+        # fallback'i de retriever hata verirse kisa mevzuat etiketine doner.
+        self._event_engine = EventEngine()
+        self._temporal_reasoner = TemporalReasoner(relation_window_sec=DEFAULT_RELATION_WINDOW_SEC)
+        self._rule_engine = RuleEngine(retriever=RetrieverTool(self._rag_service))
+        self._event_builder = EventBuilder()
+        self._event_history = EventHistory(self._event_store)
+
+        # Pipeline cagrilari arasinda SIFIRLANMAYAN, zaman bazli budanan
+        # buffer (bkz. `_prune_stale_events`). `relation_window_sec`in 3
+        # kati kadar (varsayilan 90s) gecmis her zaman korunur.
+        self._event_buffer_retention_sec = DEFAULT_RELATION_WINDOW_SEC * 3
+        self._event_history_buffer: Deque[DetectedEvent] = deque()
+
     def run(
         self,
         video_source: str,
@@ -236,21 +337,53 @@ class SafirPipeline:
             on_stage(*STAGE_AGENT)
 
         latest_timestamp = clusters[-1].end_time
+
+        # 07 - Olay Analizi Katmani (T008-T009-T010): VLM aciklamasindan
+        # yapilandirilmis olay tespiti, buffer'a ekleme + zaman bazli budama,
+        # zamansal gruplama/iliskilendirme, kural sorgulama. `temporal_events`
+        # ve `rule_matches`, tum buffer (bu cagriya kadar biriken gecmis)
+        # uzerinden hesaplanir.
+        engine_input = EventEngineInput.from_vlm_response(vlm_response, timestamp=latest_timestamp)
+        detected_events = self._event_engine.detect(engine_input)
+        self._event_history_buffer.extend(detected_events)
+        _prune_stale_events(self._event_history_buffer, latest_timestamp, self._event_buffer_retention_sec)
+
+        temporal_events = self._temporal_reasoner.reason(list(self._event_history_buffer))
+        rule_matches = self._rule_engine.evaluate(temporal_events)
+
         context = self._context_builder.build(
             vlm_description=vlm_response.description,
             user_prompt=user_prompt,
             timestamp=latest_timestamp,
         )
 
-        decision = self._agent.run(context.to_prompt_block())
+        prompt_block = context.to_prompt_block()
+        event_analysis_summary = _summarize_rule_matches(rule_matches)
+        if event_analysis_summary:
+            prompt_block = (
+                f"{prompt_block}\n\n## Olay Analizi Katmani Sinyalleri (T008-T012)\n{event_analysis_summary}"
+            )
 
-        event_id = self._event_store.add_event(
-            timestamp=latest_timestamp,
-            description=vlm_response.description,
-            risk_score=decision.risk_score,
-            risk_level=decision.risk_level,
-            source_model=vlm_response.model_name,
+        decision = self._agent.run(prompt_block)
+
+        # 07 - Olay Analizi Katmani (T011-T012): bu cagrida uretilen/
+        # guncellenen TUM TemporalEvent'leri (birden fazla kategori
+        # tetiklenmis olabilir) StructuredEvent'e cevirip topluca kaydet.
+        # Ajan karari (risk_score/risk_level) tum baglami (tum rule_matches)
+        # gorerek verildigi icin, bu cagridaki her StructuredEvent'e aynen uygulanir.
+        current_call_events = _select_current_call_events(temporal_events, latest_timestamp)
+        structured_events = self._event_builder.build_batch(current_call_events, rule_matches)
+        recorded_event_ids = self._event_history.record_batch(
+            structured_events,
+            risk_scores=[decision.risk_score] * len(structured_events),
+            risk_levels=[decision.risk_level] * len(structured_events),
         )
+        logger.info(
+            "Event Gecmisi: %d StructuredEvent kaydedildi (ids=%s)",
+            len(recorded_event_ids),
+            recorded_event_ids,
+        )
+        event_id = recorded_event_ids[0] if recorded_event_ids else None
 
         timeline = self._event_store.get_timeline(
             start_ts=clusters[0].start_time, end_ts=latest_timestamp
@@ -316,7 +449,7 @@ class SafirPipeline:
         Raises:
             ValueError: `feedback` gecersiz bir deger olursa veya `event_id` bulunamazsa.
         """
-        self._event_store.record_feedback(event_id, feedback)
+        self._event_history.mark_feedback(event_id, feedback)
 
 
 _pipeline: SafirPipeline | None = None
