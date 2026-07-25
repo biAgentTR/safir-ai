@@ -1,5 +1,13 @@
 """T008 - Event Engine: VLM metin ciktisindan yapilandirilmis olay tespiti.
 
+Kategori kaynagi
+-----------------
+`_KEYWORD_RULES` anahtarlari `EventType` degerleridir; ilk 8 kategori
+`src/memory/embedding_rag_service.py::DEFAULT_ISG_REGULATIONS` icindeki 8
+mevzuat maddesiyle birebir hizalanmistir (bkz. `schemas.EVENT_TYPE_REGULATION_MAP`).
+`YETKISIZ_ERISIM` ve `GENEL_GOZLEM` mevcut mevzuat setinde karsiligi olmayan,
+operasyonel amacli iki ozel kategoridir (bkz. `EventType` docstring'i).
+
 Yaklasim karsilastirmasi
 -------------------------
 Bu katmanin gorevi, `03 VLM` katmaninin ürettigi serbest metin aciklamayi
@@ -46,6 +54,13 @@ from src.event_analysis.schemas import DetectedEvent, EventEngineInput, EventTyp
 logger = logging.getLogger(__name__)
 
 _KEYWORD_RULES: Dict[EventType, List[str]] = {
+    EventType.DUSME_RISKI: [
+        "dusme onleyici",
+        "yukseklikte calisma",
+        "guvenlik kemeri",
+        "korkuluk yok",
+        "iskele",
+    ],
     EventType.KKD_IHLALI: [
         "baretsiz",
         "yeleksiz",
@@ -60,18 +75,35 @@ _KEYWORD_RULES: Dict[EventType, List[str]] = {
         "carpisma riski",
         "yaya trafigi",
     ],
-    EventType.DUSME_RISKI: [
-        "dusme onleyici",
-        "yukseklikte calisma",
-        "guvenlik kemeri",
-        "korkuluk yok",
-        "iskele",
+    EventType.SICAK_CALISMA_IHLALI: [
+        "sicak calisma izni",
+        "kaynak islemi",
+        "kivilcim",
+        "izinsiz ates",
     ],
     EventType.YANGIN_DUMAN: [
         "duman",
         "yangin",
         "alev",
         "yanik kokusu",
+    ],
+    EventType.DAR_ALAN_IHLALI: [
+        "kapali alan",
+        "dar alan",
+        "gaz olcumu yapilmadan",
+        "gozetmen olmadan",
+    ],
+    EventType.ENERJI_KESME_IHLALI: [
+        "elektrik pano",
+        "enerji kesme",
+        "loto",
+        "kilitleme etiketleme",
+    ],
+    EventType.AGIR_YUK_RISKI: [
+        "vinc",
+        "kren",
+        "agir yuk kaldirma",
+        "sinyalman olmadan",
     ],
     EventType.YETKISIZ_ERISIM: [
         "yetkisiz",
