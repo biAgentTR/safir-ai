@@ -10,7 +10,7 @@ onlari degistirmez.
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -51,14 +51,71 @@ class EventEngineInput(BaseModel):
 
 
 class EventType(str, Enum):
-    """Event Engine'in tanidigi olay kategorileri."""
+    """Event Engine'in tanidigi olay kategorileri.
+
+    Ilk 8 deger, `src/memory/embedding_rag_service.py::DEFAULT_ISG_REGULATIONS`
+    icindeki 8 mevzuat maddesiyle birebir hizalanmistir (bkz.
+    `EVENT_TYPE_REGULATION_MAP`); T010 Rule Engine bu eslesmeyi dogrudan
+    kullanabilir. `YETKISIZ_ERISIM` ve `GENEL_GOZLEM` mevcut mevzuat setinde
+    karsiligi olmayan, operasyonel amacli iki ozel kategoridir (asagida
+    ayrica aciklanmistir).
+    """
+
+    DUSME_RISKI = "dusme_riski"
+    """ISG Yonetmeligi Madde 12 (yukseklikte calisma / dusme onleyici ekipman)."""
 
     KKD_IHLALI = "kkd_ihlali"
+    """ISG Yonetmeligi Madde 24 (Kisisel Koruyucu Donanim eksikligi)."""
+
     ARAC_YAYA_YAKINLIGI = "arac_yaya_yakinligi"
-    DUSME_RISKI = "dusme_riski"
+    """Operasyonel Kural OK-07 (forklift/is makinesi - yaya gecidi ihlali)."""
+
+    SICAK_CALISMA_IHLALI = "sicak_calisma_ihlali"
+    """ISG Yonetmeligi Madde 31 (izinsiz ates/kivilcim/sicak yuzey islemi)."""
+
     YANGIN_DUMAN = "yangin_duman"
+    """Yangin Guvenligi Talimati YG-03 (duman/alev tespiti)."""
+
+    DAR_ALAN_IHLALI = "dar_alan_ihlali"
+    """ISG Yonetmeligi Madde 45 (gaz olcumu/gozetmen olmadan kapali-dar alana giris)."""
+
+    ENERJI_KESME_IHLALI = "enerji_kesme_ihlali"
+    """Operasyonel Kural OK-15 (LOTO - Lockout/Tagout prosedurune uyulmadan mudahale)."""
+
+    AGIR_YUK_RISKI = "agir_yuk_riski"
+    """ISG Yonetmeligi Madde 52 (sinyalman olmadan vinc/kren ile agir yuk kaldirma)."""
+
     YETKISIZ_ERISIM = "yetkisiz_erisim"
+    """Mevzuat disi, operasyonel izleme kategorisi: mevcut `DEFAULT_ISG_REGULATIONS`
+    setinde dogrudan karsiligi yoktur, ancak yasakli/yetkisiz alana giris
+    saha guvenligi acisindan izlenmesi gereken yaygin bir durum oldugundan
+    enum'da tutulur. Mevzuat seti genisledikce (orn. erisim kontrolu maddesi
+    eklenirse) `EVENT_TYPE_REGULATION_MAP`'e baglanabilir."""
+
     GENEL_GOZLEM = "genel_gozlem"
+    """Fallback kategori: hicbir kural kategorisi eslesmedigi durumlar icin (mevzuat karsiligi yok)."""
+
+
+EVENT_TYPE_REGULATION_MAP: Dict[EventType, Optional[str]] = {
+    EventType.DUSME_RISKI: "ISG Yonetmeligi Madde 12",
+    EventType.KKD_IHLALI: "ISG Yonetmeligi Madde 24",
+    EventType.ARAC_YAYA_YAKINLIGI: "Operasyonel Kural OK-07",
+    EventType.SICAK_CALISMA_IHLALI: "ISG Yonetmeligi Madde 31",
+    EventType.YANGIN_DUMAN: "Yangin Guvenligi Talimati YG-03",
+    EventType.DAR_ALAN_IHLALI: "ISG Yonetmeligi Madde 45",
+    EventType.ENERJI_KESME_IHLALI: "Operasyonel Kural OK-15",
+    EventType.AGIR_YUK_RISKI: "ISG Yonetmeligi Madde 52",
+    EventType.YETKISIZ_ERISIM: None,
+    EventType.GENEL_GOZLEM: None,
+}
+"""`EventType` -> ilgili mevzuat maddesinin kisa referans etiketi.
+
+Etiketler `src/memory/embedding_rag_service.py::DEFAULT_ISG_REGULATIONS`
+icindeki tam metinlerin basliklarina karsilik gelir (o dosyaya bagimlilik
+eklememek icin metin burada tekrarlanmaz, yalnizca referans etiketi
+tutulur). `None` degeri, o kategorinin mevcut mevzuat setinde karsiligi
+olmadigi anlamina gelir (bkz. `YETKISIZ_ERISIM`/`GENEL_GOZLEM` docstring'leri).
+"""
 
 
 class DetectedEvent(BaseModel):
