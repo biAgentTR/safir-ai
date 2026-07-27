@@ -1,0 +1,26 @@
+# =============================================================================
+# SAFIR Operator Paneli - hafif Streamlit imaji (GPU/vLLM bagimliliksiz)
+# =============================================================================
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+COPY requirements-dashboard.txt .
+RUN pip install --upgrade pip \
+    && pip install -r requirements-dashboard.txt
+
+COPY src/ui/ ./src/ui/
+COPY src/__init__.py ./src/__init__.py
+
+RUN mkdir -p data outputs/evidence_frames
+
+EXPOSE 8501
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python3 -c "import httpx; httpx.get('http://localhost:8501/_stcore/health', timeout=3.0).raise_for_status()" || exit 1
+
+CMD ["streamlit", "run", "src/ui/dashboard.py", "--server.address=0.0.0.0", "--server.port=8501"]

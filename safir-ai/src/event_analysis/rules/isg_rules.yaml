@@ -1,0 +1,67 @@
+# T010 Rule Engine - Kombinasyon (bilesik ihlal) kurallari.
+#
+# Tekli olay -> mevzuat eslestirmesi kod icinde, T008'de tanimlanan
+# `EVENT_TYPE_REGULATION_MAP` (src/event_analysis/schemas.py) uzerinden
+# deterministik olarak yapilir; burada YALNIZCA `TemporalEvent.related_events`
+# uzerinden kurulan bilesik ihlal kurallari tanimlanir. Her kural,
+# `required_event_types` listesindeki TUM tiplerin ayni iliskili
+# zaman penceresinde (bkz. src/event_analysis/temporal_reasoner.py)
+# birlikte gorulmesini gerektirir.
+#
+# Alanlar:
+#   rule_id:              Kural kimligi (COMBO-XX).
+#   description:          Kuralin dogal dil aciklamasi.
+#   required_event_types: Bu kuralin tetiklenmesi icin ayni iliski
+#                          kumesinde (TemporalEvent + related_events)
+#                          birlikte bulunmasi gereken EventType degerleri.
+#   severity:              Bilesik ihlalin siddet seviyesi
+#                          (dusuk | orta | yuksek | kritik).
+
+combination_rules:
+  - rule_id: "COMBO-01"
+    description: >-
+      Ayni zaman penceresinde hem KKD ihlali hem arac-yaya yakinligi tespit
+      edildi: personel hem korumasiz ekipmanla hem arac trafigine yakin
+      calisiyor.
+    required_event_types:
+      - kkd_ihlali
+      - arac_yaya_yakinligi
+    severity: "kritik"
+
+  - rule_id: "COMBO-02"
+    description: >-
+      Ayni zaman penceresinde hem dusme riski hem KKD ihlali tespit edildi:
+      yukseklikte calisma sirasinda koruyucu ekipman eksik.
+    required_event_types:
+      - dusme_riski
+      - kkd_ihlali
+    severity: "kritik"
+
+  - rule_id: "COMBO-03"
+    description: >-
+      Ayni zaman penceresinde hem yangin/duman hem dar alan ihlali tespit
+      edildi: kapali/dar alanda yangin riski tahliyeyi zorlastirir.
+    required_event_types:
+      - yangin_duman
+      - dar_alan_ihlali
+    severity: "kritik"
+
+  - rule_id: "COMBO-04"
+    description: >-
+      Ayni zaman penceresinde hem enerji kesme ihlali hem sicak calisma
+      ihlali tespit edildi: enerjisi kesilmemis hat/ekipman uzerinde
+      ates/kivilcimli islem yapiliyor.
+    required_event_types:
+      - enerji_kesme_ihlali
+      - sicak_calisma_ihlali
+    severity: "kritik"
+
+  - rule_id: "COMBO-05"
+    description: >-
+      Ayni zaman penceresinde hem yetkisiz erisim hem agir yuk riski
+      tespit edildi: yetkisiz bir kisi agir yuk kaldirma operasyonunun
+      yakininda bulunuyor.
+    required_event_types:
+      - yetkisiz_erisim
+      - agir_yuk_riski
+    severity: "yuksek"
