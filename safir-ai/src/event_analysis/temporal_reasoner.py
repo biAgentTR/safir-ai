@@ -4,15 +4,25 @@ Bu modul, `Event Engine`in (T008) birden fazla VLM cikisi/zaman penceresi
 uzerinden urettigi `List[DetectedEvent]`'i alip iki farkli zamansal iliskiyi
 kurar:
 
-1. Gruplama/birlestirme ("suregelen olay"): ayni `event_type`e sahip, art
-   arda gelen `DetectedEvent`ler, aralarindaki zaman farki `merge_window_sec`
-   esigini asmadigi surece tek bir `TemporalEvent`e indirgenir. Ornegin bir
-   dusme riski 3 ardisik VLM cikisinda da (5'er saniye arayla) tespit
-   edildiyse, bunlar 3 ayri olay degil, `occurrence_count=3`,
-   `duration=10.0` olan TEK bir suregelen `TemporalEvent` olarak modellenir.
-   Gerekce: ayni riskin her VLM karesinde yeniden "yeni bir olay" sayilmasi,
-   asagi akıştaki `05 LangGraph Ajani`nin ve `Event Gecmisi`nin (T012) ayni
-   durumu tekrar tekrar islemesine/raporlamasina yol acardi.
+1. Gruplama/birlestirme ("suregelen olay"): ayni `event_type`e sahip
+   `DetectedEvent`ler, aralarindaki zaman farki `merge_window_sec` esigini
+   asmadigi surece tek bir `TemporalEvent`e indirgenir. Ornegin bir dusme
+   riski 3 VLM cikisinda da (5'er saniye arayla) tespit edildiyse, bunlar 3
+   ayri olay degil, `occurrence_count=3`, `duration=10.0` olan TEK bir
+   suregelen `TemporalEvent` olarak modellenir. Gerekce: ayni riskin her
+   VLM karesinde yeniden "yeni bir olay" sayilmasi, asagi akıştaki `05
+   LangGraph Ajani`nin ve `Event Gecmisi`nin (T012) ayni durumu tekrar
+   tekrar islemesine/raporlamasina yol acardi.
+
+   Birlestirme karari YALNIZCA "ayni tip + zaman farki `merge_window_sec`
+   icinde" kriterine gore verilir; iki ayni-tip olay arasina baska tipte
+   bir olay girmesi birlestirmeyi ENGELLEMEZ (T015 - bkz.
+   `_group_by_type_and_proximity`). Ornegin `kkd_ihlali(t=0)` ->
+   `arac_yaya_yakinligi(t=3)` -> `kkd_ihlali(t=5)` sirasinda, iki
+   `kkd_ihlali` (araya farkli tip girmis olsa da) birlesir; `arac_yaya_yakinligi`
+   ayri, tek olaylik bir grup olarak kalir. (T015 oncesi: yalnizca listede
+   dogrudan BITISIK ayni-tip olaylar birlesiyordu; bu, T013'un gercek
+   pipeline entegrasyonunda tespit edilen bir kisitlamaydi.)
 2. Iliskilendirme: birlestirme sonrasi elde edilen `TemporalEvent`ler
    arasinda, zaman ekseninde birbirine yakin duranlar (`relation_window_sec`
    icinde, tip fark etmeksizin) `related_events` alaninda birbirine
@@ -30,7 +40,7 @@ dokunulmadan, `SafirConfig`'e sonradan tasinabilecek sekilde izole edilmistir.
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import Dict, List
 
 from src.event_analysis.schemas import DetectedEvent, TemporalEvent
 
@@ -105,26 +115,39 @@ class TemporalReasoner:
     def _group_by_type_and_proximity(
         self, sorted_events: List[DetectedEvent]
     ) -> List[List[DetectedEvent]]:
-        """Zaman sirali olaylari, ayni tipte ve `merge_window_sec` icinde ardisik olanlara gore gruplar.
+        """Zaman sirali olaylari, tip bazinda "en son acik grup" mantigiyla gruplar.
+
+        Her `event_type` icin, o tipteki EN SON grubun indeksi ayri ayri
+        izlenir (`last_group_index_by_type`). Yeni bir olay geldiginde:
+        - Ayni tipteki en son grubun son olayina zaman farki
+          `merge_window_sec` icindeyse, o gruba eklenir (araya baska tipte
+          kac olay girmis olursa olsun - listede bitisik olma sarti YOKTUR).
+        - Degilse (ya bu tip ilk kez goruluyor ya da esik asilmis), bu tip
+          icin YENI bir grup acilir; o tipin "en son grup" isaretcisi bu
+          yeni gruba guncellenir (eski grup bir daha asla yeniden acilmaz -
+          zaten zaman ilerledikce ona olan uzaklik sadece artabilir).
 
         Args:
             sorted_events: Zaman damgasina gore artan sirali `DetectedEvent` listesi.
 
         Returns:
-            Her biri tek bir suregelen olaya karsilik gelecek `DetectedEvent` gruplarinin listesi.
+            Her biri tek bir suregelen olaya karsilik gelecek, olusturulma
+            sirasina gore (bu da baslangic zaman damgasina gore artan
+            siraya esittir) dizili `DetectedEvent` gruplarinin listesi.
         """
         groups: List[List[DetectedEvent]] = []
+        last_group_index_by_type: Dict[str, int] = {}
 
         for event in sorted_events:
-            if groups:
-                last_group = groups[-1]
-                last_event = last_group[-1]
-                same_type = last_event.event_type == event.event_type
-                within_window = (event.timestamp - last_event.timestamp) <= self._merge_window_sec
-                if same_type and within_window:
-                    last_group.append(event)
+            last_index = last_group_index_by_type.get(event.event_type)
+            if last_index is not None:
+                last_event = groups[last_index][-1]
+                if (event.timestamp - last_event.timestamp) <= self._merge_window_sec:
+                    groups[last_index].append(event)
                     continue
+
             groups.append([event])
+            last_group_index_by_type[event.event_type] = len(groups) - 1
 
         return groups
 
