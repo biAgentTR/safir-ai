@@ -200,3 +200,94 @@ def test_event_ids_are_unique_and_stable_ordering() -> None:
     ids = [e.event_id for e in result]
     assert ids == ["evt_0", "evt_1", "evt_2"]
     assert len(set(ids)) == len(ids)
+
+
+# --- T015: tip-bazli gruplama (araya farkli tip girmesi birlestirmeyi engellemez) ---
+
+
+def test_same_type_events_merge_even_with_a_different_type_interleaved() -> None:
+    """A(t=0) -> B(t=3) -> A(t=5): iki A, araya B girmis olsa da birlesmeli."""
+    events = [
+        _event("kkd_ihlali", timestamp=0.0, keywords=["baretsiz"]),
+        _event("arac_yaya_yakinligi", timestamp=3.0, keywords=["forklift"]),
+        _event("kkd_ihlali", timestamp=5.0, keywords=["korumasiz alan"]),
+    ]
+    result = TemporalReasoner().reason(events)
+
+    assert len(result) == 2
+    by_type = {e.event_type: e for e in result}
+
+    merged_kkd = by_type["kkd_ihlali"]
+    assert merged_kkd.occurrence_count == 2
+    assert merged_kkd.start_timestamp == 0.0
+    assert merged_kkd.end_timestamp == 5.0
+    assert merged_kkd.duration == 5.0
+    assert set(merged_kkd.matched_keywords) == {"baretsiz", "korumasiz alan"}
+
+    standalone_arac_yaya = by_type["arac_yaya_yakinligi"]
+    assert standalone_arac_yaya.occurrence_count == 1
+    assert standalone_arac_yaya.duration == 0.0
+
+
+def test_interleaved_same_type_events_stay_separate_when_gap_too_large() -> None:
+    """A(t=0) -> B(t=3) -> A(t=50): araya girme, zaman penceresini gecersiz kilmaz - gap 50 > 10 -> ayri kalmali."""
+    events = [
+        _event("kkd_ihlali", timestamp=0.0),
+        _event("arac_yaya_yakinligi", timestamp=3.0),
+        _event("kkd_ihlali", timestamp=50.0),
+    ]
+    result = TemporalReasoner().reason(events)
+
+    kkd_events = [e for e in result if e.event_type == "kkd_ihlali"]
+    assert len(kkd_events) == 2
+    assert all(e.occurrence_count == 1 for e in kkd_events)
+
+    arac_yaya_events = [e for e in result if e.event_type == "arac_yaya_yakinligi"]
+    assert len(arac_yaya_events) == 1
+    assert arac_yaya_events[0].occurrence_count == 1
+
+
+def test_three_way_interleaving_each_type_merges_independently() -> None:
+    """A(0) -> B(2) -> A(4) -> B(6) -> A(8): her tip kendi ardisik olaylarini bagimsiz birlestirmeli."""
+    events = [
+        _event("kkd_ihlali", timestamp=0.0),
+        _event("arac_yaya_yakinligi", timestamp=2.0),
+        _event("kkd_ihlali", timestamp=4.0),
+        _event("arac_yaya_yakinligi", timestamp=6.0),
+        _event("kkd_ihlali", timestamp=8.0),
+    ]
+    result = TemporalReasoner().reason(events)
+
+    assert len(result) == 2
+    by_type = {e.event_type: e for e in result}
+
+    merged_kkd = by_type["kkd_ihlali"]
+    assert merged_kkd.occurrence_count == 3
+    assert merged_kkd.start_timestamp == 0.0
+    assert merged_kkd.end_timestamp == 8.0
+
+    merged_arac_yaya = by_type["arac_yaya_yakinligi"]
+    assert merged_arac_yaya.occurrence_count == 2
+    assert merged_arac_yaya.start_timestamp == 2.0
+    assert merged_arac_yaya.end_timestamp == 6.0
+
+
+def test_closed_group_never_reopens_even_if_a_later_same_type_event_would_be_close_to_it() -> None:
+    """A(0) -> A(15) (esik disi, yeni grup acilir) -> B(16) -> A(17): 3. A, KAPANMIS ilk gruba degil, EN SON acik A grubuna (t=15) eklenmeli."""
+    events = [
+        _event("kkd_ihlali", timestamp=0.0),
+        _event("kkd_ihlali", timestamp=15.0),
+        _event("arac_yaya_yakinligi", timestamp=16.0),
+        _event("kkd_ihlali", timestamp=17.0),
+    ]
+    result = TemporalReasoner().reason(events)
+
+    kkd_events = sorted(
+        (e for e in result if e.event_type == "kkd_ihlali"), key=lambda e: e.start_timestamp
+    )
+    assert len(kkd_events) == 2
+    assert kkd_events[0].occurrence_count == 1
+    assert kkd_events[0].start_timestamp == 0.0
+    assert kkd_events[1].occurrence_count == 2
+    assert kkd_events[1].start_timestamp == 15.0
+    assert kkd_events[1].end_timestamp == 17.0
