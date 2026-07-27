@@ -1,0 +1,6 @@
+# Operator Paneli (src/ui/dashboard.py) icin hafif bagimliliklar.
+# vLLM/FAISS/sentence-transformers gibi agir GPU/backend bagimliliklarini
+# ICERMEZ; dashboard yalnizca SAFIR API'sine HTTP uzerinden konusur.
+streamlit==1.36.0
+httpx==0.27.0
+reportlab==4.2.2

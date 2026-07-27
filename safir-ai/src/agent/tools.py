@@ -2,9 +2,10 @@
 
 Bu modul, `Reasoning Agent`in baglama gore yonlendirdigi uc mock/taslak araci
 tanimlar: gecmis olay sorgulama (SQL Tool), zamansal cizelgeleme (Timeline
-Tool) ve ISG/operasyonel mevzuat aramasi (RAG Tool). Araclar, gercek
-`EventStore`/`SemanticMemory` bagimliliklari verilmezse bile calisabilen mock
-veriye duser; boylece iskelet bagimsiz test edilebilir.
+Tool) ve ISG/operasyonel mevzuat aramasi (`retriever_tool`, Embedding & RAG
+Katmani uzerinden). Araclar, gercek `EventStore`/`EmbeddingRAGService`
+bagimliliklari verilmezse bile calisabilen mock veriye duser; boylece iskelet
+bagimsiz test edilebilir.
 """
 
 from __future__ import annotations
@@ -15,8 +16,8 @@ from typing import List, Optional
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
-from src.memory.semantic_memory import SemanticMemory
 
 logger = logging.getLogger(__name__)
 
@@ -93,26 +94,26 @@ class SqlTool:
         )
 
 
-class RagToolInput(BaseModel):
-    """RAG Tool icin girdi semasi."""
+class RetrieverToolInput(BaseModel):
+    """`retriever_tool` icin girdi semasi."""
 
     question: str = Field(description="ISG/operasyonel mevzuat ile ilgili dogal dil sorusu.")
     top_k: int = Field(default=3, description="Getirilecek maksimum mevzuat maddesi sayisi.")
 
 
-class RagTool:
-    """ISG mevzuati ve operasyonel kurallari anlamsal bellek (FAISS) uzerinden arayan arac."""
+class RetrieverTool:
+    """ISG mevzuati ve operasyonel kurallari Embedding & RAG Katmani (`EmbeddingRAGService`) uzerinden arayan arac."""
 
-    def __init__(self, semantic_memory: Optional[SemanticMemory] = None) -> None:
-        """RagTool'u opsiyonel bir `SemanticMemory` bagimliligiyla baslatir.
+    def __init__(self, rag_service: Optional[EmbeddingRAGService] = None) -> None:
+        """RetrieverTool'u opsiyonel bir `EmbeddingRAGService` bagimliligiyla baslatir.
 
         Args:
-            semantic_memory: Gercek FAISS tabanli anlamsal bellek; `None` ise mock veri kullanilir.
+            rag_service: Gercek embedding+FAISS tabanli RAG servisi; `None` ise mock veri kullanilir.
         """
-        self._semantic_memory = semantic_memory
+        self._rag_service = rag_service
 
     def run(self, question: str, top_k: int = 3) -> str:
-        """RAG Tool'u calistirir ve ilgili mevzuat maddelerini dondurur.
+        """`retriever_tool`'u calistirir ve ilgili mevzuat maddelerini dondurur.
 
         Args:
             question: Dogal dil sorgusu.
@@ -121,11 +122,11 @@ class RagTool:
         Returns:
             Ilgili mevzuat maddelerini iceren metin.
         """
-        if self._semantic_memory is None:
-            logger.warning("RagTool: SemanticMemory baglanmadi, mock veri donduruluyor.")
+        if self._rag_service is None:
+            logger.warning("RetrieverTool: EmbeddingRAGService baglanmadi, mock veri donduruluyor.")
             regulations = _MOCK_REGULATIONS[:top_k]
         else:
-            regulations = [doc.text for doc in self._semantic_memory.query(question, top_k=top_k)]
+            regulations = [doc.text for doc in self._rag_service.query(question, top_k=top_k)]
 
         if not regulations:
             return "Sorguyla ilgili mevzuat maddesi bulunamadi."
@@ -136,9 +137,12 @@ class RagTool:
         """Bu araci LangGraph/LangChain ajanina baglanabilecek `StructuredTool`'a cevirir."""
         return StructuredTool.from_function(
             func=self.run,
-            name="rag_tool",
-            description="ISG mevzuati ve operasyonel kurallari anlamsal olarak arar.",
-            args_schema=RagToolInput,
+            name="retriever_tool",
+            description=(
+                "ISG mevzuati ve operasyonel kurallari, embedding tabanli anlamsal "
+                "arama (Embedding & RAG Katmani) ile arar."
+            ),
+            args_schema=RetrieverToolInput,
         )
 
 
@@ -194,19 +198,19 @@ class TimelineTool:
 
 def build_tool_registry(
     event_store: Optional[EventStore] = None,
-    semantic_memory: Optional[SemanticMemory] = None,
+    rag_service: Optional[EmbeddingRAGService] = None,
 ) -> List[StructuredTool]:
     """Ajanin `Dynamic Tool Router`ina baglanacak tum araclarin listesini uretir.
 
     Args:
         event_store: SQL ve Timeline araclarinin kullanacagi olay deposu.
-        semantic_memory: RAG aracinin kullanacagi anlamsal bellek.
+        rag_service: `retriever_tool`'un kullanacagi Embedding & RAG servisi.
 
     Returns:
         LangGraph ajanina dogrudan baglanabilecek `StructuredTool` listesi.
     """
     return [
         SqlTool(event_store).as_langchain_tool(),
-        RagTool(semantic_memory).as_langchain_tool(),
+        RetrieverTool(rag_service).as_langchain_tool(),
         TimelineTool(event_store).as_langchain_tool(),
     ]
