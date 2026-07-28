@@ -57,7 +57,7 @@ vlm:
   active_model: "qwen"               # qwen | gemma  (VLMFactory tarafindan okunur)
   models:
     qwen:
-      model_name: "Qwen/Qwen2.5-VL-7B-Instruct"
+      model_name: "Qwen/Qwen2.5-VL-3B-Instruct"
       vllm_host: "0.0.0.0"
       vllm_port: 8001
       max_new_tokens: 512
