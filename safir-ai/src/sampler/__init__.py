@@ -2,16 +2,22 @@
 
 from src.sampler.adaptive_sampler import (
     AdaptiveFrameSampler,
+    ClusterMergeStats,
     SamplerRunStats,
     sampler_from_config,
 )
+from src.sampler.context import PeakFrameExporter, RepresentativeFrameExtractor
 from src.sampler.payload_builder import VLMPayloadBuilder
-from src.sampler.schema import EventCluster, EvidenceFrame
+from src.sampler.schema import EventCluster, EvidenceFrame, RepresentativeFrame
 
 __all__ = [
     "AdaptiveFrameSampler",
+    "ClusterMergeStats",
     "EventCluster",
     "EvidenceFrame",
+    "PeakFrameExporter",
+    "RepresentativeFrame",
+    "RepresentativeFrameExtractor",
     "SamplerRunStats",
     "sampler_from_config",
     "VLMPayloadBuilder",
