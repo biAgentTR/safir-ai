@@ -55,7 +55,15 @@ class VLMPayloadBuilder:
                 f"degisim_skoru={peak.change_score:.4f}"
             )
             content.append({"type": "text", "text": metadata_text})
-            content.append({"type": "image_url", "image_url": {"url": peak.base64_image}})
+
+            if cluster.representative_frames:
+                for rf in cluster.representative_frames:
+                    content.append(
+                        {"type": "text", "text": f"[{rf.label}, {rf.timestamp_str}]"}
+                    )
+                    content.append({"type": "image_url", "image_url": {"url": rf.base64_image}})
+            else:
+                content.append({"type": "image_url", "image_url": {"url": peak.base64_image}})
 
         logger.debug(
             "VLMPayloadBuilder: %d olay grubu icin %d icerik blogu uretildi.",
