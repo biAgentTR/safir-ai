@@ -1,0 +1,13 @@
+version: "3.9"
+
+services:
+  safir-api:
+    build: .
+    container_name: safir-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./data:/app/data
+    environment:
+      - SAFIR_ENV=development

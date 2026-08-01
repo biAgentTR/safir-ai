@@ -1,0 +1,15 @@
+app:
+  name: "SAFİR"
+  version: "2.0.0"
+  use_mock_vlm: true
+  use_mock_llm: true
+
+sampler:
+  sample_fps: 5
+  min_change_threshold: 0.011
+
+models:
+  vlm:
+    endpoint: "http://vllm-vlm:8001/v1"
+  llm:
+    endpoint: "http://vllm-llm:8003/v1"
