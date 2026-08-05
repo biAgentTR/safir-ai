@@ -33,6 +33,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 import streamlit as st
 from history import render_history_section
+from pdf_fonts import register_tr_fonts, TR_FONT, TR_FONT_BOLD
+register_tr_fonts()
 
 
 API_BASE_URL = os.environ.get("SAFIR_API_URL", "http://localhost:8000")
@@ -400,7 +402,7 @@ def _send_feedback(event_id: int, feedback: str) -> None:
 
 
 def _render_evidence_gallery(report: Dict[str, Any]) -> None:
-    """Zirve kanit karelerini, her karti icin Dogru Ihbar/Yanlis Alarm butonlariyla birlikte gosterir.
+    """Zirve Kanıt Karelerini, her karti icin Dogru Ihbar/Yanlis Alarm butonlariyla birlikte gosterir.
 
     Not: Backend her analiz icin SQLite'a tek bir toplu olay kaydi yazar
     (`SafirReport.event_id`); dolayisiyla bu sekmedeki her kart ayni
@@ -453,7 +455,7 @@ def _render_agent_rag_tab(report: Dict[str, Any]) -> None:
     Args:
         report: Guncel `SafirReport` sozlugu.
     """
-    st.subheader("🧠 vLLM Gorsel Anlama Ciktisi (Turkce)")
+    st.subheader("🧠 vLLM Görsel Anlama Çıktısı (Turkce)")
     st.write(report["natural_language_summary"])
 
     st.subheader("📚 RAG & Mevzuat Karti (FAISS)")
@@ -468,15 +470,15 @@ def _render_agent_rag_tab(report: Dict[str, Any]) -> None:
 
 
 def _render_timeline_alert_tab(report: Dict[str, Any]) -> None:
-    """Olay zaman cizelgesini ve Human-in-the-Loop alarm tetikleme bolumunu gosterir.
+    """Olay Zaman Çizelgesini ve Human-in-the-Loop alarm tetikleme bolumunu gosterir.
 
     Args:
         report: Guncel `SafirReport` sozlugu.
     """
-    st.subheader("🕒 Olay Zaman Cizelgesi")
+    st.subheader("🕒 Olay Zaman Çizelgesi")
     timeline = report.get("timeline", [])
     if not timeline:
-        st.caption("Zaman cizelgesinde kayit yok.")
+        st.caption("Zaman Çizelgesinde Kayıt yok.")
     else:
         for entry in timeline:
             with st.container(border=True):
@@ -513,7 +515,7 @@ def _render_timeline_alert_tab(report: Dict[str, Any]) -> None:
 
 
 def _report_file_stub(report: Dict[str, Any]) -> str:
-    """Indirme dosya adlari icin video kaynagindan guvenli bir dosya adi kokü uretir.
+    """Indirme dosya adlari icin Video Kaynağından guvenli bir dosya adi kokü uretir.
 
     Args:
         report: Guncel `SafirReport` sozlugu.
@@ -546,12 +548,12 @@ def _build_html_report(report: Dict[str, Any]) -> str:
 
     regulations_html = "".join(
         f"<li>{regulation}</li>" for regulation in report.get("relevant_regulations", [])
-    ) or "<li>Ilgili mevzuat bulunamadi.</li>"
+    ) or "<li>	İlgili mevzuat bulunamadı.</li>"
 
     timeline_html = "".join(
         f"<li>[{entry['timestamp']:.1f}s] {entry['description']}</li>"
         for entry in report.get("timeline", [])
-    ) or "<li>Kayit yok.</li>"
+    ) or "<li>Kayıt yok.</li>"
 
     return f"""<!doctype html>
 <html lang="tr">
@@ -570,34 +572,34 @@ def _build_html_report(report: Dict[str, Any]) -> str:
 </head>
 <body>
 <h1>🛡️ SAFIR Saha Analiz Raporu</h1>
-<p><b>Video Kaynagi:</b> {report['video_source']}<br/>
-<b>Uretim Zamani:</b> {report['generated_at']}<br/>
+<p><b>Video Kaynağı:</b> {report['video_source']}<br/>
+<b>Üretim Zamanı:</b> {report['generated_at']}<br/>
 <b>Aktif Modeller:</b> VLM={report.get('vlm_model') or '-'} / LLM={report.get('llm_model') or '-'}</p>
 
 <div class="section">
 <h2>Risk Degerlendirmesi</h2>
 <p><b>Risk Skoru:</b> {report['risk_score']}/100 &nbsp;
 <span class="risk-badge" style="background-color:{risk_color};">{report['risk_level'].upper()}</span></p>
-<p><b>Onerilen Aksiyon:</b> {report['recommended_action']}</p>
+<p><b>Önerilen Aksiyon:</b> {report['recommended_action']}</p>
 </div>
 
 <div class="section">
-<h2>vLLM Gorsel Anlama Ciktisi</h2>
+<h2>vLLM Görsel Anlama Çıktısı</h2>
 <p>{report['natural_language_summary']}</p>
 </div>
 
 <div class="section">
-<h2>Kanit Kareleri</h2>
+<h2>Kanıt Kareleri</h2>
 {evidence_html}
 </div>
 
 <div class="section">
-<h2>Ilgili ISG Mevzuati (FAISS RAG)</h2>
+<h2>	İlgili İSG Mevzuatı (FAISS RAG)</h2>
 <ul>{regulations_html}</ul>
 </div>
 
 <div class="section">
-<h2>Zaman Cizelgesi</h2>
+<h2>Zaman Çizelgesi</h2>
 <ul>{timeline_html}</ul>
 </div>
 </body>
@@ -633,6 +635,8 @@ def _build_pdf_report(report: Dict[str, Any]) -> bytes:
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, topMargin=2 * cm, bottomMargin=2 * cm)
     styles = getSampleStyleSheet()
+    for _stil in styles.byName.values():
+        _stil.fontName = TR_FONT_BOLD if ("Heading" in _stil.name or _stil.name == "Title") else TR_FONT
     risk_style = ParagraphStyle(
         "SafirRisk", parent=styles["BodyText"], textColor=colors.HexColor(risk_color), fontSize=14, spaceAfter=6
     )
@@ -640,16 +644,16 @@ def _build_pdf_report(report: Dict[str, Any]) -> bytes:
     story = [
         Paragraph("SAFIR Saha Analiz Raporu", styles["Title"]),
         Spacer(1, 0.3 * cm),
-        Paragraph(f"Video Kaynagi: {report['video_source']}", styles["BodyText"]),
-        Paragraph(f"Uretim Zamani: {report['generated_at']}", styles["BodyText"]),
+        Paragraph(f"Video Kaynağı: {report['video_source']}", styles["BodyText"]),
+        Paragraph(f"Üretim Zamanı: {report['generated_at']}", styles["BodyText"]),
         Spacer(1, 0.3 * cm),
         Paragraph(f"Risk Skoru: {report['risk_score']}/100 — {report['risk_level'].upper()}", risk_style),
-        Paragraph(f"Onerilen Aksiyon: {report['recommended_action']}", styles["BodyText"]),
+        Paragraph(f"Önerilen Aksiyon: {report['recommended_action']}", styles["BodyText"]),
         Spacer(1, 0.4 * cm),
-        Paragraph("vLLM Gorsel Anlama Ciktisi", styles["Heading2"]),
+        Paragraph("vLLM Görsel Anlama Çıktısı", styles["Heading2"]),
         Paragraph(report["natural_language_summary"], styles["BodyText"]),
         Spacer(1, 0.4 * cm),
-        Paragraph("Kanit Kareleri", styles["Heading2"]),
+        Paragraph("Kanıt Kareleri", styles["Heading2"]),
     ]
 
     for evidence in report.get("evidence_frames", []):
@@ -668,7 +672,7 @@ def _build_pdf_report(report: Dict[str, Any]) -> bytes:
         except (KeyError, ValueError, base64.binascii.Error):
             continue
 
-    story.append(Paragraph("Ilgili ISG Mevzuati (FAISS RAG)", styles["Heading2"]))
+    story.append(Paragraph("	İlgili İSG Mevzuatı (FAISS RAG)", styles["Heading2"]))
     regulations = report.get("relevant_regulations", [])
     if regulations:
         story.append(
@@ -677,10 +681,10 @@ def _build_pdf_report(report: Dict[str, Any]) -> bytes:
             )
         )
     else:
-        story.append(Paragraph("Ilgili mevzuat bulunamadi.", styles["BodyText"]))
+        story.append(Paragraph("	İlgili mevzuat bulunamadı.", styles["BodyText"]))
 
     story.append(Spacer(1, 0.4 * cm))
-    story.append(Paragraph("Zaman Cizelgesi", styles["Heading2"]))
+    story.append(Paragraph("Zaman Çizelgesi", styles["Heading2"]))
     timeline = report.get("timeline", [])
     if timeline:
         story.append(
@@ -693,7 +697,7 @@ def _build_pdf_report(report: Dict[str, Any]) -> bytes:
             )
         )
     else:
-        story.append(Paragraph("Kayit yok.", styles["BodyText"]))
+        story.append(Paragraph("Kayıt yok.", styles["BodyText"]))
 
     doc.build(story)
     return buffer.getvalue()
@@ -761,7 +765,7 @@ def _render_report(report: Dict[str, Any]) -> None:
         st.markdown(_risk_badge_html(report["risk_level"], report["risk_score"]), unsafe_allow_html=True)
     col3.metric("VLM / LLM", f"{report.get('vlm_model', '-')} / {report.get('llm_model', '-')}")
 
-    st.markdown("**Onerilen Aksiyon**")
+    st.markdown("**Önerilen Aksiyon**")
     st.info(report["recommended_action"])
 
     tab1, tab2, tab3, tab4 = st.tabs(
