@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 _JPEG_QUALITY = 85
 
 
-class RepresentativeFrameExtractor:git add .
+class RepresentativeFrameExtractor:
     """Zirve kare etrafinda pre-event/post-event temsili kareleri seek ile cikarir."""
 
     def __init__(self, pre_event_sec: float = 3.0, post_event_sec: float = 3.0) -> None:
