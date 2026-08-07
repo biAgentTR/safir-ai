@@ -1,205 +1,144 @@
+"""Modul 2 - VLM Client & Model Interface: VLM icin gercek/mock istemciler.
+
+`VLMClient`, config'te secilen aktif VLM'i (Qwen2.5-VL / Gemma 3 Vision)
+`VLMFactory` uzerinden kurup gercek vLLM servisine HTTP istegi atar; boylece
+mevcut test edilmis `BaseVLM`/`QwenVLM`/`GemmaVLM` mantigi hic degistirilmeden
+tek bir noktadan yeniden kullanilir. `MockVLMClient` ise GPU'su olmayan
+gelistiriciler icin ayni `BaseVLM` sozlesmesini (`describe_events`,
+`health_check`) saniyenin onda biri kadar surede, sabit Turkce ISG tasvir
+metniyle karsilar; boylece `get_vlm_client(..., use_mock=True)` ile secildiginde
+main.py'deki pipeline hicbir kod degisikligi olmadan calisir.
+"""
+
 from __future__ import annotations
 
-import base64
-import json
-from dataclasses import dataclass
-from typing import List, Optional
+import logging
+import time
+from typing import List
 
-import urllib.error
-import urllib.request
+from src.sampler.adaptive_sampler import EventCluster
+from src.utils.config_loader import VLLMEndpointConfig, VLMConfig
+from src.vlm.base_vlm import BaseVLM, VLMResponse
+from src.vlm.vlm_factory import VLMFactory
 
+logger = logging.getLogger(__name__)
 
-# =============================================================================
-# Cikti veri modeli
-# =============================================================================
-@dataclass
-class VLMDescription:
-    """Bir kanit karesi icin VLM'in urettigi yapisal ISG gorsel aciklamasi.
+_MOCK_ENDPOINT = VLLMEndpointConfig(
+    model_name="mock-vlm",
+    vllm_host="mock",
+    vllm_port=0,
+    max_new_tokens=0,
+    temperature=0.0,
+)
 
-    Attributes:
-        description: Serbest metin Turkce sahne aciklamasi.
-        detected_hazards: Tespit edilen ISG tehlike/ihlal etiketleri.
-        model_name: Aciklamayi ureten model adi (veya "mock-vlm").
-        is_mock: Aciklamanin mock olup olmadigi.
-        source_frame: Aciklanan karenin dosya yolu (varsa).
-    """
-
-    description: str
-    detected_hazards: List[str]
-    model_name: str
-    is_mock: bool
-    source_frame: Optional[str] = None
-
-
-# ISG denetim istemi (gercek Ollama cagrisi icin sistem+kullanici baglamı).
-ISG_VLM_PROMPT = (
-    "Sen bir Isci Saglığı ve Guvenligi (ISG) denetim uzmanisin. Sana verilen "
-    "saha/insaat kamera goruntusunu Turkce olarak degerlendirir; kisisel koruyucu "
-    "donanim (KKD) eksikliklerini (baret, is guvenligi yelegi, eldiven), tehlikeli "
-    "yakinlik durumlarini (arac-yaya, yuksekte calisma), duzensizlik ve diger ISG "
-    "risklerini kisa ve net maddeler halinde raporla. Yalnizca goruntude gordugun "
-    "kanitlara dayan."
+_MOCK_DESCRIPTION = (
+    "[MOCK] Sahada bir personel korumasız bir alanda hareket ediyor; baret ve "
+    "yansıtıcı yelek eksik görünüyor. Yakın çevrede forklift trafiğinin olduğu "
+    "gözlemleniyor. Herhangi bir duman veya yangın belirtisi tespit edilmedi."
 )
 
 
-# =============================================================================
-# VLM Istemcisi
-# =============================================================================
-class VLMClient:
-    """Ollama tabanli VLM istemcisi; mock modda dis baglanti kurmadan calisir."""
+class VLMClient(BaseVLM):
+    """Config'teki aktif VLM'i gercek vLLM servisi uzerinden cagiran genel istemci.
 
-    def __init__(
-        self,
-        base_url: str,
-        model_name: str,
-        use_mock: bool,
-        request_timeout_sec: int = 120,
-    ) -> None:
-        """VLM istemcisini kurar.
-
-        Args:
-            base_url: Ollama sunucu adresi (orn. "http://localhost:11434").
-            model_name: Kullanilacak VLM model adi (orn. "qwen2.5-vl").
-            use_mock: True ise gercek servise baglanmadan sabit cikti doner.
-            request_timeout_sec: Gercek cagri icin zaman asimi (sn).
-        """
-        self.base_url = base_url.rstrip("/")
-        self.model_name = model_name
-        self.use_mock = use_mock
-        self.request_timeout_sec = request_timeout_sec
-
-    # ------------------------------------------------------------------ #
-    # Genel API
-    # ------------------------------------------------------------------ #
-    def describe_frame(self, image_path: str, prompt: Optional[str] = None) -> VLMDescription:
-        """Verilen kanit karesi icin ISG odakli Turkce bir gorsel aciklama uretir.
-
-        Args:
-            image_path: Aciklanacak kareyi iceren `.jpg` yolu.
-            prompt: Isteğe bagli ek kullanici istemi (mock modda goz ardi edilir).
-
-        Returns:
-            `VLMDescription` nesnesi.
-        """
-        if self.use_mock:
-            return self._mock_description(image_path)
-        return self._ollama_description(image_path, prompt or "")
-
-    # ------------------------------------------------------------------ #
-    # MOCK yol
-    # ------------------------------------------------------------------ #
-    def _mock_description(self, image_path: str) -> VLMDescription:
-        """Deterministik, sabit bir Turkce ISG aciklamasi dondurur (mock)."""
-        description = (
-            "Sahada bir isci, hareket halindeki bir is makinesine tehlikeli olcude "
-            "yakin konumda calismaktadir. Iscinin basinda koruyucu baret "
-            "bulunmamakta ve is guvenligi yelegi eksik gorunmektedir. Zeminde "
-            "duzensiz sekilde birakilmis malzemeler dusme/takilma riski "
-            "olusturmaktadir. Genel gorunum, acil operator mudahalesi gerektiren "
-            "yuksek riskli bir ISG ihlaline isaret etmektedir."
-        )
-        hazards = [
-            "KKD ihlali: Baret takili degil",
-            "KKD ihlali: Is guvenligi yelegi yok",
-            "Arac-yaya tehlikeli yakinligi",
-            "Zeminde duzensiz malzeme (dusme/takilma riski)",
-        ]
-        return VLMDescription(
-            description=description,
-            detected_hazards=hazards,
-            model_name="mock-vlm",
-            is_mock=True,
-            source_frame=image_path,
-        )
-
-    # ------------------------------------------------------------------ #
-    # GERCEK yol (Ollama /api/chat)
-    # ------------------------------------------------------------------ #
-    @staticmethod
-    def _encode_image_base64(image_path: str) -> str:
-        """Bir resmi Base64 string'e cevirir (Ollama `images` alani icin)."""
-        with open(image_path, "rb") as fh:
-            return base64.b64encode(fh.read()).decode("utf-8")
-
-    def _ollama_description(self, image_path: str, extra_prompt: str) -> VLMDescription:
-        """Ollama `/api/chat` uc noktasina Base64 resmi + ISG istemini gonderir.
-
-        Args:
-            image_path: Kanit karesinin dosya yolu.
-            extra_prompt: Kullanicidan gelen ek odak istemi.
-
-        Returns:
-            Modelden donen aciklamayi iceren `VLMDescription`.
-
-        Raises:
-            RuntimeError: Ollama cagrisi basarisiz olursa.
-        """
-        image_b64 = self._encode_image_base64(image_path)
-        user_content = ISG_VLM_PROMPT
-        if extra_prompt.strip():
-            user_content = f"{ISG_VLM_PROMPT}\n\nEk odak: {extra_prompt.strip()}"
-
-        payload = {
-            "model": self.model_name,
-            "stream": False,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": user_content,
-                    "images": [image_b64],
-                }
-            ],
-        }
-
-        data = json.dumps(payload).encode("utf-8")
-        url = f"{self.base_url}/api/chat"
-        request = urllib.request.Request(
-            url, data=data, headers={"Content-Type": "application/json"}, method="POST"
-        )
-
-        try:
-            with urllib.request.urlopen(request, timeout=self.request_timeout_sec) as response:
-                body = json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            raise RuntimeError(
-                f"Ollama VLM cagrisi basarisiz ({url}, model={self.model_name}): {exc}"
-            ) from exc
-
-        content = (body.get("message", {}) or {}).get("content", "").strip()
-        if not content:
-            raise RuntimeError("Ollama VLM bos yanit dondurdu.")
-
-        return VLMDescription(
-            description=content,
-            detected_hazards=self._extract_hazards(content),
-            model_name=self.model_name,
-            is_mock=False,
-            source_frame=image_path,
-        )
-
-    @staticmethod
-    def _extract_hazards(text: str) -> List[str]:
-        """Serbest metinden madde/satir bazli kaba tehlike etiketleri cikarir."""
-        hazards: List[str] = []
-        for raw_line in text.splitlines():
-            line = raw_line.strip().lstrip("-*•0123456789. ").strip()
-            if line:
-                hazards.append(line)
-        return hazards[:8]
-
-
-def build_vlm_client(config) -> VLMClient:
-    """`config.yaml`den bir `VLMClient` kurar (mock/gercek secimi dahil).
-
-    Args:
-        config: `load_config()` ciktisi (DotDict).
-
-    Returns:
-        Yapilandirilmis `VLMClient`.
+    HTTP/payload mantigini tekrarlamamak icin somut isi `VLMFactory`
+    tarafindan secilen `QwenVLM`/`GemmaVLM` orneğine devreder.
     """
-    return VLMClient(
-        base_url=config.ollama.base_url,
-        model_name=config.ollama.vlm_model,
-        use_mock=bool(config.app.use_mock_vlm),
-        request_timeout_sec=int(config.ollama.request_timeout_sec),
+
+    def __init__(self, vlm_config: VLMConfig) -> None:
+        """VLMClient'i config'teki aktif VLM secimiyle baslatir.
+
+        Args:
+            vlm_config: `configs/config.yaml` icindeki `vlm` blogu.
+        """
+        self._delegate = VLMFactory.create(vlm_config)
+        super().__init__(vlm_config.active_endpoint())
+
+    def describe_events(self, clusters: List[EventCluster], prompt: str) -> VLMResponse:
+        """Cagriyi, config'te secilen gercek VLM implementasyonuna devreder.
+
+        Args:
+            clusters: Analiz edilecek Olay Gruplari.
+            prompt: Kullanici/istem metni.
+
+        Returns:
+            Gercek vLLM servisinden donen `VLMResponse`.
+        """
+        return self._delegate.describe_events(clusters, prompt)
+
+    def health_check(self) -> bool:
+        """Devredilen gercek VLM implementasyonunun saglik durumunu dondurur."""
+        return self._delegate.health_check()
+
+
+class MockVLMClient(BaseVLM):
+    """GPU'su olmayan gelistiriciler icin sahte VLM istemcisi (`use_mock_vlm: true`).
+
+    Gercek vLLM servisine hic baglanmadan, `BaseVLM` sozlesmesine uygun sabit
+    bir Turkce ISG sahne tasviri dondurur.
+    """
+
+    def __init__(self) -> None:
+        """MockVLMClient'i (gercek endpoint gerekmeden) baslatir."""
+        super().__init__(_MOCK_ENDPOINT)
+
+    def describe_events(self, clusters: List[EventCluster], prompt: str) -> VLMResponse:
+        """Sahte gecikme sonrasi sabit bir Turkce sahne tasviri dondurur.
+
+        Args:
+            clusters: Analiz edilecek Olay Gruplari (yalnizca sayisi kullanilir).
+            prompt: Kullanici/istem metni (yalnizca loglanir).
+
+        Returns:
+            Sabit metinli, model_name="mock-vlm" olan `VLMResponse`.
+        """
+        started_at = time.perf_counter()
+        time.sleep(0.1)
+        logger.info("MockVLMClient: %d olay grubu icin sahte aciklama uretildi (prompt=%r)", len(clusters), prompt)
+        return VLMResponse(
+            description=_MOCK_DESCRIPTION,
+            model_name=self.model_name,
+            frame_count=len(clusters),
+            latency_ms=(time.perf_counter() - started_at) * 1000,
+        )
+
+    def health_check(self) -> bool:
+        """Mock istemci her zaman saglikli kabul edilir."""
+        return True
+
+
+if __name__ == "__main__":
+    # Modul 2'nin bagimsiz calistirilabilirlik testi:
+    #   python -m src.vlm.vlm_client            -> mock istemciyi test eder
+    #   python -m src.vlm.vlm_client --real      -> config'teki gercek vLLM'e istek atar
+    import sys
+
+    from src.sampler.schema import EventCluster as _EventCluster
+    from src.sampler.schema import EvidenceFrame as _EvidenceFrame
+    from src.utils.config_loader import load_config
+
+    logging.basicConfig(level=logging.INFO)
+
+    demo_evidence = _EvidenceFrame(
+        frame_id=0,
+        timestamp_sec=1.0,
+        timestamp_str="00:01",
+        change_score=0.5,
+        image_bytes=b"",
+        base64_image="data:image/jpeg;base64,AA==",
+        image_shape=(1, 1, 3),
     )
+    demo_cluster = _EventCluster(
+        event_id=1, start_time=1.0, end_time=1.0, peak_frame=demo_evidence, total_candidate_frames=1
+    )
+
+    use_real = "--real" in sys.argv
+    if use_real:
+        demo_client: BaseVLM = VLMClient(load_config().vlm)
+    else:
+        demo_client = MockVLMClient()
+
+    demo_response = demo_client.describe_events([demo_cluster], prompt="Test istemi: risk var mi?")
+    print(f"model_name={demo_response.model_name}")
+    print(f"latency_ms={demo_response.latency_ms:.1f}")
+    print(f"description={demo_response.description}")
