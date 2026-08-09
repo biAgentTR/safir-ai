@@ -403,9 +403,11 @@ class SafirPipeline:
             video_source=video_source,
             generated_at=datetime.datetime.utcnow().isoformat() + "Z",
             natural_language_summary=vlm_response.description,
+            summary=decision.summary or vlm_response.description,
             risk_score=decision.risk_score,
             risk_level=decision.risk_level,
             recommended_action=decision.recommended_action,
+            actions=decision.actions,
             timeline=[
                 TimelineEntry(timestamp=e["timestamp"], description=e["description"])
                 for e in timeline

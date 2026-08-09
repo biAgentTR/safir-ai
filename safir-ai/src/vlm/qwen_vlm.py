@@ -5,17 +5,13 @@ from __future__ import annotations
 import logging
 from typing import List
 
+from src.prompts import VLM_OBSERVER_SYSTEM_PROMPT
 from src.sampler.adaptive_sampler import EventCluster
 from src.vlm.base_vlm import BaseVLM, VLMResponse
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_SYSTEM_PROMPT = (
-    "Sen bir saha guvenlik analistisin. Sana verilen Olay Gruplarinin zirve "
-    "karelerini zaman sirasina gore analiz ederek sahnede olan olaylari, "
-    "riskli davranislari ve dikkat cekici degisimleri Turkce, ayrintili ve "
-    "nesnel bir sekilde tarif et."
-)
+_DEFAULT_SYSTEM_PROMPT = VLM_OBSERVER_SYSTEM_PROMPT
 
 
 class QwenVLM(BaseVLM):

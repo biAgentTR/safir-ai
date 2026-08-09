@@ -25,9 +25,13 @@ from src.utils.config_loader import LLMConfig
 logger = logging.getLogger(__name__)
 
 _MOCK_DECISION_TEXT = (
-    "[MOCK] Sahnedeki gozlemlere gore orta duzeyde bir risk tespit edildi.\n"
-    "RISK_SKORU: 35\n"
-    "AKSIYON_ONERISI: Saha operatorunu bilgilendirin ve KKD kontrolu yapin."
+    "{\n"
+    '  "summary": "[MOCK] Sahada KKD eksikligi gozlendi; orta duzeyde risk mevcut.",\n'
+    '  "events": [{"time": "00:12", "event": "Korumasiz alanda KKD eksik personel"}],\n'
+    '  "risk_score": 35,\n'
+    '  "risk_level": "orta",\n'
+    '  "actions": ["Saha operatorunu bilgilendirin", "KKD kontrolu yapin"]\n'
+    "}"
 )
 
 
@@ -42,10 +46,12 @@ class LLMClient:
         """
         endpoint = llm_config.active_endpoint()
         self._model_name = endpoint.model_name
+        # Yerel vLLM icin base_url=http://host:port/v1 ve api_key="EMPTY";
+        # provider="gemini" icin endpoint.base_url + GEMINI_API_KEY (api_key_env).
         self._chat = ChatOpenAI(
             model=endpoint.model_name,
-            base_url=f"http://{endpoint.vllm_host}:{endpoint.vllm_port}/v1",
-            api_key="EMPTY",
+            base_url=endpoint.resolved_base_url(),
+            api_key=endpoint.resolved_api_key(),
             temperature=endpoint.temperature,
             max_tokens=endpoint.max_new_tokens,
         )

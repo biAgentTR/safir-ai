@@ -66,8 +66,12 @@ def test_mock_llm_client_produces_parseable_decision_with_no_tool_calls() -> Non
     response = client.invoke([HumanMessage(content="Sahnede risk var mi?")])
 
     assert response.tool_calls == []
-    assert "RISK_SKORU" in response.content
-    assert "AKSIYON_ONERISI" in response.content
+    # Mock artik sartname-uyumlu JSON uretir; ayristirilabilir olmali.
+    import json
+
+    parsed = json.loads(response.content)
+    assert parsed["risk_score"] == 35
+    assert isinstance(parsed["actions"], list) and parsed["actions"]
 
 
 def test_mock_llm_client_bind_tools_returns_self() -> None:

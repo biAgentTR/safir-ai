@@ -7,6 +7,7 @@ from typing import Callable, Dict, Type
 
 from src.utils.config_loader import VLMConfig
 from src.vlm.base_vlm import BaseVLM
+from src.vlm.gemini_vlm import GeminiVLM
 from src.vlm.gemma_vlm import GemmaVLM
 from src.vlm.qwen_vlm import QwenVLM
 
@@ -23,6 +24,7 @@ class VLMFactory:
     _REGISTRY: Dict[str, Type[BaseVLM]] = {
         "qwen": QwenVLM,
         "gemma": GemmaVLM,
+        "gemini": GeminiVLM,      # gecici GELISTIRME/TEST backend'i (harici API)
     }
 
     @classmethod
