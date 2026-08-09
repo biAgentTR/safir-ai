@@ -77,10 +77,18 @@ class SafirReport(BaseModel):
     )
     video_source: str = Field(description="Analiz edilen video/kamera akisinin kaynagi.")
     generated_at: str = Field(description="Raporun ISO-8601 formatinda uretim zamani.")
-    natural_language_summary: str = Field(description="Turkce, sade karar ozeti.")
+    natural_language_summary: str = Field(description="VLM'in urettigi ham Turkce sahne gozlemi.")
+    summary: str = Field(
+        default="", description="Ajanin urettigi, operatore yonelik sade Turkce durum ozeti (sartname 'summary')."
+    )
     risk_score: int = Field(ge=0, le=100, description="0-100 arasi hesaplanmis risk skoru.")
     risk_level: str = Field(description="dusuk | orta | yuksek | kritik")
-    recommended_action: str = Field(description="Saha operatorune yonelik somut aksiyon onerisi.")
+    recommended_action: str = Field(
+        description="Saha operatorune yonelik birincil aksiyon onerisi (geriye-uyum: actions[0])."
+    )
+    actions: List[str] = Field(
+        default_factory=list, description="Operatore yonelik somut aksiyon onerileri listesi (sartname 'actions')."
+    )
     timeline: List[TimelineEntry] = Field(default_factory=list, description="Kronolojik olay cizelgesi.")
     evidence_frames: List[EvidenceFrameOut] = Field(
         default_factory=list, description="Her Olay Grubunun zirve karesi (goruntu + metadata)."
@@ -93,6 +101,35 @@ class SafirReport(BaseModel):
     )
     vlm_model: Optional[str] = Field(default=None, description="Aciklamayi ureten aktif VLM adi.")
     llm_model: Optional[str] = Field(default=None, description="Karari ureten aktif LLM adi.")
+
+    @staticmethod
+    def _seconds_to_mmss(seconds: float) -> str:
+        """Saniye degerini `MM:SS` bicimine cevirir (sartname olay zaman damgasi icin)."""
+        total = int(round(seconds))
+        return f"{total // 60:02d}:{total % 60:02d}"
+
+    def to_sartname_json(self) -> dict:
+        """Raporu sartnamedeki mock ornekle birebir ayni sekle indirger.
+
+        Sartname ornegi: `{"summary", "events":[{"time","event"}], "risk", "actions"}`.
+        `events`, `timeline` girislerinden (`MM:SS` zaman damgasiyla) uretilir;
+        `risk`, insan-okur risk seviyesidir. Tam/zengin cikti icin
+        `model_dump()` (tum alanlar) kullanilabilir; bu yardimci yalnizca
+        sartname-uyumlu ozet gorunumu icindir.
+
+        Returns:
+            Sartname semasiyla uyumlu, JSON-serilestirilebilir sozluk.
+        """
+        return {
+            "summary": self.summary or self.natural_language_summary,
+            "events": [
+                {"time": self._seconds_to_mmss(entry.timestamp), "event": entry.description}
+                for entry in self.timeline
+            ],
+            "risk": self.risk_level,
+            "risk_score": self.risk_score,
+            "actions": self.actions or ([self.recommended_action] if self.recommended_action else []),
+        }
 
     def to_json_file(self, path: str) -> None:
         """Raporu belirtilen dosya yoluna UTF-8 JSON olarak yazar.

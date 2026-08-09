@@ -32,7 +32,9 @@ def test_safir_agent_runs_end_to_end_with_mock_llm(safir_config) -> None:
     assert 0 <= decision.risk_score <= 100
     assert decision.risk_level in ("dusuk", "orta", "yuksek", "kritik")
     assert decision.recommended_action
-    assert "RISK_SKORU" in decision.raw_response
+    # Yeni sartname-uyumlu JSON ciktisi: actions listesi dolu, ozet mevcut olmali.
+    assert decision.actions and decision.recommended_action == decision.actions[0]
+    assert decision.summary
 
 
 def test_safir_agent_model_name_reflects_mock_client(safir_config) -> None:

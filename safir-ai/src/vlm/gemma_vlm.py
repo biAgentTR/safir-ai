@@ -5,16 +5,13 @@ from __future__ import annotations
 import logging
 from typing import List
 
+from src.prompts import VLM_OBSERVER_SYSTEM_PROMPT
 from src.sampler.adaptive_sampler import EventCluster
 from src.vlm.base_vlm import BaseVLM, VLMResponse
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_SYSTEM_PROMPT = (
-    "Bir saha analiz asistanisin. Verilen Olay Gruplarinin zirve karelerini "
-    "zaman sirasiyla incele; sahnedeki insan/ekipman hareketlerini, olasi "
-    "tehlikeleri ve onemli degisimleri Turkce, aciklayici bir sekilde ozetle."
-)
+_DEFAULT_SYSTEM_PROMPT = VLM_OBSERVER_SYSTEM_PROMPT
 
 
 class GemmaVLM(BaseVLM):

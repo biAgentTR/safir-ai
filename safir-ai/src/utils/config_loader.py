@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import functools
+import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import yaml
 from pydantic import BaseModel, Field
@@ -56,6 +57,17 @@ class SamplerConfig(BaseModel):
     min_event_interval_sec: float
     sample_fps: int
 
+    # --- Olay kumeleme / zamansal oylama / temsili kare ayarlari ---
+    # `sampler_from_config` bu alanlari `AdaptiveFrameSampler.__init__`e gecirir.
+    # Varsayilanlar constructor imzasiyla birebir ayni tutulur; config.yaml'da
+    # tanimlanmalari zorunlu degildir (verilmezse bu varsayilanlar kullanilir).
+    cluster_merge_gap_sec: float = 20.0
+    bbox_iou_merge_threshold: float = 0.10
+    temporal_vote_window: int = 1
+    temporal_vote_min_count: int = 1
+    pre_peak_offset_sec: float = 2.0
+    post_peak_offset_sec: float = 2.0
+
     idle_interval_sec: float
     active_fps: float
     noise_floor: float
@@ -67,14 +79,67 @@ class SamplerConfig(BaseModel):
 
 
 class VLLMEndpointConfig(BaseModel):
-    """Tek bir vLLM tarafindan sunulan model icin baglanti bilgileri."""
+    """Tek bir model uc noktasi icin baglanti bilgileri (yerel vLLM veya harici saglayici).
+
+    Varsayilan `provider="vllm"` ile davranis, `http://<vllm_host>:<vllm_port>/v1`
+    adresindeki yerel OpenAI-uyumlu vLLM servisine baglanmaktir (yarismanin
+    offline/yerel gereksinimi). `provider="gemini"` (veya baska bir harici
+    saglayici) secildiginde `base_url` ile tam OpenAI-uyumlu taban adres ve
+    `api_key_env` ile anahtarin okunacagi ortam degiskeni adi verilir; boylece
+    VRAM'i yetmeyen gelistiriciler ayni pipeline'i tek config anahtariyla
+    Gemini API uzerinden test edebilir.
+
+    ONEMLI: Harici API kullanimi (Gemini) yalnizca GELISTIRME/TEST amaclidir ve
+    sartnamenin "tamamen yerel/offline calisma" gereksinimini ihlal eder;
+    yarisma teslimi icin `provider` her zaman `vllm` (yerel) olmalidir.
+    """
 
     model_name: str
-    vllm_host: str
-    vllm_port: int
+    vllm_host: str = "localhost"
+    vllm_port: int = 0
     max_new_tokens: int
     temperature: float
     top_p: float = 1.0
+
+    provider: str = "vllm"                       # vllm | gemini
+    base_url: Optional[str] = None               # verilirse host:port yerine bu tam OpenAI-uyumlu taban kullanilir
+    api_key_env: Optional[str] = None            # anahtarin okunacagi ortam degiskeni adi (orn. "GEMINI_API_KEY")
+
+    def resolved_base_url(self) -> str:
+        """Bu uc nokta icin kullanilacak OpenAI-uyumlu taban URL'yi dondurur.
+
+        `base_url` verilmisse (harici saglayici) sondaki `/` temizlenerek o
+        kullanilir; aksi halde yerel vLLM adresi (`http://host:port/v1`) uretilir.
+        """
+        if self.base_url:
+            return self.base_url.rstrip("/")
+        return f"http://{self.vllm_host}:{self.vllm_port}/v1"
+
+    def resolved_api_key(self) -> str:
+        """Bu uc nokta icin API anahtarini dondurur.
+
+        `api_key_env` tanimliysa ilgili ortam degiskeninden okunur; yerel vLLM
+        icin anahtar gerekmediginden `"EMPTY"` doner (OpenAI istemcileri bos
+        olmayan bir deger bekler).
+
+        Raises:
+            RuntimeError: `api_key_env` tanimli ama ortam degiskeni bos/yoksa.
+        """
+        if self.api_key_env:
+            key = os.environ.get(self.api_key_env, "").strip()
+            if not key:
+                raise RuntimeError(
+                    f"'{self.model_name}' uc noktasi icin API anahtari bulunamadi: "
+                    f"'{self.api_key_env}' ortam degiskenini tanimlayin."
+                )
+            return key
+        return "EMPTY"
+
+    def auth_headers(self) -> Dict[str, str]:
+        """Harici saglayici icin `Authorization` header'ini dondurur (yerel vLLM icin bos)."""
+        if self.api_key_env:
+            return {"Authorization": f"Bearer {self.resolved_api_key()}"}
+        return {}
 
 
 class VLMConfig(BaseModel):

@@ -40,6 +40,14 @@ sampler:
   min_event_interval_sec: 2.0        # Ardisik kareleri ayni Olay Grubuna dahil etme zaman araligi (sn)
   sample_fps: 5                      # Videonun kac saniyede bir kare kontrol edilecegini belirleyen hiz
 
+  # --- Olay kumeleme / zamansal oylama / temsili kare cikarimi (cluster_events) ---
+  cluster_merge_gap_sec: 20.0        # Iki HAM olay grubunu tek Olay Grubunda birlestirmek icin izin verilen bosluk (sn)
+  bbox_iou_merge_threshold: 0.10     # Sinir kutusu IoU tabanli birlestirme esigi
+  temporal_vote_window: 1            # Zamansal oylama penceresi (kare)
+  temporal_vote_min_count: 1         # Bir olayin gecerli sayilmasi icin gereken min oy
+  pre_peak_offset_sec: 2.0           # Zirve karesi oncesi temsili kare ofseti (sn)
+  post_peak_offset_sec: 2.0          # Zirve karesi sonrasi temsili kare ofseti (sn)
+
   # --- Geriye donuk uyumluluk / alternatif sampler ince ayarlari ---
   idle_interval_sec: 2.0             # Sakin bolgelerde kare yakalama araligi (saniye/kare)
   active_fps: 5                      # Hareket/degisim anlarinda aktif ornekleme hizi (fps)
@@ -53,8 +61,16 @@ sampler:
 # -----------------------------------------------------------------------------
 # 03 - Gorsel Dil Modeli (VLM) Katmani - GPU / vLLM
 # -----------------------------------------------------------------------------
+# NOT (Gemini test backend'i): VRAM yetersizliginden yerel VLM/LLM makul hizda
+# kosulamadiginda, tum pipeline ayni kod yolu uzerinden Gemini'nin OpenAI-uyumlu
+# API'siyle test edilebilir. Bunun icin SADECE su iki satiri degistirmek yeterli:
+#   vlm.active_model: "gemini"   ve   llm.active_model: "gemini"
+# ve `GEMINI_API_KEY` ortam degiskenini tanimlamak (bkz. .env.example).
+# UYARI: Harici API, sartnamenin "tamamen yerel/offline" gereksinimini ihlal
+# eder; yalnizca gelistirme/test icindir. Yarisma teslimi icin bu degerler
+# yerel modele (qwen/qwen3) geri alinmalidir.
 vlm:
-  active_model: "qwen"               # qwen | gemma  (VLMFactory tarafindan okunur)
+  active_model: "qwen"               # qwen | gemma | gemini  (VLMFactory tarafindan okunur)
   models:
     qwen:
       model_name: "Qwen/Qwen2.5-VL-3B-Instruct"
@@ -68,6 +84,14 @@ vlm:
       vllm_host: "0.0.0.0"
       vllm_port: 8002
       max_new_tokens: 512
+      temperature: 0.2
+      top_p: 0.9
+    gemini:                          # gecici TEST backend'i (harici API — offline degildir)
+      provider: "gemini"
+      model_name: "gemini-2.5-flash"
+      base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+      api_key_env: "GEMINI_API_KEY"
+      max_new_tokens: 1024
       temperature: 0.2
       top_p: 0.9
 
@@ -91,7 +115,7 @@ memory:
 # 05 - Ajan ve Muhakeme Katmani (LangGraph) - GPU / vLLM
 # -----------------------------------------------------------------------------
 llm:
-  active_model: "qwen3"              # qwen3 | gemma3 (VLM'den bagimsiz saf muhakeme modeli)
+  active_model: "qwen3"              # qwen3 | gemma3 | gemini (VLM'den bagimsiz saf muhakeme modeli)
   models:
     qwen3:
       model_name: "Qwen/Qwen3-8B-Instruct"
@@ -103,6 +127,13 @@ llm:
       model_name: "google/gemma-3-8b-it"
       vllm_host: "0.0.0.0"
       vllm_port: 8004
+      max_new_tokens: 1024
+      temperature: 0.1
+    gemini:                          # gecici TEST backend'i (harici API — offline degildir)
+      provider: "gemini"
+      model_name: "gemini-2.5-flash"
+      base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
+      api_key_env: "GEMINI_API_KEY"
       max_new_tokens: 1024
       temperature: 0.1
 

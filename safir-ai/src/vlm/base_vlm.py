@@ -47,8 +47,8 @@ class BaseVLM(ABC):
 
     @property
     def base_url(self) -> str:
-        """Bu modelin vLLM OpenAI-uyumlu servisinin taban URL'sini dondurur."""
-        return f"http://{self._endpoint.vllm_host}:{self._endpoint.vllm_port}/v1"
+        """Bu modelin OpenAI-uyumlu servisinin taban URL'sini dondurur (yerel vLLM veya harici saglayici)."""
+        return self._endpoint.resolved_base_url()
 
     @property
     def model_name(self) -> str:
@@ -125,7 +125,10 @@ class BaseVLM(ABC):
         started_at = time.perf_counter()
         try:
             response = httpx.post(
-                f"{self.base_url}/chat/completions", json=payload, timeout=60.0
+                f"{self.base_url}/chat/completions",
+                json=payload,
+                headers=self._endpoint.auth_headers(),
+                timeout=60.0,
             )
             response.raise_for_status()
             data = response.json()
@@ -151,7 +154,9 @@ class BaseVLM(ABC):
             Servis 200 ile yanit veriyorsa `True`, aksi halde `False`.
         """
         try:
-            response = httpx.get(f"{self.base_url}/models", timeout=5.0)
+            response = httpx.get(
+                f"{self.base_url}/models", headers=self._endpoint.auth_headers(), timeout=5.0
+            )
             return response.status_code == 200
         except httpx.HTTPError as exc:
             logger.warning("VLM saglik kontrolu basarisiz (%s): %s", self.model_name, exc)

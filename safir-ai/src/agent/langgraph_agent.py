@@ -9,10 +9,11 @@ ve sonunda 0-100 arasi bir risk skoru ile karar/aksiyon onerisi ureten
 
 from __future__ import annotations
 
+import json
 import logging
 import re
-from dataclasses import dataclass
-from typing import Annotated, List, Optional, Sequence, TypedDict
+from dataclasses import dataclass, field
+from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
@@ -22,22 +23,20 @@ from langgraph.graph.message import add_messages
 from src.agent.tools import build_tool_registry
 from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
+from src.prompts import AGENT_SYSTEM_PROMPT, build_agent_user_prompt
 from src.utils.config_loader import AgentConfig, LLMConfig
 from src.vlm.factory import get_llm_client
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_PROMPT = (
-    "Sen SAFIR sisteminin saha guvenligi muhakeme ajanisin. Sana verilen "
-    "gozlem baglamini degerlendir; gerekirse sql_tool, retriever_tool veya "
-    "timeline_tool araclarini kullanarak gecmis olaylari ve ilgili mevzuati "
-    "incele. Analizinin sonunda MUTLAKA su formatta bir sonuc satiri yaz:\n"
-    "RISK_SKORU: <0-100 arasi tam sayi>\n"
-    "AKSIYON_ONERISI: <operatore yonelik kisa, somut Turkce aksiyon onerisi>"
-)
+_SYSTEM_PROMPT = AGENT_SYSTEM_PROMPT
 
-_RISK_LINE_PATTERN = re.compile(r"RISK_SKORU:\s*(\d{1,3})", re.IGNORECASE)
+# Yapisal JSON ayristirma basarisiz olursa kullanilan geriye-donuk regex'ler
+# (eski RISK_SKORU/AKSIYON_ONERISI bicimini ve mock ciktilarini korur).
+_RISK_LINE_PATTERN = re.compile(r"(?:RISK_SKORU|risk_score)\D{0,4}(\d{1,3})", re.IGNORECASE)
 _ACTION_LINE_PATTERN = re.compile(r"AKSIYON_ONERISI:\s*(.+)", re.IGNORECASE)
+# Serbest metin icine gomulu ilk JSON nesnesini yakalar (```json blogu dahil).
+_JSON_OBJECT_PATTERN = re.compile(r"\{.*\}", re.DOTALL)
 
 
 class AgentState(TypedDict):
@@ -49,12 +48,15 @@ class AgentState(TypedDict):
 
 @dataclass
 class AgentDecision:
-    """Ajan durum makinesinin nihai muhakeme sonucu."""
+    """Ajan durum makinesinin nihai muhakeme sonucu (sartname JSON'u ile hizali)."""
 
     risk_score: int
     risk_level: str
-    recommended_action: str
+    recommended_action: str                       # geriye-uyum: actions[0]
     raw_response: str
+    summary: str = ""                             # operatore yonelik Turkce durum ozeti
+    actions: List[str] = field(default_factory=list)   # somut aksiyon onerileri listesi
+    events: List[Dict[str, str]] = field(default_factory=list)  # [{"time": "MM:SS", "event": "..."}]
 
 
 class SafirAgent:
@@ -226,31 +228,103 @@ class SafirAgent:
             context_block: `ContextBuilder.build(...).to_prompt_block()` ciktisi.
 
         Returns:
-            Risk skoru, seviyesi ve aksiyon onerisini iceren `AgentDecision`.
+            Risk skoru, seviyesi, ozet, olaylar ve aksiyon onerilerini iceren `AgentDecision`.
         """
         initial_state: AgentState = {
             "messages": [
                 SystemMessage(content=_SYSTEM_PROMPT),
-                HumanMessage(content=context_block),
+                HumanMessage(content=build_agent_user_prompt(context_block)),
             ],
             "iteration": 0,
         }
 
         final_state = self._graph.invoke(initial_state)
         final_text = final_state["messages"][-1].content or ""
+        return self._parse_decision(final_text)
 
-        risk_match = _RISK_LINE_PATTERN.search(final_text)
-        action_match = _ACTION_LINE_PATTERN.search(final_text)
+    def _parse_decision(self, final_text: str) -> AgentDecision:
+        """Ajanin son yanitini `AgentDecision`'a cevirir (once JSON, sonra regex fallback).
 
-        risk_score = int(risk_match.group(1)) if risk_match else 0
-        risk_score = max(0, min(100, risk_score))
-        recommended_action = (
-            action_match.group(1).strip() if action_match else "Ek aksiyon onerisi uretilemedi."
-        )
+        Once yanit icindeki ilk JSON nesnesi ayristirilmaya calisilir (sartname
+        semasi: summary/events/risk_score/actions). Bu basarisiz olursa eski
+        `RISK_SKORU:`/`AKSIYON_ONERISI:` bicimi regex ile okunur; boylece hem
+        yeni JSON-ureten modeller hem de eski/mock ciktilar desteklenir.
+
+        Args:
+            final_text: Ajanin son mesaj icerigi.
+
+        Returns:
+            Ayristirilmis `AgentDecision`. Risk seviyesi her zaman config
+            esiklerinden yeniden hesaplanir (modelin iddia ettigi seviyeye guvenilmez).
+        """
+        parsed = self._extract_json(final_text)
+
+        if parsed is not None:
+            risk_score = self._coerce_risk_score(parsed.get("risk_score"))
+            summary = str(parsed.get("summary", "")).strip()
+            actions = self._coerce_actions(parsed.get("actions"))
+            events = self._coerce_events(parsed.get("events"))
+        else:
+            logger.warning("Ajan yaniti JSON olarak ayristirilamadi, regex fallback kullaniliyor.")
+            risk_match = _RISK_LINE_PATTERN.search(final_text)
+            action_match = _ACTION_LINE_PATTERN.search(final_text)
+            risk_score = self._coerce_risk_score(risk_match.group(1) if risk_match else None)
+            summary = ""
+            single_action = action_match.group(1).strip() if action_match else ""
+            actions = [single_action] if single_action else []
+            events = []
+
+        recommended_action = actions[0] if actions else "Ek aksiyon onerisi uretilemedi."
 
         return AgentDecision(
             risk_score=risk_score,
             risk_level=self._resolve_risk_level(risk_score),
             recommended_action=recommended_action,
             raw_response=final_text,
+            summary=summary,
+            actions=actions,
+            events=events,
         )
+
+    @staticmethod
+    def _extract_json(text: str) -> Optional[Dict[str, Any]]:
+        """Serbest metin icindeki ilk JSON nesnesini ayristirir; bulunamazsa None."""
+        match = _JSON_OBJECT_PATTERN.search(text)
+        if not match:
+            return None
+        try:
+            data = json.loads(match.group(0))
+        except (json.JSONDecodeError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _coerce_risk_score(value: Any) -> int:
+        """Risk skorunu 0-100 araligina kirpilmis bir tam sayiya cevirir (gecersizse 0)."""
+        try:
+            score = int(float(value))
+        except (TypeError, ValueError):
+            return 0
+        return max(0, min(100, score))
+
+    @staticmethod
+    def _coerce_actions(value: Any) -> List[str]:
+        """`actions` alanini temiz bir string listesine cevirir (liste, string veya None)."""
+        if isinstance(value, list):
+            return [str(a).strip() for a in value if str(a).strip()]
+        if isinstance(value, str) and value.strip():
+            return [value.strip()]
+        return []
+
+    @staticmethod
+    def _coerce_events(value: Any) -> List[Dict[str, str]]:
+        """`events` alanini `{"time", "event"}` sozluklerinden olusan bir listeye cevirir."""
+        if not isinstance(value, list):
+            return []
+        events: List[Dict[str, str]] = []
+        for item in value:
+            if isinstance(item, dict) and ("event" in item or "time" in item):
+                events.append(
+                    {"time": str(item.get("time", "")).strip(), "event": str(item.get("event", "")).strip()}
+                )
+        return events
