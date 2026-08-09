@@ -264,6 +264,63 @@ def test_run_populates_rule_engine_retriever_through_real_rag_service(
     assert len(fake_rag_service.queries) >= 1
 
 
+def test_run_produces_schema_complete_report_with_escalation(
+    pipeline: SafirPipeline, motion_video: str
+) -> None:
+    """`run()` sartname-uyumlu, sema-eksiksiz bir rapor uretmeli (summary/actions/eskalasyon).
+
+    Mock LLM orta risk (35) doner; bu yuzden otomatik eskalasyon kademesi
+    'notify' olmali ve alarm OTOMATIK tetiklenMEmeli (auto_dispatched=False).
+    Ayrica sartname-uyumlu ozet JSON'un beklenen anahtarlari tasidigi dogrulanir.
+    """
+    report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+
+    # Yeni sema alanlari dolu olmali.
+    assert report.summary
+    assert isinstance(report.actions, list) and report.actions
+    assert report.recommended_action == report.actions[0]
+
+    # Otomatik eskalasyon (Human-on-the-Loop): orta risk -> notify, alarm yok.
+    assert report.escalation_tier == "notify"
+    assert report.auto_dispatched is False
+    assert report.alert_id is None
+
+    # Sartname-uyumlu ozet JSON beklenen sekilde olmali.
+    sartname = report.to_sartname_json()
+    assert set(sartname) >= {"summary", "events", "risk", "actions"}
+    assert sartname["risk"] == report.risk_level
+    assert all("time" in e and "event" in e for e in sartname["events"])
+
+
+def test_high_risk_auto_dispatches_alarm_in_pipeline(
+    pipeline: SafirPipeline, motion_video: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Yuksek risk skorunda pipeline, operator onayi beklemeden alarmi OTOMATIK tetiklemeli."""
+    from src.agent.langgraph_agent import AgentDecision
+
+    high_decision = AgentDecision(
+        risk_score=90,
+        risk_level="kritik",
+        recommended_action="Saglik ekibini cagir",
+        raw_response="{}",
+        summary="Kritik durum",
+        actions=["Saglik ekibini cagir", "Alani guvenlik altina al"],
+        events=[],
+    )
+    monkeypatch.setattr(pipeline._agent, "run", lambda _prompt: high_decision)
+
+    report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+
+    assert report.risk_score == 90
+    assert report.escalation_tier == "alarm"
+    assert report.auto_dispatched is True
+    assert report.alert_id is not None
+
+    # Operator, otomatik tetiklenen alarmi sonradan onaylayabilmeli (Human-on-the-Loop).
+    record = pipeline.acknowledge_alert(report.alert_id, "operator denetledi")
+    assert record.acknowledged is True
+
+
 def test_record_feedback_delegates_to_event_history(
     pipeline: SafirPipeline, motion_video: str
 ) -> None:
