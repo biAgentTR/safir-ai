@@ -59,7 +59,7 @@ class VLMPayloadBuilder:
             if cluster.representative_frames:
                 for rf in cluster.representative_frames:
                     content.append(
-                        {"type": "text", "text": f"[{rf.label}, {rf.timestamp_str}]"}
+                        {"type": "text", "text": f"[Kare rolu: {rf.label} | zaman: {rf.timestamp_str}]"}
                     )
                     content.append({"type": "image_url", "image_url": {"url": rf.base64_image}})
             else:

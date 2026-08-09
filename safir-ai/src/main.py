@@ -36,6 +36,7 @@ from src.memory.context_builder import ContextBuilder
 from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
 from src.sampler.adaptive_sampler import EventCluster, EvidenceFrame, sampler_from_config
+from src.sampler.context.representative_frame_extractor import RepresentativeFrameExtractor
 from src.schemas.report import EvidenceFrameOut, SafirReport, SamplerStats, TimelineEntry
 from src.utils.config_loader import SafirConfig, load_config
 from src.vlm.factory import get_vlm_client
@@ -155,6 +156,15 @@ def normalize_video_source(video_source: str) -> str:
     normalized_slashes = video_source.replace("\\", "/")
     filename = os.path.basename(normalized_slashes)
     return os.path.join(_DATA_DIR, filename)
+
+
+def is_live_source(video_source: str) -> bool:
+    """`video_source` canli bir yayin URI'si (RTSP/HTTP) ise `True` dondurur.
+
+    Temsili kare cikarici (seek tabanli) yalnizca kayitli (VOD) dosyalarda
+    calisir; canli yayinlarda geriye seek yapilamayacagi icin bu ayrim gerekir.
+    """
+    return video_source.strip().lower().startswith(("rtsp://", "http://", "https://"))
 
 
 class AnalyzeRequest(BaseModel):
@@ -347,10 +357,33 @@ class SafirPipeline:
         if not clusters:
             raise RuntimeError(f"Kanit karelerinden Olay Grubu uretilemedi: {video_source}")
 
+        # 02b - Temsili Kare Cikarimi: Her Olay Grubu icin zirve karenin
+        # oncesi/sonrasindan (pre-event/peak/post-event) kareler cikarilir ve
+        # VLM'e TEK durağan kare yerine zaman sirali bir DIZI olarak gonderilir;
+        # boylece model olayin baslangic->gelisim->sonuc akisini muhakeme
+        # edebilir (sartname: zamansal iliskiler / kritik an analizi). Seek
+        # tabanli oldugundan yalnizca kayitli (VOD) dosyalarda uygulanir.
+        if not is_live_source(video_source):
+            rep_extractor = RepresentativeFrameExtractor(
+                pre_event_sec=self._config.sampler.pre_peak_offset_sec,
+                post_event_sec=self._config.sampler.post_peak_offset_sec,
+            )
+            for cluster in clusters:
+                try:
+                    cluster.representative_frames = rep_extractor.extract(video_source, cluster.peak_frame)
+                except (ValueError, RuntimeError) as exc:
+                    logger.warning(
+                        "Temsili kare cikarilamadi (Olay #%d), tek kareye dusuluyor: %s",
+                        cluster.event_id,
+                        exc,
+                    )
+
+        total_rep_frames = sum(len(c.representative_frames) for c in clusters)
         logger.info(
-            "VLM oncesi katman ozeti: %d Kanit Karesi -> %d Olay Grubu (peak kareler VLM'e gonderiliyor)",
+            "VLM oncesi katman ozeti: %d Kanit Karesi -> %d Olay Grubu -> %d temsili kare VLM'e gonderiliyor",
             len(evidence_frames),
             len(clusters),
+            total_rep_frames or len(clusters),
         )
 
         if on_stage:

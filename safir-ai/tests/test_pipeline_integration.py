@@ -321,6 +321,34 @@ def test_high_risk_auto_dispatches_alarm_in_pipeline(
     assert record.acknowledged is True
 
 
+def test_pipeline_sends_representative_frame_sequence_to_vlm(
+    pipeline: SafirPipeline, motion_video: str
+) -> None:
+    """Pipeline, VLM'e tek zirve kare yerine zaman sirali temsili kare DIZISI gondermeli.
+
+    Zirve karenin oncesi/sonrasindan (pre-event/post-event) kareler cikarilip
+    `cluster.representative_frames` doldurulmali; boylece VLM olayin akisini
+    (baslangic->gelisim->sonuc) muhakeme edebilir. VLM'e gecirilen kumeler
+    yakalanarak dogrulanir.
+    """
+    captured = {}
+    original_describe = pipeline._vlm.describe_events
+
+    def _capture(clusters, prompt):
+        captured["clusters"] = clusters
+        return original_describe(clusters, prompt)
+
+    pipeline._vlm.describe_events = _capture  # type: ignore[assignment]
+    pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+
+    clusters = captured["clusters"]
+    assert clusters, "VLM'e en az bir Olay Grubu gitmeli."
+    # En az bir kume, pre/peak/post iceren bir DIZI tasimali (tek kare degil).
+    assert any(len(c.representative_frames) >= 2 for c in clusters)
+    labels = {rf.label for c in clusters for rf in c.representative_frames}
+    assert "peak" in labels
+
+
 def test_record_feedback_delegates_to_event_history(
     pipeline: SafirPipeline, motion_video: str
 ) -> None:
