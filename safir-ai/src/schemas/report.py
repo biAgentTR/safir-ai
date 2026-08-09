@@ -96,6 +96,15 @@ class SafirReport(BaseModel):
     relevant_regulations: List[str] = Field(
         default_factory=list, description="FAISS RAG'dan getirilen ilgili ISG mevzuat maddeleri."
     )
+    escalation_tier: Optional[str] = Field(
+        default=None, description="Otomatik eskalasyon kademesi: monitor | notify | alarm."
+    )
+    auto_dispatched: bool = Field(
+        default=False, description="Saha alarminin operator onayi beklemeden otomatik tetiklenip tetiklenmedigi."
+    )
+    alert_id: Optional[str] = Field(
+        default=None, description="Otomatik tetiklenen saha alarminin kimligi (operator onayi/geri alma icin)."
+    )
     sampler_stats: Optional[SamplerStats] = Field(
         default=None, description="CPU suzgec katmaninin GPU tasarruf istatistikleri."
     )

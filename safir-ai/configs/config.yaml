@@ -152,6 +152,18 @@ agent:
     verification_tool_enabled: true
 
 # -----------------------------------------------------------------------------
+# Otomatik Eskalasyon (Human-on-the-Loop) - bloke edici operator kapisi YOK
+# -----------------------------------------------------------------------------
+# Sistem, risk skoruna gore aksiyon kademesini kendisi belirler:
+#   skor >= notify_score      -> bildirim (NOTIFY)
+#   skor >= auto_alarm_score  -> saha alarmi OTOMATIK tetiklenir (ALARM)
+# Operator, alarmi ENGELLEMEK icin degil; sonradan DENETLEMEK/GERI ALMAK icin
+# devrededir (bkz. /alerts/{alert_id}/acknowledge).
+escalation:
+  notify_score: 26                   # orta ve uzeri -> bildirim
+  auto_alarm_score: 51               # yuksek/kritik -> otomatik saha alarmi
+
+# -----------------------------------------------------------------------------
 # API / Servis Katmani
 # -----------------------------------------------------------------------------
 api:

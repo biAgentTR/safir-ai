@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 
 from src.agent.langgraph_agent import SafirAgent
 from src.agent.tools import RetrieverTool
+from src.decision.escalation import EscalationPolicy
 from src.event_analysis.event_builder import EventBuilder
 from src.event_analysis.event_engine import EventEngine
 from src.event_analysis.event_history import EventHistory
@@ -173,7 +174,12 @@ class AnalyzeRequest(BaseModel):
 
 
 class AlertTriggerRequest(BaseModel):
-    """`/alerts/trigger` icin istek govdesi (Human-in-the-Loop onayi)."""
+    """`/alerts/trigger` icin istek govdesi (operatorun manuel/override alarm tetiklemesi).
+
+    NOT: Yuksek/kritik risk artik pipeline tarafindan OTOMATIK tetiklenir; bu uc
+    nokta yalnizca operatorun otomatik akis disinda manuel alarm baslatmasi
+    (override) icindir.
+    """
 
     risk_score: int
     risk_level: str
@@ -186,6 +192,20 @@ class AlertTriggerResponse(BaseModel):
 
     acknowledged: bool
     alert_id: str
+    message: str
+
+
+class AlertAcknowledgeRequest(BaseModel):
+    """`/alerts/{alert_id}/acknowledge` icin istek govdesi (Human-on-the-Loop denetimi)."""
+
+    operator_note: str = ""
+
+
+class AlertAcknowledgeResponse(BaseModel):
+    """`/alerts/{alert_id}/acknowledge` yaniti."""
+
+    alert_id: str
+    acknowledged: bool
     message: str
 
 
@@ -265,6 +285,11 @@ class SafirPipeline:
         self._rule_engine = RuleEngine(retriever=RetrieverTool(self._rag_service))
         self._event_builder = EventBuilder()
         self._event_history = EventHistory(self._event_store)
+
+        # 06 - Otomatik Eskalasyon (Human-on-the-Loop): risk skoruna gore aksiyon
+        # kademesini KENDISI belirler ve yuksek/kritik durumda saha alarmini
+        # operator onayi beklemeden OTOMATIK tetikler.
+        self._escalation = EscalationPolicy(config.escalation)
 
         # Pipeline cagrilari arasinda SIFIRLANMAYAN, zaman bazli budanan
         # buffer (bkz. `_prune_stale_events`). `relation_window_sec`in 3
@@ -366,6 +391,23 @@ class SafirPipeline:
 
         decision = self._agent.run(prompt_block)
 
+        # 06 - Otomatik Eskalasyon: risk skoruna gore kademe belirlenir ve
+        # yuksek/kritik durumda saha alarmi OTOMATIK tetiklenir (bloke edici
+        # operator kapisi yok).
+        escalation = self._escalation.evaluate(
+            risk_score=decision.risk_score,
+            risk_level=decision.risk_level,
+            recommended_action=decision.recommended_action,
+            summary=decision.summary or vlm_response.description,
+        )
+        logger.info(
+            "Otomatik eskalasyon: kademe=%s otomatik_tetik=%s alert_id=%s (%s)",
+            escalation.tier.value,
+            escalation.auto_dispatched,
+            escalation.alert_id,
+            escalation.reason,
+        )
+
         # 07 - Olay Analizi Katmani (T011-T012): bu cagrida uretilen/
         # guncellenen TUM TemporalEvent'leri (birden fazla kategori
         # tetiklenmis olabilir) StructuredEvent'e cevirip topluca kaydet.
@@ -408,6 +450,9 @@ class SafirPipeline:
             risk_level=decision.risk_level,
             recommended_action=decision.recommended_action,
             actions=decision.actions,
+            escalation_tier=escalation.tier.value,
+            auto_dispatched=escalation.auto_dispatched,
+            alert_id=escalation.alert_id,
             timeline=[
                 TimelineEntry(timestamp=e["timestamp"], description=e["description"])
                 for e in timeline
@@ -439,6 +484,43 @@ class SafirPipeline:
             ),
             vlm_model=vlm_response.model_name,
             llm_model=self._agent.model_name,
+        )
+
+    def acknowledge_alert(self, alert_id: str, operator_note: str = ""):
+        """Operatorun otomatik tetiklenmis bir saha alarmini onaylamasini/geri almasini isler (Human-on-the-Loop).
+
+        Args:
+            alert_id: `SafirReport.alert_id` (otomatik tetiklenen alarmin kimligi).
+            operator_note: Operatorun opsiyonel notu.
+
+        Returns:
+            Guncellenmis `AlertRecord`.
+
+        Raises:
+            KeyError: `alert_id` bilinmiyorsa.
+        """
+        return self._escalation.sink.acknowledge(alert_id, operator_note)
+
+    def trigger_manual_alert(
+        self, risk_score: int, risk_level: str, recommended_action: str, summary: str = ""
+    ) -> str:
+        """Operatorun manuel/zorunlu saha alarmi tetiklemesini isler (otomatik akisin disinda override).
+
+        Args:
+            risk_score: Operatorun bildirdigi risk skoru.
+            risk_level: Risk seviyesi.
+            recommended_action: Alarma iliştirilecek aksiyon.
+            summary: Opsiyonel durum ozeti.
+
+        Returns:
+            Tetiklenen alarmin `alert_id`'si.
+        """
+        return self._escalation.sink.dispatch(
+            risk_score=risk_score,
+            risk_level=risk_level,
+            recommended_action=recommended_action,
+            summary=summary,
+            auto=False,
         )
 
     def record_feedback(self, event_id: int, feedback: str) -> None:
@@ -616,30 +698,59 @@ def get_analyze_job(job_id: str) -> JobStatusResponse:
 
 @app.post("/alerts/trigger", response_model=AlertTriggerResponse)
 def trigger_alert(request: AlertTriggerRequest) -> AlertTriggerResponse:
-    """Operatorun Human-in-the-Loop onayiyla tetikledigi saha alarmini isler (mock).
+    """Operatorun manuel/override saha alarmi tetiklemesini isler (mock).
 
-    Gercek bir saha entegrasyonunda bu uc nokta SMS/anons/SCADA sistemine
-    baglanir; bu iskelette yalnizca alarmi loglar ve bir onay kimligi dondurur.
+    Yuksek/kritik risk artik pipeline tarafindan OTOMATIK tetiklenir; bu uc
+    nokta, operatorun otomatik akis disinda manuel alarm baslatmasi (override)
+    icindir. Gercek bir saha entegrasyonunda alarm SMS/anons/SCADA'ya baglanir.
 
     Args:
-        request: Onaylanan risk skoru/seviyesi ve operator notunu iceren istek.
+        request: Manuel tetiklenen risk skoru/seviyesi ve operator notunu iceren istek.
 
     Returns:
-        Alarmin kabul edildigini bildiren yanit.
+        Alarmin kabul edildigini bildiren yanit (takip icin `alert_id`).
     """
-    alert_id = str(uuid.uuid4())
-    logger.warning(
-        "SAHA ALARMI TETIKLENDI (operator onayi): alert_id=%s risk=%d(%s) aksiyon=%s not=%s",
-        alert_id,
-        request.risk_score,
-        request.risk_level,
-        request.recommended_action,
-        request.operator_note or "(yok)",
+    pipeline = get_pipeline()
+    alert_id = pipeline.trigger_manual_alert(
+        risk_score=request.risk_score,
+        risk_level=request.risk_level,
+        recommended_action=request.recommended_action,
+        summary=request.operator_note,
     )
     return AlertTriggerResponse(
         acknowledged=True,
         alert_id=alert_id,
-        message="Saha alarmi operator onayiyla tetiklendi ve kayit altina alindi.",
+        message="Manuel saha alarmi tetiklendi ve kayit altina alindi.",
+    )
+
+
+@app.post("/alerts/{alert_id}/acknowledge", response_model=AlertAcknowledgeResponse)
+def acknowledge_alert(alert_id: str, request: AlertAcknowledgeRequest) -> AlertAcknowledgeResponse:
+    """Operatorun otomatik tetiklenmis bir saha alarmini denetlemesini/geri almasini isler.
+
+    Bu, Human-on-the-Loop denetim noktasidir: alarm zaten OTOMATIK tetiklenmistir;
+    operator burada onu yalnizca onaylar/geri alir, tetiklenmesini engellemez.
+
+    Args:
+        alert_id: `SafirReport.alert_id` (otomatik tetiklenen alarmin kimligi).
+        request: Operator notunu iceren istek govdesi.
+
+    Returns:
+        Alarmin onaylandigini bildiren yanit.
+
+    Raises:
+        HTTPException: `alert_id` bilinmiyorsa (404).
+    """
+    try:
+        pipeline = get_pipeline()
+        pipeline.acknowledge_alert(alert_id, request.operator_note)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return AlertAcknowledgeResponse(
+        alert_id=alert_id,
+        acknowledged=True,
+        message="Saha alarmi operator tarafindan onaylandi/denetlendi.",
     )
 
 

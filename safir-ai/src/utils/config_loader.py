@@ -220,6 +220,18 @@ class AgentConfig(BaseModel):
     tools: AgentToolsConfig
 
 
+class EscalationConfig(BaseModel):
+    """Otomatik eskalasyon esikleri (Human-on-the-Loop; bloke edici operator kapisi yok).
+
+    `notify_score` ve uzeri risk skoru -> bildirim (NOTIFY); `auto_alarm_score`
+    ve uzeri -> saha alarmi OTOMATIK tetiklenir (ALARM). Varsayilanlar
+    `agent.risk_thresholds` ile hizalidir (orta>25, yuksek>50).
+    """
+
+    notify_score: int = 26
+    auto_alarm_score: int = 51
+
+
 class ApiConfig(BaseModel):
     host: str
     port: int
@@ -245,6 +257,7 @@ class SafirConfig(BaseModel):
     memory: MemoryConfig
     llm: LLMConfig
     agent: AgentConfig
+    escalation: EscalationConfig = Field(default_factory=EscalationConfig)
     api: ApiConfig
     output: OutputConfig
 
