@@ -215,3 +215,61 @@ def test_multiple_categories_one_negated_one_not() -> None:
     event_types = {e.event_type for e in events}
     assert EventType.KKD_IHLALI.value in event_types
     assert EventType.ARAC_YAYA_YAKINLIGI.value not in event_types
+
+
+# --- T008b: model-tabanli (structured_events) tespit yolu + anahtar-kelime fallback ---
+
+
+def _input_structured(structured, description="belirgin tehlike yok", timestamp=15.0) -> EventEngineInput:
+    return EventEngineInput(
+        vlm_description=description,
+        timestamp=timestamp,
+        source_model="test-vlm",
+        frame_count=1,
+        structured_events=structured,
+    )
+
+
+def test_structured_events_take_precedence_over_keywords() -> None:
+    """VLM tipli olay urettiyse, anahtar-kelime taramasi yerine ONLAR kullanilir."""
+    # Aciklamada 'forklift' GECMIYOR ama structured olay var -> yine de tespit edilir.
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured(
+            [{"type": "arac_yaya_yakinligi", "timestamp": 15, "confidence": 0.9, "evidence": "forklift yaklasti"}]
+        )
+    )
+    assert len(events) == 1
+    assert events[0].event_type == EventType.ARAC_YAYA_YAKINLIGI.value
+    assert events[0].confidence == 0.9
+    assert events[0].timestamp == 15.0
+    assert events[0].matched_keywords == []  # anahtar-kelime yolu calismadi
+
+
+def test_structured_invalid_type_falls_back_to_keywords() -> None:
+    """Structured olaylarin tipi enum'da yoksa, anahtar-kelime fallback devreye girer."""
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured(
+            [{"type": "GECERSIZ_TIP", "confidence": 0.9}],
+            description="forklift yaya gecidine yaklasti",
+        )
+    )
+    types = {e.event_type for e in events}
+    assert EventType.ARAC_YAYA_YAKINLIGI.value in types
+    # Fallback yolu anahtar kelimeyle esler.
+    assert any(e.matched_keywords for e in events)
+
+
+def test_structured_confidence_clamped_and_timestamp_defaults() -> None:
+    """Guven skoru 0-1'e kirpilir; timestamp yoksa cagrinin zaman damgasina duser."""
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured(
+            [{"type": "kkd_ihlali", "confidence": 5.0}],  # asiri deger + timestamp yok
+            timestamp=42.0,
+        )
+    )
+    assert len(events) == 1
+    assert events[0].confidence == 1.0
+    assert events[0].timestamp == 42.0

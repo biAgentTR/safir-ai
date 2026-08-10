@@ -149,6 +149,9 @@ _KEYWORD_RULES: Dict[EventType, List[str]] = {
 _BASE_CONFIDENCE = 0.5
 _CONFIDENCE_STEP_PER_EXTRA_MATCH = 0.1
 
+# VLM'in dogrudan urettigi tipli olaylari dogrulamak icin gecerli EventType degerleri.
+_VALID_EVENT_TYPES = {event_type.value for event_type in EventType}
+
 _NEGATION_CUES: List[str] = [
     "degil",
     "yok",
@@ -245,22 +248,37 @@ class EventEngine:
         self._min_confidence = min_confidence
 
     def detect(self, engine_input: EventEngineInput) -> List[DetectedEvent]:
-        """VLM aciklama metnini kural tabanindaki anahtar kelimelere karsi tarar.
+        """VLM ciktisindan yapilandirilmis olaylar uretir (once model-tabanli, sonra anahtar-kelime).
 
-        Birden fazla kategori eslesirse, her biri icin ayri bir `DetectedEvent`
-        uretilir (guven skoruna gore azalan sirali). Hicbir kategori
-        eslesmezse, dusuk guvenli tek bir `genel_gozlem` olayi dondurulur;
-        boylece her VLM aciklamasi en az bir `DetectedEvent`e karsilik gelir
-        ve `05 LangGraph Ajani`/`Event Gecmisi` katmani bos girdiyle
-        karsilasmaz.
+        Oncelik sirasi:
+        1. VLM dogrudan tipli olaylar urettiyse (`EVENTS_JSON`,
+           `engine_input.structured_events`), bunlar dogrulanip kullanilir
+           (model-tabanli siniflandirma; sartname "statik kural" cezasindan kacinir).
+        2. Yapilandirilmis olay yoksa/gecersizse, mevcut anahtar-kelime kurali
+           (olumsuzlama tespitiyle) FALLBACK olarak devreye girer.
+
+        Her iki durumda da hicbir olay uretilemezse, dusuk guvenli tek bir
+        `genel_gozlem` olayi dondurulur; boylece her VLM aciklamasi en az bir
+        `DetectedEvent`e karsilik gelir.
 
         Args:
             engine_input: `EventEngineInput.from_vlm_response(...)` ile
-                uretilmis, VLM aciklamasi + zaman damgasini tasiyan girdi.
+                uretilmis, VLM aciklamasi + (varsa) tipli olaylar + zaman damgasi.
 
         Returns:
             Guven skoruna gore azalan sirali `DetectedEvent` listesi.
         """
+        structured = self._detect_from_structured(engine_input)
+        if structured:
+            structured.sort(key=lambda event: event.confidence, reverse=True)
+            logger.debug(
+                "EventEngine: t=%.2f -> %d olay (model-tabanli/structured: %s)",
+                engine_input.timestamp,
+                len(structured),
+                ", ".join(d.event_type for d in structured),
+            )
+            return structured
+
         text_lower = engine_input.vlm_description.lower()
         clauses = _split_into_clauses(text_lower)
         detections: List[DetectedEvent] = []
@@ -305,6 +323,65 @@ class EventEngine:
             ", ".join(d.event_type for d in detections),
         )
         return detections
+
+    def _detect_from_structured(self, engine_input: EventEngineInput) -> List[DetectedEvent]:
+        """VLM'in dogrudan urettigi tipli olaylari (`structured_events`) dogrulayip `DetectedEvent`e cevirir.
+
+        Yalnizca `EventType` enum'unda tanimli tipler kabul edilir (gecersiz
+        tipler atlanir); guven skoru 0-1 araligina kirpilir ve zaman damgasi
+        item'da yoksa cagrinin zaman damgasina duser. Gecerli hicbir olay
+        yoksa bos liste doner ve cagiran (`detect`) anahtar-kelime fallback'ine
+        gecer.
+
+        Args:
+            engine_input: (varsa) `structured_events` tasiyan girdi.
+
+        Returns:
+            Dogrulanmis `DetectedEvent` listesi (siralama cagirana birakilir).
+        """
+        detections: List[DetectedEvent] = []
+        for item in engine_input.structured_events:
+            if not isinstance(item, dict):
+                continue
+
+            raw_type = str(item.get("type", "")).strip().lower()
+            if raw_type not in _VALID_EVENT_TYPES:
+                logger.debug("Structured olay atlandi (gecersiz tip): %r", raw_type)
+                continue
+
+            confidence = self._coerce_confidence(item.get("confidence"))
+            if confidence < self._min_confidence:
+                continue
+
+            evidence = str(item.get("evidence") or "").strip() or engine_input.vlm_description
+            detections.append(
+                DetectedEvent(
+                    event_type=raw_type,
+                    description=evidence,
+                    timestamp=self._coerce_timestamp(item.get("timestamp"), engine_input.timestamp),
+                    confidence=confidence,
+                    matched_keywords=[],
+                    source_model=engine_input.source_model,
+                )
+            )
+        return detections
+
+    @staticmethod
+    def _coerce_confidence(value: Any, default: float = 0.5) -> float:
+        """Guven skorunu 0.0-1.0 araligina kirpilmis bir float'a cevirir (gecersizse `default`)."""
+        try:
+            confidence = float(value)
+        except (TypeError, ValueError):
+            return default
+        return round(max(0.0, min(1.0, confidence)), 2)
+
+    @staticmethod
+    def _coerce_timestamp(value: Any, fallback: float) -> float:
+        """Zaman damgasini float'a cevirir; gecersizse cagrinin zaman damgasina (`fallback`) duser."""
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return fallback
 
     @staticmethod
     def _match_keywords_excluding_negated(

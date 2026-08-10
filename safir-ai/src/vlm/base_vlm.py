@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Any, Dict, List
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Tuple
 
 import httpx
 
@@ -25,6 +27,47 @@ class VLMResponse:
     model_name: str
     frame_count: int
     latency_ms: float
+    structured_events: List[Dict[str, Any]] = field(default_factory=list)
+    """Modelin dogrudan urettigi tipli olaylar (bkz. `EVENTS_JSON` blogu):
+    her biri `{"type", "timestamp", "confidence", "evidence"}`. Bos ise
+    `EventEngine` anahtar-kelime fallback'ine duser (bkz. `event_engine.detect`)."""
+
+
+# VLM ciktisinin sonundaki makine-okunur olay blogunu yakalar:
+#   EVENTS_JSON: [ {...}, {...} ]
+_EVENTS_JSON_PATTERN = re.compile(r"EVENTS_JSON:\s*(\[.*\])", re.DOTALL | re.IGNORECASE)
+
+
+def parse_structured_events(content: str) -> Tuple[str, List[Dict[str, Any]]]:
+    """VLM metninden `EVENTS_JSON` blogunu ayristirir ve insan-okur metinden ayirir.
+
+    Model, insan-okur gozlem bloklarindan sonra `EVENTS_JSON: [...]` satiri
+    ekler. Bu fonksiyon o JSON dizisini ayristirip dondurur ve blogu
+    aciklamadan temizler; boylece rapor/panelde yalnizca temiz gozlem metni
+    kalir. Blok yoksa veya JSON gecersizse, aciklama oldugu gibi kalir ve bos
+    liste doner (EventEngine anahtar-kelime fallback'ine gecer).
+
+    Args:
+        content: Modelin ham metin ciktisi.
+
+    Returns:
+        `(temiz_aciklama, structured_events)` ikilisi.
+    """
+    match = _EVENTS_JSON_PATTERN.search(content)
+    if not match:
+        return content.strip(), []
+
+    events: List[Dict[str, Any]] = []
+    try:
+        parsed = json.loads(match.group(1))
+        if isinstance(parsed, list):
+            events = [item for item in parsed if isinstance(item, dict)]
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("VLM EVENTS_JSON blogu ayristirilamadi, anahtar-kelime fallback'ine dusulecek.")
+        events = []
+
+    clean_description = content[: match.start()].strip()
+    return (clean_description or content.strip()), events
 
 
 class BaseVLM(ABC):
@@ -132,9 +175,13 @@ class BaseVLM(ABC):
             )
             response.raise_for_status()
             data = response.json()
-            description = data["choices"][0]["message"]["content"]
+            raw_content = data["choices"][0]["message"]["content"]
         except (httpx.HTTPError, KeyError, IndexError) as exc:
             raise RuntimeError(f"vLLM cagrisi basarisiz ({self.model_name}): {exc}") from exc
+
+        # Modelin urettigi makine-okunur EVENTS_JSON blogunu ayristir; insan-okur
+        # aciklamadan ayir (bos ise EventEngine anahtar-kelime fallback'ine duser).
+        description, structured_events = parse_structured_events(raw_content)
 
         latency_ms = (time.perf_counter() - started_at) * 1000
         image_count = sum(
@@ -145,6 +192,7 @@ class BaseVLM(ABC):
             model_name=self.model_name,
             frame_count=image_count,
             latency_ms=latency_ms,
+            structured_events=structured_events,
         )
 
     def health_check_impl(self) -> bool:
