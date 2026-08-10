@@ -18,6 +18,10 @@ from src.utils.config_loader import VLLMEndpointConfig
 
 logger = logging.getLogger(__name__)
 
+# Gecici ag hatalarinda VLM cagrisinin kac kez yeniden deneneceği ve geri-cekilme tabani.
+_MAX_INFERENCE_RETRIES = 2
+_RETRY_BACKOFF_BASE_SEC = 0.5
+
 
 @dataclass
 class VLMResponse:
@@ -57,17 +61,37 @@ def parse_structured_events(content: str) -> Tuple[str, List[Dict[str, Any]]]:
     if not match:
         return content.strip(), []
 
-    events: List[Dict[str, Any]] = []
-    try:
-        parsed = json.loads(match.group(1))
-        if isinstance(parsed, list):
-            events = [item for item in parsed if isinstance(item, dict)]
-    except (json.JSONDecodeError, ValueError):
-        logger.warning("VLM EVENTS_JSON blogu ayristirilamadi, anahtar-kelime fallback'ine dusulecek.")
-        events = []
+    events = _loads_events_lenient(match.group(1))
+    if not events:
+        logger.warning("VLM EVENTS_JSON blogu ayristirilamadi/bos, anahtar-kelime fallback'ine dusulecek.")
 
     clean_description = content[: match.start()].strip()
     return (clean_description or content.strip()), events
+
+
+def _loads_events_lenient(raw_block: str) -> List[Dict[str, Any]]:
+    """`EVENTS_JSON` dizisini toleransli sekilde ayristirir (kucuk modellerin yaygin hatalarina karsi).
+
+    Once ham metin `json.loads` ile denenir; basarisiz olursa yaygin bir hata
+    olan "sondaki virgul" (`,]` / `,}`) temizlenip yeniden denenir. Yalnizca
+    sozluk (dict) elemanlar dondurulur; hicbir gecerli JSON elde edilemezse bos
+    liste doner (EventEngine anahtar-kelime fallback'ine gecer).
+
+    Args:
+        raw_block: `EVENTS_JSON:` isaretcisinden sonra yakalanan `[...]` metni.
+
+    Returns:
+        Sozluk elemanlardan olusan liste veya bos liste.
+    """
+    candidates = [raw_block, re.sub(r",(\s*[\]}])", r"\1", raw_block)]
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(parsed, list):
+            return [item for item in parsed if isinstance(item, dict)]
+    return []
 
 
 class BaseVLM(ABC):
@@ -144,13 +168,17 @@ class BaseVLM(ABC):
         """
         content = VLMPayloadBuilder.build_content_blocks(clusters, prompt)
 
-        return {
+        payload: Dict[str, Any] = {
             "model": self._endpoint.model_name,
             "messages": [{"role": "user", "content": content}],
             "max_tokens": self._endpoint.max_new_tokens,
             "temperature": self._endpoint.temperature,
             "top_p": self._endpoint.top_p,
         }
+        # Saglayici-ozel guided decoding alanlari (vLLM); cekirdek alanlar ezilmez.
+        for key, value in (self._endpoint.extra_body or {}).items():
+            payload.setdefault(key, value)
+        return payload
 
     def _post_chat_completion(self, payload: Dict[str, Any]) -> VLMResponse:
         """Hazirlanan istegi vLLM servisine gonderir ve yaniti `VLMResponse`'a cevirir.
@@ -166,18 +194,40 @@ class BaseVLM(ABC):
                 bicimde gelirse.
         """
         started_at = time.perf_counter()
-        try:
-            response = httpx.post(
-                f"{self.base_url}/chat/completions",
-                json=payload,
-                headers=self._endpoint.auth_headers(),
-                timeout=60.0,
-            )
-            response.raise_for_status()
-            data = response.json()
-            raw_content = data["choices"][0]["message"]["content"]
-        except (httpx.HTTPError, KeyError, IndexError) as exc:
-            raise RuntimeError(f"vLLM cagrisi basarisiz ({self.model_name}): {exc}") from exc
+        # Gecici ag hatalarina (baglanti/timeout/5xx) karsi ustel geri-cekilmeli
+        # yeniden deneme; bozuk yanit (KeyError/IndexError) yeniden denenmez.
+        last_exc: Exception | None = None
+        for attempt in range(_MAX_INFERENCE_RETRIES + 1):
+            try:
+                response = httpx.post(
+                    f"{self.base_url}/chat/completions",
+                    json=payload,
+                    headers=self._endpoint.auth_headers(),
+                    timeout=60.0,
+                )
+                response.raise_for_status()
+                data = response.json()
+                raw_content = data["choices"][0]["message"]["content"]
+                break
+            except (KeyError, IndexError) as exc:
+                raise RuntimeError(f"VLM yaniti beklenmedik bicimde ({self.model_name}): {exc}") from exc
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                if attempt < _MAX_INFERENCE_RETRIES:
+                    backoff = _RETRY_BACKOFF_BASE_SEC * (2**attempt)
+                    logger.warning(
+                        "VLM cagrisi basarisiz (deneme %d/%d, %s): %s — %.1fs sonra yeniden denenecek",
+                        attempt + 1,
+                        _MAX_INFERENCE_RETRIES + 1,
+                        self.model_name,
+                        exc,
+                        backoff,
+                    )
+                    time.sleep(backoff)
+        else:
+            raise RuntimeError(
+                f"VLM cagrisi {_MAX_INFERENCE_RETRIES + 1} denemede basarisiz ({self.model_name}): {last_exc}"
+            ) from last_exc
 
         # Modelin urettigi makine-okunur EVENTS_JSON blogunu ayristir; insan-okur
         # aciklamadan ayir (bos ise EventEngine anahtar-kelime fallback'ine duser).

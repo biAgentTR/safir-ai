@@ -58,7 +58,14 @@ def test_fallback_frame_used_when_no_threshold_crossed(tmp_path: Path, static_vi
     assert isinstance(frames[0], EvidenceFrame)
     assert frames[0].is_fallback is True
     assert frames[0].frame_id == 0
-    assert Path(frames[0].saved_path).exists()
+    # Tasarim (bkz. _build_evidence_frame docstring): Kanit Kareleri
+    # process_video'da diske YAZILMAZ (saved_path=None); yalnizca zirve kareler
+    # cluster_events/_close_group'ta kalici yazilir. Kare gecerli goruntu tasir.
+    assert frames[0].saved_path is None
+    assert frames[0].base64_image.startswith("data:image/jpeg;base64,")
+    # Zirve olarak secildiginde kalici diske yazilir:
+    clusters = sampler.cluster_events(frames)
+    assert clusters and Path(clusters[0].peak_frame.saved_path).exists()
 
 
 def test_fallback_still_produces_a_valid_cluster(tmp_path: Path, static_video: str) -> None:
@@ -81,8 +88,13 @@ def test_motion_produces_real_evidence_frames(tmp_path: Path, motion_video: str)
 
     assert len(frames) >= 1
     assert all(not f.is_fallback for f in frames)
-    assert all(Path(f.saved_path).exists() for f in frames)
+    # Tasarim: process_video diske yazmaz (saved_path=None); kareler gecerli
+    # goruntu verisi tasir. Kalici kayit, zirve karelerde cluster_events'te olur.
+    assert all(f.saved_path is None for f in frames)
     assert all(f.base64_image.startswith("data:image/jpeg;base64,") for f in frames)
+    assert all(f.image_bytes for f in frames)
+    clusters = sampler.cluster_events(frames)
+    assert all(Path(c.peak_frame.saved_path).exists() for c in clusters)
 
 
 def test_cluster_events_groups_nearby_frames(tmp_path: Path, motion_video: str) -> None:

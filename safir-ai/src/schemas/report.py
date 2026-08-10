@@ -89,6 +89,10 @@ class SafirReport(BaseModel):
     actions: List[str] = Field(
         default_factory=list, description="Operatore yonelik somut aksiyon onerileri listesi (sartname 'actions')."
     )
+    detected_event_types: List[str] = Field(
+        default_factory=list,
+        description="Bu analizde tespit edilen olay kategorileri (bkz. EventType); aciklanabilirlik/olcumleme icin.",
+    )
     timeline: List[TimelineEntry] = Field(default_factory=list, description="Kronolojik olay cizelgesi.")
     evidence_frames: List[EvidenceFrameOut] = Field(
         default_factory=list, description="Her Olay Grubunun zirve karesi (goruntu + metadata)."
