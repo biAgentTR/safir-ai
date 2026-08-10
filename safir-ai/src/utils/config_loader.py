@@ -218,6 +218,10 @@ class AgentConfig(BaseModel):
     max_iterations: int
     risk_thresholds: RiskThresholds
     tools: AgentToolsConfig
+    guided_json: bool = True
+    """Ajanin nihai karari gecerli JSON degilse, JSON-modu (response_format=
+    json_object; vLLM/Gemini destekler) ile TEK bir yeniden-deneme yapilir.
+    Kucuk yerel modellerde bozuk JSON'u kurtarir. `false` ile devre disi."""
 
 
 class EscalationConfig(BaseModel):

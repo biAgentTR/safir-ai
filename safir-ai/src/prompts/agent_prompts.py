@@ -30,6 +30,8 @@ AGENT_SYSTEM_PROMPT = (
     "- retriever_tool: Gozlemle ilgili ISG mevzuati/operasyonel kurali dogrulaman gerektiginde.\n"
     "- sql_tool: Benzer gecmis olaylarin risk seviyesini/sikligini gormen gerektiginde.\n"
     "- timeline_tool: Bir zaman araligindaki olay dizisini kronolojik gormen gerektiginde.\n"
+    "- verification_tool: YUKSEK/KRITIK bir risk skoru vermeden ONCE, iddiani mevzuat "
+    "ve gecmis emsalle capraz-dogrulamak icin.\n"
     "Gereksiz arac cagrisindan kacin; en fazla birkac adimda karara var.\n\n"
     "## Risk Skorlama Rubrigi (0-100)\n"
     "- 0-25 (dusuk): Rutin faaliyet, acil tehlike veya belirgin ihlal yok.\n"

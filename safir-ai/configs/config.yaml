@@ -139,6 +139,7 @@ llm:
 
 agent:
   max_iterations: 6                  # LangGraph durum makinesinin maksimum dongu sayisi
+  guided_json: true                  # Ajan ciktisi bozuk JSON ise JSON-modu ile 1 kez yeniden dene (vLLM/Gemini)
   risk_thresholds:
     low: 25                          # 0-25       -> dusuk risk
     medium: 50                       # 26-50      -> orta risk

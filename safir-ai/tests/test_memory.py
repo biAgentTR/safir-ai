@@ -9,6 +9,7 @@ testler de agsiz ve GPU'suz calisir.
 
 from __future__ import annotations
 
+import hashlib
 import time
 
 import numpy as np
@@ -105,7 +106,11 @@ class _FakeSentenceTransformer:
         for text in texts:
             vector = np.zeros(self._DIMENSION, dtype="float32")
             for token in text.lower().split():
-                vector[hash(token) % self._DIMENSION] += 1.0
+                # DETERMINISTIK hash: Python'un yerlesik hash()'i sureç basina
+                # rastgelelestirildiginden (PYTHONHASHSEED) test sonucu run'dan
+                # run'a degisirdi; stabil bir hash ile bu flakiness giderilir.
+                token_hash = int(hashlib.md5(token.encode("utf-8")).hexdigest(), 16)
+                vector[token_hash % self._DIMENSION] += 1.0
             norm = np.linalg.norm(vector)
             if normalize_embeddings and norm > 0:
                 vector = vector / norm

@@ -11,7 +11,7 @@ bagimsiz test edilebilir.
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
@@ -153,6 +153,78 @@ class TimelineToolInput(BaseModel):
     end_ts: float = Field(description="Zaman araligi bitisi (saniye).")
 
 
+class VerificationToolInput(BaseModel):
+    """`verification_tool` icin girdi semasi."""
+
+    claim: str = Field(description="Dogrulanacak risk/gozlem iddiasi (dogal dil).")
+    event_type: Optional[str] = Field(
+        default=None, description="Ilgili olay kategorisi (varsa; orn. 'arac_yaya_yakinligi')."
+    )
+
+
+class VerificationTool:
+    """Ajanin bir risk iddiasini, ISG mevzuati ve gecmis olay emsaliyle capraz-dogrulayan arac.
+
+    Ajan, ozellikle yuksek/kritik bir risk skorunu sonuclandirmadan once bu
+    araci cagirarak iddiasini iki kaynaga karsi test edebilir: (1) ilgili
+    mevzuat maddesi var mi (RAG), (2) benzer olaylar gecmiste kaydedilmis mi
+    (SQLite). Bu, kararin kanit ve mevzuatla temellenmesini saglar
+    (sartname: cok adimli karar zinciri / dogrulama). `event_store`/`rag_service`
+    verilmezse mock veriye duser; boylece bagimsiz test edilebilir.
+    """
+
+    def __init__(
+        self,
+        event_store: Optional[EventStore] = None,
+        rag_service: Optional[EmbeddingRAGService] = None,
+    ) -> None:
+        """VerificationTool'u opsiyonel olay deposu ve RAG servisiyle baslatir."""
+        self._event_store = event_store
+        self._rag_service = rag_service
+
+    def run(self, claim: str, event_type: Optional[str] = None) -> str:
+        """Iddiayi mevzuat destegi ve gecmis emsal acisindan dogrular.
+
+        Args:
+            claim: Dogrulanacak dogal dil iddiasi.
+            event_type: Ilgili olay kategorisi (varsa).
+
+        Returns:
+            Mevzuat destegi (var/yok) ve gecmis emsal sayisini iceren dogrulama ozeti.
+        """
+        if self._rag_service is None:
+            regulations = _MOCK_REGULATIONS[:2]
+        else:
+            regulations = [doc.text for doc in self._rag_service.query(claim, top_k=2)]
+
+        if self._event_store is None:
+            recent_events = _MOCK_RECENT_EVENTS
+        else:
+            recent_events = self._event_store.query_recent(limit=5)
+
+        support = "VAR" if regulations else "YOK"
+        lines = [
+            f"Dogrulanan iddia: {claim}",
+            f"Ilgili kategori: {event_type or 'belirtilmedi'}",
+            f"Mevzuat destegi: {support}",
+        ]
+        lines.extend(f"  - {r}" for r in regulations)
+        lines.append(f"Gecmis emsal (son kayitlar): {len(recent_events)} olay")
+        return "\n".join(lines)
+
+    def as_langchain_tool(self) -> StructuredTool:
+        """Bu araci LangGraph/LangChain ajanina baglanabilecek `StructuredTool`'a cevirir."""
+        return StructuredTool.from_function(
+            func=self.run,
+            name="verification_tool",
+            description=(
+                "Bir risk iddiasini ISG mevzuati (RAG) ve gecmis olay emsali (SQLite) ile "
+                "capraz-dogrular. Yuksek/kritik risk karari vermeden once kullan."
+            ),
+            args_schema=VerificationToolInput,
+        )
+
+
 class TimelineTool:
     """Belirli bir zaman araligindaki olaylari kronolojik olarak cizelgeleyen arac."""
 
@@ -199,18 +271,33 @@ class TimelineTool:
 def build_tool_registry(
     event_store: Optional[EventStore] = None,
     rag_service: Optional[EmbeddingRAGService] = None,
+    tools_config: Optional[Any] = None,
 ) -> List[StructuredTool]:
-    """Ajanin `Dynamic Tool Router`ina baglanacak tum araclarin listesini uretir.
+    """Ajanin `Dynamic Tool Router`ina baglanacak araclarin listesini config bayraklarina gore uretir.
 
     Args:
-        event_store: SQL ve Timeline araclarinin kullanacagi olay deposu.
-        rag_service: `retriever_tool`'un kullanacagi Embedding & RAG servisi.
+        event_store: SQL/Timeline/Verification araclarinin kullanacagi olay deposu.
+        rag_service: retriever/verification araclarinin kullanacagi Embedding & RAG servisi.
+        tools_config: `configs/config.yaml` icindeki `agent.tools` blogu
+            (`AgentToolsConfig`). `None` verilirse geriye-uyum icin TUM araclar
+            (verification dahil) kurulur; verilirse yalnizca `*_enabled=true`
+            olanlar eklenir. `rag_tool_enabled` ile `retriever_tool_enabled`
+            ayni RAG aracina isaret eder (herhangi biri true ise eklenir).
 
     Returns:
         LangGraph ajanina dogrudan baglanabilecek `StructuredTool` listesi.
     """
-    return [
-        SqlTool(event_store).as_langchain_tool(),
-        RetrieverTool(rag_service).as_langchain_tool(),
-        TimelineTool(event_store).as_langchain_tool(),
-    ]
+
+    def _enabled(attr: str) -> bool:
+        return getattr(tools_config, attr, True) if tools_config is not None else True
+
+    tools: List[StructuredTool] = []
+    if _enabled("sql_tool_enabled"):
+        tools.append(SqlTool(event_store).as_langchain_tool())
+    if _enabled("retriever_tool_enabled") or _enabled("rag_tool_enabled"):
+        tools.append(RetrieverTool(rag_service).as_langchain_tool())
+    if _enabled("timeline_tool_enabled"):
+        tools.append(TimelineTool(event_store).as_langchain_tool())
+    if _enabled("verification_tool_enabled"):
+        tools.append(VerificationTool(event_store, rag_service).as_langchain_tool())
+    return tools

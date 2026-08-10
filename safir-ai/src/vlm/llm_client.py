@@ -48,13 +48,16 @@ class LLMClient:
         self._model_name = endpoint.model_name
         # Yerel vLLM icin base_url=http://host:port/v1 ve api_key="EMPTY";
         # provider="gemini" icin endpoint.base_url + GEMINI_API_KEY (api_key_env).
-        self._chat = ChatOpenAI(
+        self._base_chat = ChatOpenAI(
             model=endpoint.model_name,
             base_url=endpoint.resolved_base_url(),
             api_key=endpoint.resolved_api_key(),
             temperature=endpoint.temperature,
             max_tokens=endpoint.max_new_tokens,
         )
+        # `bind_tools` bunu araci-baglanmis surumle degistirir; `_base_chat`
+        # (araci baglanmamis) JSON-modu (invoke_json) icin saklanir.
+        self._chat = self._base_chat
 
     @property
     def model_name(self) -> str:
@@ -83,6 +86,23 @@ class LLMClient:
             LLM'in yanitini tasiyan `AIMessage`.
         """
         return self._chat.invoke(messages)
+
+    def invoke_json(self, messages: Sequence[BaseMessage]) -> AIMessage:
+        """Mesajlari JSON-modunda (araci baglanmamis) LLM'e gonderip gecerli JSON yaniti dondurur.
+
+        `response_format={"type": "json_object"}` hem vLLM hem Gemini'nin
+        OpenAI-uyumlu ucunda desteklenir ve modeli gecerli bir JSON nesnesi
+        uretmeye zorlar; kucuk yerel modellerde bozuk JSON'u onler. Arac
+        cagrilariyla catismamasi icin `_base_chat` (araci baglanmamis) kullanilir.
+
+        Args:
+            messages: Karar formatlama istemi dahil mesaj gecmisi.
+
+        Returns:
+            Gecerli JSON icerigi tasiyan `AIMessage`.
+        """
+        structured_chat = self._base_chat.bind(response_format={"type": "json_object"})
+        return structured_chat.invoke(messages)
 
 
 class MockLLMClient:
@@ -128,6 +148,10 @@ class MockLLMClient:
         time.sleep(0.1)
         logger.info("MockLLMClient: %d mesajlik gecmis icin sahte karar uretildi", len(messages))
         return AIMessage(content=_MOCK_DECISION_TEXT, tool_calls=[])
+
+    def invoke_json(self, messages: Sequence[BaseMessage]) -> AIMessage:
+        """Mock modda JSON-modu ile normal `invoke` ayni sabit JSON karari dondurur."""
+        return self.invoke(messages)
 
 
 if __name__ == "__main__":

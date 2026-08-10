@@ -24,12 +24,20 @@ from src.agent.tools import build_tool_registry
 from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
 from src.prompts import AGENT_SYSTEM_PROMPT, build_agent_user_prompt
+from src.prompts.agent_prompts import AGENT_OUTPUT_SCHEMA_HINT
 from src.utils.config_loader import AgentConfig, LLMConfig
 from src.vlm.factory import get_llm_client
 
 logger = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = AGENT_SYSTEM_PROMPT
+
+# Ajanin ciktisi gecerli JSON degilse, JSON-modunda (invoke_json) verilecek
+# yeniden-deneme talimati. 'JSON' kelimesi response_format=json_object icin gerekli.
+_JSON_RETRY_INSTRUCTION = (
+    "Onceki analizine dayanarak nihai kararini SADECE gecerli bir JSON nesnesi "
+    "olarak ver (baska hicbir metin ekleme). Sema:\n" + AGENT_OUTPUT_SCHEMA_HINT
+)
 
 # Yapisal JSON ayristirma basarisiz olursa kullanilan geriye-donuk regex'ler
 # (eski RISK_SKORU/AKSIYON_ONERISI bicimini ve mock ciktilarini korur).
@@ -95,8 +103,11 @@ class SafirAgent:
                 `app.use_mock_llm`).
         """
         self._agent_config = agent_config
+        self._use_json_mode = agent_config.guided_json
 
-        self._tools: List[StructuredTool] = build_tool_registry(event_store, rag_service)
+        self._tools: List[StructuredTool] = build_tool_registry(
+            event_store, rag_service, agent_config.tools
+        )
         self._llm = get_llm_client(llm_config, use_mock=use_mock_llm).bind_tools(self._tools)
 
         self._tools_by_name = {tool.name: tool for tool in self._tools}
@@ -240,7 +251,40 @@ class SafirAgent:
 
         final_state = self._graph.invoke(initial_state)
         final_text = final_state["messages"][-1].content or ""
+
+        # Guided JSON: serbest cikti gecerli JSON degilse, JSON-modunda (vLLM/
+        # Gemini response_format) TEK bir yeniden-deneme ile kurtarmayi dene.
+        if self._use_json_mode and self._extract_json(final_text) is None:
+            final_text = self._guided_json_retry(final_state["messages"], final_text)
+
         return self._parse_decision(final_text)
+
+    def _guided_json_retry(self, messages: Sequence[BaseMessage], fallback_text: str) -> str:
+        """Serbest cikti JSON degilse, JSON-modunda tek bir yeniden-deneme yapar.
+
+        Ajanin biriktirdigi mesaj gecmisine bir formatlama talimati eklenip
+        `LLMClient.invoke_json` (araci baglanmamis, `response_format=json_object`)
+        ile cagrilir. Yeni cikti gecerli JSON ise o dondurulur; degilse veya
+        cagri patlarsa orijinal `fallback_text` korunur (regex fallback devreye girer).
+
+        Args:
+            messages: LangGraph durum makinesinin son mesaj gecmisi.
+            fallback_text: Yeniden-deneme basarisiz olursa korunacak orijinal cikti.
+
+        Returns:
+            Gecerli JSON iceren yeni metin veya `fallback_text`.
+        """
+        logger.info("Ajan ciktisi gecerli JSON degil; JSON-modu ile yeniden deneniyor.")
+        try:
+            retry_messages = list(messages) + [HumanMessage(content=_JSON_RETRY_INSTRUCTION)]
+            response = self._llm.invoke_json(retry_messages)
+            content = response.content or ""
+            if self._extract_json(content) is not None:
+                return content
+            logger.warning("JSON-modu yeniden denemesi de gecerli JSON uretmedi.")
+        except Exception as exc:  # noqa: BLE001 - retry best-effort; hata fallback'e dusurulur
+            logger.warning("JSON-modu yeniden denemesi basarisiz: %s", exc)
+        return fallback_text
 
     def _parse_decision(self, final_text: str) -> AgentDecision:
         """Ajanin son yanitini `AgentDecision`'a cevirir (once JSON, sonra regex fallback).
