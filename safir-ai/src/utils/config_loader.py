@@ -5,7 +5,7 @@ from __future__ import annotations
 import functools
 import os
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 from pydantic import BaseModel, Field
@@ -104,6 +104,10 @@ class VLLMEndpointConfig(BaseModel):
     provider: str = "vllm"                       # vllm | gemini
     base_url: Optional[str] = None               # verilirse host:port yerine bu tam OpenAI-uyumlu taban kullanilir
     api_key_env: Optional[str] = None            # anahtarin okunacagi ortam degiskeni adi (orn. "GEMINI_API_KEY")
+    extra_body: Dict[str, Any] = Field(default_factory=dict)
+    """Istek govdesine eklenecek saglayici-ozel alanlar (vLLM guided decoding icin;
+    orn. `{"guided_json": {...}}` veya `{"guided_regex": "..."}`). Varsayilan bos
+    (davranis degismez). Cekirdek alanlari (model/messages/...) EZMEZ."""
 
     def resolved_base_url(self) -> str:
         """Bu uc nokta icin kullanilacak OpenAI-uyumlu taban URL'yi dondurur.

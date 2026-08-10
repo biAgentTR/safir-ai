@@ -89,6 +89,39 @@ python scripts/e2e_smoke.py --video data/ornek.mp4
 pytest -q
 ```
 
+## KPI / Benchmark (ölçümleme)
+
+Şartname kendi metriklerinizi tanımlamanızı ister. `scripts/benchmark.py`,
+etiketli klipler üzerinde tüm pipeline'ı koşup KPI'ları raporlar: olay tespiti
+precision/recall/F1 (kategori + makro/mikro), kritik olay yakalama oranı ve
+klip başı gecikme.
+
+```bash
+# Hazır sentetik demo (offline, mock) — harness'i ve metrikleri gösterir:
+python scripts/benchmark.py --synthetic --mock
+
+# Gerçek etiketli klipler (Gemini/vLLM backend ayarlıysa):
+python scripts/benchmark.py --manifest benchmarks/manifest.json --out benchmarks/result.json
+```
+
+Manifest biçimi:
+```json
+[
+  {"video": "data/clip1.mp4", "expected_events": ["arac_yaya_yakinligi"], "critical": true},
+  {"video": "data/clip2.mp4", "expected_events": ["kkd_ihlali"]}
+]
+```
+
+## Dayanıklılık (hata işleme)
+
+- VLM çağrıları geçici ağ hatalarında üstel geri-çekilmeli yeniden denenir; kalıcı
+  hatada iş çökmez, **degraded** (hata notlu) rapor üretilir ve operatör manuel
+  incelemeye yönlendirilir.
+- Ajan muhakemesi hata verirse risk uydurulmaz; güvenli bir degraded karar döner.
+- Küçük modellerin bozuk JSON'u: ajan tarafında JSON-modu yeniden-denemesi
+  (`agent.guided_json`), VLM tarafında toleranslı EVENTS_JSON ayrıştırma +
+  anahtar-kelime yedeği ile kurtarılır.
+
 > **Bilinen sorun:** `tests/test_sampler.py` içindeki iki test
 > (`test_motion_produces_real_evidence_frames`,
 > `test_fallback_frame_used_when_no_threshold_crossed`) bu değişikliklerden

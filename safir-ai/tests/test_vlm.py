@@ -115,3 +115,34 @@ def test_parse_structured_events_invalid_json_falls_back() -> None:
 
     _, events = parse_structured_events("Gozlem.\nEVENTS_JSON: [not valid json}")
     assert events == []
+
+
+def test_parse_structured_events_repairs_trailing_commas() -> None:
+    """Kucuk modellerin yaygin hatasi (sondaki virgul) toleransli ayristirilmali."""
+    from src.vlm.base_vlm import parse_structured_events
+
+    _, events = parse_structured_events(
+        'Gozlem.\nEVENTS_JSON: [{"type": "kkd_ihlali", "confidence": 0.7,},]'
+    )
+    assert events == [{"type": "kkd_ihlali", "confidence": 0.7}]
+
+
+def test_endpoint_extra_body_merges_into_vlm_payload() -> None:
+    """VLLMEndpointConfig.extra_body (vLLM guided decoding) istek govdesine eklenmeli, cekirdegi ezmemeli."""
+    from src.sampler.schema import EventCluster, EvidenceFrame
+    from src.utils.config_loader import VLLMEndpointConfig
+    from src.vlm.qwen_vlm import QwenVLM
+
+    endpoint = VLLMEndpointConfig(
+        model_name="m", vllm_host="h", vllm_port=1, max_new_tokens=10, temperature=0.1,
+        extra_body={"guided_json": {"type": "array"}, "model": "EZILMEMELI"},
+    )
+    frame = EvidenceFrame(
+        frame_id=0, timestamp_sec=1.0, timestamp_str="00:01", change_score=0.5,
+        image_bytes=b"x", base64_image="data:image/jpeg;base64,AA==", image_shape=(1, 1, 3),
+    )
+    cluster = EventCluster(event_id=1, start_time=1.0, end_time=1.0, peak_frame=frame, total_candidate_frames=1)
+
+    payload = QwenVLM(endpoint)._build_chat_payload([cluster], "test")
+    assert payload["guided_json"] == {"type": "array"}
+    assert payload["model"] == "m"  # cekirdek alan ezilmedi

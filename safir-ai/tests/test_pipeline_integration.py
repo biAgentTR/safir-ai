@@ -349,6 +349,23 @@ def test_pipeline_sends_representative_frame_sequence_to_vlm(
     assert "peak" in labels
 
 
+def test_pipeline_produces_degraded_report_when_vlm_fails(
+    pipeline: SafirPipeline, motion_video: str
+) -> None:
+    """VLM analizi patlarsa pipeline cokmemeli; degraded (hata notlu) bir rapor uretmeli."""
+
+    def _boom(clusters, prompt):
+        raise RuntimeError("VLM servisi erisilemez")
+
+    pipeline._vlm.describe_events = _boom  # type: ignore[assignment]
+    report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+
+    # Is "error" ile cokmedi; rapor uretildi ve hata operatore gorunur.
+    assert report is not None
+    assert "[HATA]" in report.natural_language_summary
+    assert report.escalation_tier in {"monitor", "notify", "alarm"}
+
+
 def test_record_feedback_delegates_to_event_history(
     pipeline: SafirPipeline, motion_video: str
 ) -> None:

@@ -39,6 +39,7 @@ from src.sampler.adaptive_sampler import EventCluster, EvidenceFrame, sampler_fr
 from src.sampler.context.representative_frame_extractor import RepresentativeFrameExtractor
 from src.schemas.report import EvidenceFrameOut, SafirReport, SamplerStats, TimelineEntry
 from src.utils.config_loader import SafirConfig, load_config
+from src.vlm.base_vlm import VLMResponse
 from src.vlm.factory import get_vlm_client
 
 logging.basicConfig(level=logging.INFO)
@@ -389,7 +390,21 @@ class SafirPipeline:
         if on_stage:
             on_stage(*STAGE_VLM)
 
-        vlm_response = self._vlm.describe_events(clusters, prompt=user_prompt)
+        # Hata dayanikliligi: VLM analizi (retry'lardan sonra da) basarisiz
+        # olursa is'i cokertmek yerine degraded bir aciklamayla devam edilir;
+        # boylece operator en azindan kanit karelerini ve acik bir hata notunu
+        # gorur (rapor "done" doner, "error" degil).
+        try:
+            vlm_response = self._vlm.describe_events(clusters, prompt=user_prompt)
+        except Exception as exc:  # noqa: BLE001 - degraded rapora tasinir
+            logger.exception("VLM analizi basarisiz; degraded raporla devam ediliyor.")
+            vlm_response = VLMResponse(
+                description=f"[HATA] VLM analizi yapilamadi ({exc}). Manuel inceleme gerekli.",
+                model_name=getattr(self._vlm, "model_name", "unknown"),
+                frame_count=len(clusters),
+                latency_ms=0.0,
+                structured_events=[],
+            )
 
         if on_stage:
             on_stage(*STAGE_AGENT)
@@ -447,6 +462,7 @@ class SafirPipeline:
         # Ajan karari (risk_score/risk_level) tum baglami (tum rule_matches)
         # gorerek verildigi icin, bu cagridaki her StructuredEvent'e aynen uygulanir.
         current_call_events = _select_current_call_events(temporal_events, latest_timestamp)
+        detected_event_types = sorted({te.event_type for te in current_call_events})
         structured_events = self._event_builder.build_batch(current_call_events, rule_matches)
         recorded_event_ids = self._event_history.record_batch(
             structured_events,
@@ -486,6 +502,7 @@ class SafirPipeline:
             escalation_tier=escalation.tier.value,
             auto_dispatched=escalation.auto_dispatched,
             alert_id=escalation.alert_id,
+            detected_event_types=detected_event_types,
             timeline=[
                 TimelineEntry(timestamp=e["timestamp"], description=e["description"])
                 for e in timeline

@@ -249,8 +249,15 @@ class SafirAgent:
             "iteration": 0,
         }
 
-        final_state = self._graph.invoke(initial_state)
-        final_text = final_state["messages"][-1].content or ""
+        # Hata dayanikliligi: LLM/arac zinciri (retry'lardan sonra da) patlarsa,
+        # is'i cokertmek yerine guvenli bir "degraded" karar dondurulur; operator
+        # manuel incelemeye yonlendirilir (risk uydurulmaz).
+        try:
+            final_state = self._graph.invoke(initial_state)
+            final_text = final_state["messages"][-1].content or ""
+        except Exception as exc:  # noqa: BLE001 - degraded karara tasinir
+            logger.exception("Ajan muhakemesi basarisiz; degraded karar donduruluyor.")
+            return self._degraded_decision(str(exc))
 
         # Guided JSON: serbest cikti gecerli JSON degilse, JSON-modunda (vLLM/
         # Gemini response_format) TEK bir yeniden-deneme ile kurtarmayi dene.
@@ -258,6 +265,22 @@ class SafirAgent:
             final_text = self._guided_json_retry(final_state["messages"], final_text)
 
         return self._parse_decision(final_text)
+
+    def _degraded_decision(self, error: str) -> AgentDecision:
+        """Muhakeme hatasinda operatoru manuel incelemeye yonlendiren guvenli karar.
+
+        Risk skoru uydurulmaz (0 -> dusuk) ancak ozet ve aksiyon, otomatik
+        analizin BASARISIZ oldugunu ve insan mudahalesi gerektigini acikca belirtir.
+        """
+        return AgentDecision(
+            risk_score=0,
+            risk_level=self._resolve_risk_level(0),
+            recommended_action="Otomatik muhakeme basarisiz; sahayi manuel inceleyin.",
+            raw_response=f"[HATA] Ajan muhakemesi tamamlanamadi: {error}",
+            summary="Otomatik risk muhakemesi bir hata nedeniyle tamamlanamadi; manuel inceleme gerekli.",
+            actions=["Sahayi manuel inceleyin", "Sistemi/kayitlari kontrol edin"],
+            events=[],
+        )
 
     def _guided_json_retry(self, messages: Sequence[BaseMessage], fallback_text: str) -> str:
         """Serbest cikti JSON degilse, JSON-modunda tek bir yeniden-deneme yapar.
