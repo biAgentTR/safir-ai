@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#__nuxt {
+  height: 100%;
+}
+
+body {
+  @apply bg-surface-0 text-slate-200 antialiased;
+  font-feature-settings: 'tnum' 1;
+  overflow: hidden; /* desktop shell: inner regions scroll, not the window */
+}
+
+/* Slim, technical scrollbars for the desktop feel. */
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-surface-3 rounded;
+}
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+@layer components {
+  .card {
+    @apply bg-surface-1 border border-edge rounded-lg;
+  }
+  .field-label {
+    @apply block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1;
+  }
+  .field-input {
+    @apply w-full bg-surface-2 border border-edge rounded-md px-3 py-2 text-sm
+           text-slate-100 placeholder:text-slate-500
+           focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent;
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-md bg-accent
+           px-4 py-2 text-sm font-medium text-white
+           hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed
+           transition-colors;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-md border border-edge
+           bg-surface-2 px-3 py-2 text-sm text-slate-300 hover:bg-surface-3
+           transition-colors;
+  }
+}
