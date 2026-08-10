@@ -70,7 +70,7 @@ sampler:
 # eder; yalnizca gelistirme/test icindir. Yarisma teslimi icin bu degerler
 # yerel modele (qwen/qwen3) geri alinmalidir.
 vlm:
-  active_model: "qwen"               # qwen | gemma | gemini  (VLMFactory tarafindan okunur)
+  active_model: "gemini"             # qwen | gemma | gemini  (VLMFactory tarafindan okunur) — TEST: gemini
   models:
     qwen:
       model_name: "Qwen/Qwen2.5-VL-3B-Instruct"
@@ -115,7 +115,7 @@ memory:
 # 05 - Ajan ve Muhakeme Katmani (LangGraph) - GPU / vLLM
 # -----------------------------------------------------------------------------
 llm:
-  active_model: "qwen3"              # qwen3 | gemma3 | gemini (VLM'den bagimsiz saf muhakeme modeli)
+  active_model: "gemini"             # qwen3 | gemma3 | gemini (VLM'den bagimsiz saf muhakeme modeli) — TEST: gemini
   models:
     qwen3:
       model_name: "Qwen/Qwen3-8B-Instruct"
