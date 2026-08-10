@@ -56,6 +56,11 @@ STAGE_AGENT = ("LangGraph Ajan (RAG & Karar)", 3, 3)
 
 OnStageCallback = Callable[[str, int, int], None]
 
+# Her ana asamanin GERCEK ara ciktisini disari veren gozlem (trace) geri cagirmasi.
+# `(asama_adi, payload_sozlugu)` alir; yalnizca gozlem/gorunurluk icindir
+# (orn. Jupyter demo), pipeline davranisini DEGISTIRMEZ. Varsayilan None -> sifir maliyet.
+TraceCallback = Callable[[str, Dict[str, object]], None]
+
 # `TemporalEvent.end_timestamp`i bu pipeline cagrisinin `latest_timestamp`ina
 # esitlerken kullanilan tolerans (kayan nokta karsilastirmasi icin).
 _CURRENT_CALL_TIMESTAMP_TOLERANCE = 1e-6
@@ -315,6 +320,7 @@ class SafirPipeline:
         on_stage: Optional[OnStageCallback] = None,
         sample_fps_override: Optional[int] = None,
         min_change_threshold_override: Optional[float] = None,
+        trace: Optional[TraceCallback] = None,
     ) -> SafirReport:
         """Video kaynagindan nihai `SafirReport`'a kadar tum pipeline'i calistirir.
 
@@ -341,6 +347,11 @@ class SafirPipeline:
             RuntimeError: Video kaynagindan hic Evidence Frame/Olay Grubu uretilemezse.
         """
         pipeline_started_at = time.perf_counter()
+
+        def _emit(stage: str, payload: Dict[str, object]) -> None:
+            """Gozlem kancasini (varsa) bir asamanin gercek ciktisiyla cagirir (yan etkisiz)."""
+            if trace is not None:
+                trace(stage, payload)
 
         if on_stage:
             on_stage(*STAGE_SAMPLER)
@@ -386,6 +397,8 @@ class SafirPipeline:
             len(clusters),
             total_rep_frames or len(clusters),
         )
+        _emit("sampler", {"evidence_frames": evidence_frames, "stats": sampler.last_run_stats})
+        _emit("clusters", {"clusters": clusters})
 
         if on_stage:
             on_stage(*STAGE_VLM)
@@ -405,6 +418,7 @@ class SafirPipeline:
                 latency_ms=0.0,
                 structured_events=[],
             )
+        _emit("vlm", {"vlm_response": vlm_response, "clusters": clusters, "user_prompt": user_prompt})
 
         if on_stage:
             on_stage(*STAGE_AGENT)
@@ -423,6 +437,14 @@ class SafirPipeline:
 
         temporal_events = self._temporal_reasoner.reason(list(self._event_history_buffer))
         rule_matches = self._rule_engine.evaluate(temporal_events)
+        _emit(
+            "events",
+            {
+                "detected_events": detected_events,
+                "temporal_events": temporal_events,
+                "rule_matches": rule_matches,
+            },
+        )
 
         context = self._context_builder.build(
             vlm_description=vlm_response.description,
@@ -437,7 +459,10 @@ class SafirPipeline:
                 f"{prompt_block}\n\n## Olay Analizi Katmani Sinyalleri (T008-T012)\n{event_analysis_summary}"
             )
 
+        _emit("agent_context", {"prompt_block": prompt_block})
+
         decision = self._agent.run(prompt_block)
+        _emit("decision", {"decision": decision})
 
         # 06 - Otomatik Eskalasyon: risk skoruna gore kademe belirlenir ve
         # yuksek/kritik durumda saha alarmi OTOMATIK tetiklenir (bloke edici
@@ -455,6 +480,7 @@ class SafirPipeline:
             escalation.alert_id,
             escalation.reason,
         )
+        _emit("escalation", {"escalation": escalation})
 
         # 07 - Olay Analizi Katmani (T011-T012): bu cagrida uretilen/
         # guncellenen TUM TemporalEvent'leri (birden fazla kategori
@@ -489,7 +515,7 @@ class SafirPipeline:
             elapsed_sec,
         )
 
-        return SafirReport(
+        report = SafirReport(
             event_id=event_id,
             video_source=video_source,
             generated_at=datetime.datetime.utcnow().isoformat() + "Z",
@@ -535,6 +561,8 @@ class SafirPipeline:
             vlm_model=vlm_response.model_name,
             llm_model=self._agent.model_name,
         )
+        _emit("report", {"report": report})
+        return report
 
     def acknowledge_alert(self, alert_id: str, operator_note: str = ""):
         """Operatorun otomatik tetiklenmis bir saha alarmini onaylamasini/geri almasini isler (Human-on-the-Loop).
