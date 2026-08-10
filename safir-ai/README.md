@@ -89,6 +89,25 @@ python scripts/e2e_smoke.py --video data/ornek.mp4
 pytest -q
 ```
 
+## Adım adım Jupyter walkthrough
+
+Pipeline'ı aşama aşama görmek için (sampler → temsili kareler → VLM → olay
+tespiti → RAG → ajan → otomatik eskalasyon → nihai rapor):
+
+```bash
+pip install notebook ipykernel          # (requirements-gemini.txt içinde de var)
+jupyter notebook notebooks/SAFIR_walkthrough.ipynb
+# veya VS Code'da .ipynb dosyasını açıp hücreleri sırayla çalıştır
+```
+
+Defterin ilk hücresindeki iki anahtar:
+- `USE_MOCK`: `False` → `config.yaml`'daki backend (Gemini; `GEMINI_API_KEY` gerekir).
+  `True` → tamamen offline (sabit örnek çıktı, GPU/anahtar gerekmez).
+- `USE_FAKE_RAG`: `True` → ağır embedding modelini (bge-m3) indirmez (demo için hızlı).
+
+Notebook, `scripts/build_notebook.py` ile üretilir (yeniden üretmek için:
+`python scripts/build_notebook.py`).
+
 ## KPI / Benchmark (ölçümleme)
 
 Şartname kendi metriklerinizi tanımlamanızı ister. `scripts/benchmark.py`,
