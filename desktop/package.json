@@ -1,0 +1,32 @@
+{
+  "name": "safir-desktop",
+  "private": true,
+  "type": "module",
+  "description": "SAFIR desktop application (Tauri 2 + Nuxt 3). Parallel to the Streamlit dashboard; talks to the existing FastAPI backend.",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview",
+    "postinstall": "nuxt prepare",
+    "typecheck": "nuxt typecheck",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-dialog": "^2.0.1",
+    "pinia": "^2.2.6",
+    "vue": "^3.5.13",
+    "vue-router": "^4.4.5"
+  },
+  "devDependencies": {
+    "@nuxtjs/tailwindcss": "^6.12.2",
+    "@pinia/nuxt": "^0.7.0",
+    "@tauri-apps/cli": "^2.1.0",
+    "nuxt": "^3.14.1592",
+    "typescript": "^5.6.3",
+    "vue-tsc": "^2.1.10"
+  }
+}
