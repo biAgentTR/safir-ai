@@ -14,6 +14,9 @@ export default defineNuxtConfig({
 
   modules: ['@nuxtjs/tailwindcss', '@pinia/nuxt'],
 
+  // Flat component names regardless of subfolder (StageCard, not WorkspaceStageCard).
+  components: [{ path: '~/components', pathPrefix: false }],
+
   css: ['~/assets/css/main.css'],
 
   app: {
@@ -45,6 +48,8 @@ export default defineNuxtConfig({
     devProxy: {
       '/health': { target: 'http://localhost:8000/health', changeOrigin: true },
       '/analyze': { target: 'http://localhost:8000/analyze', changeOrigin: true },
+      '/events': { target: 'http://localhost:8000/events', changeOrigin: true },
+      '/alerts': { target: 'http://localhost:8000/alerts', changeOrigin: true },
     },
   },
 

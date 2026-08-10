@@ -1,18 +1,36 @@
 /**
- * Pinia store: analysis job lifecycle (create + poll for final report).
- *
- * Live pipeline trace comes from `useAnalysisStream` (SSE); this store owns the
- * job identity and the terminal poll result (SafirReport). Keeping the two
- * separated mirrors the backend: SSE = live observability, GET /analyze/jobs =
- * authoritative status + result.
+ * Central Pinia store for a single analysis job. Holds EVERYTHING the workspace
+ * renders (spec #16): current job, live trace events, job status, final report,
+ * selected stage, and alarm/feedback/acknowledge state. Components read from
+ * here and act through `useSafirApi` / `useAnalysisStream` — never raw HTTP.
  */
 import { defineStore } from 'pinia'
 import type {
   AnalyzeRequest,
+  FeedbackLabel,
   JobStatus,
   JobStatusResponse,
   SafirReport,
+  TraceEvent,
+  TraceStage,
+  TraceStatus,
 } from '~/types/api'
+import type { StreamConnection } from '~/composables/useAnalysisStream'
+
+export const STAGE_ORDER: TraceStage[] = [
+  'sampler',
+  'vlm',
+  'events',
+  'agent_context',
+  'decision',
+  'escalation',
+  'report',
+]
+
+/** Critical alarm threshold — mirrors Streamlit theme.CRITICAL_ALARM_THRESHOLD. */
+export const CRITICAL_ALARM_THRESHOLD = 70
+
+type ActionState = 'idle' | 'pending' | 'ok' | 'error'
 
 interface AnalysisState {
   jobId: string | null
@@ -24,6 +42,21 @@ interface AnalysisState {
   error: string | null
   submitting: boolean
   lastRequest: AnalyzeRequest | null
+
+  // live SSE trace
+  traceEvents: TraceEvent[]
+  connection: StreamConnection
+  endStatus: JobStatus | null
+  streamError: string | null
+
+  // ui
+  selectedStage: TraceStage | null
+  alarmPlayedFor: string | null
+
+  // human-in/on-the-loop
+  feedback: { state: ActionState; label: FeedbackLabel | null; message: string }
+  ack: { state: ActionState; message: string }
+  manualAlert: { state: ActionState; message: string; alertId: string | null }
 }
 
 export const useAnalysisStore = defineStore('analysis', {
@@ -37,11 +70,62 @@ export const useAnalysisStore = defineStore('analysis', {
     error: null,
     submitting: false,
     lastRequest: null,
+
+    traceEvents: [],
+    connection: 'idle',
+    endStatus: null,
+    streamError: null,
+
+    selectedStage: null,
+    alarmPlayedFor: null,
+
+    feedback: { state: 'idle', label: null, message: '' },
+    ack: { state: 'idle', message: '' },
+    manualAlert: { state: 'idle', message: '', alertId: null },
   }),
 
   getters: {
     isTerminal: (s) => s.status === 'done' || s.status === 'error',
     isRunning: (s) => s.status === 'queued' || s.status === 'running',
+
+    /** Last trace event for a stage (one per stage today). */
+    eventForStage:
+      (s) =>
+      (stage: TraceStage): TraceEvent | undefined => {
+        for (let i = s.traceEvents.length - 1; i >= 0; i--) {
+          if (s.traceEvents[i].stage === stage) return s.traceEvents[i]
+        }
+        return undefined
+      },
+
+    /** Derived per-stage status for the cumulative timeline. */
+    stageStatus() {
+      return (stage: TraceStage): TraceStatus | 'pending' => {
+        const ev = (this as unknown as { eventForStage: (x: TraceStage) => TraceEvent | undefined }).eventForStage(stage)
+        if (ev) return ev.status
+        // no event yet: running if the job is active and this is the next stage
+        return 'pending'
+      }
+    },
+
+    completedCount: (s) =>
+      new Set(s.traceEvents.filter((e) => e.status === 'completed').map((e) => e.stage)).size,
+
+    latestStage: (s): TraceStage | null =>
+      s.traceEvents.length ? s.traceEvents[s.traceEvents.length - 1].stage : null,
+
+    riskScore(): number | null {
+      return this.report ? this.report.risk_score : null
+    },
+    riskLevel(): string | null {
+      return this.report ? this.report.risk_level : null
+    },
+    isCritical(): boolean {
+      return this.report != null && this.report.risk_score >= CRITICAL_ALARM_THRESHOLD
+    },
+    hasAutoAlert(): boolean {
+      return !!(this.report && this.report.auto_dispatched && this.report.alert_id)
+    },
   },
 
   actions: {
@@ -53,13 +137,45 @@ export const useAnalysisStore = defineStore('analysis', {
       this.totalSteps = 3
       this.report = null
       this.error = null
+      this.traceEvents = []
+      this.connection = 'idle'
+      this.endStatus = null
+      this.streamError = null
+      this.selectedStage = null
+      this.alarmPlayedFor = null
+      this.feedback = { state: 'idle', label: null, message: '' }
+      this.ack = { state: 'idle', message: '' }
+      this.manualAlert = { state: 'idle', message: '', alertId: null }
     },
 
-    /** POST /analyze/jobs; returns the new job_id. */
+    // ---- SSE trace ingestion (called by useAnalysisStream) ----
+    pushTraceEvent(ev: TraceEvent) {
+      this.traceEvents = [...this.traceEvents, ev]
+      // auto-follow the newest stage unless the user picked one
+      if (!this.selectedStage || this.selectedStage === this.latestStage) {
+        this.selectedStage = ev.stage
+      }
+    },
+    setConnection(c: StreamConnection) {
+      this.connection = c
+    },
+    setEndStatus(s: JobStatus) {
+      this.endStatus = s
+    },
+    setStreamError(detail: string | null) {
+      this.streamError = detail
+    },
+    selectStage(stage: TraceStage) {
+      this.selectedStage = stage
+    },
+    markAlarmPlayed(signature: string) {
+      this.alarmPlayedFor = signature
+    },
+
+    // ---- job lifecycle ----
     async createAnalysis(payload: AnalyzeRequest): Promise<string> {
       const api = useSafirApi()
       this.submitting = true
-      this.error = null
       try {
         this.resetJob()
         this.lastRequest = payload
@@ -81,10 +197,6 @@ export const useAnalysisStore = defineStore('analysis', {
       this.error = s.error
     },
 
-    /**
-     * Poll GET /analyze/jobs/{id} until terminal. SSE drives the live pipeline
-     * view; this fetches the authoritative final SafirReport.
-     */
     async pollUntilDone(jobId: string, intervalMs = 500, timeoutMs = 120_000) {
       const api = useSafirApi()
       const deadline = Date.now() + timeoutMs
@@ -96,5 +208,55 @@ export const useAnalysisStore = defineStore('analysis', {
       }
       throw new Error('Poll timeout')
     },
+
+    // ---- human-in/on-the-loop actions (real endpoints) ----
+    async submitFeedback(label: FeedbackLabel) {
+      if (this.report?.event_id == null) return
+      const api = useSafirApi()
+      this.feedback = { state: 'pending', label, message: '' }
+      try {
+        const res = await api.sendFeedback(this.report.event_id, label)
+        this.feedback = { state: 'ok', label, message: res.message }
+      } catch (e) {
+        this.feedback = { state: 'error', label, message: humanError(e, 'Geri bildirim kaydedilemedi.') }
+      }
+    },
+
+    async acknowledgeAlert(note = '') {
+      if (!this.report?.alert_id) return
+      const api = useSafirApi()
+      this.ack = { state: 'pending', message: '' }
+      try {
+        const res = await api.acknowledgeAlert(this.report.alert_id, note)
+        this.ack = { state: 'ok', message: res.message }
+      } catch (e) {
+        this.ack = { state: 'error', message: humanError(e, 'Alarm onaylanamadı.') }
+      }
+    },
+
+    async triggerManualAlert(note = '') {
+      if (!this.report) return
+      const api = useSafirApi()
+      this.manualAlert = { state: 'pending', message: '', alertId: null }
+      try {
+        const res = await api.triggerAlert({
+          risk_score: this.report.risk_score,
+          risk_level: this.report.risk_level,
+          recommended_action: this.report.actions?.[0] ?? this.report.recommended_action ?? '',
+          operator_note: note,
+        })
+        this.manualAlert = { state: 'ok', message: res.message, alertId: res.alert_id }
+      } catch (e) {
+        this.manualAlert = { state: 'error', message: humanError(e, 'Manuel alarm tetiklenemedi.'), alertId: null }
+      }
+    },
   },
 })
+
+function humanError(e: unknown, fallback: string): string {
+  return (
+    (e as { data?: { detail?: string } })?.data?.detail ??
+    (e as Error)?.message ??
+    fallback
+  )
+}
