@@ -10,6 +10,25 @@ saglar.
 
 from __future__ import annotations
 
+from src.event_analysis.schemas import EventType
+
+# Modelin `EVENTS_JSON` blogunda kullanabilecegi gecerli tip degerleri
+# (EventType enum'undan turetilir; enum degisirse otomatik senkron kalir).
+_ALLOWED_EVENT_TYPES = ", ".join(event_type.value for event_type in EventType)
+
+_EVENTS_JSON_INSTRUCTION = (
+    "\n\n## Makine-Okunur Olay Listesi (ZORUNLU)\n"
+    "Yukaridaki insan-okur bloklardan SONRA, en son satirda su bicimde bir "
+    "'EVENTS_JSON' satiri ekle (bu satirdan sonra baska metin yazma):\n"
+    'EVENTS_JSON: [{"type": "<tip>", "timestamp": <saniye>, "confidence": <0.0-1.0>, '
+    '"evidence": "<kisa kanit>"}]\n'
+    f"Gecerli 'type' degerleri YALNIZCA sunlardir: {_ALLOWED_EVENT_TYPES}.\n"
+    "Gordugun HER riskli olay icin ayri bir kayit uret; hicbir riskli olay "
+    "yoksa tek bir {\"type\": \"genel_gozlem\"} kaydi uret. 'timestamp' saniye "
+    "cinsinden (ilgili Olay Grubunun peak zamani); 'confidence' senin eminlik "
+    "derecendir. Tipi kanittan emin degilsen 'genel_gozlem' kullan."
+)
+
 VLM_OBSERVER_SYSTEM_PROMPT = (
     "Sen savunma sanayi tesisleri ve saha operasyonlari icin calisan bir is "
     "sagligi ve guvenligi (ISG) goruntu analistisin. Gorevin, kamera "
@@ -48,6 +67,7 @@ VLM_OBSERVER_SYSTEM_PROMPT = (
     "4. Sahne rutinse tehlike uydurma; ilgili alanlara 'yok'/'belirgin tehlike yok' yaz.\n"
     "5. Risk skoru, risk seviyesi veya aksiyon onerisi URETME; bu sonraki katmanin isidir.\n"
     "6. Asagida operatorun ek talimati varsa, gozlemini ona oncelik vererek yap."
+    + _EVENTS_JSON_INSTRUCTION
 )
 
 __all__ = ["VLM_OBSERVER_SYSTEM_PROMPT"]

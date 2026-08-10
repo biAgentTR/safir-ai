@@ -30,6 +30,14 @@ class EventEngineInput(BaseModel):
     timestamp: float = Field(description="Gozlemin saniye cinsinden zaman damgasi.")
     source_model: str = Field(description="Aciklamayi ureten VLM'in model adi.")
     frame_count: int = Field(default=0, ge=0, description="Aciklamaya kaynaklik eden Kanit Karesi sayisi.")
+    structured_events: List[dict] = Field(
+        default_factory=list,
+        description=(
+            "VLM'in dogrudan urettigi tipli olaylar (`EVENTS_JSON`); her biri "
+            "`{type, timestamp, confidence, evidence}`. Bos ise EventEngine "
+            "anahtar-kelime fallback'ine duser."
+        ),
+    )
 
     @classmethod
     def from_vlm_response(cls, vlm_response: "VLMResponse", timestamp: float) -> "EventEngineInput":
@@ -47,6 +55,7 @@ class EventEngineInput(BaseModel):
             timestamp=timestamp,
             source_model=vlm_response.model_name,
             frame_count=vlm_response.frame_count,
+            structured_events=list(getattr(vlm_response, "structured_events", []) or []),
         )
 
 

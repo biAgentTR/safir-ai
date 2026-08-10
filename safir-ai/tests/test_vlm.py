@@ -84,3 +84,34 @@ def test_get_llm_client_returns_mock_when_flagged(safir_config) -> None:
     client = get_llm_client(safir_config.llm, use_mock=True)
     assert isinstance(client, MockLLMClient)
     assert client.model_name == "mock-llm"
+
+
+def test_parse_structured_events_extracts_and_cleans() -> None:
+    """VLM ciktisindaki EVENTS_JSON blogu ayristirilmali ve insan-okur metinden ayrilmali."""
+    from src.vlm.base_vlm import parse_structured_events
+
+    content = (
+        "Olay #1 (00:15):\n- Kisiler: 1 kisi yerde\n"
+        'EVENTS_JSON: [{"type": "arac_yaya_yakinligi", "timestamp": 15, "confidence": 0.8}]'
+    )
+    desc, events = parse_structured_events(content)
+    assert "EVENTS_JSON" not in desc
+    assert desc.strip().endswith("yerde")
+    assert events == [{"type": "arac_yaya_yakinligi", "timestamp": 15, "confidence": 0.8}]
+
+
+def test_parse_structured_events_no_block_returns_empty() -> None:
+    """EVENTS_JSON blogu yoksa metin degismeden kalmali, olay listesi bos donmeli."""
+    from src.vlm.base_vlm import parse_structured_events
+
+    desc, events = parse_structured_events("Sadece duz gozlem metni.")
+    assert desc == "Sadece duz gozlem metni."
+    assert events == []
+
+
+def test_parse_structured_events_invalid_json_falls_back() -> None:
+    """Gecersiz JSON blogu bos liste dondurmeli (EventEngine keyword fallback'ine duser)."""
+    from src.vlm.base_vlm import parse_structured_events
+
+    _, events = parse_structured_events("Gozlem.\nEVENTS_JSON: [not valid json}")
+    assert events == []
