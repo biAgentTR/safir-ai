@@ -48,12 +48,17 @@ class LLMClient:
         self._model_name = endpoint.model_name
         # Yerel vLLM icin base_url=http://host:port/v1 ve api_key="EMPTY";
         # provider="gemini" icin endpoint.base_url + GEMINI_API_KEY (api_key_env).
+        # logprobs=None: langchain_openai varsayilan olarak `logprobs: false`
+        # gonderir; Gemini'nin OpenAI-uyumlu ucu bu alani reddeder ("Unknown name
+        # logprobs" 400). None yapmak alani payload'dan tamamen dusurur
+        # (yerel vLLM icin de zarari yok).
         self._base_chat = ChatOpenAI(
             model=endpoint.model_name,
             base_url=endpoint.resolved_base_url(),
             api_key=endpoint.resolved_api_key(),
             temperature=endpoint.temperature,
             max_tokens=endpoint.max_new_tokens,
+            logprobs=None,
         )
         # `bind_tools` bunu araci-baglanmis surumle degistirir; `_base_chat`
         # (araci baglanmamis) JSON-modu (invoke_json) icin saklanir.
