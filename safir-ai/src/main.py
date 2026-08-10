@@ -10,18 +10,24 @@ olarak saglanir; `/analyze` ise tek seferlik senkron kullanim icin korunur.
 
 from __future__ import annotations
 
+import asyncio
 import datetime
+import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Deque, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
+
+from src.observability.trace_serializer import MAX_FRAMES_PER_JOB, PipelineTraceCollector
 
 from src.agent.langgraph_agent import SafirAgent
 from src.agent.tools import RetrieverTool
@@ -241,7 +247,7 @@ class FeedbackResponse(BaseModel):
 
 @dataclass
 class JobState:
-    """Bir `/analyze/jobs` isinin canli durumu (asama, sonuc, hata)."""
+    """Bir `/analyze/jobs` isinin canli durumu (asama, sonuc, hata, trace)."""
 
     status: str = "queued"                    # queued | running | done | error
     stage_name: str = ""
@@ -249,6 +255,13 @@ class JobState:
     total_steps: int = 3
     result: Optional[SafirReport] = None
     error: Optional[str] = None
+    # 08 - Gozlemlenebilirlik (SSE): pipeline'in GERCEK ara asama ciktilarinin
+    # frontend-uyumlu, base64 icermeyen serilestirilmis olaylari. `frames`,
+    # trace olaylarinin referans verdigi kucuk JPEG baytlarini bellek-ici tutar
+    # (frame endpoint'i buradan sunar; base64 SSE payload'una girmez).
+    trace_events: List[dict] = field(default_factory=list)
+    frames: Dict[str, bytes] = field(default_factory=dict)
+    current_stage: str = ""
 
 
 class JobStatusResponse(BaseModel):
@@ -668,6 +681,7 @@ class SafirPipeline:
 _pipeline: SafirPipeline | None = None
 _jobs: Dict[str, JobState] = {}
 _jobs_lock = threading.Lock()
+_MAX_JOBS = 50  # Bellek sinir: bu sayidan fazla is tutulmaz (en eski budanir).
 
 
 def get_pipeline() -> SafirPipeline:
@@ -707,6 +721,25 @@ def _run_job(
             job.step = step
             job.total_steps = total
 
+    # 08 - Gozlemlenebilirlik: her GERCEK asama ciktisini serilestirip JobState'e
+    # yazan trace toplayici. Pipeline mantigi degismez; yalnizca `trace` kancasi
+    # beslenir. `frames` (kucuk JPEG baytlar) trace olaylarindan AYRI tutulur.
+    def _on_event(event: dict) -> None:
+        with _jobs_lock:
+            job = _jobs[job_id]
+            job.trace_events.append(event)
+            job.current_stage = event.get("stage", "")
+
+    def _on_frames(frames: Dict[str, bytes]) -> None:
+        with _jobs_lock:
+            store = _jobs[job_id].frames
+            for fid, raw in frames.items():
+                if len(store) >= MAX_FRAMES_PER_JOB:
+                    break
+                store[fid] = raw
+
+    trace_collector = PipelineTraceCollector(job_id, on_event=_on_event, on_frames=_on_frames)
+
     try:
         pipeline = get_pipeline()
         normalized_source = normalize_video_source(video_source)
@@ -716,6 +749,7 @@ def _run_job(
             on_stage=on_stage,
             sample_fps_override=sample_fps_override,
             min_change_threshold_override=min_change_threshold_override,
+            trace=trace_collector,
         )
         with _jobs_lock:
             job = _jobs[job_id]
@@ -727,7 +761,21 @@ def _run_job(
         with _jobs_lock:
             job = _jobs[job_id]
             job.status = "error"
-            job.error = str(exc)
+            # Guvenli hata mesaji (stack trace/secret UI'a donmez).
+            job.error = "Analiz basarisiz oldu. Ayrintilar sunucu loglarinda."
+            failed_stage = job.current_stage or "sampler"
+            job.trace_events.append(
+                {
+                    "stage": failed_stage,
+                    "status": "failed",
+                    "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                    "duration_ms": None,
+                    "summary": "Asama basarisiz oldu.",
+                    "data": {},
+                    "metadata": {},
+                    "error": job.error,
+                }
+            )
 
 
 @app.get("/health")
@@ -778,6 +826,10 @@ def create_analyze_job(request: AnalyzeRequest) -> AnalyzeJobResponse:
     """
     job_id = str(uuid.uuid4())
     with _jobs_lock:
+        # Bellek sinir: en eski isleri budayarak `_jobs`'in (ve icindeki frame
+        # baytlarinin) sinirsiz buyumesini engelle.
+        while len(_jobs) >= _MAX_JOBS:
+            _jobs.pop(next(iter(_jobs)))
         _jobs[job_id] = JobState()
 
     thread = threading.Thread(
@@ -822,6 +874,85 @@ def get_analyze_job(job_id: str) -> JobStatusResponse:
         total_steps=job.total_steps,
         result=job.result,
         error=job.error,
+    )
+
+
+# Frame kimligi yalnizca in-memory sozluk anahtaridir (dosya yolu DEGIL); path
+# traversal riski yoktur. Yine de beklenmedik girdilere karsi bicimi kisitlariz.
+_FRAME_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+
+
+@app.get("/analyze/jobs/{job_id}/frames/{frame_id}")
+def get_job_frame(job_id: str, frame_id: str) -> Response:
+    """Bir isin trace olaylarinda referans verilen kareyi (JPEG) sunar (base64 yerine).
+
+    Kareler, `_run_job` sirasinda bellek-ici (`JobState.frames`) tutulur; bu uc
+    nokta yalnizca o sozlukten okur (dosya sistemine erisim/yeni dosya kopyalama
+    YOK).
+
+    Args:
+        job_id: Analiz isinin kimligi.
+        frame_id: Trace olayindaki `frame_id`/`thumbnail_url` referansi.
+
+    Returns:
+        `image/jpeg` yaniti.
+
+    Raises:
+        HTTPException: Is/kare bulunamazsa (404) veya `frame_id` bicimi gecersizse (400).
+    """
+    if not _FRAME_ID_RE.match(frame_id):
+        raise HTTPException(status_code=400, detail="Gecersiz frame_id.")
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        raw = job.frames.get(frame_id) if job else None
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Is bulunamadi: {job_id}")
+    if raw is None:
+        raise HTTPException(status_code=404, detail=f"Kare bulunamadi: {frame_id}")
+    return Response(content=raw, media_type="image/jpeg")
+
+
+@app.get("/analyze/jobs/{job_id}/stream")
+async def stream_analyze_job(job_id: str) -> StreamingResponse:
+    """Bir isin GERCEK pipeline trace olaylarini canli (SSE) yayinlar.
+
+    Additive uc nokta: mevcut polling (`GET /analyze/jobs/{job_id}`) YERINE GECMEZ,
+    onu tamamlar. Baglanan istemci once o ana kadar birikmis tum trace olaylarini
+    (replay) alir, sonra yenileri geldikce yayinlanir; is `done`/`error` olunca
+    `event: end` ile stream duzgun sonlandirilir.
+
+    SSE bicimi: her olay `data: <json>\\n\\n`; kapanis `event: end` + durum.
+    Yalnizca serilestirilmis, base64/secret icermeyen TraceEvent'ler gonderilir.
+    """
+
+    async def event_generator():
+        with _jobs_lock:
+            exists = job_id in _jobs
+        if not exists:
+            yield f"event: error\ndata: {json.dumps({'detail': 'Is bulunamadi'})}\n\n"
+            return
+
+        sent = 0
+        while True:
+            with _jobs_lock:
+                job = _jobs.get(job_id)
+                events = list(job.trace_events) if job else []
+                status = job.status if job else "error"
+
+            for event in events[sent:]:
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            sent = len(events)
+
+            if status in ("done", "error"):
+                yield f"event: end\ndata: {json.dumps({'status': status})}\n\n"
+                return
+
+            await asyncio.sleep(0.2)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
