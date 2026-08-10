@@ -356,12 +356,92 @@ class SafirPipeline:
         if on_stage:
             on_stage(*STAGE_SAMPLER)
 
+        # Her asama, GERCEK production metoduna delege edilir; boylece hem run()
+        # tek cagriyla calisir, hem de Jupyter demo bu metotlari tek tek cagirip
+        # her asamanin gercek ciktisini gosterebilir (implementasyon kopyalanmaz).
+        sampler, evidence_frames, clusters = self.stage_sample(
+            video_source, sample_fps_override, min_change_threshold_override
+        )
+        _emit("sampler", {"evidence_frames": evidence_frames, "stats": sampler.last_run_stats})
+        _emit("clusters", {"clusters": clusters})
+
+        if on_stage:
+            on_stage(*STAGE_VLM)
+
+        vlm_response = self.stage_vlm(clusters, user_prompt)
+        _emit("vlm", {"vlm_response": vlm_response, "clusters": clusters, "user_prompt": user_prompt})
+
+        if on_stage:
+            on_stage(*STAGE_AGENT)
+
+        detected_events, temporal_events, rule_matches, latest_timestamp = self.stage_events(
+            vlm_response, clusters
+        )
+        _emit(
+            "events",
+            {
+                "detected_events": detected_events,
+                "temporal_events": temporal_events,
+                "rule_matches": rule_matches,
+            },
+        )
+
+        prompt_block, context = self.stage_context(
+            vlm_response, user_prompt, latest_timestamp, rule_matches
+        )
+        _emit("agent_context", {"prompt_block": prompt_block})
+
+        decision = self.stage_decide(prompt_block)
+        _emit("decision", {"decision": decision})
+
+        escalation = self.stage_escalate(decision, vlm_response)
+        _emit("escalation", {"escalation": escalation})
+
+        report = self.build_report(
+            video_source=video_source,
+            sampler=sampler,
+            clusters=clusters,
+            vlm_response=vlm_response,
+            context=context,
+            decision=decision,
+            escalation=escalation,
+            temporal_events=temporal_events,
+            rule_matches=rule_matches,
+            latest_timestamp=latest_timestamp,
+        )
+        logger.info(
+            "SAFIR pipeline tamamlandi: video=%s risk=%d(%s) sure=%.3fs",
+            video_source,
+            decision.risk_score,
+            decision.risk_level,
+            time.perf_counter() - pipeline_started_at,
+        )
+        _emit("report", {"report": report})
+        return report
+
+    # -------------------------------------------------------------------------
+    # Asama metotlari: `run()`in her adimini ayri, GERCEK production metodu
+    # olarak sunar. Jupyter demo (notebooks/safir_end_to_end_demo.ipynb) bu
+    # metotlari tek tek cagirip her asamanin gercek ciktisini gosterir;
+    # implementasyon notebook'a KOPYALANMAZ, yalnizca bu metotlar cagrilir.
+    # -------------------------------------------------------------------------
+
+    def stage_sample(
+        self,
+        video_source: str,
+        sample_fps_override: Optional[int] = None,
+        min_change_threshold_override: Optional[float] = None,
+    ):
+        """01-02: Adaptive Frame Sampler + Olay Kumeleme + Temsili Kare Cikarimi.
+
+        Returns:
+            `(sampler, evidence_frames, clusters)` — clusters, VLM'e gonderilecek
+            pre/peak/post `representative_frames` ile doldurulmustur (VOD dosyalari).
+        """
         sampler = sampler_from_config(self._config.sampler, min_change_threshold_override)
         sample_fps = sample_fps_override or self._default_sample_fps
 
-        evidence_frames: List[EvidenceFrame] = sampler.process_video(
-            video_source, sample_fps=sample_fps
-        )
+        evidence_frames: List[EvidenceFrame] = sampler.process_video(video_source, sample_fps=sample_fps)
         if not evidence_frames:
             raise RuntimeError(f"Video kaynagindan kanit karesi uretilemedi: {video_source}")
 
@@ -369,12 +449,7 @@ class SafirPipeline:
         if not clusters:
             raise RuntimeError(f"Kanit karelerinden Olay Grubu uretilemedi: {video_source}")
 
-        # 02b - Temsili Kare Cikarimi: Her Olay Grubu icin zirve karenin
-        # oncesi/sonrasindan (pre-event/peak/post-event) kareler cikarilir ve
-        # VLM'e TEK durağan kare yerine zaman sirali bir DIZI olarak gonderilir;
-        # boylece model olayin baslangic->gelisim->sonuc akisini muhakeme
-        # edebilir (sartname: zamansal iliskiler / kritik an analizi). Seek
-        # tabanli oldugundan yalnizca kayitli (VOD) dosyalarda uygulanir.
+        # 02b - Temsili Kare Cikarimi (seek tabanli -> yalnizca VOD dosyalari).
         if not is_live_source(video_source):
             rep_extractor = RepresentativeFrameExtractor(
                 pre_event_sec=self._config.sampler.pre_peak_offset_sec,
@@ -385,51 +460,39 @@ class SafirPipeline:
                     cluster.representative_frames = rep_extractor.extract(video_source, cluster.peak_frame)
                 except (ValueError, RuntimeError) as exc:
                     logger.warning(
-                        "Temsili kare cikarilamadi (Olay #%d), tek kareye dusuluyor: %s",
-                        cluster.event_id,
-                        exc,
+                        "Temsili kare cikarilamadi (Olay #%d), tek kareye dusuluyor: %s", cluster.event_id, exc
                     )
 
-        total_rep_frames = sum(len(c.representative_frames) for c in clusters)
         logger.info(
             "VLM oncesi katman ozeti: %d Kanit Karesi -> %d Olay Grubu -> %d temsili kare VLM'e gonderiliyor",
             len(evidence_frames),
             len(clusters),
-            total_rep_frames or len(clusters),
+            sum(len(c.representative_frames) for c in clusters) or len(clusters),
         )
-        _emit("sampler", {"evidence_frames": evidence_frames, "stats": sampler.last_run_stats})
-        _emit("clusters", {"clusters": clusters})
+        return sampler, evidence_frames, clusters
 
-        if on_stage:
-            on_stage(*STAGE_VLM)
-
-        # Hata dayanikliligi: VLM analizi (retry'lardan sonra da) basarisiz
-        # olursa is'i cokertmek yerine degraded bir aciklamayla devam edilir;
-        # boylece operator en azindan kanit karelerini ve acik bir hata notunu
-        # gorur (rapor "done" doner, "error" degil).
+    def stage_vlm(self, clusters: List[EventCluster], user_prompt: str) -> VLMResponse:
+        """03: VLM (Gemini) gorsel anlama. Hata halinde is'i cokertmez, degraded `VLMResponse` doner."""
         try:
-            vlm_response = self._vlm.describe_events(clusters, prompt=user_prompt)
+            return self._vlm.describe_events(clusters, prompt=user_prompt)
         except Exception as exc:  # noqa: BLE001 - degraded rapora tasinir
             logger.exception("VLM analizi basarisiz; degraded raporla devam ediliyor.")
-            vlm_response = VLMResponse(
+            return VLMResponse(
                 description=f"[HATA] VLM analizi yapilamadi ({exc}). Manuel inceleme gerekli.",
                 model_name=getattr(self._vlm, "model_name", "unknown"),
                 frame_count=len(clusters),
                 latency_ms=0.0,
                 structured_events=[],
             )
-        _emit("vlm", {"vlm_response": vlm_response, "clusters": clusters, "user_prompt": user_prompt})
 
-        if on_stage:
-            on_stage(*STAGE_AGENT)
+    def stage_events(self, vlm_response: VLMResponse, clusters: List[EventCluster]):
+        """07: EventEngine -> buffer/budama -> TemporalReasoner -> RuleEngine.
 
+        Returns:
+            `(detected_events, temporal_events, rule_matches, latest_timestamp)`.
+            `temporal_events`/`rule_matches`, cagrilar arasi kalici buffer uzerinden hesaplanir.
+        """
         latest_timestamp = clusters[-1].end_time
-
-        # 07 - Olay Analizi Katmani (T008-T009-T010): VLM aciklamasindan
-        # yapilandirilmis olay tespiti, buffer'a ekleme + zaman bazli budama,
-        # zamansal gruplama/iliskilendirme, kural sorgulama. `temporal_events`
-        # ve `rule_matches`, tum buffer (bu cagriya kadar biriken gecmis)
-        # uzerinden hesaplanir.
         engine_input = EventEngineInput.from_vlm_response(vlm_response, timestamp=latest_timestamp)
         detected_events = self._event_engine.detect(engine_input)
         self._event_history_buffer.extend(detected_events)
@@ -437,36 +500,31 @@ class SafirPipeline:
 
         temporal_events = self._temporal_reasoner.reason(list(self._event_history_buffer))
         rule_matches = self._rule_engine.evaluate(temporal_events)
-        _emit(
-            "events",
-            {
-                "detected_events": detected_events,
-                "temporal_events": temporal_events,
-                "rule_matches": rule_matches,
-            },
-        )
+        return detected_events, temporal_events, rule_matches, latest_timestamp
 
+    def stage_context(self, vlm_response: VLMResponse, user_prompt: str, latest_timestamp: float, rule_matches):
+        """04: ContextBuilder (SQLite + FAISS RAG) + kural ozeti -> ajan istem blogu.
+
+        Returns:
+            `(prompt_block, context)`.
+        """
         context = self._context_builder.build(
-            vlm_description=vlm_response.description,
-            user_prompt=user_prompt,
-            timestamp=latest_timestamp,
+            vlm_description=vlm_response.description, user_prompt=user_prompt, timestamp=latest_timestamp
         )
-
         prompt_block = context.to_prompt_block()
         event_analysis_summary = _summarize_rule_matches(rule_matches)
         if event_analysis_summary:
             prompt_block = (
                 f"{prompt_block}\n\n## Olay Analizi Katmani Sinyalleri (T008-T012)\n{event_analysis_summary}"
             )
+        return prompt_block, context
 
-        _emit("agent_context", {"prompt_block": prompt_block})
+    def stage_decide(self, prompt_block: str):
+        """05: LangGraph ajani muhakeme -> `AgentDecision` (risk skoru, ozet, aksiyonlar)."""
+        return self._agent.run(prompt_block)
 
-        decision = self._agent.run(prompt_block)
-        _emit("decision", {"decision": decision})
-
-        # 06 - Otomatik Eskalasyon: risk skoruna gore kademe belirlenir ve
-        # yuksek/kritik durumda saha alarmi OTOMATIK tetiklenir (bloke edici
-        # operator kapisi yok).
+    def stage_escalate(self, decision, vlm_response: VLMResponse):
+        """06: Otomatik eskalasyon -> `EscalationDecision` (yuksek/kritikte alarm otomatik tetiklenir)."""
         escalation = self._escalation.evaluate(
             risk_score=decision.risk_score,
             risk_level=decision.risk_level,
@@ -480,13 +538,23 @@ class SafirPipeline:
             escalation.alert_id,
             escalation.reason,
         )
-        _emit("escalation", {"escalation": escalation})
+        return escalation
 
-        # 07 - Olay Analizi Katmani (T011-T012): bu cagrida uretilen/
-        # guncellenen TUM TemporalEvent'leri (birden fazla kategori
-        # tetiklenmis olabilir) StructuredEvent'e cevirip topluca kaydet.
-        # Ajan karari (risk_score/risk_level) tum baglami (tum rule_matches)
-        # gorerek verildigi icin, bu cagridaki her StructuredEvent'e aynen uygulanir.
+    def build_report(
+        self,
+        *,
+        video_source: str,
+        sampler,
+        clusters: List[EventCluster],
+        vlm_response: VLMResponse,
+        context,
+        decision,
+        escalation,
+        temporal_events,
+        rule_matches,
+        latest_timestamp: float,
+    ) -> SafirReport:
+        """06-07: Olay kaydi (EventBuilder/History/Store) + nihai `SafirReport` insasi."""
         current_call_events = _select_current_call_events(temporal_events, latest_timestamp)
         detected_event_types = sorted({te.event_type for te in current_call_events})
         structured_events = self._event_builder.build_batch(current_call_events, rule_matches)
@@ -496,26 +564,12 @@ class SafirPipeline:
             risk_levels=[decision.risk_level] * len(structured_events),
         )
         logger.info(
-            "Event Gecmisi: %d StructuredEvent kaydedildi (ids=%s)",
-            len(recorded_event_ids),
-            recorded_event_ids,
+            "Event Gecmisi: %d StructuredEvent kaydedildi (ids=%s)", len(recorded_event_ids), recorded_event_ids
         )
         event_id = recorded_event_ids[0] if recorded_event_ids else None
+        timeline = self._event_store.get_timeline(start_ts=clusters[0].start_time, end_ts=latest_timestamp)
 
-        timeline = self._event_store.get_timeline(
-            start_ts=clusters[0].start_time, end_ts=latest_timestamp
-        )
-
-        elapsed_sec = time.perf_counter() - pipeline_started_at
-        logger.info(
-            "SAFIR pipeline tamamlandi: video=%s risk=%d(%s) sure=%.3fs",
-            video_source,
-            decision.risk_score,
-            decision.risk_level,
-            elapsed_sec,
-        )
-
-        report = SafirReport(
+        return SafirReport(
             event_id=event_id,
             video_source=video_source,
             generated_at=datetime.datetime.utcnow().isoformat() + "Z",
@@ -530,8 +584,7 @@ class SafirPipeline:
             alert_id=escalation.alert_id,
             detected_event_types=detected_event_types,
             timeline=[
-                TimelineEntry(timestamp=e["timestamp"], description=e["description"])
-                for e in timeline
+                TimelineEntry(timestamp=e["timestamp"], description=e["description"]) for e in timeline
             ],
             evidence_frames=[
                 EvidenceFrameOut(
@@ -561,8 +614,6 @@ class SafirPipeline:
             vlm_model=vlm_response.model_name,
             llm_model=self._agent.model_name,
         )
-        _emit("report", {"report": report})
-        return report
 
     def acknowledge_alert(self, alert_id: str, operator_note: str = ""):
         """Operatorun otomatik tetiklenmis bir saha alarmini onaylamasini/geri almasini isler (Human-on-the-Loop).

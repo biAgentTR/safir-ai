@@ -1,13 +1,17 @@
 """SAFIR uctan-uca demo notebook'unu uretir: notebooks/safir_end_to_end_demo.ipynb
 
-FAITHFUL demo: GERCEK production pipeline'i (`SafirPipeline.run`) TEK cagriyla
-calistirir; her asamanin gercek ara ciktisini `trace` gozlem kancasiyla yakalar
-ve gosterir. Notebook production mantigini KOPYALAMAZ, yalnizca import edip
-calistirir ve yakalanan gercek ciktilari gorsellestirir. Fake cikti yok.
+FAITHFUL orchestration + observability:
+- Notebook production implementasyonunu KOPYALAMAZ.
+- Her seyi tek `run()` arkasina SAKLAMAZ.
+- Bir `SafirPipeline` orneginin GERCEK asama metotlarini (stage_sample, stage_vlm,
+  stage_events, stage_context, stage_decide, stage_escalate, build_report) tek tek
+  cagirir ve her cagrinin gercek ciktisini gosterir.
+- Varsayilan: GERCEK video (data/ dropdown) + GERCEK Gemini + GERCEK RAG. Mock/fake
+  yalnizca ayri, acikca isaretli gelistirici bayraklaridir.
 
 Kullanim:
-    python scripts/build_e2e_demo.py            # Gemini (USE_MOCK=False)
-    python scripts/build_e2e_demo.py --mock     # offline dogrulama
+    python scripts/build_e2e_demo.py            # gercek demo (Gemini + gercek RAG)
+    python scripts/build_e2e_demo.py --dev      # DEV_MODE=True (mock+fake, offline dogrulama)
 """
 
 from __future__ import annotations
@@ -20,7 +24,7 @@ import nbformat as nbf
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def build(use_mock_default: bool) -> nbf.NotebookNode:
+def build(dev_default: bool) -> nbf.NotebookNode:
     nb = nbf.v4.new_notebook()
     cells: list = []
     md = lambda s: cells.append(nbf.v4.new_markdown_cell(s))
@@ -29,33 +33,33 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
     md(
         "# 🛡️ SAFIR — Uctan Uca (End-to-End) Teknik Demonstrasyon\n"
         "\n"
-        "Bu defter, SAFIR'in **gercek calisan sisteminin teknik aynasidir**. Bir video verildiginde "
-        "**production pipeline** (`src/main.py::SafirPipeline.run`) TEK cagriyla calisir; her asamanin "
-        "**gercek** ara ciktisi bir gozlem (trace) kancasiyla yakalanip gosterilir.\n"
+        "Bu defter, SAFIR'in **gercek calisan sisteminin teknik aynasidir**. Production `SafirPipeline`'in "
+        "**gercek asama metotlarini tek tek cagirir** ve her cagrinin **gercek** ciktisini gosterir.\n"
         "\n"
-        "> Notebook production mantigini kopyalamaz — yalnizca gercek kodu **import edip calistirir** ve "
-        "yakalanan gercek ciktilari gorsellestirir. VLM olarak **Gemini** kullanilir.\n"
+        "> Notebook production mantigini **kopyalamaz** ve her seyi tek `run()` arkasina **saklamaz** — "
+        "orchestration + observability katmanidir. VLM olarak **Gemini** kullanilir.\n"
         "\n"
-        "### Gercek pipeline (koddan cikarilmis)\n"
+        "### Gercek pipeline (koddan cikarilmis) ve cagrilan metotlar\n"
         "```\n"
         "VIDEO\n"
-        "  ↓  AdaptiveFrameSampler.process_video        (src/sampler/adaptive_sampler.py)  -> kanit kareleri + motion_bbox\n"
-        "  ↓  AdaptiveFrameSampler.cluster_events                                          -> Olay Gruplari (zaman+IoU)\n"
-        "  ↓  RepresentativeFrameExtractor.extract      (src/sampler/context/...)          -> pre/peak/post kareler\n"
-        "  ↓  VLMClient/GeminiVLM.describe_events        (src/vlm/gemini_vlm.py)  → GEMINI  -> gozlem + EVENTS_JSON\n"
-        "  ↓  EventEngine.detect                         (src/event_analysis/event_engine.py) -> tipli olaylar\n"
-        "  ↓  TemporalReasoner.reason + RuleEngine.evaluate                                -> zamansal olaylar + ISG kurallari\n"
-        "  ↓  ContextBuilder.build                       (src/memory/context_builder.py)   -> ajan baglami (+RAG)\n"
-        "  ↓  SafirAgent.run                             (src/agent/langgraph_agent.py)    -> risk/ozet/aksiyon (JSON)\n"
-        "  ↓  EscalationPolicy.evaluate                  (src/decision/escalation.py)      -> otomatik eskalasyon\n"
-        "  ↓  SafirReport (+to_sartname_json)            (src/schemas/report.py)           -> FINAL REPORT\n"
-        "```"
+        "  ↓  SafirPipeline.stage_sample()   -> AdaptiveFrameSampler.process_video + cluster_events + RepresentativeFrameExtractor\n"
+        "  ↓  SafirPipeline.stage_vlm()      -> GeminiVLM.describe_events            → GEMINI\n"
+        "  ↓  SafirPipeline.stage_events()   -> EventEngine.detect + TemporalReasoner.reason + RuleEngine.evaluate\n"
+        "  ↓  SafirPipeline.stage_context()  -> ContextBuilder.build (SQLite + FAISS RAG)\n"
+        "  ↓  SafirPipeline.stage_decide()   -> SafirAgent.run (LangGraph)\n"
+        "  ↓  SafirPipeline.stage_escalate() -> EscalationPolicy.evaluate\n"
+        "  ↓  SafirPipeline.build_report()   -> SafirReport (+to_sartname_json)\n"
+        "```\n"
+        "Ayni metotlar `SafirPipeline.run()` tarafindan da ayni sirayla cagrilir (tek gercek kaynak)."
     )
 
     # 1 - Environment
     md(
         "## 1) Environment & Configuration\n"
-        "Proje koku, konfigurasyon, cihaz ve model bilgileri. Eksik bagimlilik varsa **acik** hata verilir."
+        "Proje koku, konfigurasyon, cihaz, model bilgileri. Eksik bagimlilik varsa **acik** hata verilir.\n"
+        "\n"
+        "> `DEV_MODE` yalnizca gelistirici dogrulamasi icindir (mock VLM/LLM + sahte RAG, offline). "
+        "**Mentor demosu icin `DEV_MODE=False`** (gercek Gemini + gercek RAG)."
     )
     code(
         "import sys, os, platform\n"
@@ -65,9 +69,8 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
         "assert (PROJECT_ROOT / 'src').exists(), 'Proje koku (safir-ai/) bulunamadi.'\n"
         "sys.path.insert(0, str(PROJECT_ROOT)); os.chdir(PROJECT_ROOT)\n"
         "\n"
-        "# ---- AYARLAR ----\n"
-        f"USE_MOCK = {use_mock_default}     # False: Gemini | True: offline (yalnizca gelistirici dogrulamasi)\n"
-        "USE_FAKE_RAG = True   # True: bge-m3 (~2GB) indirmez | False: gercek FAISS RAG\n"
+        "# ---- MOD ----\n"
+        f"DEV_MODE = {dev_default}   # False: GERCEK (Gemini + gercek RAG) | True: offline dogrulama (mock+fake)\n"
         "\n"
         "_missing = []\n"
         "for _m in ['cv2', 'numpy', 'langgraph', 'langchain_openai', 'httpx', 'yaml', 'ipywidgets']:\n"
@@ -78,23 +81,23 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
         "\n"
         "from src.utils.config_loader import load_config\n"
         "config = load_config()\n"
-        "if USE_MOCK:\n"
+        "if DEV_MODE:\n"
         "    config = config.model_copy(update={'app': config.app.model_copy(update={'use_mock_vlm': True, 'use_mock_llm': True})})\n"
         "\n"
         "print('Python      :', platform.python_version())\n"
         "print('Device (cfg):', config.system.device)\n"
         "print('VLM backend :', config.vlm.active_model, '->', config.vlm.models[config.vlm.active_model].model_name)\n"
         "print('LLM backend :', config.llm.active_model, '->', config.llm.models[config.llm.active_model].model_name)\n"
-        "print('MOCK        :', USE_MOCK, '| FAKE_RAG:', USE_FAKE_RAG)\n"
-        "if not USE_MOCK and not os.environ.get('GEMINI_API_KEY'):\n"
-        "    print('\\n[UYARI] GEMINI_API_KEY tanimli degil — Gemini cagrilari basarisiz olur. (Secret: ortam degiskeni)')"
+        "print('DEV_MODE    :', DEV_MODE, '(False = gercek Gemini + gercek RAG)')\n"
+        "if not DEV_MODE and not os.environ.get('GEMINI_API_KEY'):\n"
+        "    raise EnvironmentError('GEMINI_API_KEY tanimli degil. Gercek demo icin sart. (Secret: ortam degiskeni; koda yazma.)')"
     )
 
     # 2 - Input video
     md(
-        "## 2) Input Video\n"
-        "Videoyu **kutudan sec** (surukle-birak) ya da yol yaz; hicbiri yoksa sentetik uretilir. "
-        "Ardindan cozunurluk / FPS / sure / kare sayisi ve ornek kareler gorunur."
+        "## 2) Input Video (gercek video)\n"
+        "Videoyu `data/` klasorune koy ve **acilir listeden sec** (en guvenilir). Sonra metadata + ornek kareler gorunur.\n"
+        "> Sentetik video yalnizca hicbir video secilmediginde, acikca isaretli bir **fallback**tir; mentor demosunda gercek video kullanin."
     )
     code(
         "import ipywidgets as widgets\n"
@@ -102,47 +105,30 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
         "Path('data').mkdir(exist_ok=True)\n"
         "_exts = ('*.mp4', '*.avi', '*.mkv', '*.mov')\n"
         "_vids = sorted({str(p) for e in _exts for p in Path('data').glob(e)})\n"
-        "# EN GARANTI YOL: videoyu data/ klasorune koy, buradan sec (upload widget'i kararsizdir).\n"
-        "video_dd = widgets.Dropdown(options=['(sentetik)'] + _vids, value='(sentetik)',\n"
-        "                            description='data/ video:', style={'description_width': 'initial'},\n"
-        "                            layout=widgets.Layout(width='520px'))\n"
-        "path_box = widgets.Text(value='', placeholder='veya tam yol: C:/Users/.../video.mp4', description='Yol:',\n"
-        "                        layout=widgets.Layout(width='520px'))\n"
-        "uploader = widgets.FileUpload(accept='video/*', multiple=False, description='📹 Yukle (opsiyonel)')\n"
-        "display(widgets.VBox([video_dd, path_box, uploader]))\n"
-        "print(f'data/ altinda {len(_vids)} video bulundu. Dropdown en garantisi.')\n"
-        "print('Videonu data/ klasorune koy -> bu hucreyi TEKRAR calistir -> dropdown\\'dan sec -> alt hucreyi calistir.')"
+        "video_dd = widgets.Dropdown(options=['(sentetik-fallback)'] + _vids, value=(_vids[0] if _vids else '(sentetik-fallback)'),\n"
+        "                            description='data/ video:', style={'description_width': 'initial'}, layout=widgets.Layout(width='560px'))\n"
+        "path_box = widgets.Text(value='', placeholder='veya tam yol', description='Yol:', layout=widgets.Layout(width='560px'))\n"
+        "display(widgets.VBox([video_dd, path_box]))\n"
+        "print(f'data/ altinda {len(_vids)} video bulundu. Sec -> ALT hucreyi calistir.')\n"
+        "print('(data/ye yeni video eklediysen bu hucreyi TEKRAR calistir.)')"
     )
     code(
         "import tempfile, cv2, numpy as np\n"
         "def _resolve_video():\n"
-        "    # 1) Dropdown (en guvenilir)\n"
-        "    if video_dd.value and video_dd.value != '(sentetik)' and Path(video_dd.value).exists():\n"
+        "    if video_dd.value and video_dd.value != '(sentetik-fallback)' and Path(video_dd.value).exists():\n"
         "        print('Kaynak: dropdown'); return video_dd.value\n"
-        "    # 2) Elle yazilan yol\n"
         "    if path_box.value and Path(path_box.value).exists():\n"
         "        print('Kaynak: yol kutusu'); return path_box.value\n"
-        "    # 3) Yuklenen dosya (kararsiz olabilir)\n"
-        "    val = uploader.value\n"
-        "    if val:\n"
-        "        item = (list(val.values())[0] if isinstance(val, dict) else val[0])\n"
-        "        name = item.get('name') or (item.get('metadata', {}) or {}).get('name') or 'uploaded.mp4'\n"
-        "        p = f'data/{name}'; Path(p).write_bytes(bytes(item['content']))\n"
-        "        print('Kaynak: upload ->', p); return p\n"
-        "    # 4) Sentetik fallback\n"
         "    tmp = tempfile.mkdtemp(); p = str(Path(tmp) / 'synthetic.mp4')\n"
         "    frames = [np.full((240, 320, 3), 30, np.uint8) for _ in range(75)]\n"
         "    for i in range(25, 50): cv2.rectangle(frames[i], (40, 60), (260, 190), (200, 200, 200), -1)\n"
         "    w = cv2.VideoWriter(p, cv2.VideoWriter_fourcc(*'mp4v'), 25.0, (320, 240))\n"
         "    for f in frames: w.write(f)\n"
-        "    w.release()\n"
-        "    print('[!] Video secilmedi -> SENTETIK kullanildi. Kendi videon icin: data/ye koy + dropdown\\'dan sec.')\n"
-        "    return p\n"
+        "    w.release(); print('[!] Gercek video secilmedi -> SENTETIK fallback (mentor demosunda gercek video sec).'); return p\n"
         "\n"
         "VIDEO_PATH = _resolve_video()\n"
         "cap = cv2.VideoCapture(VIDEO_PATH)\n"
-        "FPS = cap.get(cv2.CAP_PROP_FPS) or 0\n"
-        "N_FRAMES = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))\n"
+        "FPS = cap.get(cv2.CAP_PROP_FPS) or 0; N_FRAMES = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))\n"
         "W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)); H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))\n"
         "DURATION = N_FRAMES / FPS if FPS else 0\n"
         "print(f'Video       : {VIDEO_PATH}')\n"
@@ -150,22 +136,20 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
         "row = []\n"
         "for idx in [0, N_FRAMES // 2, max(0, N_FRAMES - 1)]:\n"
         "    cap.set(cv2.CAP_PROP_POS_FRAMES, idx); ok, fr = cap.read()\n"
-        "    if ok:\n"
-        "        _ok, _b = cv2.imencode('.jpg', fr); row.append(widgets.Image(value=_b.tobytes(), format='jpeg', width=180))\n"
-        "cap.release()\n"
-        "print('Ornek kareler (bas / orta / son):'); display(widgets.HBox(row))"
+        "    if ok: _ok, _b = cv2.imencode('.jpg', fr); row.append(widgets.Image(value=_b.tobytes(), format='jpeg', width=180))\n"
+        "cap.release(); print('Ornek kareler (bas/orta/son):'); display(widgets.HBox(row))"
     )
 
-    # 3 - THE real pipeline run (single call, trace)
+    # 3 - build pipeline (real construction)
     md(
-        "## 3) 🚀 Gercek Pipeline'i TEK Cagriyla Calistir (uctan uca)\n"
-        "Burada **production** `SafirPipeline.run()` **tek sefer** calisir. `trace` gozlem kancasi her "
-        "asamanin **gercek** ara ciktisini yakalar (asagidaki bolumler bu yakalanan ciktilari gosterir). "
-        "Asamalar gerceklestikce ✓ ile tik atar. **Gemini burada cagrilir.**"
+        "## 3) Production Pipeline'i Kur (gercek __init__ wiring)\n"
+        "`SafirPipeline(config)` tum gercek bilesenleri (VLM/Gemini, EventEngine, TemporalReasoner, RuleEngine, "
+        "ContextBuilder, SafirAgent, EscalationPolicy, EventStore, RAG) production'daki gibi kurar. Asagida bu "
+        "orneginin **gercek asama metotlarini** tek tek cagiracagiz."
     )
     code(
-        "if USE_FAKE_RAG:\n"
-        "    # bge-m3 (~2GB) indirmeden: RAG servisini hafif sahteyle degistir (yalnizca mevzuat metni)\n"
+        "if DEV_MODE:\n"
+        "    # Sadece DEV: agir bge-m3 (~2GB) indirmemek icin RAG'i hafif sahteyle degistir.\n"
         "    from dataclasses import dataclass\n"
         "    import src.main as safir_main\n"
         "    @dataclass\n"
@@ -174,31 +158,20 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
         "    class _FakeRAG:\n"
         "        def seed_default_regulations(self): pass\n"
         "        def query(self, q, top_k=None):\n"
-        "            return [_Doc('ISG Yonetmeligi Madde 24: KKD (baret/yelek) zorunludur.'),\n"
-        "                    _Doc('Operasyonel Kural OK-07: Forklift trafiginde yaya gecitleri acik tutulmalidir.')][:(top_k or 2)]\n"
+        "            return [_Doc('ISG Yonetmeligi Madde 24: KKD zorunludur.'), _Doc('Operasyonel Kural OK-07: yaya gecidi.')][:(top_k or 2)]\n"
         "    safir_main.EmbeddingRAGService = lambda *a, **k: _FakeRAG()\n"
         "else:\n"
-        "    import src.main as safir_main\n"
+        "    import src.main as safir_main  # gercek EmbeddingRAGService (bge-m3) — ilk kosuda ~2GB inebilir\n"
         "\n"
         "USER_PROMPT = 'Sahnede riskli bir durum var mi degerlendir.'\n"
-        "captured = {}\n"
-        "_ORDER = ['sampler', 'clusters', 'vlm', 'events', 'agent_context', 'decision', 'escalation', 'report']\n"
-        "def trace(stage, payload):\n"
-        "    captured[stage] = payload\n"
-        "    print(f'  \\u2713 {stage}')\n"
-        "\n"
-        "print('Pipeline calisiyor (Gemini cagrilari dahil)...')\n"
         "pipeline = safir_main.SafirPipeline(config)\n"
-        "report = pipeline.run(VIDEO_PATH, USER_PROMPT, trace=trace)\n"
-        "print('\\nTAMAMLANDI. Yakalanan asamalar:', [s for s in _ORDER if s in captured])"
+        "print('SafirPipeline hazir. VLM =', type(pipeline._vlm).__name__, '| Agent LLM =', pipeline._agent.model_name)"
     )
-
-    # helper display cell
     code(
-        "# Gorsel yardimcilari (yakalanan gercek ciktilari gostermek icin)\n"
+        "# Gorsel yardimcilari\n"
         "import base64\n"
         "def _img(b, width=180): return widgets.Image(value=b, format='jpeg', width=width)\n"
-        "def _b64(data_uri): return base64.b64decode(data_uri.split(',', 1)[1])\n"
+        "def _b64(u): return base64.b64decode(u.split(',', 1)[1])\n"
         "def _draw_bbox(image_bytes, bbox):\n"
         "    arr = cv2.imdecode(np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR)\n"
         "    if bbox:\n"
@@ -206,103 +179,112 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
         "    _ok, buf = cv2.imencode('.jpg', arr); return buf.tobytes()"
     )
 
-    # 4 - sampler output
+    # 4 - stage_sample
     md(
-        "## 4) Cikti — Frame Sampling & Motion Region\n"
-        "**INPUT:** ham video · **PROCESSING:** `AdaptiveFrameSampler` (CPU; YOLO/ByteTrack yerine) · "
-        "**OUTPUT:** kanit kareleri + hareket bolgesi (`motion_bbox`)."
+        "## 4) `pipeline.stage_sample()` → Frame Sampling & Motion Region\n"
+        "**INPUT:** video · **PROCESSING:** gercek `AdaptiveFrameSampler` (CPU) + `RepresentativeFrameExtractor` · "
+        "**OUTPUT:** kanit kareleri + `motion_bbox` + Olay Gruplari."
     )
     code(
-        "st = captured['sampler']['stats']; ev = captured['sampler']['evidence_frames']\n"
+        "sampler, evidence, clusters = pipeline.stage_sample(VIDEO_PATH)\n"
+        "st = sampler.last_run_stats\n"
         "ratio = (100.0 * st.sampled_frames_evaluated / st.total_frames_scanned) if st.total_frames_scanned else 0\n"
         "print(f'Original frames : {st.total_frames_scanned}')\n"
         "print(f'Sampled frames  : {st.sampled_frames_evaluated}  (%{ratio:.1f})')\n"
-        "print(f'Evidence frames : {st.evidence_frame_count}  (elenen %{st.eliminated_ratio_pct} -> VLM tasarrufu)')\n"
-        "print('\\nKanit kareleri + hareket bolgesi (kirmizi kutu = motion_bbox):')\n"
-        "display(widgets.HBox([_img(_draw_bbox(f.image_bytes, f.motion_bbox)) for f in ev]))\n"
-        "for f in ev: print(f'  [{f.timestamp_str}] change={f.change_score:.4f} motion_bbox={f.motion_bbox}')"
-    )
-
-    # 5 - clusters + representative frames
-    md(
-        "## 5) Cikti — Clustering / Tracking & VLM'e Giden Kareler\n"
-        "**PROCESSING:** `cluster_events` (zaman + bbox IoU sureklilik) + `RepresentativeFrameExtractor` · "
-        "**OUTPUT:** Olay Gruplari ve her grup icin **VLM'e gonderilen** pre/peak/post kareler."
-    )
-    code(
-        "cl = captured['clusters']['clusters']\n"
-        "print(f'{len(ev)} kanit karesi -> {len(cl)} Olay Grubu\\n')\n"
-        "for c in cl:\n"
-        "    print(f\"=== Olay #{c.event_id} ({c.start_time:.1f}-{c.end_time:.1f}s) — VLM'e {len(c.representative_frames)} kare ===\")\n"
-        "    for rf in c.representative_frames: print(f'   • {rf.label:<11} @ {rf.timestamp_str}')\n"
+        "print(f'Evidence frames : {st.evidence_frame_count}  (elenen %{st.eliminated_ratio_pct})')\n"
+        "print(f'Olay Gruplari   : {len(clusters)}')\n"
+        "print('\\nKanit kareleri (kirmizi kutu = motion_bbox):')\n"
+        "display(widgets.HBox([_img(_draw_bbox(f.image_bytes, f.motion_bbox)) for f in evidence]))\n"
+        "print('\\nHer Olay Grubu icin VLM\\'e gidecek pre/peak/post kareler:')\n"
+        "for c in clusters:\n"
+        "    print(f\"  Olay #{c.event_id} ({c.start_time:.1f}-{c.end_time:.1f}s): {[rf.label for rf in c.representative_frames]}\")\n"
         "    display(widgets.HBox([_img(_b64(rf.base64_image)) for rf in c.representative_frames]))"
     )
 
-    # 6 - VLM (Gemini) I/O
+    # 5 - stage_vlm
     md(
-        "## 6) Cikti — VLM (Gemini) Girdi & Ham Yanit\n"
-        "**INPUT (Gemini'ye giden):** pre/peak/post kareler + prompt · **PROCESSING:** Gemini · "
-        "**OUTPUT:** modelin **ham** yaniti + yapilandirilmis olaylar (`EVENTS_JSON`)."
+        "## 5) `pipeline.stage_vlm()` → VLM (Gemini) Girdi & Ham Yanit\n"
+        "**INPUT (Gemini'ye giden):** pre/peak/post kareler + prompt · **PROCESSING:** gercek `GeminiVLM.describe_events` · "
+        "**OUTPUT:** modelin **ham** yaniti + `EVENTS_JSON`."
     )
     code(
         "from src.prompts import VLM_OBSERVER_SYSTEM_PROMPT\n"
-        "vr = captured['vlm']['vlm_response']\n"
-        "vcl = captured['vlm']['clusters']\n"
         "print('=== GEMINI INPUT ===')\n"
-        "print('Kullanici istemi:', captured['vlm']['user_prompt'])\n"
+        "print('Kullanici istemi:', USER_PROMPT)\n"
         "print('Sistem istemi (ilk 200 krk):', VLM_OBSERVER_SYSTEM_PROMPT[:200], '...')\n"
-        "print(f\"Gonderilen kare sayisi: {sum(len(c.representative_frames) for c in vcl)}\")\n"
-        "print('\\n=== GEMINI RAW OUTPUT ===\\n')\n"
-        "print(vr.description)\n"
-        "print('\\n=== Parse edilmis yapilandirilmis olaylar (EVENTS_JSON) ===')\n"
-        "for e in vr.structured_events: print('  ', e)\n"
-        "if vr.description.startswith('[HATA]'):\n"
-        "    print('\\n[!] Gemini cagrisi basarisiz (retry sonrasi). Pipeline dayanikliligi devrede: degraded devam etti.')"
+        "print('Gonderilen kare sayisi:', sum(len(c.representative_frames) for c in clusters))\n"
+        "\n"
+        "vlm_response = pipeline.stage_vlm(clusters, USER_PROMPT)   # <-- gercek Gemini cagrisi\n"
+        "\n"
+        "print('\\n=== GEMINI RAW OUTPUT (model:', vlm_response.model_name, ') ===\\n')\n"
+        "print(vlm_response.description)\n"
+        "print('\\n=== Parse edilmis EVENTS_JSON ===')\n"
+        "for e in vlm_response.structured_events: print('  ', e)\n"
+        "if vlm_response.description.startswith('[HATA]'):\n"
+        "    print('\\n[!] Gemini cagrisi basarisiz -> pipeline dayanikliligi devrede (degraded).')"
     )
 
-    # 7 - event analysis
+    # 6 - stage_events
     md(
-        "## 7) Cikti — Event / Temporal Analysis\n"
-        "**PROCESSING:** `EventEngine.detect` → `TemporalReasoner.reason` → `RuleEngine.evaluate` · "
+        "## 6) `pipeline.stage_events()` → Event / Temporal Analysis\n"
+        "**PROCESSING:** gercek `EventEngine.detect` → `TemporalReasoner.reason` → `RuleEngine.evaluate` · "
         "**OUTPUT:** tipli olaylar, zamansal sureklilik, tetiklenen ISG kurallari."
     )
     code(
-        "de = captured['events']\n"
+        "detected, temporal, rules, latest_ts = pipeline.stage_events(vlm_response, clusters)\n"
         "print('Tespit edilen olaylar (DetectedEvent):')\n"
-        "for d in de['detected_events']:\n"
+        "for d in detected:\n"
         "    print(f'   {{\"event\": \"{d.event_type}\", \"time\": {d.timestamp:.1f}, \"confidence\": {d.confidence:.2f}}}')\n"
-        "print('\\nZamansal olaylar (TemporalEvent — sureklilik):')\n"
-        "for t in de['temporal_events']:\n"
-        "    print(f'   {t.event_type:<22} tekrar={t.occurrence_count} sure={t.duration:.1f}s')\n"
+        "print('\\nZamansal olaylar (TemporalEvent):')\n"
+        "for t in temporal: print(f'   {t.event_type:<22} tekrar={t.occurrence_count} sure={t.duration:.1f}s')\n"
         "print('\\nTetiklenen ISG kurallari (RuleMatch):')\n"
-        "for r in de['rule_matches']:\n"
-        "    print(f'   [{r.rule_id}] ({r.severity}) {r.rule_description}')"
+        "for r in rules: print(f'   [{r.rule_id}] ({r.severity}) {r.rule_description}')"
     )
 
-    # 8 - decision + escalation
+    # 7 - stage_context
     md(
-        "## 8) Cikti — Decision / Risk Evaluation\n"
-        "**PROCESSING:** `SafirAgent.run` (LangGraph + araclar) → `EscalationPolicy.evaluate` · "
+        "## 7) `pipeline.stage_context()` → Ajan Baglami (RAG dahil)\n"
+        "**PROCESSING:** gercek `ContextBuilder.build` (SQLite + FAISS RAG) + kural ozeti · "
+        "**OUTPUT:** ajana gidecek istem blogu + ilgili mevzuat."
+    )
+    code(
+        "prompt_block, context = pipeline.stage_context(vlm_response, USER_PROMPT, latest_ts, rules)\n"
+        "print('Ilgili mevzuat (RAG):')\n"
+        "for r in context.relevant_regulations: print('   -', r)\n"
+        "print('\\nAjana giden istem blogu (ilk 600 krk):\\n')\n"
+        "print(prompt_block[:600], '...')"
+    )
+
+    # 8 - stage_decide + stage_escalate
+    md(
+        "## 8) `pipeline.stage_decide()` + `stage_escalate()` → Karar / Risk\n"
+        "**PROCESSING:** gercek `SafirAgent.run` (LangGraph) → `EscalationPolicy.evaluate` · "
         "**OUTPUT:** risk seviyesi, ozet, aksiyonlar, otomatik eskalasyon."
     )
     code(
-        "dec = captured['decision']['decision']\n"
-        "esc = captured['escalation']['escalation']\n"
-        "print('Risk Level :', dec.risk_level.upper(), f'(skor {dec.risk_score}/100)')\n"
-        "print('Ozet       :', dec.summary)\n"
+        "decision = pipeline.stage_decide(prompt_block)     # <-- gercek ajan (Gemini LLM)\n"
+        "escalation = pipeline.stage_escalate(decision, vlm_response)\n"
+        "print('Risk Level :', decision.risk_level.upper(), f'(skor {decision.risk_score}/100)')\n"
+        "print('Ozet       :', decision.summary)\n"
         "print('Aksiyonlar :')\n"
-        "for a in dec.actions: print('   -', a)\n"
-        "print('\\nOtomatik eskalasyon:', esc.tier.value, '| alarm otomatik tetiklendi:', esc.auto_dispatched)\n"
-        "print('Gerekce            :', esc.reason)"
+        "for a in decision.actions: print('   -', a)\n"
+        "print('\\nOtomatik eskalasyon:', escalation.tier.value, '| alarm otomatik tetiklendi:', escalation.auto_dispatched)\n"
+        "print('Gerekce            :', escalation.reason)"
     )
 
-    # 9 - final report
+    # 9 - build_report
     md(
-        "## 9) Final Report\n"
-        "`SafirPipeline` ciktisi: **sartname-uyumlu JSON** + insan-okur ozet (ayni tek kosunun sonucu)."
+        "## 9) `pipeline.build_report()` → Final Report\n"
+        "**PROCESSING:** gercek olay kaydi (EventBuilder/History/Store) + `SafirReport` · "
+        "**OUTPUT:** sartname-uyumlu JSON + insan-okur ozet."
     )
     code(
         "import json\n"
+        "report = pipeline.build_report(\n"
+        "    video_source=VIDEO_PATH, sampler=sampler, clusters=clusters, vlm_response=vlm_response,\n"
+        "    context=context, decision=decision, escalation=escalation,\n"
+        "    temporal_events=temporal, rule_matches=rules, latest_timestamp=latest_ts)\n"
+        "\n"
         "print('===== JSON (sartname uyumlu) =====')\n"
         "print(json.dumps(report.to_sartname_json(), ensure_ascii=False, indent=2))\n"
         "print('\\n===== Insan-okur ozet =====')\n"
@@ -314,26 +296,23 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
         "for a in (report.actions or [report.recommended_action]): print('   -', a)"
     )
 
-    # 10 - end-to-end summary
+    # 10 - summary
     md("## 10) SAFIR END-TO-END TEST")
     code(
-        "vr = captured['vlm']['vlm_response']\n"
-        "gemini_ok = ('vlm' in captured) and not vr.description.startswith('[HATA]')\n"
+        "gemini_ok = not vlm_response.description.startswith('[HATA]')\n"
         "checks = [\n"
         "    ('Video Input',      Path(VIDEO_PATH).exists()),\n"
-        "    ('Video Processing', 'sampler' in captured),\n"
-        "    ('Frame Sampling',   captured.get('sampler', {}).get('stats').evidence_frame_count > 0 if 'sampler' in captured else False),\n"
-        "    ('Clustering/Track', len(captured.get('clusters', {}).get('clusters', [])) > 0),\n"
+        "    ('Frame Sampling',   st.evidence_frame_count > 0),\n"
+        "    ('Clustering/Track', len(clusters) > 0),\n"
         "    ('Gemini Inference', gemini_ok),\n"
-        "    ('Output Parsing',   'events' in captured),\n"
-        "    ('Event Analysis',   len(captured.get('events', {}).get('detected_events', [])) > 0),\n"
-        "    ('Risk/Decision',    'decision' in captured),\n"
+        "    ('Output Parsing',   isinstance(vlm_response.structured_events, list)),\n"
+        "    ('Event Analysis',   len(detected) > 0),\n"
+        "    ('Risk/Decision',    decision is not None),\n"
+        "    ('Escalation',       escalation is not None),\n"
         "    ('Structured JSON',  bool(report.to_sartname_json())),\n"
         "    ('Final Report',     report.event_id is not None),\n"
         "]\n"
-        "print('=' * 42)\n"
-        "print('        SAFIR END-TO-END TEST')\n"
-        "print('=' * 42)\n"
+        "print('=' * 42); print('        SAFIR END-TO-END TEST'); print('=' * 42)\n"
         "for name, ok in checks:\n"
         "    mark = '✓' if ok else '✗'\n"
         "    print(f'  {name:<22} {mark}')\n"
@@ -344,9 +323,9 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
         "    failed = [n for n, ok in checks if not ok][0]\n"
         "    print('\\nFailed stage :', failed)\n"
         "    if failed == 'Gemini Inference':\n"
-        "        print('Error        :', vr.description)\n"
-        "        print('Root cause   : Gemini cagrisi basarisiz (kota/model/anahtar). Pipeline dayanikli -> degraded rapor uretti.')\n"
-        "        print('Cozum        : GEMINI_API_KEY + config.yaml model_name (kotasi olan model) kontrol et.')"
+        "        print('Error        :', vlm_response.description)\n"
+        "        print('Root cause   : Gemini cagrisi basarisiz (kota/model/anahtar).')\n"
+        "        print('Cozum        : GEMINI_API_KEY + config.yaml model_name (kotali model).')"
     )
 
     nb["cells"] = cells
@@ -359,10 +338,10 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mock", action="store_true")
+    parser.add_argument("--dev", action="store_true", help="DEV_MODE=True (mock+fake, offline).")
     parser.add_argument("--out", default=str(ROOT / "notebooks" / "safir_end_to_end_demo.ipynb"))
     args = parser.parse_args()
-    nb = build(use_mock_default=args.mock)
+    nb = build(dev_default=args.dev)
     out = Path(args.out); out.parent.mkdir(parents=True, exist_ok=True)
     nbf.write(nb, str(out))
     print("Yazildi:", out)
