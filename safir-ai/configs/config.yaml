@@ -88,7 +88,7 @@ vlm:
       top_p: 0.9
     gemini:                          # gecici TEST backend'i (harici API — offline degildir)
       provider: "gemini"
-      model_name: "gemini-2.5-flash"
+      model_name: "gemini-3.5-flash-lite"
       base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
       api_key_env: "GEMINI_API_KEY"
       max_new_tokens: 1024
@@ -131,7 +131,7 @@ llm:
       temperature: 0.1
     gemini:                          # gecici TEST backend'i (harici API — offline degildir)
       provider: "gemini"
-      model_name: "gemini-2.5-flash"
+      model_name: "gemini-3.5-flash-lite"
       base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
       api_key_env: "GEMINI_API_KEY"
       max_new_tokens: 1024
