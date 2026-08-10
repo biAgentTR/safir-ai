@@ -204,6 +204,90 @@ export interface Escalation {
   reason: string
 }
 
+/** events stage: detected_events[] (trace_serializer.serialize_events). */
+export interface DetectedEvent {
+  event_type: string
+  timestamp: number
+  confidence: number
+  matched_keywords: string[]
+}
+export interface TemporalEvent {
+  event_type: string
+  occurrence_count: number
+  duration: number
+  start_timestamp: number
+  end_timestamp: number
+  confidence: number
+}
+export interface RuleMatch {
+  rule_id: string
+  rule_description: string
+  severity: string
+  event_type: string
+}
+export interface EventsStageData {
+  detected_events: DetectedEvent[]
+  temporal_events: TemporalEvent[]
+  rule_matches: RuleMatch[]
+}
+
+/** agent_context stage. */
+export interface ContextStageData {
+  prompt_block: string
+  length: number
+}
+
+/** report stage (compact; full report comes from the polling endpoint). */
+export interface ReportStageData {
+  event_id: number | null
+  risk_score: number
+  risk_level: string
+  escalation_tier: string | null
+  auto_dispatched: boolean
+  alert_id: string | null
+  detected_event_types: string[]
+  vlm_model: string | null
+  llm_model: string | null
+  timeline: TimelineEntry[]
+  sartname_json: Record<string, unknown>
+}
+
+// -------------------------------------------------- feedback / alerts -------
+
+/** POST /events/{event_id}/feedback */
+export type FeedbackLabel = 'true_positive' | 'false_positive'
+export interface FeedbackRequest {
+  feedback: FeedbackLabel
+}
+export interface FeedbackResponse {
+  event_id: number
+  feedback: string
+  message: string
+}
+
+/** POST /alerts/{alert_id}/acknowledge */
+export interface AlertAcknowledgeRequest {
+  operator_note?: string
+}
+export interface AlertAcknowledgeResponse {
+  alert_id: string
+  acknowledged: boolean
+  message: string
+}
+
+/** POST /alerts/trigger */
+export interface AlertTriggerRequest {
+  risk_score: number
+  risk_level: string
+  recommended_action: string
+  operator_note?: string
+}
+export interface AlertTriggerResponse {
+  acknowledged: boolean
+  alert_id: string
+  message: string
+}
+
 // -------------------------------------------------------- SSE envelope ------
 
 /** Terminal SSE control event: `event: end` / `event: error`. */

@@ -1,49 +1,45 @@
 <script setup lang="ts">
-// Analysis workspace. On mount it (1) opens the real SSE stream for the job and
-// (2) polls GET /analyze/jobs/{id} for the authoritative final SafirReport.
-// The pipeline view here is intentionally the basic technical StageList; the
-// rich Pipeline Timeline is ADIM 4.
-import type { EvidenceFrameRef, SamplerStageData } from '~/types/api'
-
+// SAFİR Analysis Workspace. Central place the operator works after starting an
+// analysis: cumulative pipeline timeline (left) + selected-stage detail (right),
+// risk summary, KPI, and tabbed Evidence / Timeline / Report at the bottom.
+// All state comes from the Pinia store; SSE + polling feed it.
 const route = useRoute()
 const jobId = computed(() => String(route.params.jobId))
 
 const store = useAnalysisStore()
 const stream = useAnalysisStream()
-const { getFrameUrl } = useSafirApi()
+const { maybeAlarm } = useAlarm()
+const { state: backendHealth } = useBackendHealth()
 
+type Tab = 'evidence' | 'timeline' | 'report'
+const tab = ref<Tab>('report')
+
+// connection presentation
 const connLabel = computed(
   () =>
-    ({
-      idle: 'Bağlanılıyor…',
-      connecting: 'Bağlanılıyor…',
-      open: 'Canlı (SSE)',
-      closed: 'Kapandı',
-      error: 'Bağlantı hatası',
-    })[stream.connection.value],
+    ({ idle: 'Bağlanılıyor…', connecting: 'Bağlanılıyor…', open: 'Canlı (SSE)', closed: 'Tamamlandı', error: 'Bağlantı hatası' })[
+      store.connection
+    ],
 )
-const connTone = computed(
-  () =>
-    ({
-      idle: 'text-slate-400',
-      connecting: 'text-slate-400',
-      open: 'text-risk-low',
-      closed: 'text-slate-400',
-      error: 'text-risk-crit',
-    })[stream.connection.value],
+const running = computed(() => store.isRunning && store.status !== 'error')
+const overall = computed(() => store.status ?? store.endStatus ?? 'queued')
+
+// play the critical alarm once per (job, score) when the report arrives
+watch(
+  () => store.report?.risk_score,
+  () => {
+    if (store.report && store.jobId) maybeAlarm(`${store.jobId}:${store.report.risk_score}`)
+  },
 )
-
-const overallStatus = computed(() => store.status ?? stream.endStatus.value ?? 'queued')
-
-// Evidence frames referenced by the sampler stage -> proven via frame endpoint.
-const evidenceFrames = computed<EvidenceFrameRef[]>(() => {
-  const ev = stream.events.value.find((e) => e.stage === 'sampler')
-  return (ev?.data as SamplerStageData | undefined)?.evidence_frames ?? []
-})
 
 function start() {
+  // if navigating to a different job, reset first
+  if (store.jobId !== jobId.value) {
+    store.resetJob()
+    store.jobId = jobId.value
+    store.status = 'queued'
+  }
   stream.start(jobId.value)
-  // Fire-and-forget poll for the final report; errors are surfaced via store.
   store.pollUntilDone(jobId.value).catch(() => {})
 }
 
@@ -52,84 +48,72 @@ onBeforeUnmount(() => stream.stop())
 </script>
 
 <template>
-  <div class="max-w-6xl mx-auto px-6 py-6 space-y-5">
+  <div class="px-6 py-5 space-y-5 max-w-[1500px] mx-auto">
     <!-- header -->
     <div class="flex items-center gap-4">
       <NuxtLink to="/new-analysis" class="btn-ghost">← Yeni</NuxtLink>
       <div class="min-w-0">
-        <div class="text-xs uppercase tracking-wide text-slate-500">Job</div>
-        <div class="font-mono text-sm text-slate-200 truncate">{{ jobId }}</div>
+        <div class="text-[11px] uppercase tracking-wide text-slate-500">Job</div>
+        <div class="font-mono text-sm text-slate-300 truncate">{{ jobId }}</div>
       </div>
-      <div class="ml-auto flex items-center gap-2 text-sm">
-        <span class="w-2 h-2 rounded-full" :class="stream.connection.value === 'open' ? 'bg-risk-low animate-pulse' : 'bg-slate-600'" />
-        <span :class="connTone">{{ connLabel }}</span>
+      <div class="ml-auto flex items-center gap-4 text-sm">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full" :class="running ? 'bg-accent animate-pulse' : overall === 'done' ? 'bg-risk-low' : overall === 'error' ? 'bg-risk-crit' : 'bg-slate-600'" />
+          <span class="uppercase tracking-wide text-xs" :class="running ? 'text-accent' : 'text-slate-300'">
+            {{ running ? 'Analysis running' : overall === 'done' ? 'Completed' : overall === 'error' ? 'Error' : overall }}
+          </span>
+        </div>
+        <span class="text-xs text-slate-500">{{ connLabel }} · {{ store.completedCount }}/7</span>
       </div>
     </div>
 
-    <!-- status strip -->
-    <div class="grid grid-cols-4 gap-4">
-      <div class="card p-4">
-        <div class="text-xs uppercase tracking-wide text-slate-500">Durum</div>
-        <div class="mt-1 text-lg font-semibold text-slate-100">{{ overallStatus }}</div>
-      </div>
-      <div class="card p-4">
-        <div class="text-xs uppercase tracking-wide text-slate-500">Aktif Aşama</div>
-        <div class="mt-1 text-lg font-semibold text-slate-100">
-          {{ stream.latestEvent.value?.metadata.label ?? '—' }}
-        </div>
-      </div>
-      <div class="card p-4">
-        <div class="text-xs uppercase tracking-wide text-slate-500">Tamamlanan</div>
-        <div class="mt-1 text-lg font-semibold text-slate-100">
-          {{ stream.completedCount.value }} / 7
-        </div>
-      </div>
-      <div class="card p-4">
-        <div class="text-xs uppercase tracking-wide text-slate-500">Risk</div>
-        <div class="mt-1 text-lg font-semibold" :class="store.report ? 'text-slate-100' : 'text-slate-600'">
-          {{ store.report ? `${store.report.risk_level} (${store.report.risk_score})` : '—' }}
-        </div>
-      </div>
+    <!-- degraded: backend offline -->
+    <div v-if="backendHealth === 'offline'" class="rounded-md border border-risk-crit/40 bg-risk-crit/10 px-4 py-2.5 text-sm text-risk-crit">
+      Backend'e ulaşılamıyor. Analiz servisi çevrimdışı olabilir.
     </div>
 
-    <!-- pipeline (technical list — ADIM 4 upgrades this) -->
-    <div class="card p-5">
-      <div class="flex items-center justify-between mb-3">
-        <h3 class="text-sm font-semibold text-slate-200">Boru Hattı (canlı trace)</h3>
-        <span class="text-xs text-slate-600">{{ stream.events.value.length }} olay</span>
-      </div>
-      <StageList :events="stream.events.value" :connected="stream.connection.value === 'open'" />
-      <p v-if="stream.errorDetail.value" class="mt-3 text-xs text-risk-crit">
-        {{ stream.errorDetail.value }}
-      </p>
+    <!-- degraded: analysis error -->
+    <div v-if="store.status === 'error'" class="rounded-md border border-risk-crit/40 bg-risk-crit/10 px-4 py-3 text-sm text-slate-200">
+      Analiz tamamlanamadı.
+      <details v-if="store.error" class="mt-1">
+        <summary class="cursor-pointer text-xs text-slate-400">Teknik detay</summary>
+        <p class="mt-1 text-xs text-slate-500">{{ store.error }}</p>
+      </details>
     </div>
 
-    <!-- evidence frames via the frame endpoint (no base64 in SSE) -->
-    <div v-if="evidenceFrames.length" class="card p-5">
-      <h3 class="text-sm font-semibold text-slate-200 mb-3">Kanıt Kareleri</h3>
-      <div class="flex flex-wrap gap-3">
-        <figure
-          v-for="f in evidenceFrames"
-          :key="f.frame_id"
-          class="w-40 border border-edge rounded-md overflow-hidden bg-surface-2"
+    <!-- risk summary (appears with the report) -->
+    <RiskSummary />
+
+    <!-- KPI -->
+    <KpiPanel />
+
+    <!-- main: pipeline rail + selected stage detail -->
+    <div class="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-5 items-start">
+      <PipelineTimeline />
+      <StageCard @open-frame="() => { tab = 'evidence' }" />
+    </div>
+
+    <!-- bottom tabs -->
+    <div class="card">
+      <div class="flex items-center gap-1 border-b border-edge px-3">
+        <button
+          v-for="t in (['report','evidence','timeline'] as Tab[])"
+          :key="t"
+          class="px-4 py-2.5 text-sm border-b-2 -mb-px transition-colors"
+          :class="tab === t ? 'border-accent text-slate-100' : 'border-transparent text-slate-400 hover:text-slate-200'"
+          @click="tab = t"
         >
-          <img
-            :src="getFrameUrl(jobId, f.frame_id)"
-            :alt="f.frame_id"
-            class="w-full h-24 object-cover"
-            loading="lazy"
-          />
-          <figcaption class="px-2 py-1 text-[11px] text-slate-400 font-mono">
-            {{ f.timestamp_str }} · Δ{{ f.change_score }}
-          </figcaption>
-        </figure>
+          {{ t === 'report' ? 'Rapor' : t === 'evidence' ? 'Kanıt Galerisi' : 'Zaman Çizelgesi' }}
+        </button>
+      </div>
+      <div class="p-5">
+        <FinalReport v-show="tab === 'report'" />
+        <EvidenceGallery v-show="tab === 'evidence'" />
+        <EventTimeline v-show="tab === 'timeline'" />
       </div>
     </div>
 
-    <!-- raw event feed (debug/technical) -->
-    <details class="card p-5">
-      <summary class="text-sm font-semibold text-slate-200 cursor-pointer">Ham Trace Olayları (debug)</summary>
-      <pre class="mt-3 max-h-80 overflow-auto text-[11px] leading-relaxed text-slate-400 font-mono">{{ JSON.stringify(stream.events.value, null, 2) }}</pre>
-    </details>
+    <!-- stream error footnote -->
+    <p v-if="store.streamError" class="text-xs text-risk-crit">Canlı akış: {{ store.streamError }}</p>
   </div>
 </template>

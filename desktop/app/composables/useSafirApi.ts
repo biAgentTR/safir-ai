@@ -10,6 +10,11 @@ import type {
   AnalyzeRequest,
   AnalyzeJobResponse,
   JobStatusResponse,
+  FeedbackLabel,
+  FeedbackResponse,
+  AlertAcknowledgeResponse,
+  AlertTriggerRequest,
+  AlertTriggerResponse,
 } from '~/types/api'
 
 export function useSafirApi() {
@@ -54,6 +59,38 @@ export function useSafirApi() {
     )
   }
 
+  /** POST /events/{event_id}/feedback (Human-in-the-Loop TP/FP). */
+  async function sendFeedback(
+    eventId: number,
+    feedback: FeedbackLabel,
+  ): Promise<FeedbackResponse> {
+    return await $fetch(url(`/events/${eventId}/feedback`), {
+      method: 'POST',
+      body: { feedback },
+    })
+  }
+
+  /** POST /alerts/{alert_id}/acknowledge (Human-on-the-Loop review). */
+  async function acknowledgeAlert(
+    alertId: string,
+    operatorNote = '',
+  ): Promise<AlertAcknowledgeResponse> {
+    return await $fetch(url(`/alerts/${encodeURIComponent(alertId)}/acknowledge`), {
+      method: 'POST',
+      body: { operator_note: operatorNote },
+    })
+  }
+
+  /** POST /alerts/trigger (operator manual/override alarm). */
+  async function triggerAlert(
+    payload: AlertTriggerRequest,
+  ): Promise<AlertTriggerResponse> {
+    return await $fetch(url('/alerts/trigger'), {
+      method: 'POST',
+      body: payload,
+    })
+  }
+
   return {
     base,
     health,
@@ -61,5 +98,8 @@ export function useSafirApi() {
     getJob,
     streamJobUrl,
     getFrameUrl,
+    sendFeedback,
+    acknowledgeAlert,
+    triggerAlert,
   }
 }
