@@ -18,7 +18,18 @@ Calistirma:
 
 from __future__ import annotations
 
-from src.ui.app import SafirDashboardApp
+import sys
+from pathlib import Path
+
+# `streamlit run src/ui/dashboard.py` betigi, betik klasorunu (src/ui) path'e
+# ekler ama proje kokunu (safir-ai) EKLEMEZ; bu yuzden `import src.ui.*`
+# basarisiz olur. Proje kokunu (bu dosyanin 2 ust dizini) sys.path'e ekleyip
+# hem streamlit hem dogrudan calistirmada import'un calismasini garanti ederiz.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from src.ui.app import SafirDashboardApp  # noqa: E402
 
 
 def main() -> None:
