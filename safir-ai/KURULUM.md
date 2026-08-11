@@ -117,6 +117,33 @@ nvidia-smi                                # iki süreç, toplam ~26 GB VRAM
 > `vllm_host: 127.0.0.1` ile birebir uyumlu. Tag (`v0.10.2`) `sm_120`/CUDA hatası verirse
 > daha güncel bir `vllm/vllm-openai` tag'ine çıkın (Blackwell CUDA 12.8'li build şart).
 
+### 6-B. Alternatif: Docker'sız (bare-metal vLLM)
+Docker kullanmak istemezsen (Linux'ta doğrudan pip). **Kritik:** `requirements.txt`
+içindeki `vllm==0.5.4` **çok eskidir** (Blackwell/5090 ve Qwen2.5-VL desteklemez) —
+serving için GÜNCEL vLLM'i **ayrı** bir venv'de kur (API venv'iyle torch çakışmasın):
+
+```bash
+# vLLM için AYRI ortam (API venv'inden bağımsız)
+python3.11 -m venv ~/vllm-env
+source ~/vllm-env/bin/activate
+pip install --upgrade pip
+pip install -U vllm                     # GÜNCEL sürüm (Blackwell/cu128 torch ile) — 0.5.4 DEĞİL
+python -c "import vllm; print(vllm.__version__)"   # ≥0.8.5, tercihen ≥0.10
+
+# VLM :8001  (bu ortamda)
+vllm serve Qwen/Qwen2.5-VL-7B-Instruct --port 8001 --trust-remote-code \
+  --quantization fp8 --dtype bfloat16 --gpu-memory-utilization 0.50 \
+  --max-model-len 8192 --limit-mm-per-prompt image=12 --max-num-seqs 2
+
+# LLM :8003  (ikinci terminal, yine `source ~/vllm-env/bin/activate`)
+vllm serve Qwen/Qwen2.5-3B-Instruct --port 8003 --trust-remote-code \
+  --dtype bfloat16 --gpu-memory-utilization 0.30 --max-model-len 4096 --max-num-seqs 4
+```
+> NVIDIA sürücüsü (≥570) yeterli; `pip install vllm` torch'u CUDA kütüphaneleriyle
+> birlikte getirir (host'a ayrı CUDA toolkit gerekmez). SAFİR API'si `vllm`
+> kütüphanesini kullanmaz — API'yi §5'teki kendi venv'inde (`requirements-gemini.txt`)
+> çalıştır.
+
 ## 7. SAFİR API'yi başlat (Pencere 3)
 ```bash
 cd ~/p3-project/safir-ai
