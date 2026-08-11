@@ -149,6 +149,9 @@ onBeforeUnmount(() => stream.stop())
       </div>
     </div>
 
+    <!-- Ask SAFİR (context-aware assistant) — job_id auto-sent; works in history too -->
+    <AskSafir v-if="store.report || isHistory" :job-id="jobId" />
+
     <!-- stream error footnote -->
     <p v-if="store.streamError" class="text-xs text-risk-crit">Canlı akış: {{ store.streamError }}</p>
   </div>
