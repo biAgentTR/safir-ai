@@ -275,6 +275,29 @@ export interface AlertAcknowledgeResponse {
   message: string
 }
 
+// -------------------------------------------------- history -----------------
+
+/** GET /history item (src/main.py: HistoryListItem). */
+export interface HistoryListItem {
+  job_id: string
+  created_at: string
+  video_source: string | null
+  status: 'queued' | 'running' | 'completed' | 'failed' | string
+  risk_level: string | null
+  risk_score: number | null
+  summary: string | null
+}
+
+/** GET /history/{job_id} (src/main.py: HistoryDetail). */
+export interface HistoryDetail {
+  job_id: string
+  created_at: string
+  updated_at: string
+  status: 'queued' | 'running' | 'completed' | 'failed' | string
+  video_source: string | null
+  report: SafirReport | null
+}
+
 /** POST /alerts/trigger */
 export interface AlertTriggerRequest {
   risk_score: number

@@ -52,6 +52,10 @@ interface AnalysisState {
   // ui
   selectedStage: TraceStage | null
   alarmPlayedFor: string | null
+  // history mode: a persisted analysis opened from /history (no live SSE/trace)
+  historyMode: boolean
+  historyLoading: boolean
+  historyError: string | null
 
   // human-in/on-the-loop
   feedback: { state: ActionState; label: FeedbackLabel | null; message: string }
@@ -78,6 +82,9 @@ export const useAnalysisStore = defineStore('analysis', {
 
     selectedStage: null,
     alarmPlayedFor: null,
+    historyMode: false,
+    historyLoading: false,
+    historyError: null,
 
     feedback: { state: 'idle', label: null, message: '' },
     ack: { state: 'idle', message: '' },
@@ -143,6 +150,9 @@ export const useAnalysisStore = defineStore('analysis', {
       this.streamError = null
       this.selectedStage = null
       this.alarmPlayedFor = null
+      this.historyMode = false
+      this.historyLoading = false
+      this.historyError = null
       this.feedback = { state: 'idle', label: null, message: '' }
       this.ack = { state: 'idle', message: '' }
       this.manualAlert = { state: 'idle', message: '', alertId: null }
@@ -199,6 +209,33 @@ export const useAnalysisStore = defineStore('analysis', {
       this.totalSteps = s.total_steps
       this.report = s.result
       this.error = s.error
+    },
+
+    /**
+     * Load a PERSISTED analysis from GET /history/{job_id} (history mode).
+     * No SSE, no trace — the report comes straight from the store on disk.
+     */
+    async loadHistory(jobId: string) {
+      const api = useSafirApi()
+      this.resetJob()
+      this.jobId = jobId
+      this.historyMode = true
+      this.historyLoading = true
+      this.historyError = null
+      try {
+        const detail = await api.getHistoryItem(jobId)
+        this.report = detail.report
+        this.lastRequest = detail.video_source
+          ? { video_source: detail.video_source, user_prompt: '' }
+          : null
+        // map persisted status -> JobStatus used across the workspace
+        this.status = detail.status === 'completed' ? 'done' : detail.status === 'failed' ? 'error' : (detail.status as JobStatus)
+      } catch (e) {
+        this.historyError = humanError(e, 'Geçmiş analiz yüklenemedi.')
+        this.status = 'error'
+      } finally {
+        this.historyLoading = false
+      }
     },
 
     async pollUntilDone(jobId: string, intervalMs = 500, timeoutMs = 120_000) {

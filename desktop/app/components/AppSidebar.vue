@@ -11,7 +11,7 @@ interface NavItem {
 const items: NavItem[] = [
   { label: 'Overview', to: '/', icon: '▤', enabled: true },
   { label: 'New Analysis', to: '/new-analysis', icon: '＋', enabled: true },
-  { label: 'History', to: '/history', icon: '≡', enabled: false },
+  { label: 'History', to: '/history', icon: '≡', enabled: true },
   { label: 'Reports', to: '/reports', icon: '⎗', enabled: false },
   { label: 'Settings', to: '/settings', icon: '⚙', enabled: false },
 ]

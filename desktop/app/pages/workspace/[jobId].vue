@@ -5,6 +5,8 @@
 // All state comes from the Pinia store; SSE + polling feed it.
 const route = useRoute()
 const jobId = computed(() => String(route.params.jobId))
+// HISTORY mode: opened from /history (persisted report, no live SSE/trace).
+const isHistory = computed(() => route.query.history === '1')
 
 const store = useAnalysisStore()
 const stream = useAnalysisStream()
@@ -24,16 +26,24 @@ const connLabel = computed(
 const running = computed(() => store.isRunning && store.status !== 'error')
 const overall = computed(() => store.status ?? store.endStatus ?? 'queued')
 
-// play the critical alarm once per (job, score) when the report arrives
+// play the critical alarm once per (job, score) when the report arrives —
+// LIVE only. A historical analysis must not re-sound the alarm.
 watch(
   () => store.report?.risk_score,
   () => {
-    if (store.report && store.jobId) maybeAlarm(`${store.jobId}:${store.report.risk_score}`)
+    if (!isHistory.value && store.report && store.jobId) {
+      maybeAlarm(`${store.jobId}:${store.report.risk_score}`)
+    }
   },
 )
 
 function start() {
-  // if navigating to a different job, reset first
+  if (isHistory.value) {
+    // HISTORY: load persisted report only — no SSE, no polling, no trace.
+    store.loadHistory(jobId.value)
+    return
+  }
+  // LIVE: if navigating to a different job, reset first
   if (store.jobId !== jobId.value) {
     store.resetJob()
     store.jobId = jobId.value
@@ -51,19 +61,24 @@ onBeforeUnmount(() => stream.stop())
   <div class="px-6 py-5 space-y-5 max-w-[1500px] mx-auto">
     <!-- header -->
     <div class="flex items-center gap-4">
-      <NuxtLink to="/new-analysis" class="btn-ghost">← Yeni</NuxtLink>
+      <NuxtLink :to="isHistory ? '/history' : '/new-analysis'" class="btn-ghost">← {{ isHistory ? 'Geçmiş' : 'Yeni' }}</NuxtLink>
       <div class="min-w-0">
         <div class="text-[11px] uppercase tracking-wide text-slate-500">Job</div>
         <div class="font-mono text-sm text-slate-300 truncate">{{ jobId }}</div>
       </div>
       <div class="ml-auto flex items-center gap-4 text-sm">
+        <!-- HISTORY badge -->
+        <span
+          v-if="isHistory"
+          class="text-[11px] px-2 py-0.5 rounded border border-edge bg-surface-2 text-slate-300 uppercase tracking-wide"
+        >Geçmiş Analiz</span>
         <div class="flex items-center gap-2">
           <span class="w-2 h-2 rounded-full" :class="running ? 'bg-accent animate-pulse' : overall === 'done' ? 'bg-risk-low' : overall === 'error' ? 'bg-risk-crit' : 'bg-slate-600'" />
           <span class="uppercase tracking-wide text-xs" :class="running ? 'text-accent' : 'text-slate-300'">
             {{ running ? 'Analysis running' : overall === 'done' ? 'Completed' : overall === 'error' ? 'Error' : overall }}
           </span>
         </div>
-        <span class="text-xs text-slate-500">{{ connLabel }} · {{ store.completedCount }}/7</span>
+        <span v-if="!isHistory" class="text-xs text-slate-500">{{ connLabel }} · {{ store.completedCount }}/7</span>
       </div>
     </div>
 
@@ -72,8 +87,17 @@ onBeforeUnmount(() => stream.stop())
       Backend'e ulaşılamıyor. Analiz servisi çevrimdışı olabilir.
     </div>
 
-    <!-- degraded: analysis error -->
-    <div v-if="store.status === 'error'" class="rounded-md border border-risk-crit/40 bg-risk-crit/10 px-4 py-3 text-sm text-slate-200">
+    <!-- history: loading / error / failed-analysis -->
+    <div v-if="isHistory && store.historyLoading" class="card p-8 text-center text-slate-500 text-sm">Geçmiş analiz yükleniyor…</div>
+    <div v-else-if="isHistory && store.historyError" class="rounded-md border border-risk-crit/40 bg-risk-crit/10 px-4 py-3 text-sm text-risk-crit">
+      {{ store.historyError }}
+    </div>
+    <div v-else-if="isHistory && store.status === 'error'" class="rounded-md border border-risk-crit/40 bg-risk-crit/10 px-4 py-3 text-sm text-slate-200">
+      Bu analiz başarısız tamamlandı (failed) — kalıcı rapor bulunmuyor.
+    </div>
+
+    <!-- degraded: analysis error (LIVE) -->
+    <div v-if="!isHistory && store.status === 'error'" class="rounded-md border border-risk-crit/40 bg-risk-crit/10 px-4 py-3 text-sm text-slate-200">
       Analiz tamamlanamadı.
       <details v-if="store.error" class="mt-1">
         <summary class="cursor-pointer text-xs text-slate-400">Teknik detay</summary>
@@ -87,10 +111,18 @@ onBeforeUnmount(() => stream.stop())
     <!-- KPI -->
     <KpiPanel />
 
-    <!-- main: pipeline rail + selected stage detail -->
-    <div class="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-5 items-start">
+    <!-- main: pipeline rail + selected stage detail (LIVE only) -->
+    <div v-if="!isHistory" class="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-5 items-start">
       <PipelineTimeline />
       <StageCard @open-frame="() => { tab = 'evidence' }" />
+    </div>
+    <!-- HISTORY: no live trace — honest fallback (no fabricated pipeline state) -->
+    <div v-else-if="store.report" class="card p-5">
+      <div class="text-sm font-semibold text-slate-200 mb-1">Boru Hattı</div>
+      <p class="text-sm text-slate-500">
+        Geçmiş analiz — canlı pipeline trace mevcut değil. Aşağıdaki risk, KPI, zaman çizelgesi ve rapor
+        kalıcı olarak saklanmış veriden üretilmiştir.
+      </p>
     </div>
 
     <!-- bottom tabs -->
@@ -108,7 +140,11 @@ onBeforeUnmount(() => stream.stop())
       </div>
       <div class="p-5">
         <FinalReport v-show="tab === 'report'" />
-        <EvidenceGallery v-show="tab === 'evidence'" />
+        <!-- Evidence: live gallery uses in-memory frames; history has none persisted -->
+        <EvidenceGallery v-if="!isHistory" v-show="tab === 'evidence'" />
+        <div v-else v-show="tab === 'evidence'" class="text-sm text-slate-500 py-6 text-center">
+          Kanıt kareleri bu oturumda kullanılabilir; geçmiş analiz için kalıcı kare saklama etkin değil.
+        </div>
         <EventTimeline v-show="tab === 'timeline'" />
       </div>
     </div>
