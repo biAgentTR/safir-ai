@@ -61,20 +61,26 @@ sampler:
 # -----------------------------------------------------------------------------
 # 03 - Gorsel Dil Modeli (VLM) Katmani - GPU / vLLM
 # -----------------------------------------------------------------------------
-# NOT (Gemini test backend'i): VRAM yetersizliginden yerel VLM/LLM makul hizda
-# kosulamadiginda, tum pipeline ayni kod yolu uzerinden Gemini'nin OpenAI-uyumlu
-# API'siyle test edilebilir. Bunun icin SADECE su iki satiri degistirmek yeterli:
-#   vlm.active_model: "gemini"   ve   llm.active_model: "gemini"
-# ve `GEMINI_API_KEY` ortam degiskenini tanimlamak (bkz. .env.example).
-# UYARI: Harici API, sartnamenin "tamamen yerel/offline" gereksinimini ihlal
-# eder; yalnizca gelistirme/test icindir. Yarisma teslimi icin bu degerler
-# yerel modele (qwen/qwen3) geri alinmalidir.
+# =============================================================================
+# AKTIF KURULUM (yerel / offline): RTX 5090 32 GB (Blackwell, sm_120)
+#   VLM: Qwen/Qwen2.5-VL-7B-Instruct   -> vLLM FP8 (~8.3 GB agirlik)  :8001
+#   LLM: Qwen/Qwen2.5-3B-Instruct      -> vLLM BF16 (~6.2 GB agirlik) :8003
+#   Toplam ~14.5 GB agirlik + KV/aktivasyon -> 32 GB'de rahat sigar.
+#   API anahtari GEREKMEZ; tamamen local inference (sartname uyumlu).
+#   vLLM servis parametreleri (dtype/quantization/util/max-model-len) icin bkz.
+#   docker-compose.yml (vllm-vlm / vllm-llm) veya README'deki `vllm serve` komutlari.
+#
+# GELISTIRME/TEST (opsiyonel): GPU'suz ortamda tum pipeline'i denemek icin
+#   app.use_mock_vlm: true + app.use_mock_llm: true  (harici hicbir sey gerekmez)
+# veya harici Gemini ile (yalnizca gelistirme; offline degildir):
+#   vlm.active_model: "gemini" + llm.active_model: "gemini" + GEMINI_API_KEY.
+# =============================================================================
 vlm:
-  active_model: "gemini"             # qwen | gemma | gemini  (VLMFactory tarafindan okunur) — TEST: gemini
+  active_model: "qwen"             # qwen | gemma | gemini  (VLMFactory tarafindan okunur) — AKTIF: qwen (yerel)
   models:
     qwen:
-      model_name: "Qwen/Qwen2.5-VL-3B-Instruct"
-      vllm_host: "0.0.0.0"
+      model_name: "Qwen/Qwen2.5-VL-7B-Instruct"   # 32 GB'de vLLM FP8 ile (bkz. docker-compose vllm-vlm)
+      vllm_host: "127.0.0.1"                        # tek makine: API + vLLM ayni host
       vllm_port: 8001
       max_new_tokens: 512
       temperature: 0.2
@@ -115,11 +121,11 @@ memory:
 # 05 - Ajan ve Muhakeme Katmani (LangGraph) - GPU / vLLM
 # -----------------------------------------------------------------------------
 llm:
-  active_model: "gemini"             # qwen3 | gemma3 | gemini (VLM'den bagimsiz saf muhakeme modeli) — TEST: gemini
+  active_model: "qwen3"              # qwen3 | gemma3 | gemini (VLM'den bagimsiz saf muhakeme modeli) — AKTIF: qwen3 (yerel)
   models:
-    qwen3:
-      model_name: "Qwen/Qwen3-8B-Instruct"
-      vllm_host: "0.0.0.0"
+    qwen3:                           # 'qwen3' anahtar adi eski kalmistir; aktif model 32 GB'a uygun Qwen2.5-3B'dir
+      model_name: "Qwen/Qwen2.5-3B-Instruct"   # ~3B muhakeme LLM'i, BF16 (bkz. docker-compose vllm-llm)
+      vllm_host: "127.0.0.1"                     # tek makine: API + vLLM ayni host
       vllm_port: 8003
       max_new_tokens: 1024
       temperature: 0.1
