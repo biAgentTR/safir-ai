@@ -17,6 +17,7 @@ import type {
   AlertTriggerResponse,
   HistoryListItem,
   HistoryDetail,
+  AskResponse,
 } from '~/types/api'
 
 export function useSafirApi() {
@@ -103,6 +104,14 @@ export function useSafirApi() {
     return await $fetch(url(`/history/${encodeURIComponent(jobId)}`))
   }
 
+  /** POST /ask -> grounded answer + sources (context-aware assistant). */
+  async function ask(question: string, jobId?: string | null): Promise<AskResponse> {
+    return await $fetch(url('/ask'), {
+      method: 'POST',
+      body: { question, job_id: jobId ?? null },
+    })
+  }
+
   return {
     base,
     health,
@@ -115,5 +124,6 @@ export function useSafirApi() {
     triggerAlert,
     getHistory,
     getHistoryItem,
+    ask,
   }
 }

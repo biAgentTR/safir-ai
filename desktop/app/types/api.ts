@@ -298,6 +298,30 @@ export interface HistoryDetail {
   report: SafirReport | null
 }
 
+// -------------------------------------------------- ask safir ---------------
+
+/** POST /ask request (src/main.py: AskRequest). */
+export interface AskRequest {
+  question: string
+  job_id?: string | null
+}
+
+/** A grounded source in the answer (src/assistant: Source). Only real fields. */
+export interface AskSource {
+  type: 'analysis' | 'regulation' | string
+  text?: string | null
+  score?: number | null
+  label?: string | null
+}
+
+/** POST /ask response (src/main.py: AskResponse). */
+export interface AskResponse {
+  answer: string
+  sources: AskSource[]
+  job_id: string | null
+  context_used: string[]
+}
+
 /** POST /alerts/trigger */
 export interface AlertTriggerRequest {
   risk_score: number

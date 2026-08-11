@@ -26,12 +26,13 @@ from typing import Callable, Deque, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from src.observability.trace_serializer import MAX_FRAMES_PER_JOB, PipelineTraceCollector
 
 from src.agent.langgraph_agent import SafirAgent
 from src.agent.tools import RetrieverTool
+from src.assistant.ask_service import AskService, JobNotFound
 from src.decision.escalation import EscalationPolicy
 from src.event_analysis.event_builder import EventBuilder
 from src.event_analysis.event_engine import EventEngine
@@ -48,7 +49,7 @@ from src.sampler.context.representative_frame_extractor import RepresentativeFra
 from src.schemas.report import EvidenceFrameOut, SafirReport, SamplerStats, TimelineEntry
 from src.utils.config_loader import SafirConfig, load_config
 from src.vlm.base_vlm import VLMResponse
-from src.vlm.factory import get_vlm_client
+from src.vlm.factory import get_llm_client, get_vlm_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -304,6 +305,38 @@ class HistoryDetail(BaseModel):
     status: str
     video_source: Optional[str] = None
     report: Optional[SafirReport] = None
+
+
+class AskRequest(BaseModel):
+    """`POST /ask` istek govdesi."""
+
+    question: str = Field(min_length=1, description="Kullanicinin dogal dil sorusu.")
+    job_id: Optional[str] = Field(default=None, description="Opsiyonel: baglam alinacak analiz kimligi.")
+
+    @field_validator("question")
+    @classmethod
+    def _question_not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Soru bos olamaz.")
+        return v
+
+
+class AskSource(BaseModel):
+    """`POST /ask` yanitindaki tek bir kaynak (yalnizca backend'in verdigi alanlar)."""
+
+    type: str  # "analysis" | "regulation"
+    text: Optional[str] = None
+    score: Optional[float] = None
+    label: Optional[str] = None
+
+
+class AskResponse(BaseModel):
+    """`POST /ask` yaniti: dayanakli cevap + kaynaklar + kullanilan baglam."""
+
+    answer: str
+    sources: List[AskSource] = Field(default_factory=list)
+    job_id: Optional[str] = None
+    context_used: List[str] = Field(default_factory=list)
 
 
 class SafirPipeline:
@@ -737,6 +770,28 @@ def get_analysis_store() -> AnalysisStore:
     return _analysis_store
 
 
+# 09B - Ask SAFIR: mevcut RAG + LLM soyutlamalarini yeniden kullanan asistan
+# servisi (yeni LLM/RAG sistemi KURMAZ). Pipeline'in seed'lenmis RAG'ini ve
+# config'teki aktif LLM'i kullanir; testler/E2E `_ask_service`'i (tipki
+# `_pipeline`/`_analysis_store` gibi) mock ile override edebilir.
+_ask_service: Optional[AskService] = None
+
+
+def get_ask_service() -> AskService:
+    """Uygulama omru boyunca tek bir `AskService` orneği olusturur/dondurur (lazy singleton)."""
+    global _ask_service
+    if _ask_service is None:
+        cfg = load_config()
+        llm_client = get_llm_client(cfg.llm, use_mock=cfg.app.use_mock_llm)
+        _ask_service = AskService(
+            analysis_store=get_analysis_store(),
+            rag_service=get_pipeline()._rag_service,  # pipeline'in seed'lenmis RAG'i (yeniden kullanim)
+            llm_client=llm_client,
+            rag_top_k=cfg.memory.faiss.top_k,
+        )
+    return _ask_service
+
+
 def _run_job(
     job_id: str,
     video_source: str,
@@ -1168,6 +1223,43 @@ def get_history_item(job_id: str) -> HistoryDetail:
         status=record.status,
         video_source=record.video_source,
         report=report,
+    )
+
+
+@app.post("/ask", response_model=AskResponse)
+def ask_safir(request: AskRequest) -> AskResponse:
+    """Ask SAFIR: soruyu (opsiyonel analiz baglami + RAG mevzuati ile) dayanakli yanitlar.
+
+    - `job_id` verilirse: o analizin kalici `SafirReport`'u ONCELIKLI baglam olur.
+    - Her durumda mevcut `EmbeddingRAGService` ile ilgili ISG mevzuati getirilir.
+    - Cevap YALNIZCA guvenli baglamdan uretilir; raw_response/internal reasoning/
+      secret/base64 modele gonderilmez ve yanitta yer almaz.
+
+    Args:
+        request: `question` (zorunlu) + `job_id` (opsiyonel).
+
+    Returns:
+        `answer`, `sources` (gercek retrieval sonuclari), `job_id`, `context_used`.
+
+    Raises:
+        HTTPException: `job_id` bilinmiyorsa (404), soru bossa (422),
+            LLM/servis cevap uretemezse (503; stack trace UI'a donmez).
+    """
+    try:
+        result = get_ask_service().answer(request.question, request.job_id)
+    except JobNotFound as exc:
+        raise HTTPException(status_code=404, detail=f"Analiz bulunamadi: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - guvenli hata; ayrintilar loglarda
+        logger.exception("Ask SAFIR cevap uretemedi")
+        raise HTTPException(status_code=503, detail="SAFIR su anda cevap olusturamadi.") from exc
+
+    return AskResponse(
+        answer=result.answer,
+        sources=[AskSource(type=s.type, text=s.text, score=s.score, label=s.label) for s in result.sources],
+        job_id=result.job_id,
+        context_used=result.context_used,
     )
 
 
