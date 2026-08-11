@@ -15,6 +15,8 @@ import type {
   AlertAcknowledgeResponse,
   AlertTriggerRequest,
   AlertTriggerResponse,
+  HistoryListItem,
+  HistoryDetail,
 } from '~/types/api'
 
 export function useSafirApi() {
@@ -91,6 +93,16 @@ export function useSafirApi() {
     })
   }
 
+  /** GET /history?limit&offset -> newest-first list. */
+  async function getHistory(limit = 50, offset = 0): Promise<HistoryListItem[]> {
+    return await $fetch(url('/history'), { query: { limit, offset } })
+  }
+
+  /** GET /history/{job_id} -> metadata + persisted SafirReport. */
+  async function getHistoryItem(jobId: string): Promise<HistoryDetail> {
+    return await $fetch(url(`/history/${encodeURIComponent(jobId)}`))
+  }
+
   return {
     base,
     health,
@@ -101,5 +113,7 @@ export function useSafirApi() {
     sendFeedback,
     acknowledgeAlert,
     triggerAlert,
+    getHistory,
+    getHistoryItem,
   }
 }

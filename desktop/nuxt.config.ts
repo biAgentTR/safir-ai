@@ -34,22 +34,21 @@ export default defineNuxtConfig({
 
   runtimeConfig: {
     public: {
-      // Empty => same-origin; the Nitro dev proxy below routes to FastAPI.
-      // Override in production packaging (out of scope for this step) via
-      // NUXT_PUBLIC_API_BASE, e.g. http://localhost:8000.
-      apiBase: '',
+      // All API traffic is namespaced under /api so it never collides with a
+      // Vue page route (e.g. the /history page vs the /history endpoint). The
+      // Nitro dev proxy below maps /api/** -> FastAPI. Override in production
+      // packaging (out of scope) via NUXT_PUBLIC_API_BASE, e.g. http://localhost:8000.
+      apiBase: '/api',
     },
   },
 
   nitro: {
-    // Nitro's devProxy strips the matched key from the path before forwarding,
-    // so each target must carry the same path prefix for it to be re-prepended
-    // (key '/analyze' + remainder '/jobs/..' -> target '.../analyze' + '/jobs/..').
+    // Single rule: Nitro strips the '/api' key, leaving the real backend path
+    // (/api/history -> /history, /api/analyze/jobs -> /analyze/jobs, ...). This
+    // keeps EventSource (SSE) and <img> frame requests same-origin, no CORS
+    // change on the backend, and no page-route / endpoint collision.
     devProxy: {
-      '/health': { target: 'http://localhost:8000/health', changeOrigin: true },
-      '/analyze': { target: 'http://localhost:8000/analyze', changeOrigin: true },
-      '/events': { target: 'http://localhost:8000/events', changeOrigin: true },
-      '/alerts': { target: 'http://localhost:8000/alerts', changeOrigin: true },
+      '/api': { target: 'http://localhost:8000', changeOrigin: true },
     },
   },
 

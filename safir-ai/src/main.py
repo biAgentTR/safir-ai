@@ -21,6 +21,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Deque, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -38,6 +39,7 @@ from src.event_analysis.event_history import EventHistory
 from src.event_analysis.rule_engine import RuleEngine
 from src.event_analysis.schemas import DetectedEvent, EventEngineInput, RuleMatch, TemporalEvent
 from src.event_analysis.temporal_reasoner import DEFAULT_RELATION_WINDOW_SEC, TemporalReasoner
+from src.memory.analysis_store import AnalysisStore
 from src.memory.context_builder import ContextBuilder
 from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
@@ -279,6 +281,29 @@ class AnalyzeJobResponse(BaseModel):
     """`/analyze/jobs` (POST) yaniti."""
 
     job_id: str
+
+
+class HistoryListItem(BaseModel):
+    """`GET /history` liste ogesi (History listesi icin gereken ozet alanlar)."""
+
+    job_id: str
+    created_at: str
+    video_source: Optional[str] = None
+    status: str
+    risk_level: Optional[str] = None
+    risk_score: Optional[int] = None
+    summary: Optional[str] = None
+
+
+class HistoryDetail(BaseModel):
+    """`GET /history/{job_id}` yaniti: metadata + kalici `SafirReport` (varsa)."""
+
+    job_id: str
+    created_at: str
+    updated_at: str
+    status: str
+    video_source: Optional[str] = None
+    report: Optional[SafirReport] = None
 
 
 class SafirPipeline:
@@ -696,6 +721,22 @@ def get_pipeline() -> SafirPipeline:
     return _pipeline
 
 
+# 09 - Analiz Gecmisi (History): dosya-tabanli, KALICI depo. Mevcut `EventStore`'a
+# ve pipeline mantigina DOKUNMAZ; yalnizca is yasam dongusu + nihai `SafirReport`
+# kalici olarak saklanir. Yol, mevcut `memory.sqlite.db_path` ile ayni klasorde
+# (`analyses.db`) tutulur (yeni config anahtari gerektirmez).
+_analysis_store: Optional[AnalysisStore] = None
+
+
+def get_analysis_store() -> AnalysisStore:
+    """Uygulama omru boyunca tek bir `AnalysisStore` orneği olusturur/dondurur (lazy singleton)."""
+    global _analysis_store
+    if _analysis_store is None:
+        db_path = Path(load_config().memory.sqlite.db_path).with_name("analyses.db")
+        _analysis_store = AnalysisStore(db_path)
+    return _analysis_store
+
+
 def _run_job(
     job_id: str,
     video_source: str,
@@ -756,8 +797,24 @@ def _run_job(
             job.status = "done"
             job.result = report
             job.step = job.total_steps
+        # History: tamamlanmis analizi (gercek SafirReport ile) kalici olarak sakla.
+        # Persistence hatasi is sonucunu ASLA etkilemez (best-effort).
+        try:
+            get_analysis_store().mark_completed(
+                job_id,
+                report_json=report.model_dump_json(),
+                risk_level=report.risk_level,
+                risk_score=report.risk_score,
+                summary=report.summary or report.natural_language_summary,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("History: tamamlanmis analiz kaydedilemedi: job_id=%s", job_id)
     except Exception as exc:  # noqa: BLE001 - hata is durumuna tasinip UI'a iletilir
         logger.exception("Analiz isi basarisiz oldu: job_id=%s", job_id)
+        try:
+            get_analysis_store().mark_failed(job_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("History: basarisiz analiz durumu kaydedilemedi: job_id=%s", job_id)
         with _jobs_lock:
             job = _jobs[job_id]
             job.status = "error"
@@ -831,6 +888,13 @@ def create_analyze_job(request: AnalyzeRequest) -> AnalyzeJobResponse:
         while len(_jobs) >= _MAX_JOBS:
             _jobs.pop(next(iter(_jobs)))
         _jobs[job_id] = JobState()
+
+    # History: kalici kaydi (created_at + video_source ile) olustur. Persistence
+    # hatasi analiz akisini ASLA bozmamali (best-effort).
+    try:
+        get_analysis_store().create(job_id, request.video_source, status="queued")
+    except Exception:  # noqa: BLE001
+        logger.exception("History kaydi olusturulamadi (analiz yine de baslatiliyor): job_id=%s", job_id)
 
     thread = threading.Thread(
         target=_run_job,
@@ -1042,6 +1106,68 @@ def submit_event_feedback(event_id: int, request: FeedbackRequest) -> FeedbackRe
         event_id=event_id,
         feedback=request.feedback,
         message="Geri bildiriminiz kaydedildi.",
+    )
+
+
+@app.get("/history", response_model=List[HistoryListItem])
+def list_history(limit: int = 50, offset: int = 0) -> List[HistoryListItem]:
+    """Kalici analiz gecmisini en yeni ONCE (newest-first), sayfali olarak dondurur.
+
+    Args:
+        limit: Dondurulecek maksimum kayit (1-200 arasina kelepcelenir).
+        offset: Atlanacak kayit sayisi (sayfalama).
+
+    Returns:
+        History listesi icin gerekli ozet alanlari iceren kayitlar.
+    """
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+    records = get_analysis_store().list(limit=limit, offset=offset)
+    return [
+        HistoryListItem(
+            job_id=r.job_id,
+            created_at=r.created_at,
+            video_source=r.video_source,
+            status=r.status,
+            risk_level=r.risk_level,
+            risk_score=r.risk_score,
+            summary=r.summary,
+        )
+        for r in records
+    ]
+
+
+@app.get("/history/{job_id}", response_model=HistoryDetail)
+def get_history_item(job_id: str) -> HistoryDetail:
+    """Tek bir kalici analizi (metadata + gercek `SafirReport`) dondurur.
+
+    Args:
+        job_id: `/analyze/jobs` tarafindan uretilmis is kimligi.
+
+    Returns:
+        Metadata ve (tamamlanmissa) kalici `SafirReport`.
+
+    Raises:
+        HTTPException: `job_id` History'de bulunamazsa (404).
+    """
+    record = get_analysis_store().get(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Analiz bulunamadi: {job_id}")
+
+    report: Optional[SafirReport] = None
+    if record.report_json:
+        try:
+            report = SafirReport.model_validate_json(record.report_json)
+        except Exception:  # noqa: BLE001 - bozuk/eski kayit UI'i kirmamali
+            logger.exception("History: kayitli rapor JSON'u cozulemedi: job_id=%s", job_id)
+
+    return HistoryDetail(
+        job_id=record.job_id,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        status=record.status,
+        video_source=record.video_source,
+        report=report,
     )
 
 
