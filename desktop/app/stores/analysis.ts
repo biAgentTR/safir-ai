@@ -150,9 +150,13 @@ export const useAnalysisStore = defineStore('analysis', {
 
     // ---- SSE trace ingestion (called by useAnalysisStream) ----
     pushTraceEvent(ev: TraceEvent) {
+      // Capture the latest stage BEFORE appending: auto-follow should advance
+      // only while the selection is still tracking the live head. If the user
+      // manually picked an earlier stage, selectedStage no longer equals the
+      // previous head, so we stop following and keep their choice.
+      const prevLatest = this.latestStage
       this.traceEvents = [...this.traceEvents, ev]
-      // auto-follow the newest stage unless the user picked one
-      if (!this.selectedStage || this.selectedStage === this.latestStage) {
+      if (!this.selectedStage || this.selectedStage === prevLatest) {
         this.selectedStage = ev.stage
       }
     },
