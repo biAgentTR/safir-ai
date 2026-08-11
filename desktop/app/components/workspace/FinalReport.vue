@@ -80,6 +80,14 @@ const tone = computed(() => riskTone(r.value?.risk_level))
       </div>
     </section>
 
+    <!-- technical JSON (real SafirReport; no raw_response/secret/reasoning) -->
+    <section>
+      <details>
+        <summary class="cursor-pointer text-xs text-slate-400">Technical JSON (tam SafirReport)</summary>
+        <pre class="mt-2 text-[11px] font-mono text-slate-400 bg-surface-2 border border-edge rounded-md p-3 max-h-96 overflow-auto">{{ JSON.stringify(r, null, 2) }}</pre>
+      </details>
+    </section>
+
     <!-- export -->
     <section class="flex items-center gap-3 pt-2 border-t border-edge">
       <span class="text-xs text-slate-500">Dışa aktar:</span>

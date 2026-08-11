@@ -54,3 +54,55 @@ export const STAGE_META: { stage: TraceStage; label: string; blurb: string }[] =
 export function stageLabel(stage: TraceStage): string {
   return STAGE_META.find((s) => s.stage === stage)?.label ?? stage
 }
+
+/**
+ * Input -> Output summary per stage, derived ONLY from the real trace payload.
+ * When a stage's event exists, counts are filled from it; otherwise the generic
+ * role words are shown. No fabricated data.
+ */
+export function stageFlow(
+  stage: TraceStage,
+  data: Record<string, unknown> | undefined,
+): { in: string; out: string } {
+  const n = (v: unknown) => (Array.isArray(v) ? v.length : typeof v === 'number' ? v : 0)
+  const d = (data ?? {}) as Record<string, any>
+  switch (stage) {
+    case 'sampler':
+      return {
+        in: data ? `${d.stats?.total_frames_scanned ?? 0} kare` : 'ham kareler',
+        out: data ? `${n(d.evidence_frames)} kanıt · ${n(d.event_groups)} grup` : 'kanıt kareleri / gruplar',
+      }
+    case 'vlm':
+      return {
+        in: data ? `${d.frames_sent || d.frame_count || 0} kare + prompt` : 'temsili kareler + prompt',
+        out: data ? `gözlem + ${n(d.structured_events)} olay` : 'gözlem + structured events',
+      }
+    case 'events':
+      return {
+        in: data ? `${n(d.detected_events)} tespit` : 'tespit edilen olaylar',
+        out: data ? `${n(d.temporal_events)} zamansal · ${n(d.rule_matches)} kural` : 'zamansal olaylar / kural eşleşmeleri',
+      }
+    case 'agent_context':
+      return {
+        in: 'olaylar + mevzuat',
+        out: data ? `${d.length ?? 0} karakter bağlam` : 'ajan bağlamı',
+      }
+    case 'decision':
+      return {
+        in: 'ajan bağlamı',
+        out: data ? `risk ${d.risk_score}/100 · ${n(d.actions)} aksiyon` : 'risk / özet / aksiyonlar',
+      }
+    case 'escalation':
+      return {
+        in: 'karar / risk',
+        out: data ? `${d.tier}${d.auto_dispatched ? ' · oto-tetik' : ''}` : 'kademe / tetikleme',
+      }
+    case 'report':
+      return {
+        in: 'pipeline çıktıları',
+        out: data ? `risk ${d.risk_score} · nihai rapor` : 'nihai rapor',
+      }
+    default:
+      return { in: '—', out: '—' }
+  }
+}

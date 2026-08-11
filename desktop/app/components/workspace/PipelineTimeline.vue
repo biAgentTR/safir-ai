@@ -26,6 +26,9 @@ const glyph: Record<string, string> = {
   pending: '',
   queued: '',
 }
+function flow(stage: TraceStage) {
+  return stageFlow(stage, store.eventForStage(stage)?.data)
+}
 function tone(s: string): string {
   if (s === 'completed') return 'text-risk-low border-risk-low/40'
   if (s === 'failed') return 'text-risk-crit border-risk-crit/40'
@@ -69,6 +72,12 @@ function tone(s: string): string {
             >{{ m.label }}</span>
             <span class="block text-[11px] text-slate-500 truncate">
               {{ store.eventForStage(m.stage)?.summary ?? m.blurb }}
+            </span>
+            <!-- Input -> Output (real data when the stage has run) -->
+            <span class="mt-0.5 flex items-center gap-1 text-[10px] font-mono text-slate-600 truncate">
+              <span class="truncate">{{ flow(m.stage).in }}</span>
+              <span class="text-slate-700">→</span>
+              <span class="truncate" :class="store.eventForStage(m.stage) ? 'text-slate-500' : ''">{{ flow(m.stage).out }}</span>
             </span>
           </span>
           <span

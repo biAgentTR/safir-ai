@@ -41,6 +41,18 @@ const context = computed(() => view<ContextStageData>('agent_context'))
 const decision = computed(() => view<Decision>('decision'))
 const escalation = computed(() => view<Escalation>('escalation'))
 const report = computed(() => view<ReportStageData>('report'))
+
+// Fix 3: the frames actually sent to the VLM are the sampler's representative
+// frames (they live in the sampler stage payload, referenced by thumbnail_url).
+const vlmInputFrames = computed(() => {
+  if (stage.value !== 'vlm') return []
+  const s = store.eventForStage('sampler')?.data as unknown as SamplerStageData | undefined
+  return s?.event_groups?.flatMap((g) => g.representative_frames) ?? []
+})
+
+// Fix 4: real regulations retrieved by the agent (report.relevant_regulations).
+// No fabricated similarity score / chunk id — the backend does not provide them.
+const regulations = computed(() => store.report?.relevant_regulations ?? [])
 </script>
 
 <template>
@@ -122,6 +134,21 @@ const report = computed(() => view<ReportStageData>('report'))
           <div class="field-label">Input · user prompt</div>
           <p class="text-sm text-slate-300 bg-surface-2 rounded-md p-3 border border-edge">{{ vlm.user_prompt || '—' }}</p>
         </div>
+        <div v-if="vlmInputFrames.length">
+          <div class="field-label">Input · VLM'e gönderilen kareler ({{ vlmInputFrames.length }})</div>
+          <div class="flex flex-wrap gap-3">
+            <button
+              v-for="rf in vlmInputFrames"
+              :key="rf.frame_id"
+              type="button"
+              class="w-28 border border-edge rounded-md overflow-hidden bg-surface-2 text-left hover:ring-1 hover:ring-accent"
+              @click="emit('open-frame', rf.frame_id)"
+            >
+              <img :src="frameUrl(rf.frame_id)" :alt="rf.frame_id" class="w-full h-20 object-cover" loading="lazy" />
+              <div class="px-2 py-1 text-[10px] font-mono text-slate-400">{{ rf.label }} · {{ rf.timestamp_str }}</div>
+            </button>
+          </div>
+        </div>
         <div>
           <div class="field-label">Model output · description</div>
           <p class="text-sm text-slate-200 leading-relaxed whitespace-pre-line">{{ vlm.description || '—' }}</p>
@@ -170,8 +197,20 @@ const report = computed(() => view<ReportStageData>('report'))
       </div>
 
       <!-- ============ CONTEXT & RAG ============ -->
-      <div v-else-if="context" class="space-y-3">
-        <p class="text-sm text-slate-400">Ajan bağlamı hazırlandı ({{ context.length }} karakter). Nihai RAG mevzuat sonuçları için Rapor sekmesine bakın.</p>
+      <div v-else-if="context" class="space-y-4">
+        <p class="text-sm text-slate-400">Ajan bağlamı hazırlandı ({{ context.length }} karakter): tespit edilen olaylar + FAISS'ten getirilen İSG mevzuatı birleştirildi.</p>
+
+        <!-- Fix 4: real retrieved regulations (report.relevant_regulations) -->
+        <div>
+          <div class="field-label">Getirilen İSG mevzuatı (RAG / FAISS)</div>
+          <ul v-if="regulations.length" class="space-y-1 text-sm text-slate-200">
+            <li v-for="(reg, i) in regulations" :key="i" class="bg-surface-2 border border-edge rounded-md px-3 py-2">{{ reg }}</li>
+          </ul>
+          <p v-else class="text-sm text-slate-500">
+            {{ store.report ? 'Bu analiz için ilgili mevzuat maddesi bulunamadı.' : 'Mevzuat sonuçları rapor tamamlanınca listelenir.' }}
+          </p>
+        </div>
+
         <details>
           <summary class="cursor-pointer text-xs text-slate-400">Teknik: agent context prompt_block</summary>
           <pre class="mt-2 text-[11px] font-mono text-slate-500 bg-surface-2 border border-edge rounded-md p-3 max-h-72 overflow-auto whitespace-pre-wrap">{{ context.prompt_block }}</pre>
