@@ -60,6 +60,7 @@ class EventStore:
         self._connection.row_factory = sqlite3.Row
         self._connection.executescript(_SCHEMA)
         self._migrate_add_feedback_column()
+        self._migrate_add_video_source_column()
         self._connection.commit()
 
     def _migrate_add_feedback_column(self) -> None:
@@ -74,6 +75,22 @@ class EventStore:
             self._connection.execute("ALTER TABLE events ADD COLUMN feedback TEXT")
             logger.info("EventStore semasi guncellendi: 'feedback' kolonu eklendi.")
 
+    def _migrate_add_video_source_column(self) -> None:
+        """`events` tablosuna, daha eski veritabanlarinda eksik olabilecek `video_source` kolonunu ekler.
+
+        Idempotenttir: kolon zaten varsa hicbir sey yapmaz. Bu kolon, `get_timeline`
+        sorgularinin FARKLI video/analiz calismalarina ait olaylari birbirine
+        karistirmasini (zaman damgasi araliklarinin ortusmesi durumunda olusan
+        cross-video contamination) onlemek icin eklenmistir. Eski (bu migration
+        oncesi yazilmis) satirlarda deger NULL kalir ve `get_timeline`e bir
+        `video_source` filtresi verildiginde bu eski satirlar KASITLI olarak
+        sonuca dahil edilmez (NULL = 'x' SQL'de hicbir zaman dogru degildir).
+        """
+        columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(events)").fetchall()}
+        if "video_source" not in columns:
+            self._connection.execute("ALTER TABLE events ADD COLUMN video_source TEXT")
+            logger.info("EventStore semasi guncellendi: 'video_source' kolonu eklendi.")
+
     def add_event(
         self,
         timestamp: float,
@@ -81,6 +98,7 @@ class EventStore:
         risk_score: Optional[int] = None,
         risk_level: Optional[str] = None,
         source_model: Optional[str] = None,
+        video_source: Optional[str] = None,
     ) -> int:
         """Yeni bir olay kaydi ekler.
 
@@ -90,16 +108,20 @@ class EventStore:
             risk_score: Hesaplanmis 0-100 risk skoru (varsa).
             risk_level: Risk seviyesi etiketi (dusuk/orta/yuksek/kritik).
             source_model: Aciklamayi ureten model adi.
+            video_source: Bu olayin uretildigi video/analiz kaynagi (normalize
+                edilmis dosya yolu veya canli yayin URI'si). `get_timeline`
+                tarafindan analiz-bazli izolasyon icin kullanilir; `None`
+                birakilirsa satir kaynaksiz (eski davranisla uyumlu) yazilir.
 
         Returns:
             Eklenen kaydin veritabani ID'si.
         """
         cursor = self._connection.execute(
             """
-            INSERT INTO events (timestamp, description, risk_score, risk_level, source_model)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO events (timestamp, description, risk_score, risk_level, source_model, video_source)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (timestamp, description, risk_score, risk_level, source_model),
+            (timestamp, description, risk_score, risk_level, source_model, video_source),
         )
         self._connection.commit()
         logger.debug("Olay kaydedildi: id=%d ts=%.2f", cursor.lastrowid, timestamp)
@@ -135,24 +157,44 @@ class EventStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def get_timeline(self, start_ts: float, end_ts: float) -> List[Dict[str, Any]]:
+    def get_timeline(
+        self, start_ts: float, end_ts: float, video_source: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """Belirtilen zaman araligindaki olaylari kronolojik sirada dondurur.
 
         Args:
             start_ts: Aralik baslangici (saniye).
             end_ts: Aralik bitisi (saniye).
+            video_source: Verilirse, yalnizca TAM OLARAK bu video/analiz
+                kaynagina ait satirlar dondurulur; farkli videolarin zaman
+                damgasi araliklari ortusse bile birbirine karismaz. Bu
+                kolon eklenmeden ONCE yazilmis eski satirlar `video_source`
+                degeri NULL oldugu icin (SQL'de `NULL = ?` hicbir zaman
+                dogru olmadigindan) KASITLI olarak sonuca dahil edilmez.
+                `None` (varsayilan) birakilirsa filtre uygulanmaz ve eski
+                davranis (tum kaynaklar) korunur.
 
         Returns:
             Zaman damgasina gore artan sirali olay sozlukleri.
         """
-        rows = self._connection.execute(
-            """
-            SELECT * FROM events
-            WHERE timestamp BETWEEN ? AND ?
-            ORDER BY timestamp ASC
-            """,
-            (start_ts, end_ts),
-        ).fetchall()
+        if video_source is not None:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM events
+                WHERE timestamp BETWEEN ? AND ? AND video_source = ?
+                ORDER BY timestamp ASC
+                """,
+                (start_ts, end_ts, video_source),
+            ).fetchall()
+        else:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM events
+                WHERE timestamp BETWEEN ? AND ?
+                ORDER BY timestamp ASC
+                """,
+                (start_ts, end_ts),
+            ).fetchall()
         return [dict(row) for row in rows]
 
     def record_feedback(self, event_id: int, feedback: str) -> None:

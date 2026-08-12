@@ -85,6 +85,94 @@ def test_record_feedback_raises_for_unknown_event(event_store) -> None:
 
 
 # ---------------------------------------------------------------------------
+# EventStore - video_source izolasyonu (Hata #2 duzeltmesi: get_timeline
+# cross-video contamination). Bkz. VLM Pipeline Kok Neden Analiz Raporu.
+# ---------------------------------------------------------------------------
+
+
+def test_migration_adds_video_source_column_to_legacy_database(tmp_path) -> None:
+    """`video_source` kolonu olmayan ESKI bir veritabani, acilista bozulmadan migrate edilmeli."""
+    db_path = tmp_path / "legacy_events.db"
+
+    # ESKI semayi (video_source YOK) elle olusturarak "gecmisten kalan" bir DB simule et.
+    import sqlite3
+
+    legacy_conn = sqlite3.connect(db_path)
+    legacy_conn.executescript(
+        """
+        CREATE TABLE events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp REAL NOT NULL,
+            description TEXT NOT NULL,
+            risk_score INTEGER,
+            risk_level TEXT,
+            source_model TEXT
+        );
+        """
+    )
+    legacy_conn.execute(
+        "INSERT INTO events (timestamp, description) VALUES (?, ?)", (5.0, "eski kayit")
+    )
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    # SAFIR'in EventStore'u ayni DB'yi acinca migration idempotent calismali; eski satir kaybolmamali.
+    store = SQLiteEventStore(SQLiteMemoryConfig(db_path=str(db_path)))
+    try:
+        rows = store.query_recent(limit=10)
+        assert len(rows) == 1
+        assert rows[0]["description"] == "eski kayit"
+        assert rows[0]["video_source"] is None
+    finally:
+        store.close()
+
+
+def test_get_timeline_without_video_source_filter_returns_all_rows(event_store) -> None:
+    """`video_source` verilmezse eski davranis (tum kaynaklar) korunur."""
+    now = time.time()
+    event_store.add_event(timestamp=now, description="A videosu", video_source="/data/a.mp4")
+    event_store.add_event(timestamp=now + 1, description="B videosu", video_source="/data/b.mp4")
+
+    timeline = event_store.get_timeline(start_ts=now, end_ts=now + 1)
+    assert len(timeline) == 2
+
+
+def test_get_timeline_with_video_source_filter_excludes_other_videos(event_store) -> None:
+    """Kok neden Hata #2'nin dogrudan regresyon testi: ayni zaman araligina dusen
+    IKI FARKLI videonun eventleri, video_source filtresiyle birbirine karismamali."""
+    now = time.time()
+    event_store.add_event(timestamp=now, description="A videosunda olay", video_source="/data/video_a.mp4")
+    event_store.add_event(timestamp=now, description="B videosunda olay", video_source="/data/video_b.mp4")
+
+    timeline_a = event_store.get_timeline(start_ts=now, end_ts=now, video_source="/data/video_a.mp4")
+    timeline_b = event_store.get_timeline(start_ts=now, end_ts=now, video_source="/data/video_b.mp4")
+
+    assert len(timeline_a) == 1
+    assert timeline_a[0]["description"] == "A videosunda olay"
+    assert len(timeline_b) == 1
+    assert timeline_b[0]["description"] == "B videosunda olay"
+
+
+def test_get_timeline_with_video_source_filter_excludes_legacy_null_rows(event_store) -> None:
+    """`video_source`'u bilinmeyen (NULL) eski kayitlar, yeni bir video'nun
+    scoped timeline'ina KESINLIKLE dahil edilmemeli."""
+    now = time.time()
+    event_store.add_event(timestamp=now, description="video_source'suz eski kayit")
+    event_store.add_event(timestamp=now, description="yeni video kaydi", video_source="/data/new.mp4")
+
+    timeline = event_store.get_timeline(start_ts=now, end_ts=now, video_source="/data/new.mp4")
+
+    assert len(timeline) == 1
+    assert timeline[0]["description"] == "yeni video kaydi"
+
+
+def test_add_event_persists_video_source(event_store) -> None:
+    event_id = event_store.add_event(timestamp=time.time(), description="test", video_source="/data/x.mp4")
+    row = next(r for r in event_store.query_recent(limit=10) if r["id"] == event_id)
+    assert row["video_source"] == "/data/x.mp4"
+
+
+# ---------------------------------------------------------------------------
 # EmbeddingRAGService / FAISSRagService (agsiz, sahte SentenceTransformer ile)
 # ---------------------------------------------------------------------------
 

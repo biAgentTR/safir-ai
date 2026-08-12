@@ -51,6 +51,7 @@ class EventStoreLike(Protocol):
         risk_score: Optional[int] = None,
         risk_level: Optional[str] = None,
         source_model: Optional[str] = None,
+        video_source: Optional[str] = None,
     ) -> int:
         """Bkz. `EventStore.add_event`. Eklenen kaydin veritabani ID'sini dondurur."""
         ...
@@ -82,6 +83,7 @@ class EventHistory:
         event: StructuredEvent,
         risk_score: Optional[int] = None,
         risk_level: Optional[str] = None,
+        video_source: Optional[str] = None,
     ) -> int:
         """Bir `StructuredEvent`i, opsiyonel risk bilgisiyle birlikte `EventStore.add_event`e yazar.
 
@@ -98,6 +100,9 @@ class EventHistory:
                 `None` ise `event.risk_score` (genelde `None`) kullanilir.
             risk_level: Ajanin urettigi risk seviyesi etiketi; `None` ise
                 `event.risk_level` (genelde `None`) kullanilir.
+            video_source: Bu olayin uretildigi video/analiz kaynagi; `None`
+                ise satir kaynaksiz (eski davranisla uyumlu) yazilir. Bkz.
+                `EventStore.get_timeline`'in analiz-bazli izolasyonu.
 
         Returns:
             `EventStore.add_event(...)`in dondurdugu veritabani kaydi kimligi.
@@ -107,6 +112,8 @@ class EventHistory:
             kwargs["risk_score"] = risk_score
         if risk_level is not None:
             kwargs["risk_level"] = risk_level
+        if video_source is not None:
+            kwargs["video_source"] = video_source
 
         event_id = self._event_store.add_event(**kwargs)
         logger.debug(
@@ -123,6 +130,7 @@ class EventHistory:
         events: List[StructuredEvent],
         risk_scores: Optional[List[Optional[int]]] = None,
         risk_levels: Optional[List[Optional[str]]] = None,
+        video_source: Optional[str] = None,
     ) -> List[int]:
         """Birden fazla `StructuredEvent`i, `events` ile ayni sirada `EventStore`a kaydeder.
 
@@ -134,6 +142,9 @@ class EventHistory:
                 elemanlari da `None` olabilir (o olay icin override yok,
                 digerleri icin var).
             risk_levels: `risk_scores` ile ayni mantik, risk seviyesi icin.
+            video_source: Tum batch icin TEK bir video/analiz kaynagi
+                (batch, zaten tek bir `SafirPipeline.run()` cagrisina/videoya
+                aittir); `None` ise satirlar kaynaksiz yazilir.
 
         Returns:
             `events` ile ayni sirada, uretilen veritabani kimliklerinin listesi.
@@ -151,7 +162,9 @@ class EventHistory:
         for index, event in enumerate(events):
             score = risk_scores[index] if risk_scores is not None else None
             level = risk_levels[index] if risk_levels is not None else None
-            event_ids.append(self.record(event, risk_score=score, risk_level=level))
+            event_ids.append(
+                self.record(event, risk_score=score, risk_level=level, video_source=video_source)
+            )
 
         logger.debug("EventHistory: %d olay toplu kaydedildi.", len(event_ids))
         return event_ids

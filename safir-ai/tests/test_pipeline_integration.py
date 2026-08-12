@@ -249,6 +249,73 @@ def test_event_buffer_persists_across_pipeline_calls(
     assert "ardisik gozlemde" in second_call_rows[0]["description"]
 
 
+def test_event_buffer_does_not_persist_across_different_video_sources(
+    pipeline: SafirPipeline, motion_video: str, tmp_path: Path
+) -> None:
+    """Kok neden Hata #3'un dogrudan regresyon testi (_event_history_buffer contamination).
+
+    `test_event_buffer_persists_across_pipeline_calls` AYNI video icin buffer'in
+    KORUNMASI gerektigini dogrular (surekli kamera/stream izleme). Bu test ise
+    tam tersini: video_source DEGISTIGINDE (bagimsiz, ilgisiz bir video analizi)
+    buffer'in temizlenmesi gerektigini dogrular - aksi halde ikinci videonun
+    TemporalReasoner/RuleEngine degerlendirmesine ilk videonun DetectedEvent'lari
+    sizar ve yanlislikla "ardisik gozlemde" (occurrence_count=2) birlesmesi olusur.
+    """
+    second_video_path = tmp_path / "motion_other.mp4"
+    frames = []
+    for i in range(60):
+        frame = np.full((48, 64, 3), 30, dtype=np.uint8)
+        if 20 <= i < 30:
+            cv2.rectangle(frame, (5, 5), (58, 42), (255, 255, 255), -1)
+        frames.append(frame)
+    _write_video(second_video_path, frames)
+
+    pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+    assert len(pipeline._event_history_buffer) >= 1
+
+    pipeline.run(str(second_video_path), "Sahnede riskli bir durum var mi degerlendir.")
+
+    second_video_rows = [
+        row
+        for row in pipeline._event_store.query_recent(limit=10)
+        if row["video_source"] == str(second_video_path)
+    ]
+    assert len(second_video_rows) == 1
+    assert "ardisik gozlemde" not in second_video_rows[0]["description"]
+
+
+def test_report_timeline_isolates_overlapping_timestamp_videos(
+    pipeline: SafirPipeline, motion_video: str, tmp_path: Path
+) -> None:
+    """Kok neden Hata #2'nin uctan uca regresyon testi (EventStore.get_timeline contamination).
+
+    Iki FARKLI video (ayni sentetik hareket deseni -> ayni sure -> ORTUSEN
+    zaman damgasi araligi, gercek kisa test klipleri gibi) art arda analiz
+    edilir; ikinci videonun `report.timeline`i, ilk videonun eventlerini
+    ICERMEMELI.
+    """
+    second_video_path = tmp_path / "motion_overlap.mp4"
+    frames = []
+    for i in range(60):
+        frame = np.full((48, 64, 3), 30, dtype=np.uint8)
+        if 20 <= i < 30:
+            cv2.rectangle(frame, (5, 5), (58, 42), (255, 255, 255), -1)
+        frames.append(frame)
+    _write_video(second_video_path, frames)
+
+    pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+    second_report = pipeline.run(str(second_video_path), "Sahnede riskli bir durum var mi degerlendir.")
+
+    assert len(second_report.timeline) == 1
+
+    timeline_a = pipeline._event_store.get_timeline(start_ts=0, end_ts=10_000, video_source=motion_video)
+    timeline_b = pipeline._event_store.get_timeline(
+        start_ts=0, end_ts=10_000, video_source=str(second_video_path)
+    )
+    assert len(timeline_a) == 1
+    assert len(timeline_b) == 1
+
+
 def test_run_populates_rule_engine_retriever_through_real_rag_service(
     pipeline: SafirPipeline, motion_video: str
 ) -> None:

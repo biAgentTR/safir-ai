@@ -413,6 +413,11 @@ class SafirPipeline:
         # kati kadar (varsayilan 90s) gecmis her zaman korunur.
         self._event_buffer_retention_sec = DEFAULT_RELATION_WINDOW_SEC * 3
         self._event_history_buffer: Deque[DetectedEvent] = deque()
+        # `run()` cagrilari arasinda video_source DEGISTIGINDE buffer sifirlanir
+        # (bagimsiz video analizleri arasi contamination'i onler); ayni
+        # video_source ile ARDISIK cagrilarda (surekli kamera/stream izleme)
+        # buffer KORUNUR (bkz. `run()` basindaki kontrol).
+        self._last_video_source: Optional[str] = None
 
     def run(
         self,
@@ -448,6 +453,14 @@ class SafirPipeline:
             RuntimeError: Video kaynagindan hic Evidence Frame/Olay Grubu uretilemezse.
         """
         pipeline_started_at = time.perf_counter()
+
+        # Bagimsiz video analizleri arasi olay-bellegi (temporal reasoning
+        # buffer) contamination'ini onler: video_source bir onceki cagridan
+        # FARKLIYSA buffer temizlenir. Ayni video_source ile ARDISIK
+        # cagrilarda (surekli kamera/stream izleme) buffer bilerek korunur.
+        if video_source != self._last_video_source:
+            self._event_history_buffer.clear()
+        self._last_video_source = video_source
 
         def _emit(stage: str, payload: Dict[str, object]) -> None:
             """Gozlem kancasini (varsa) bir asamanin gercek ciktisiyla cagirir (yan etkisiz)."""
@@ -663,12 +676,15 @@ class SafirPipeline:
             structured_events,
             risk_scores=[decision.risk_score] * len(structured_events),
             risk_levels=[decision.risk_level] * len(structured_events),
+            video_source=video_source,
         )
         logger.info(
             "Event Gecmisi: %d StructuredEvent kaydedildi (ids=%s)", len(recorded_event_ids), recorded_event_ids
         )
         event_id = recorded_event_ids[0] if recorded_event_ids else None
-        timeline = self._event_store.get_timeline(start_ts=clusters[0].start_time, end_ts=latest_timestamp)
+        timeline = self._event_store.get_timeline(
+            start_ts=clusters[0].start_time, end_ts=latest_timestamp, video_source=video_source
+        )
 
         return SafirReport(
             event_id=event_id,

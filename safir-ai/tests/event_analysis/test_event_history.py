@@ -27,6 +27,7 @@ class _FakeEventStore:
         risk_score: int | None = None,
         risk_level: str | None = None,
         source_model: str | None = None,
+        video_source: str | None = None,
     ) -> int:
         event_id = len(self.rows)
         self.rows.append(
@@ -37,6 +38,7 @@ class _FakeEventStore:
                 "risk_score": risk_score,
                 "risk_level": risk_level,
                 "source_model": source_model,
+                "video_source": video_source,
             }
         )
         return event_id
@@ -156,6 +158,33 @@ def test_record_batch_raises_on_mismatched_risk_levels_length() -> None:
 def test_record_batch_with_empty_events_returns_empty_list() -> None:
     store = _FakeEventStore()
     assert EventHistory(store).record_batch([]) == []
+
+
+def test_record_without_video_source_writes_none() -> None:
+    store = _FakeEventStore()
+    event = _structured_event()
+
+    EventHistory(store).record(event)
+
+    assert store.rows[0]["video_source"] is None
+
+
+def test_record_with_video_source_writes_it() -> None:
+    store = _FakeEventStore()
+    event = _structured_event()
+
+    EventHistory(store).record(event, video_source="/data/videos/video_a.mp4")
+
+    assert store.rows[0]["video_source"] == "/data/videos/video_a.mp4"
+
+
+def test_record_batch_applies_single_video_source_to_all_rows() -> None:
+    store = _FakeEventStore()
+    events = [_structured_event(temporal_event_id=f"evt_{i}") for i in range(3)]
+
+    EventHistory(store).record_batch(events, video_source="/data/videos/video_b.mp4")
+
+    assert all(row["video_source"] == "/data/videos/video_b.mp4" for row in store.rows)
 
 
 def test_mark_feedback_forwards_event_id_and_value_unchanged() -> None:
