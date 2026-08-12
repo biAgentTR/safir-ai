@@ -571,7 +571,12 @@ class SafirPipeline:
             )
             for cluster in clusters:
                 try:
-                    cluster.representative_frames = rep_extractor.extract(video_source, cluster.peak_frame)
+                    cluster.representative_frames = rep_extractor.extract(
+                        video_source,
+                        cluster.peak_frame,
+                        start_time=cluster.start_time,
+                        end_time=cluster.end_time,
+                    )
                 except (ValueError, RuntimeError) as exc:
                     logger.warning(
                         "Temsili kare cikarilamadi (Olay #%d), tek kareye dusuluyor: %s", cluster.event_id, exc
