@@ -44,10 +44,13 @@ nvidia-smi                         # 5090 + sürücü + "CUDA Version: 12.x" gö
 
 ## 2. Sistem paketleri
 ```bash
-sudo apt install -y git python3.11 python3.11-venv python3.11-dev python3-pip \
+sudo apt install -y git python3.12 python3.12-venv python3.12-dev python3-pip \
                     ffmpeg libgl1 libglib2.0-0
 ```
-> `ffmpeg` + `libgl1` OpenCV'nin video okuması için gerekir.
+> `ffmpeg` + `libgl1` OpenCV'nin video okuması için gerekir. (Python 3.12
+> kullanın — vLLM'in güncel wheel'leri bu sürüme göre test edilmiştir; farklı
+> bir sürüm sisteminizde zaten kuruluysa `python3 --version` ile kontrol edip
+> ona göre uyarlayın.)
 
 ## 3. Depoyu klonla
 ```bash
@@ -57,20 +60,68 @@ cd p3-project
 git checkout claude/gemini-api-refactor-r1roi4
 ```
 
-## 4. Tek Python ortamı, tek kurulum
+## 4. Kurulum — 3 fazlı, DOĞRULAMA ZORUNLU
+
+**Neden fazlı?** vLLM'in kendi transitive bağımlılıkları (torch/outlines/openai/
+fastapi) çok geniştir; bunları projeyle aynı anda, tek adımda kurup bir sorun
+çıktığında "proje mi, vLLM mi bozuk" ayrımını yapmak zordur. Bu yüzden ÖNCE
+vLLM'i **projeden tamamen izole**, tek başına doğrularız; SONRA proje
+bağımlılıklarını ekleriz. Bir faz atlanırsa/eski dosya kullanılırsa sorunlar
+sessizce üst üste biner — **her fazın çıktısını gerçekten kontrol edin.**
+
+### Faz 0 — Repo durumunu doğrula (atlamayın)
+```bash
+cd ~/p3-project
+git log -1 --oneline          # en güncel commit'te olmalısınız
+grep -E "^vllm|^outlines|^openai" safir-ai/requirements.txt
+```
+İkinci komut şunu göstermeli (satır başları farklıysa `git pull origin
+claude/gemini-api-refactor-r1roi4` çalıştırıp tekrar kontrol edin):
+```
+vllm>0.7.2
+outlines>=0.1.0
+openai>=1.35
+```
+
+### Faz 1 — vLLM'i İZOLE doğrula (proje kodundan tamamen bağımsız)
+```bash
+mkdir -p ~/vllm-sanity-check && cd ~/vllm-sanity-check
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install vllm
+python -c "import vllm, outlines; print('vllm', vllm.__version__); print('outlines', outlines.__version__)"
+vllm --version
+deactivate
+cd ~ && rm -rf ~/vllm-sanity-check
+```
+Bu adım **sürüm sabitlemeden** (`pip install vllm`, ekstra kısıtlama yok) çalışır;
+VM'nin torch/CUDA/Blackwell ortamıyla doğal olarak uyumlu en güncel vLLM'i
+kurar. `vllm --version` temiz bir sürüm numarası basmalı, traceback OLMAMALI.
+**Bu adım başarısız olursa proje kurulumuna GEÇMEYİN** — sorun VM'nin CUDA/
+sürücü/Python ortamındadır, `requirements.txt`'te değil (bkz. Sorun giderme).
+
+### Faz 2 — Proje ortamı (Faz 1 başarılıysa)
 ```bash
 cd ~/p3-project/safir-ai
-python3.11 -m venv .venv
+rm -rf .venv                  # varsa ONCEKI/kismi kurulumu temizle
+python3.12 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
 ```
-Bu **tek komut**, backend (FastAPI, LangGraph, FAISS/sentence-transformers) **ve**
-yerel vLLM serving altyapısını (`vllm` paketi) aynı ortama kurar. Ayrı bir
-"vLLM ortamı" gerekmez.
+Doğrula (Faz 1'dekiyle aynı/yakın bir vLLM sürümü görmelisiniz — asla eski
+`0.5.x` gibi bir şey değil):
+```bash
+pip show vllm outlines pyairports 2>&1 | grep -E "^Name|^Version|not found"
+```
+`pyairports` **hiç görünmemeli** ("Package(s) not found"). `vllm`/`outlines`
+Faz 1'dekiyle uyumlu (modern) sürümlerde olmalı.
 
 > Kurulum uzun sürer (`vllm` büyük bir paket — torch/CUDA wheel'leri indirir).
-> pip bağımlılık çözümlemesinde bir çakışma raporlarsa bkz. **Sorun giderme**.
+> `--no-deps` ile kısmi/manuel kurulum YAPMAYIN (bkz. `requirements.txt`
+> başındaki not) — eski bir dosya kopyasıyla birleşirse vLLM'i sessizce eski
+> bir sürüme düşürüp kırık bağımlılık zincirine geri döner.
 
 ## 5. vLLM model sunucularını başlat (aynı ortam, arka planda)
 `.venv` aktifken, **tek terminalde**, arka planda (`&` + `nohup`) başlatılabilir —
@@ -90,6 +141,12 @@ nohup vllm serve Qwen/Qwen2.5-3B-Instruct --port 8003 --trust-remote-code \
   --dtype bfloat16 --gpu-memory-utilization 0.30 --max-model-len 4096 --max-num-seqs 4 \
   > ~/llm.log 2>&1 &
 ```
+
+> `--quantization fp8` bayrağı bazı vLLM sürümlerinde adlandırma/parametre
+> değiştirebilir; `vllm serve --help | grep -i quant` ile bu VM'nizde kurulu
+> sürümde geçerli seçenekleri doğrulayın. Sorun çıkarsa bu bayrağı tamamen
+> kaldırıp BF16 ile deneyin (7B ağırlık ~16.6 GB, yine 32 GB'a sığar — bkz.
+> aşağıdaki VRAM tablosu).
 
 **İlk çalıştırma modelleri indirir** (~22 GB, birkaç dakika–saat). İzle:
 ```bash
