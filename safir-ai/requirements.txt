@@ -6,8 +6,12 @@
 # API'leri (field_validator, response_model, StreamingResponse vb.) garantiler;
 # ust sinir konulmadi ki pip, vllm ile UYUMLU en guncel surumu secebilsin.
 #
-# EGER pip yine de cozemezse (ResolutionImpossible), ONCE vllm'i tek basina
-# kurup SONRA kalanini --no-deps ile ekleyin:
+# EGER pip yine de cozemezse (ResolutionImpossible), ONCE bu dosyanin GUNCEL
+# oldugunu dogrulayin (`git pull`, sonra `grep vllm requirements.txt` ==
+# "vllm>=0.8.5" gormelisiniz) — eski/pinli bir kopyayla `--no-deps` kullanmak
+# vllm'i eskiye DUSURUP kirik bir outlines/pyairports zincirine geri doner.
+# Guncel dosyayla hala cozulmezse: ONCE vllm'i tek basina kurup SONRA
+# kalanini --no-deps ile ekleyin:
 #   pip install "vllm>=0.8.5"
 #   pip install --no-deps -r requirements.txt
 fastapi>=0.111
@@ -28,6 +32,16 @@ numpy>=1.26,<3
 # sinir konulmadi ki pip, VM'deki CUDA/torch ile uyumlu en guncel surumu
 # secebilsin (eski 0.5.4 pini Blackwell/Qwen2.5-VL ile CALISMAZ).
 vllm>=0.8.5
+# outlines: vllm'in guided/structured-decoding fallback'i icin ic bagimlilik
+# (import zamaninda, backend'den bagimsiz olarak yuklenir). outlines<0.1.0
+# (orn. 0.0.46), artik PyPI'da islevsiz/sahte bir "pyairports" paketine
+# (Author: "John Doe", gercek NICTA/pyairports DEGIL) bagimliydi ve
+# `ModuleNotFoundError: No module named 'pyairports'` ile CALISMAZ. Bu sorun
+# outlines>=0.1.0'da KALICI OLARAK giderildi (pyairports bagimliligi tamamen
+# kaldirildi) — bkz. github.com/dottxt-ai/outlines/issues/1093. Alt sinir
+# burada ACIKCA belirtiliyor ki pip, hangi vllm surumunu secerse secsin eski/
+# kirik outlines'a ASLA geri donmesin.
+outlines>=0.1.0
 openai==1.35.10
 
 # --- Ajan ve Muhakeme Katmani (LangGraph) ---
