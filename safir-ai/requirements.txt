@@ -1,19 +1,16 @@
-# --- Cekirdek servis ---
-# fastapi/uvicorn/pydantic/httpx: tam (==) pin YERINE alt-sinir birakildi.
-# vllm kendi ic FastAPI sunucusu icin belirli bir fastapi/uvicorn/pydantic
-# araligi dayatir; tam pin ile bu araliklarin KESISIMI BOS olabilir (pip
-# "ResolutionImpossible" verir). Alt sinirlar SAFIR kodunun fiilen kullandigi
-# API'leri (field_validator, response_model, StreamingResponse vb.) garantiler;
-# ust sinir konulmadi ki pip, vllm ile UYUMLU en guncel surumu secebilsin.
+# =============================================================================
+# ILKE: vLLM'in KENDI transitive bagimliliklarini (fastapi, uvicorn, pydantic,
+# httpx, openai, outlines, torch, transformers...) burada SABITLEMEYIZ. Bu
+# paketler icin yalnizca SAFIR kodunun fiilen ihtiyac duydugu ALT SINIRLAR
+# verilir, UST SINIR verilmez — nihai surumu vLLM'in kendi dependency
+# resolver'i secer. Boylece vllm hangi (guncel) surume cozulurse cozulsun,
+# onun istedigi fastapi/pydantic/openai/outlines surumleriyle CATISMAYIZ.
 #
-# EGER pip yine de cozemezse (ResolutionImpossible), ONCE bu dosyanin GUNCEL
-# oldugunu dogrulayin (`git pull`, sonra `grep vllm requirements.txt` ==
-# "vllm>=0.8.5" gormelisiniz) — eski/pinli bir kopyayla `--no-deps` kullanmak
-# vllm'i eskiye DUSURUP kirik bir outlines/pyairports zincirine geri doner.
-# Guncel dosyayla hala cozulmezse: ONCE vllm'i tek basina kurup SONRA
-# kalanini --no-deps ile ekleyin:
-#   pip install "vllm>=0.8.5"
-#   pip install --no-deps -r requirements.txt
+# `--no-deps` ile kismi/manuel kurulum YAPMAYIN: eski bir requirements.txt
+# kopyasiyla birlikte kullanilirsa vllm'i sessizce ESKI bir surume dusurup
+# kirik transitive bagimliliklara (orn. outlines<0.1.0 -> pyairports) geri
+# doner. Temiz kurulum icin KURULUM.md'deki Faz 1/Faz 2 prosedurunu izleyin.
+# =============================================================================
 fastapi>=0.111
 uvicorn[standard]>=0.30
 pydantic>=2.7,<3
@@ -27,22 +24,27 @@ numpy>=1.26,<3
 # --- VLM / LLM (vLLM servis altyapisi + istemci) ---
 # NOT: vllm, kendi uyumlu torch/CUDA wheel'lerini pip araciligiyla getirir;
 # VM'de ayrica CUDA toolkit veya Docker kurulmasina GEREK YOKTUR — yalnizca
-# NVIDIA surucusu (>=570, Blackwell/RTX 5090 icin) yeterlidir. Alt sinir
-# (>=0.8.5), Qwen2.5-VL ve Blackwell (sm_120) destegi icin gereklidir; ust
-# sinir konulmadi ki pip, VM'deki CUDA/torch ile uyumlu en guncel surumu
-# secebilsin (eski 0.5.4 pini Blackwell/Qwen2.5-VL ile CALISMAZ).
-vllm>=0.8.5
+# NVIDIA surucusu yeterlidir. Alt sinir (>0.7.2), Qwen2.5-VL destegi icin
+# gereken DOGRULANMIS minimum surumdur (bkz. vLLM PR/release notes); UST
+# SINIR KASTEN KONULMADI — bu VM'de standalone `pip install vllm` zaten
+# calisip Blackwell (RTX 5090) destegini kanitlamisti (bkz. KURULUM.md Faz 1),
+# ve tam olarak HANGI guncel surumun cozulecegi VM'nin torch/CUDA ortamina
+# birakilir; burada rastgele bir surum numarasi SABITLENMEZ.
+vllm>0.7.2
 # outlines: vllm'in guided/structured-decoding fallback'i icin ic bagimlilik
 # (import zamaninda, backend'den bagimsiz olarak yuklenir). outlines<0.1.0
 # (orn. 0.0.46), artik PyPI'da islevsiz/sahte bir "pyairports" paketine
 # (Author: "John Doe", gercek NICTA/pyairports DEGIL) bagimliydi ve
 # `ModuleNotFoundError: No module named 'pyairports'` ile CALISMAZ. Bu sorun
-# outlines>=0.1.0'da KALICI OLARAK giderildi (pyairports bagimliligi tamamen
-# kaldirildi) — bkz. github.com/dottxt-ai/outlines/issues/1093. Alt sinir
-# burada ACIKCA belirtiliyor ki pip, hangi vllm surumunu secerse secsin eski/
-# kirik outlines'a ASLA geri donmesin.
+# outlines>=0.1.0'da KALICI OLARAK giderildi (PR #1156, pyairports bagimliligi
+# tamamen kaldirildi) — bkz. github.com/dottxt-ai/outlines/issues/1093. Alt
+# sinir burada ACIKCA belirtiliyor ki pip, hangi vllm surumunu secerse secsin
+# eski/kirik outlines'a ASLA geri donmesin.
 outlines>=0.1.0
-openai==1.35.10
+# openai: vllm'in KENDISI de bu paketi ic bagimlilik olarak listeler (bkz.
+# `pip show vllm` -> Requires). Tam (==) pin, vllm'in istedigi surumle
+# CATISABILIR; bu yuzden alt sinir birakildi.
+openai>=1.35
 
 # --- Ajan ve Muhakeme Katmani (LangGraph) ---
 langgraph==0.1.9
