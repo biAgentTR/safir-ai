@@ -148,27 +148,57 @@ def _summarize_rule_matches(rule_matches: List[RuleMatch]) -> str:
     return "\n".join(f"- [{match.rule_id}] ({match.severity}) {match.rule_description}" for match in rule_matches)
 
 
-def normalize_video_source(video_source: str) -> str:
-    """`video_source` degerini, canli yayin URI'lerini koruyarak yerel dosya yoluna normalize eder.
+_WINDOWS_ABS_PATH_RE = re.compile(r"^[a-zA-Z]:[\\/]")
 
-    Operator panelinden veya harici istemcilerden gelen Windows tam yollari
-    (`C:\\Users\\...\\test.mp4`) veya bagil yollar, dosya adi ayiklanip
-    her zaman `data/<dosya_adi>` seklinde yeniden yazilir; boylece konteyner
-    icindeki `./data` bind mount'una gore calisir. RTSP/HTTP(S) canli yayin
-    adresleri oldugu gibi birakilir.
+
+def _is_absolute_path(path: str) -> bool:
+    """POSIX (`/...`), Windows suruculu (`C:\\...`/`C:/...`) veya UNC (`\\\\sunucu\\pay`) mutlak yolu tanir.
+
+    `os.path.isabs` host isletim sistemine gore davranir (ornegin Linux
+    backend'de `C:\\...` mutlak SAYILMAZ); bu fonksiyon host'tan BAGIMSIZ
+    olarak her iki bicimi de taniyip mutlak kabul eder.
+    """
+    if os.path.isabs(path):
+        return True
+    if _WINDOWS_ABS_PATH_RE.match(path):
+        return True
+    if path.startswith("\\\\"):
+        return True
+    return False
+
+
+def normalize_video_source(video_source: str) -> str:
+    """`video_source` degerini, canli yayin URI'lerini ve MUTLAK yollari koruyarak normalize eder.
+
+    Operator panelinden veya harici istemcilerden gelen deger su sekilde ele alinir:
+      - RTSP/HTTP(S) canli yayin adresleri: OLDUGU GIBI birakilir.
+      - MUTLAK yol (POSIX `/...`, Windows `C:\\...`/`C:/...`, UNC `\\\\sunucu\\pay`):
+        OLDUGU GIBI KORUNUR — kullanicinin isaret ettigi GERCEK dosya okunur.
+        (Onceden bu durumda da dosya adi ayiklanip `data/<ad>` altina
+        yonlendiriliyordu; bu, ayni dosya adina sahip FARKLI videolarin
+        sunucuda CAKISIP yanlislikla ayni/eski dosyanin okunmasina yol
+        aciyordu — bkz. kok neden analizi, Hata #1.)
+      - BAGIL yol veya yalnizca dosya adi: MEVCUT (degismemis) davranis
+        korunur — dosya adi ayiklanip `data/<dosya_adi>` seklinde yeniden
+        yazilir; boylece konteyner icindeki `./data` bind mount'una gore
+        calisma DEVAM eder.
 
     Args:
         video_source: `/analyze` istegindeki ham `video_source` degeri.
 
     Returns:
-        Canli yayin URI'si ise degistirilmeden, aksi halde `data/<dosya_adi>`
-        seklinde normalize edilmis yol.
+        Canli yayin URI'si veya mutlak yol ise degistirilmeden; bagil/dosya-adi
+        girdiyse `data/<dosya_adi>` seklinde normalize edilmis yol.
     """
     lowered = video_source.strip().lower()
     if lowered.startswith(("rtsp://", "http://", "https://")):
         return video_source
 
-    normalized_slashes = video_source.replace("\\", "/")
+    stripped = video_source.strip()
+    if _is_absolute_path(stripped):
+        return stripped
+
+    normalized_slashes = stripped.replace("\\", "/")
     filename = os.path.basename(normalized_slashes)
     return os.path.join(_DATA_DIR, filename)
 
@@ -839,6 +869,12 @@ def _run_job(
     try:
         pipeline = get_pipeline()
         normalized_source = normalize_video_source(video_source)
+        logger.info(
+            "Analiz icin cozulen video yolu: girdi=%r -> cozulen=%r (job_id=%s)",
+            video_source,
+            normalized_source,
+            job_id,
+        )
         report = pipeline.run(
             normalized_source,
             user_prompt,
@@ -912,6 +948,11 @@ def analyze(request: AnalyzeRequest) -> SafirReport:
     try:
         pipeline = get_pipeline()
         normalized_source = normalize_video_source(request.video_source)
+        logger.info(
+            "Analiz icin cozulen video yolu: girdi=%r -> cozulen=%r",
+            request.video_source,
+            normalized_source,
+        )
         return pipeline.run(
             normalized_source,
             request.user_prompt,
