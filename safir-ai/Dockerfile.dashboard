@@ -1,5 +1,8 @@
 # =============================================================================
-# SAFIR Operator Paneli - hafif Streamlit imaji (GPU/vLLM bagimliliksiz)
+# SAFIR Operator Paneli - hafif Streamlit imaji (OPSIYONEL / LEGACY)
+# NOT: Native kurulumda dogrudan `streamlit run src/ui/dashboard.py` yeterlidir
+# (bkz. KURULUM.md); bu imaj yalnizca Docker tercih edenler icin alternatiftir.
+# GPU/vLLM bagimliligi yoktur.
 # =============================================================================
 FROM python:3.11-slim
 

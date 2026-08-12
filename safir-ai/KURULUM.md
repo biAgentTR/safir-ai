@@ -1,30 +1,34 @@
-# SAFİR — Sıfırdan Kurulum Rehberi (Linux VM + RTX 5090 32 GB)
+# SAFİR — Sıfırdan Kurulum Rehberi (Native VM + RTX 5090, Docker'sız)
 
 Bu rehber, **temiz bir Ubuntu 22.04/24.04 sanal makinesinde** (RTX 5090 / Blackwell,
-32 GB VRAM geçirmeli) SAFİR'i tamamen **yerel / offline** çalıştırmayı anlatır.
+32 GB VRAM geçirmeli) SAFİR'i **tamamen native (Docker'sız), yerel/offline**
+çalıştırmayı anlatır.
+
+**Deployment modeli:** VM → Python ortamı → `pip install -r requirements.txt` →
+`vllm serve` (2 kez) → `uvicorn` → çalışır. **Docker, container veya Compose
+GEREKMEZ** — `vllm` paketi kendi uyumlu torch/CUDA wheel'lerini pip ile getirir;
+sisteme yalnızca **NVIDIA sürücüsü** yeterlidir.
 
 Mimari:
 
 ```
- (aynı GPU, tek makine)
- ┌─────────────────────────────┐        ┌────────────────────┐
- │ vLLM VLM  :8001  (Qwen2.5-VL-7B, FP8)  │◄──HTTP──┤                    │
- │ vLLM LLM  :8003  (Qwen2.5-3B, BF16)    │◄──HTTP──┤  SAFİR API :8000   │◄── Frontend
- └─────────────────────────────┘        │  (FastAPI, CPU)    │   (Nuxt :3000 / Streamlit :8501)
-                                         └────────────────────┘
+ (aynı GPU, tek makine, tek Python ortamı)
+ ┌───────────────────────────────┐        ┌────────────────────┐
+ │ vllm serve  :8001  (Qwen2.5-VL-7B, FP8) │◄──HTTP──┤                    │
+ │ vllm serve  :8003  (Qwen2.5-3B, BF16)   │◄──HTTP──┤  SAFİR API :8000   │◄── Frontend
+ └───────────────────────────────┘        │  (FastAPI, uvicorn) │   (Nuxt :3000 / Streamlit :8501)
+                                           └────────────────────┘
 ```
-- Modeller **vLLM Docker konteynerleri** ile serve edilir (CUDA imaj içinde gelir → host'a CUDA kurmaya gerek yok, sadece NVIDIA sürücüsü).
-- SAFİR API salt bir **HTTP istemcisidir**; `vllm` python kütüphanesi gerekmez.
+- `vllm serve`, sistemdeki NVIDIA sürücüsünü doğrudan kullanan bir Python sürecidir (Docker yok).
+- SAFİR API salt bir **HTTP istemcisidir** (`httpx`/`openai`/`langchain-openai` ile); model ağırlığını kendisi yüklemez.
 - **API anahtarı yok**, harici servis yok.
 
 ---
 
 ## 0. Ön koşullar
 - Ubuntu 22.04 veya 24.04, `sudo` yetkisi, internet erişimi.
-- RTX 5090 makineye geçirilmiş (VM'de `lspci | grep -i nvidia` görünmeli).
-- Disk: modeller + cache için **≥ 60 GB boş** (7B-VL ~16 GB, 3B ~6 GB, bge-m3 ~2 GB, imajlar).
-
----
+- RTX 5090 makineye geçirilmiş (`lspci | grep -i nvidia` görünmeli).
+- Disk: modeller + cache için **≥ 60 GB boş** (7B-VL ~16 GB, 3B ~6 GB, bge-m3 ~2 GB).
 
 ## 1. NVIDIA sürücüsü (Blackwell ≥ 570)
 ```bash
@@ -35,34 +39,17 @@ sudo reboot
 nvidia-smi                         # 5090 + sürücü + "CUDA Version: 12.x" görünmeli
 ```
 > `ubuntu-drivers` uygun sürüm bulmazsa: `sudo apt install nvidia-driver-570-open` (veya daha güncel).
+> **Not:** Bu, yalnızca sürücüdür — ayrı bir CUDA toolkit kurulumu (nvcc vb.) GEREKMEZ;
+> `pip install vllm` kendi uyumlu CUDA/torch wheel'lerini getirir.
 
-## 2. Docker + NVIDIA Container Toolkit
-```bash
-# Docker
-curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker $USER && newgrp docker
-
-# NVIDIA Container Toolkit (GPU'yu konteynerlere açar)
-curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
-  sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
-  sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-sudo apt update && sudo apt install -y nvidia-container-toolkit
-sudo nvidia-ctk runtime configure --runtime=docker
-sudo systemctl restart docker
-
-# doğrula (GPU konteynerde görünüyor mu):
-docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
-```
-
-## 3. Sistem paketleri (backend için)
+## 2. Sistem paketleri
 ```bash
 sudo apt install -y git python3.11 python3.11-venv python3.11-dev python3-pip \
-                    ffmpeg libgl1 libglib2.0-0 tmux
+                    ffmpeg libgl1 libglib2.0-0
 ```
 > `ffmpeg` + `libgl1` OpenCV'nin video okuması için gerekir.
 
-## 4. Depoyu klonla
+## 3. Depoyu klonla
 ```bash
 cd ~
 git clone https://github.com/yarengogsu/p3-project.git
@@ -70,93 +57,64 @@ cd p3-project
 git checkout claude/gemini-api-refactor-r1roi4
 ```
 
-## 5. Backend Python ortamı (vllm kütüphanesi OLMADAN)
+## 4. Tek Python ortamı, tek kurulum
 ```bash
 cd ~/p3-project/safir-ai
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements-gemini.txt      # = tüm CPU bağımlılıkları, vllm python libi HARİÇ
+pip install -r requirements.txt
 ```
-> Neden `requirements-gemini.txt`? Modelleri vLLM Docker serve ettiği için API'nin
-> `vllm` python kütüphanesine ihtiyacı yoktur; bu dosya tam da o set (fastapi, opencv,
-> langchain-openai, faiss, sentence-transformers…) — `vllm` hariç. `requirements.txt`
-> ise `vllm==0.5.4` içerir ve gereksizdir (Blackwell/py3.12'de derlenmesi de zordur).
+Bu **tek komut**, backend (FastAPI, LangGraph, FAISS/sentence-transformers) **ve**
+yerel vLLM serving altyapısını (`vllm` paketi) aynı ortama kurar. Ayrı bir
+"vLLM ortamı" gerekmez.
 
-## 6. vLLM model sunucularını başlat (2 konteyner, aynı GPU)
-`tmux` içinde iki pencere aç (uzun süreçler). **İlk çalıştırma modelleri indirir** (~22 GB, birkaç dk–saat).
+> Kurulum uzun sürer (`vllm` büyük bir paket — torch/CUDA wheel'leri indirir).
+> pip bağımlılık çözümlemesinde bir çakışma raporlarsa bkz. **Sorun giderme**.
 
-**Pencere 1 — VLM (Qwen2.5-VL-7B, FP8):**
+## 5. vLLM model sunucularını başlat (aynı ortam, arka planda)
+`.venv` aktifken, **tek terminalde**, arka planda (`&` + `nohup`) başlatılabilir —
+ayrı pencere/terminal şart değildir:
+
 ```bash
-docker run --rm --gpus all --network host \
-  -v ~/.cache/huggingface:/root/.cache/huggingface \
-  vllm/vllm-openai:v0.10.2 \
-  --model Qwen/Qwen2.5-VL-7B-Instruct --port 8001 --trust-remote-code \
-  --quantization fp8 --dtype bfloat16 \
-  --gpu-memory-utilization 0.50 --max-model-len 8192 \
-  --limit-mm-per-prompt image=12 --max-num-seqs 2
+# VLM (Qwen2.5-VL-7B, FP8) — arka planda, log dosyaya
+nohup vllm serve Qwen/Qwen2.5-VL-7B-Instruct --port 8001 --trust-remote-code \
+  --quantization fp8 --dtype bfloat16 --gpu-memory-utilization 0.50 \
+  --max-model-len 8192 --limit-mm-per-prompt image=12 --max-num-seqs 2 \
+  > ~/vlm.log 2>&1 &
+
+sleep 20   # VLM önce yerleşsin (GPU belleğini ölçerken çakışmasın)
+
+# LLM (Qwen2.5-3B, BF16) — arka planda
+nohup vllm serve Qwen/Qwen2.5-3B-Instruct --port 8003 --trust-remote-code \
+  --dtype bfloat16 --gpu-memory-utilization 0.30 --max-model-len 4096 --max-num-seqs 4 \
+  > ~/llm.log 2>&1 &
 ```
 
-**Pencere 2 — LLM (Qwen2.5-3B, BF16):**
+**İlk çalıştırma modelleri indirir** (~22 GB, birkaç dakika–saat). İzle:
 ```bash
-docker run --rm --gpus all --network host \
-  -v ~/.cache/huggingface:/root/.cache/huggingface \
-  vllm/vllm-openai:v0.10.2 \
-  --model Qwen/Qwen2.5-3B-Instruct --port 8003 --trust-remote-code \
-  --dtype bfloat16 --gpu-memory-utilization 0.30 --max-model-len 4096 --max-num-seqs 4
+tail -f ~/vlm.log     # "Uvicorn running on http://0.0.0.0:8001" görünce hazır
 ```
 
-Her ikisi de `Application startup complete` / `Uvicorn running on http://0.0.0.0:800X`
-yazınca hazırdır. Kontrol:
+Kontrol:
 ```bash
 curl http://127.0.0.1:8001/v1/models      # VLM listelenmeli
 curl http://127.0.0.1:8003/v1/models      # LLM listelenmeli
 nvidia-smi                                # iki süreç, toplam ~26 GB VRAM
 ```
-> `--network host` sayesinde konteynerler `127.0.0.1:8001/8003`'te açılır — `config.yaml`'daki
-> `vllm_host: 127.0.0.1` ile birebir uyumlu. Tag (`v0.10.2`) `sm_120`/CUDA hatası verirse
-> daha güncel bir `vllm/vllm-openai` tag'ine çıkın (Blackwell CUDA 12.8'li build şart).
 
-### 6-B. Alternatif: Docker'sız (bare-metal vLLM)
-Docker kullanmak istemezsen (Linux'ta doğrudan pip). **Kritik:** `requirements.txt`
-içindeki `vllm==0.5.4` **çok eskidir** (Blackwell/5090 ve Qwen2.5-VL desteklemez) —
-serving için GÜNCEL vLLM'i **ayrı** bir venv'de kur (API venv'iyle torch çakışmasın):
-
-```bash
-# vLLM için AYRI ortam (API venv'inden bağımsız)
-python3.11 -m venv ~/vllm-env
-source ~/vllm-env/bin/activate
-pip install --upgrade pip
-pip install -U vllm                     # GÜNCEL sürüm (Blackwell/cu128 torch ile) — 0.5.4 DEĞİL
-python -c "import vllm; print(vllm.__version__)"   # ≥0.8.5, tercihen ≥0.10
-
-# VLM :8001  (bu ortamda)
-vllm serve Qwen/Qwen2.5-VL-7B-Instruct --port 8001 --trust-remote-code \
-  --quantization fp8 --dtype bfloat16 --gpu-memory-utilization 0.50 \
-  --max-model-len 8192 --limit-mm-per-prompt image=12 --max-num-seqs 2
-
-# LLM :8003  (ikinci terminal, yine `source ~/vllm-env/bin/activate`)
-vllm serve Qwen/Qwen2.5-3B-Instruct --port 8003 --trust-remote-code \
-  --dtype bfloat16 --gpu-memory-utilization 0.30 --max-model-len 4096 --max-num-seqs 4
-```
-> NVIDIA sürücüsü (≥570) yeterli; `pip install vllm` torch'u CUDA kütüphaneleriyle
-> birlikte getirir (host'a ayrı CUDA toolkit gerekmez). SAFİR API'si `vllm`
-> kütüphanesini kullanmaz — API'yi §5'teki kendi venv'inde (`requirements-gemini.txt`)
-> çalıştır.
-
-## 7. SAFİR API'yi başlat (Pencere 3)
+## 6. SAFİR API'yi başlat
 ```bash
 cd ~/p3-project/safir-ai
 source .venv/bin/activate
-python -m uvicorn src.main:app --host 0.0.0.0 --port 8000
-```
-Kontrol (Pencere 4):
-```bash
+nohup python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 > ~/api.log 2>&1 &
 curl http://127.0.0.1:8000/health         # {"status":"ok","system":"SAFIR"}
 ```
-> İlk analizde RAG için `BAAI/bge-m3` (~2 GB) CPU'ya inip yüklenir (bir kez).
+> `configs/config.yaml`'da `vlm.active_model: qwen`, `llm.active_model: qwen3`
+> ve `vllm_host: 127.0.0.1` zaten bu native kuruluma göre ayarlıdır — ekstra
+> config değişikliği gerekmez.
 
-## 8. Arayüz — iki seçenek
+## 7. Arayüz — iki seçenek
 
 ### Seçenek A (en hızlı): Streamlit paneli
 ```bash
@@ -173,7 +131,6 @@ sonra tarayıcıda `http://localhost:8501`.
 
 ### Seçenek B (modern desktop UI, tarayıcıda): Nuxt
 ```bash
-# Node 20+ (nvm ile)
 curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
 source ~/.bashrc && nvm install 22
 cd ~/p3-project/desktop
@@ -186,10 +143,9 @@ ssh -L 3000:localhost:3000 -L 8000:localhost:8000 kullanici@VM_IP
 ```
 sonra tarayıcıda `http://localhost:3000`.
 > Native Tauri penceresi (`npm run tauri:dev`) başsız (headless) sunucuda **açılmaz**
-> (ekran/WebKit ister); VM'de tarayıcı sürümünü kullanın. Native pencere ancak masaüstü
-> ortamı olan bir makinede gerekir.
+> (ekran/WebKit ister); VM'de tarayıcı sürümünü kullanın.
 
-## 9. Uçtan uca doğrulama
+## 8. Uçtan uca doğrulama
 1. UI'da **New Analysis** → bir video yolu gir (ör. `~/p3-project/safir-ai/data/test.mp4`).
 2. **Analizi Başlat** → Workspace'te 7 aşamanın (Sampling→VLM→Events→Context→Decision→Escalation→Report) canlı aktığını gör.
 3. **Ask SAFİR** panelinden soru sor; **History** sekmesinde kalıcı kayıtları gör.
@@ -211,16 +167,29 @@ python -c "import cv2,numpy as np; from pathlib import Path; Path('data').mkdir(
 
 Multimodal aktivasyon + KV cache için rahat pay bırakır.
 
-## Sorun giderme
-- **`nvidia-smi` konteynerde çalışmıyor** → NVIDIA Container Toolkit adımını tekrar et, `sudo systemctl restart docker`.
-- **vLLM `sm_120` / CUDA hatası** → imaj tag'ini daha güncel bir Blackwell build'ine çıkar.
-- **OOM** → VLM `--gpu-memory-utilization`'ı 0.45'e, `--max-model-len`'i 4096'ya, `--limit-mm-per-prompt image`'ı 6'ya düşür.
-- **Model indirme yavaş/gated** → Qwen ve bge-m3 herkese açık, token gerekmez; `HF_HUB_ENABLE_HF_TRANSFER=1` ile hızlanır (`pip install hf_transfer`).
-- **GPU yokken denemek** → `configs/config.yaml`'da `app.use_mock_vlm: true` + `use_mock_llm: true`; vLLM konteynerleri gerekmeden tüm pipeline çalışır (cevaplar sahte).
+## Süreçleri durdurmak
+```bash
+pkill -f "vllm serve"
+pkill -f "uvicorn src.main:app"
+```
 
-## Kalıcılık / servisleştirme (opsiyonel)
-Demo sonrası kalıcı çalışsın istersen vLLM `docker run` yerine `docker compose`
-(bkz. `docker-compose.yml`) veya `systemd` servisleri kullanılabilir. `docker compose`
-yolunda API ve vLLM ayrı konteynerlerde olduğundan `config.yaml`'daki `vllm_host`
-değerlerini servis adlarına (`vllm-vlm` / `vllm-llm`) çevir; tek makinede yukarıdaki
-`--network host` + `127.0.0.1` yolu daha basittir.
+## Sorun giderme
+- **`pip install -r requirements.txt` bağımlılık çakışması veriyor** → `vllm`'in
+  kendi (daha yeni) `torch`/`transformers`/`pydantic` gereksinimleri diğer
+  paketlerle çakışabilir. Önce `pip install "vllm>=0.8.5"` tek başına kur, sonra
+  `pip install -r requirements.txt` ile kalanını tamamla (pip zaten kurulu
+  sürümleri koruyacaktır); ya da `pip install -r requirements.txt --no-deps`
+  ardından eksik kalanları tek tek çözün.
+- **vLLM `sm_120` / CUDA hatası** → sürücü ≥570 mi kontrol et (`nvidia-smi`);
+  `pip install -U vllm` ile en güncel sürüme çık.
+- **OOM** → VLM `--gpu-memory-utilization`'ı 0.45'e, `--max-model-len`'i 4096'ya,
+  `--limit-mm-per-prompt image`'ı 6'ya düşür.
+- **Model indirme yavaş** → `pip install hf_transfer` + `export HF_HUB_ENABLE_HF_TRANSFER=1`.
+- **GPU yokken denemek** → `configs/config.yaml`'da `app.use_mock_vlm: true` +
+  `use_mock_llm: true`; vLLM süreçleri gerekmeden tüm pipeline çalışır (cevaplar sahte).
+
+## Docker hakkında
+Repo'da eski/opsiyonel `Dockerfile`, `Dockerfile.dashboard` ve `docker-compose.yml`
+dosyaları bulunur; bunlar **bu native kurulum için gerekli değildir** ve
+kullanılmayacaktır. Yukarıdaki adımlar tamamen bağımsızdır — Docker kurmanıza
+gerek yoktur.
