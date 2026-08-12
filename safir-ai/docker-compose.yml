@@ -1,5 +1,12 @@
 # =============================================================================
-# SAFIR - Docker Compose orkestrasyonu
+# SAFIR - Docker Compose orkestrasyonu (OPSIYONEL / LEGACY)
+#
+# NOT: Standart deployment modeli artik NATIVE'dir (Docker'siz): VM -> Python
+# venv -> `pip install -r requirements.txt` -> `vllm serve` (x2) -> `uvicorn`.
+# Bkz. KURULUM.md ve README.md "Kurulum (native)". Bu dosya Docker/Compose
+# tercih edenler icin ALTERNATIF olarak birakilmistir; native kurulum bu
+# dosyaya BAGIMLI DEGILDIR.
+#
 # safir-api: hafif CPU (sampler) + ajan orkestrasyonu (FastAPI)
 # vllm-vlm : Gorsel Dil Modeli servisi (GPU)
 # vllm-llm : Saf muhakeme/ajan LLM servisi (GPU)

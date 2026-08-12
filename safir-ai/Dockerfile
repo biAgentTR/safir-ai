@@ -1,5 +1,8 @@
 # =============================================================================
-# SAFIR - Production-grade container image
+# SAFIR - Container image (OPSIYONEL / LEGACY)
+# NOT: Standart deployment modeli artik NATIVE'dir (Docker'siz) — bkz.
+# KURULUM.md / README.md. Bu imaj Docker tercih edenler icin ALTERNATIFTIR;
+# native kurulum bu dosyaya bagimli degildir.
 # NVIDIA CUDA 12.1 runtime tabanli, GPU/vLLM destekli calisma zamani.
 # =============================================================================
 FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04

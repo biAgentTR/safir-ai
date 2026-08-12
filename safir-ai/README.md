@@ -5,23 +5,46 @@ Akış: **Video → Adaptive Frame Sampler (CPU) → VLM (görsel anlama) → Ol
 Analizi + Hibrit Bellek/RAG → LangGraph Ajanı (muhakeme) → Otomatik Eskalasyon →
 Yapılandırılmış Rapor (JSON) + Operatör Paneli**.
 
-## Kurulum
+## Kurulum (native — Docker GEREKMEZ)
+
+Sistemde bir NVIDIA GPU + sürücü (Blackwell/RTX 5090 için ≥570) varsa yeterlidir;
+ayrı bir CUDA toolkit veya Docker kurulumuna gerek yoktur (`vllm` paketi kendi
+uyumlu torch/CUDA wheel'lerini pip ile getirir).
 
 ```bash
 cd safir-ai
-pip install -r requirements.txt            # çekirdek servis (backend)
-pip install -r requirements-dashboard.txt  # operatör paneli (Streamlit)
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt            # backend + yerel vLLM istemcisi/servisi (tek kurulum)
+pip install -r requirements-dashboard.txt  # opsiyonel: operatör paneli (Streamlit)
 ```
 
 ## Çalıştırma
 
+Modelleri servis eden vLLM süreçlerini (VLM + LLM), ardından API'yi başlatın —
+üçü de aynı `venv` içindeki `vllm`/`python` komutlarıyla, Docker'sız:
+
 ```bash
-# Backend (FastAPI)
+# 1) VLM sunucusu (arka planda)
+vllm serve Qwen/Qwen2.5-VL-7B-Instruct --port 8001 --trust-remote-code \
+  --quantization fp8 --dtype bfloat16 --gpu-memory-utilization 0.50 \
+  --max-model-len 8192 --limit-mm-per-prompt image=12 --max-num-seqs 2 &
+
+# 2) LLM sunucusu (arka planda)
+vllm serve Qwen/Qwen2.5-3B-Instruct --port 8003 --trust-remote-code \
+  --dtype bfloat16 --gpu-memory-utilization 0.30 --max-model-len 4096 --max-num-seqs 4 &
+
+# 3) Backend (FastAPI)
 python -m src.main            # veya: uvicorn src.main:app --host 0.0.0.0 --port 8000
 
-# Operatör paneli (Streamlit)
+# Operatör paneli (Streamlit, opsiyonel)
 streamlit run src/ui/dashboard.py
 ```
+
+`configs/config.yaml` içindeki `vlm.models.qwen` / `llm.models.qwen3` altındaki
+`vllm_host`/`vllm_port` değerleri (varsayılan `127.0.0.1:8001` / `127.0.0.1:8003`)
+yukarıdaki `--port` değerleriyle eşleşmelidir. Ayrıntılı sıfırdan-kurulum adımları
+(sürücü kurulumu, `nohup` ile arka planda çalıştırma, sorun giderme) için bkz.
+[`KURULUM.md`](KURULUM.md).
 
 ## Model backend'leri
 
