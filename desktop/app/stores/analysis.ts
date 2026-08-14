@@ -213,7 +213,10 @@ export const useAnalysisStore = defineStore('analysis', {
 
     /**
      * Load a PERSISTED analysis from GET /history/{job_id} (history mode).
-     * No SSE, no trace — the report comes straight from the store on disk.
+     * No SSE, no polling — the report AND (if persisted) the pipeline trace
+     * come straight from the store on disk. traceEvents is filled with the
+     * exact same TraceEvent[] shape the live SSE stream produces, so
+     * PipelineTimeline / StageCard render unchanged in history mode.
      */
     async loadHistory(jobId: string) {
       const api = useSafirApi()
@@ -230,6 +233,13 @@ export const useAnalysisStore = defineStore('analysis', {
           : null
         // map persisted status -> JobStatus used across the workspace
         this.status = detail.status === 'completed' ? 'done' : detail.status === 'failed' ? 'error' : (detail.status as JobStatus)
+
+        // Pipeline trace (older records or a persistence failure -> empty array;
+        // PipelineTimeline already renders an all-"pending" rail for that case).
+        this.traceEvents = detail.trace_events ?? []
+        this.selectedStage = this.traceEvents.length
+          ? this.traceEvents[this.traceEvents.length - 1].stage
+          : null
       } catch (e) {
         this.historyError = humanError(e, 'Geçmiş analiz yüklenemedi.')
         this.status = 'error'

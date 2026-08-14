@@ -296,6 +296,14 @@ export interface HistoryDetail {
   status: 'queued' | 'running' | 'completed' | 'failed' | string
   video_source: string | null
   report: SafirReport | null
+  /**
+   * Persisted trace events — same TraceEvent schema the live SSE stream
+   * produces (src/observability/trace_serializer.py::make_event). Empty for
+   * analyses completed before this field existed, or if persistence failed
+   * (best-effort on the backend) — the UI must treat that as "no pipeline
+   * detail available", not an error.
+   */
+  trace_events: TraceEvent[]
 }
 
 // -------------------------------------------------- ask safir ---------------
@@ -333,6 +341,51 @@ export interface AlertTriggerResponse {
   acknowledged: boolean
   alert_id: string
   message: string
+}
+
+// -------------------------------------------------------- conversations -----
+// SAFIR Asistan sohbet gecmisi. Yalnizca UI/gecmis icindir — bu mesajlar
+// backend'de LLM prompt'una GERI BESLENMEZ (bkz. src/assistant/ask_service.py).
+
+/** POST /conversations istek govdesi. */
+export interface ConversationCreateRequest {
+  title?: string | null
+  job_id?: string | null
+}
+
+/** src/main.py: ConversationSummary (sohbet listesi/ozet, mesajlar HARIC). */
+export interface Conversation {
+  conversation_id: string
+  created_at: string
+  updated_at: string
+  title: string | null
+  job_id: string | null
+}
+
+/** src/main.py: ConversationMessageOut. */
+export interface ConversationMessage {
+  id: number
+  role: 'user' | 'assistant'
+  content: string
+  created_at: string
+}
+
+/** GET /conversations/{id} yaniti: ozet + tam mesaj gecmisi. */
+export interface ConversationDetail extends Conversation {
+  messages: ConversationMessage[]
+}
+
+/** POST /conversations/{id}/messages istek govdesi. */
+export interface ConversationMessageCreateRequest {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+/** GET /ask/stream ilk SSE olayi (meta) — sonraki olaylar {delta: string}. */
+export interface AskStreamMeta {
+  sources: AskSource[]
+  job_id: string | null
+  context_used: string[]
 }
 
 // -------------------------------------------------------- SSE envelope ------

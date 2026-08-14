@@ -18,6 +18,10 @@ import type {
   HistoryListItem,
   HistoryDetail,
   AskResponse,
+  Conversation,
+  ConversationCreateRequest,
+  ConversationDetail,
+  ConversationMessage,
 } from '~/types/api'
 
 export function useSafirApi() {
@@ -112,6 +116,44 @@ export function useSafirApi() {
     })
   }
 
+  /** Absolute (proxied) URL for the streaming Ask SAFIR SSE endpoint (GET /ask/stream). */
+  function askStreamUrl(question: string, jobId?: string | null, conversationId?: string | null): string {
+    const params = new URLSearchParams({ question })
+    if (jobId) params.set('job_id', jobId)
+    if (conversationId) params.set('conversation_id', conversationId)
+    return url(`/ask/stream?${params.toString()}`)
+  }
+
+  /** POST /conversations -> create a new SAFIR Asistan chat. */
+  async function createConversation(payload: ConversationCreateRequest): Promise<Conversation> {
+    return await $fetch(url('/conversations'), { method: 'POST', body: payload })
+  }
+
+  /** GET /conversations?limit&offset -> newest-updated-first list. */
+  async function getConversations(limit = 50, offset = 0): Promise<Conversation[]> {
+    return await $fetch(url('/conversations'), { query: { limit, offset } })
+  }
+
+  /** GET /conversations/{id} -> conversation summary + full message history. */
+  async function getConversation(conversationId: string): Promise<ConversationDetail> {
+    return await $fetch(url(`/conversations/${encodeURIComponent(conversationId)}`))
+  }
+
+  /**
+   * POST /conversations/{id}/messages -> append a message (UI/history only —
+   * never fed back into the LLM prompt, see backend docstring).
+   */
+  async function addConversationMessage(
+    conversationId: string,
+    role: 'user' | 'assistant',
+    content: string,
+  ): Promise<ConversationMessage> {
+    return await $fetch(url(`/conversations/${encodeURIComponent(conversationId)}/messages`), {
+      method: 'POST',
+      body: { role, content },
+    })
+  }
+
   return {
     base,
     health,
@@ -125,5 +167,10 @@ export function useSafirApi() {
     getHistory,
     getHistoryItem,
     ask,
+    askStreamUrl,
+    createConversation,
+    getConversations,
+    getConversation,
+    addConversationMessage,
   }
 }
