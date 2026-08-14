@@ -177,3 +177,183 @@ def test_ask_system_prompt_enforces_grounding():
 
     low = ASK_SYSTEM_PROMPT.lower()
     assert "uydurma" in low and "baglam" in low  # sadece baglamdan, uydurma yok
+
+
+# --------------------------- _prepare / history (conversation-aware) ---------------------------
+
+
+def test_prepare_without_history_has_no_history_block(ask_env):
+    """`history` verilmezse (varsayilan, `/ask`in kullandigi yol) davranis oncekiyle BIREBIR AYNI."""
+    ask = ask_env["ask"]
+    messages, sources, context_used, used_job = ask._prepare("Genel bir soru", None, None)
+    human = messages[-1].content
+    assert "KONUSMA GECMISI" not in human
+    assert not any("konusma gecmisi" in c for c in context_used)
+
+
+def test_prepare_with_history_adds_labeled_non_evidence_block(ask_env):
+    ask = ask_env["ask"]
+    history = [("user", "Bu analizde en kritik olay ne?"), ("assistant", "En kritik olay X.")]
+    messages, sources, context_used, used_job = ask._prepare("Peki neden?", None, history)
+    human = messages[-1].content
+    assert "KONUSMA GECMISI" in human
+    assert "KANIT DEGILDIR" in human
+    assert "Bu analizde en kritik olay ne?" in human
+    assert any("konusma gecmisi" in c for c in context_used)
+
+
+def test_prepare_history_is_bounded_to_max_messages(ask_env):
+    from src.assistant.ask_service import _MAX_HISTORY_MESSAGES
+
+    ask = ask_env["ask"]
+    history = [("user", f"soru {i}") for i in range(_MAX_HISTORY_MESSAGES + 10)]
+    messages, sources, context_used, used_job = ask._prepare("son soru", None, history)
+    human = messages[-1].content
+    assert "soru 0" not in human  # eski mesajlar kirpilmis olmali
+    assert f"soru {_MAX_HISTORY_MESSAGES + 9}" in human  # en yeni mesaj kalmali
+
+
+# --------------------------- /ask/stream (SSE) ---------------------------
+
+
+def _parse_sse_blocks(text: str) -> list[tuple[str, dict]]:
+    blocks: list[tuple[str, dict]] = []
+    for raw in text.split("\n\n"):
+        raw = raw.strip("\n")
+        if not raw:
+            continue
+        event = "message"
+        data = None
+        for line in raw.split("\n"):
+            if line.startswith("event:"):
+                event = line[len("event:") :].strip()
+            elif line.startswith("data:"):
+                data = line[len("data:") :].strip()
+        if data is not None:
+            blocks.append((event, json.loads(data)))
+    return blocks
+
+
+def test_ask_stream_returns_meta_then_deltas_then_end(ask_env):
+    from src.vlm.llm_client import _MOCK_DECISION_TEXT
+
+    client = TestClient(app)
+    resp = client.get("/ask/stream", params={"question": "Yuksekte calismada nelere dikkat edilmeli?"})
+    assert resp.status_code == 200
+    blocks = _parse_sse_blocks(resp.text)
+
+    assert len(blocks) >= 3  # meta + en az bir delta + end
+    first_event, first_data = blocks[0]
+    assert first_event == "message"
+    assert "sources" in first_data and "context_used" in first_data and "job_id" in first_data
+
+    delta_blocks = [b for b in blocks[1:-1]]
+    assert all(ev == "message" and "delta" in data for ev, data in delta_blocks)
+
+    last_event, last_data = blocks[-1]
+    assert last_event == "end"
+    assert last_data["status"] == "done"
+
+    # parcalar dogru sirada birlestiginde MockLLMClient'in TAM sabit metnini vermeli
+    reassembled = "".join(data["delta"] for _, data in delta_blocks)
+    assert reassembled == _MOCK_DECISION_TEXT
+
+
+def test_ask_stream_job_scoped_meta_matches_ask(ask_env, video_in_data):
+    client = TestClient(app)
+    job_id = _run_job(client, video_in_data)
+
+    resp = client.get("/ask/stream", params={"question": "Bu analiz neden bu risk seviyesinde?", "job_id": job_id})
+    blocks = _parse_sse_blocks(resp.text)
+    _, meta = blocks[0]
+    assert meta["job_id"] == job_id
+    types = {s["type"] for s in meta["sources"]}
+    assert "analysis" in types and "regulation" in types
+
+
+def test_ask_stream_unknown_job_emits_error_event(ask_env):
+    client = TestClient(app)
+    resp = client.get("/ask/stream", params={"question": "neden?", "job_id": "yok-boyle-job"})
+    assert resp.status_code == 200  # SSE: HTTP durumu 200, hata olay olarak gelir
+    blocks = _parse_sse_blocks(resp.text)
+    assert len(blocks) == 1
+    event, data = blocks[0]
+    assert event == "error"
+    assert "bulunamadi" in data["detail"].lower()
+
+
+def test_ask_stream_blank_question_emits_error_event(ask_env):
+    client = TestClient(app)
+    resp = client.get("/ask/stream", params={"question": "   "})
+    blocks = _parse_sse_blocks(resp.text)
+    assert len(blocks) == 1
+    assert blocks[0][0] == "error"
+
+
+def test_ask_stream_llm_failure_emits_safe_error_no_leak(ask_env):
+    class _BoomStreamLLM:
+        def invoke(self, messages):
+            raise RuntimeError("gizli detay: SECRET")
+
+        def stream(self, messages):
+            raise RuntimeError("gizli stack detay: SECRET_STREAM")
+
+    ask_env["ask"]._llm = _BoomStreamLLM()
+    client = TestClient(app)
+    resp = client.get("/ask/stream", params={"question": "test"})
+    blocks = _parse_sse_blocks(resp.text)
+
+    # ilk blok (meta) her zaman gelir - LLM cagrisi ondan SONRA yapilir
+    assert blocks[0][0] == "message"
+    error_blocks = [b for b in blocks if b[0] == "error"]
+    assert len(error_blocks) == 1
+    assert error_blocks[0][1]["detail"] == "SAFIR su anda cevap olusturamadi."
+    assert "SECRET_STREAM" not in resp.text and "Traceback" not in resp.text
+
+
+def test_ask_stream_empty_llm_response_emits_error_event(ask_env):
+    class _EmptyStreamLLM:
+        def invoke(self, messages):
+            from langchain_core.messages import AIMessage
+
+            return AIMessage(content="")
+
+        def stream(self, messages):
+            return iter(())  # hic parca yok
+
+    ask_env["ask"]._llm = _EmptyStreamLLM()
+    client = TestClient(app)
+    resp = client.get("/ask/stream", params={"question": "test"})
+    blocks = _parse_sse_blocks(resp.text)
+    assert blocks[-1][0] == "error"
+    assert blocks[-1][1]["detail"] == "SAFIR su anda cevap olusturamadi."
+
+
+def test_ask_stream_uses_conversation_history_end_to_end(monkeypatch, ask_env):
+    """`conversation_id` verilirse gecmis okunur ve akis yine de basariyla tamamlanir (crash yok)."""
+    from src.memory.conversation_store import ConversationStore
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ConversationStore(Path(tmp) / "conversations.db")
+        monkeypatch.setattr(main, "_conversation_store", store)
+        conv = store.create(title="t")
+        store.add_message(conv.conversation_id, "user", "Bu analizde en kritik olay ne?")
+        store.add_message(conv.conversation_id, "assistant", "[MOCK] cevap")
+
+        client = TestClient(app)
+        resp = client.get(
+            "/ask/stream", params={"question": "Peki neden?", "conversation_id": conv.conversation_id}
+        )
+        blocks = _parse_sse_blocks(resp.text)
+        assert blocks[-1][0] == "end"
+
+
+def test_ask_stream_unknown_conversation_id_does_not_crash(ask_env):
+    """Bilinmeyen `conversation_id` sessizce baglamsiz devam etmeli (cokme yok)."""
+    client = TestClient(app)
+    resp = client.get("/ask/stream", params={"question": "test", "conversation_id": "yok-boyle-sohbet"})
+    assert resp.status_code == 200
+    blocks = _parse_sse_blocks(resp.text)
+    assert blocks[-1][0] == "end"

@@ -22,7 +22,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Deque, Dict, List, Optional
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
@@ -42,6 +42,7 @@ from src.event_analysis.schemas import DetectedEvent, EventEngineInput, RuleMatc
 from src.event_analysis.temporal_reasoner import DEFAULT_RELATION_WINDOW_SEC, TemporalReasoner
 from src.memory.analysis_store import AnalysisStore
 from src.memory.context_builder import ContextBuilder
+from src.memory.conversation_store import ConversationStore
 from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
 from src.sampler.adaptive_sampler import EventCluster, EvidenceFrame, sampler_from_config
@@ -335,6 +336,11 @@ class HistoryDetail(BaseModel):
     status: str
     video_source: Optional[str] = None
     report: Optional[SafirReport] = None
+    trace_events: List[Dict[str, Any]] = Field(default_factory=list)
+    """Kalici trace olay listesi (varsa); `PipelineTraceCollector` tarafindan
+    canli analiz sirasinda uretilenle AYNI `TraceEvent` sozlugu semasini tasir
+    (bkz. `src/observability/trace_serializer.py::make_event`). Bu analiz icin
+    hic kaydedilmemisse (eski kayit veya persistence basarisiz olduysa) bos liste."""
 
 
 class AskRequest(BaseModel):
@@ -367,6 +373,49 @@ class AskResponse(BaseModel):
     sources: List[AskSource] = Field(default_factory=list)
     job_id: Optional[str] = None
     context_used: List[str] = Field(default_factory=list)
+
+
+# --- SAFIR Asistan: sohbet gecmisi (Conversation) - yalnizca UI/gecmis icindir,
+# LLM'e GERI BESLENMEZ (bkz. src/assistant/ask_service.py modul dokustringi). ---
+
+
+class ConversationCreateRequest(BaseModel):
+    """`POST /conversations` istek govdesi."""
+
+    title: Optional[str] = Field(default=None, description="Kisa baslik (genelde ilk sorudan kirpilir).")
+    job_id: Optional[str] = Field(default=None, description="Bu sohbetin bagli oldugu analiz kimligi (opsiyonel).")
+
+
+class ConversationSummary(BaseModel):
+    """Sohbet listesi/ozet gorunumu (mesajlar HARIC)."""
+
+    conversation_id: str
+    created_at: str
+    updated_at: str
+    title: Optional[str] = None
+    job_id: Optional[str] = None
+
+
+class ConversationMessageOut(BaseModel):
+    """Tek bir sohbet mesaji (`GET`/`POST /conversations/.../messages` yanitlarinda)."""
+
+    id: int
+    role: str  # "user" | "assistant"
+    content: str
+    created_at: str
+
+
+class ConversationDetailResponse(ConversationSummary):
+    """`GET /conversations/{id}` yaniti: ozet + tam mesaj gecmisi."""
+
+    messages: List[ConversationMessageOut] = Field(default_factory=list)
+
+
+class ConversationMessageCreateRequest(BaseModel):
+    """`POST /conversations/{id}/messages` istek govdesi."""
+
+    role: str = Field(description="'user' veya 'assistant'.")
+    content: str = Field(min_length=1)
 
 
 class SafirPipeline:
@@ -843,6 +892,81 @@ def get_ask_service() -> AskService:
     return _ask_service
 
 
+# 09C - SAFIR Asistan sohbet gecmisi: `AnalysisStore`/`EventStore` ile AYNI
+# hafif desen (dosya-tabanli SQLite, lazy singleton) — yeni bir depolama
+# soyutlamasi KURULMAZ, mevcut deseni tekrar eder.
+_conversation_store: Optional[ConversationStore] = None
+
+
+def get_conversation_store() -> ConversationStore:
+    """Uygulama omru boyunca tek bir `ConversationStore` orneği olusturur/dondurur (lazy singleton).
+
+    Veritabani dosyasi, `analyses.db` ile AYNI klasorde (`memory.sqlite.db_path`
+    ile ayni dizin) ayri bir dosyadadir; mevcut `events`/`analyses` semalarina
+    HIC dokunmaz.
+    """
+    global _conversation_store
+    if _conversation_store is None:
+        db_path = Path(load_config().memory.sqlite.db_path).with_name("conversations.db")
+        _conversation_store = ConversationStore(db_path)
+    return _conversation_store
+
+
+# History icin kalici representative-frame depolamasi: yalnizca VLM'e fiilen
+# gonderilen kareler (cluster basina RepresentativeFrameExtractor ciktisi),
+# TUM evidence frame'ler DEGIL. `data/` altinda, projenin mevcut kalici veri
+# dizin desenine (analyses.db/events.db) uygun bir alt klasor.
+_HISTORY_FRAMES_DIR = "history_frames"
+
+
+def _history_frame_path(job_id: str, frame_id: str) -> Path:
+    """Bir HISTORY representative-frame'inin diskteki yolunu dondurur (dosya var olmayabilir)."""
+    return Path(_DATA_DIR) / _HISTORY_FRAMES_DIR / job_id / f"{frame_id}.jpg"
+
+
+def _persist_representative_frames_best_effort(
+    job_id: str, trace_events: List[Dict[str, Any]], frames: Dict[str, bytes]
+) -> None:
+    """VLM'e fiilen gonderilen representative frame'leri (yalnizca onlari) History icin diske yazar.
+
+    `frames`, `_run_job` sirasinda `_on_frames` ile zaten doldurulmus, JPEG
+    baytlarini tasiyan ayni sozluktur; burada yeniden kodlama/yeniden isleme
+    YOKTUR — hangi anahtarlarin representative frame'e ait oldugu, ayni
+    calismada zaten uretilmis `trace_events`in `sampler` asamasindaki
+    `event_groups[].representative_frames[].frame_id` listesinden (bkz.
+    `trace_serializer.serialize_sampler`) okunur; diger tum evidence frame
+    anahtarlari (`ev...`) yoksayilir.
+
+    Best-effort: herhangi bir hata yalnizca loglanir; analiz sonucunu ASLA
+    etkilemez (bu fonksiyon hicbir zaman disari exception firlatmaz).
+
+    Args:
+        job_id: Kalici klasor adi olarak kullanilacak is kimligi.
+        trace_events: Bu calismanin tam trace olay listesi (`job.trace_events`in kopyasi).
+        frames: Bu calismada biriken frame_id -> JPEG baytlari sozlugu (`job.frames`in kopyasi).
+    """
+    try:
+        sampler_event = next((e for e in trace_events if e.get("stage") == "sampler"), None)
+        if sampler_event is None:
+            return
+        rep_frame_ids = {
+            rf["frame_id"]
+            for eg in sampler_event.get("data", {}).get("event_groups", [])
+            for rf in eg.get("representative_frames", [])
+        }
+        if not rep_frame_ids:
+            return
+        job_dir = Path(_DATA_DIR) / _HISTORY_FRAMES_DIR / job_id
+        job_dir.mkdir(parents=True, exist_ok=True)
+        for frame_id in rep_frame_ids:
+            raw = frames.get(frame_id)
+            if raw is None:
+                continue
+            (job_dir / f"{frame_id}.jpg").write_bytes(raw)
+    except Exception:  # noqa: BLE001 - best-effort; analiz sonucu ASLA etkilenmez
+        logger.exception("History: representative frame'ler diske yazilamadi: job_id=%s", job_id)
+
+
 def _run_job(
     job_id: str,
     video_source: str,
@@ -909,8 +1033,17 @@ def _run_job(
             job.status = "done"
             job.result = report
             job.step = job.total_steps
-        # History: tamamlanmis analizi (gercek SafirReport ile) kalici olarak sakla.
-        # Persistence hatasi is sonucunu ASLA etkilemez (best-effort).
+            trace_events_snapshot = list(job.trace_events)
+            frames_snapshot = dict(job.frames)
+        # History: VLM'e gonderilen representative frame'leri (yalnizca onlari)
+        # diske yaz — kendi ici tamamen best-effort (hicbir exception disari
+        # cikmaz), analiz sonucunu etkilemez.
+        _persist_representative_frames_best_effort(job_id, trace_events_snapshot, frames_snapshot)
+        # History: tamamlanmis analizi (gercek SafirReport + trace olay listesi ile)
+        # kalici olarak sakla. Persistence hatasi is sonucunu ASLA etkilemez
+        # (best-effort) — trace_json serilestirmesi de ayni try/except icinde,
+        # bir sorun olursa yalnizca History'nin PipelineTimeline gorunumu eksik
+        # kalir, analiz "basarisiz" sayilmaz.
         try:
             get_analysis_store().mark_completed(
                 job_id,
@@ -918,6 +1051,7 @@ def _run_job(
                 risk_level=report.risk_level,
                 risk_score=report.risk_score,
                 summary=report.summary or report.natural_language_summary,
+                trace_json=json.dumps(trace_events_snapshot, ensure_ascii=False),
             )
         except Exception:  # noqa: BLE001
             logger.exception("History: tamamlanmis analiz kaydedilemedi: job_id=%s", job_id)
@@ -1058,18 +1192,25 @@ def get_analyze_job(job_id: str) -> JobStatusResponse:
     )
 
 
-# Frame kimligi yalnizca in-memory sozluk anahtaridir (dosya yolu DEGIL); path
-# traversal riski yoktur. Yine de beklenmedik girdilere karsi bicimi kisitlariz.
+# Frame/is kimlikleri yalnizca in-memory sozluk anahtari veya (HISTORY icin)
+# `data/history_frames/{job_id}/{frame_id}.jpg` dosya yolu bilesenidir; her iki
+# kullanimda da path traversal'i onlemek icin bicim kisitlanir (slash/nokta yok).
 _FRAME_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 
 
 @app.get("/analyze/jobs/{job_id}/frames/{frame_id}")
 def get_job_frame(job_id: str, frame_id: str) -> Response:
     """Bir isin trace olaylarinda referans verilen kareyi (JPEG) sunar (base64 yerine).
 
-    Kareler, `_run_job` sirasinda bellek-ici (`JobState.frames`) tutulur; bu uc
-    nokta yalnizca o sozlukten okur (dosya sistemine erisim/yeni dosya kopyalama
-    YOK).
+    Iki kaynak sirayla denenir:
+    1. CANLI: bellek-ici `JobState.frames` (is hala `_jobs` icindeyse) — mevcut
+       davranis, DEGISMEDI.
+    2. HISTORY: is bellekte yoksa (veya bu frame_id o iste yoksa), `_run_job`
+       tarafindan best-effort yazilmis kalici representative-frame dosyasina
+       (`data/history_frames/{job_id}/{frame_id}.jpg`) bakilir. Yalnizca VLM'e
+       fiilen gonderilen representative frame'ler icin doludur; tum evidence
+       frame'ler icin bu dosya yoktur (bkz. `_persist_representative_frames_best_effort`).
 
     Args:
         job_id: Analiz isinin kimligi.
@@ -1079,18 +1220,29 @@ def get_job_frame(job_id: str, frame_id: str) -> Response:
         `image/jpeg` yaniti.
 
     Raises:
-        HTTPException: Is/kare bulunamazsa (404) veya `frame_id` bicimi gecersizse (400).
+        HTTPException: Is/kare bulunamazsa (404) veya kimlik bicimi gecersizse (400).
     """
     if not _FRAME_ID_RE.match(frame_id):
         raise HTTPException(status_code=400, detail="Gecersiz frame_id.")
+    if not _JOB_ID_RE.match(job_id):
+        raise HTTPException(status_code=400, detail="Gecersiz job_id.")
+
     with _jobs_lock:
         job = _jobs.get(job_id)
         raw = job.frames.get(frame_id) if job else None
+    if raw is not None:
+        return Response(content=raw, media_type="image/jpeg")
+
+    disk_path = _history_frame_path(job_id, frame_id)
+    try:
+        if disk_path.is_file():
+            return Response(content=disk_path.read_bytes(), media_type="image/jpeg")
+    except OSError:
+        logger.exception("History: kare diskten okunamadi: job_id=%s frame_id=%s", job_id, frame_id)
+
     if job is None:
         raise HTTPException(status_code=404, detail=f"Is bulunamadi: {job_id}")
-    if raw is None:
-        raise HTTPException(status_code=404, detail=f"Kare bulunamadi: {frame_id}")
-    return Response(content=raw, media_type="image/jpeg")
+    raise HTTPException(status_code=404, detail=f"Kare bulunamadi: {frame_id}")
 
 
 @app.get("/analyze/jobs/{job_id}/stream")
@@ -1278,6 +1430,13 @@ def get_history_item(job_id: str) -> HistoryDetail:
         except Exception:  # noqa: BLE001 - bozuk/eski kayit UI'i kirmamali
             logger.exception("History: kayitli rapor JSON'u cozulemedi: job_id=%s", job_id)
 
+    trace_events: List[Dict[str, Any]] = []
+    if record.trace_json:
+        try:
+            trace_events = json.loads(record.trace_json)
+        except Exception:  # noqa: BLE001 - bozuk/eski kayit UI'i kirmamali (bos liste ile devam)
+            logger.exception("History: kayitli trace JSON'u cozulemedi: job_id=%s", job_id)
+
     return HistoryDetail(
         job_id=record.job_id,
         created_at=record.created_at,
@@ -1285,6 +1444,7 @@ def get_history_item(job_id: str) -> HistoryDetail:
         status=record.status,
         video_source=record.video_source,
         report=report,
+        trace_events=trace_events,
     )
 
 
@@ -1322,6 +1482,192 @@ def ask_safir(request: AskRequest) -> AskResponse:
         sources=[AskSource(type=s.type, text=s.text, score=s.score, label=s.label) for s in result.sources],
         job_id=result.job_id,
         context_used=result.context_used,
+    )
+
+
+_MAX_CONVERSATION_TITLE_LEN = 80
+
+
+@app.post("/conversations", response_model=ConversationSummary)
+def create_conversation(request: ConversationCreateRequest) -> ConversationSummary:
+    """SAFIR Asistan icin yeni bir sohbet kaydi olusturur.
+
+    Baslik icin HICBIR LLM cagrisi yapilmaz (basit kirpma; bkz. `request.title`,
+    frontend'de genelde ilk kullanici sorusundan turetilir).
+
+    Args:
+        request: Opsiyonel baslik ve opsiyonel bagli analiz kimligi (`job_id`).
+
+    Returns:
+        Olusturulan sohbetin ozeti.
+    """
+    title = (request.title or "").strip()[:_MAX_CONVERSATION_TITLE_LEN] or None
+    record = get_conversation_store().create(title=title, job_id=request.job_id)
+    return ConversationSummary(
+        conversation_id=record.conversation_id,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        title=record.title,
+        job_id=record.job_id,
+    )
+
+
+@app.get("/conversations", response_model=List[ConversationSummary])
+def list_conversations(limit: int = 50, offset: int = 0) -> List[ConversationSummary]:
+    """Sohbetleri en son GUNCELLENEN once (updated_at DESC), sayfali dondurur.
+
+    Args:
+        limit: Dondurulecek maksimum kayit (1-200 arasina kelepcelenir).
+        offset: Atlanacak kayit sayisi (sayfalama).
+    """
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+    records = get_conversation_store().list(limit=limit, offset=offset)
+    return [
+        ConversationSummary(
+            conversation_id=r.conversation_id,
+            created_at=r.created_at,
+            updated_at=r.updated_at,
+            title=r.title,
+            job_id=r.job_id,
+        )
+        for r in records
+    ]
+
+
+@app.get("/conversations/{conversation_id}", response_model=ConversationDetailResponse)
+def get_conversation(conversation_id: str) -> ConversationDetailResponse:
+    """Tek bir sohbeti, tam mesaj gecmisiyle (kronolojik) birlikte dondurur.
+
+    Args:
+        conversation_id: `POST /conversations` tarafindan uretilmis sohbet kimligi.
+
+    Raises:
+        HTTPException: `conversation_id` bulunamazsa (404).
+    """
+    store = get_conversation_store()
+    record = store.get(conversation_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Sohbet bulunamadi: {conversation_id}")
+
+    messages = store.list_messages(conversation_id)
+    return ConversationDetailResponse(
+        conversation_id=record.conversation_id,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+        title=record.title,
+        job_id=record.job_id,
+        messages=[
+            ConversationMessageOut(id=m.id, role=m.role, content=m.content, created_at=m.created_at)
+            for m in messages
+        ],
+    )
+
+
+@app.post("/conversations/{conversation_id}/messages", response_model=ConversationMessageOut)
+def add_conversation_message(
+    conversation_id: str, request: ConversationMessageCreateRequest
+) -> ConversationMessageOut:
+    """Bir sohbete yeni bir mesaj ekler.
+
+    ONEMLI: Bu yalnizca UI/gecmis icindir — burada saklanan mesajlar `POST /ask`
+    veya `GET /ask/stream`e HICBIR ZAMAN geri beslenmez (bkz.
+    `src/assistant/ask_service.py` modul dokustringi); `AskService`in kendi
+    (opsiyonel, sinirli) `history` mekanizmasi `GET /ask/stream` tarafindan
+    AYRICA ve acikca yonetilir.
+
+    Args:
+        conversation_id: Hedef sohbetin kimligi.
+        request: `role` (`"user"`/`"assistant"`) + `content`.
+
+    Raises:
+        HTTPException: `conversation_id` bulunamazsa (404) veya `role` gecersizse (422).
+    """
+    if request.role not in ("user", "assistant"):
+        raise HTTPException(status_code=422, detail="role 'user' veya 'assistant' olmalidir.")
+
+    store = get_conversation_store()
+    if store.get(conversation_id) is None:
+        raise HTTPException(status_code=404, detail=f"Sohbet bulunamadi: {conversation_id}")
+
+    record = store.add_message(conversation_id, request.role, request.content)
+    return ConversationMessageOut(id=record.id, role=record.role, content=record.content, created_at=record.created_at)
+
+
+@app.get("/ask/stream")
+async def ask_safir_stream(
+    question: str, job_id: Optional[str] = None, conversation_id: Optional[str] = None
+) -> StreamingResponse:
+    """Ask SAFIR'i SSE ile parca parca (streaming) yanitlar.
+
+    Mevcut `POST /ask` ile AYNI baglam-olusturma/guvenlik mantigini (`AskService`)
+    kullanir; yalnizca LLM yanitini parca parca yayinlar. `/ask`in davranisi/
+    response modeli DEGISMEZ — bu tamamen ADDITIVE, ayri bir uc noktadir.
+
+    `conversation_id` verilirse, o sohbetin (bu soru HENUZ eklenmemis) onceki
+    mesajlarindan en fazla son birkaci (bkz. `ask_service._MAX_HISTORY_MESSAGES`)
+    baglam olarak eklenir — yalnizca takip sorularini anlamak icindir, KANIT
+    olarak sunulmaz (bkz. `ASK_SYSTEM_PROMPT`). Mesaj YAZMA (persistence) burada
+    YAPILMAZ; istemci, akis basariyla tamamlaninca kullanici sorusu + nihai
+    cevabi AYRICA `POST /conversations/{id}/messages` ile kaydeder (bkz. o
+    endpoint'in dokustringi) — boylece hicbir token/parca tek tek veritabanina
+    yazilmaz, yalnizca tamamlanmis nihai mesajlar kalici olur.
+
+    SSE bicimi (mevcut `/analyze/jobs/{job_id}/stream` ile ayni konvansiyon):
+      - ilk olay: `data: {"sources": [...], "context_used": [...], "job_id": ...}`
+      - sonraki olaylar: `data: {"delta": "..."}` (metin parcasi)
+      - kapanis: `event: end` VEYA hata: `event: error`
+    """
+
+    async def event_generator():
+        history: List[Tuple[str, str]] = []
+        if conversation_id:
+            try:
+                history = [(m.role, m.content) for m in get_conversation_store().list_messages(conversation_id)]
+            except Exception:  # noqa: BLE001 - gecmis okunamazsa baglamsiz (ama hatasiz) devam edilir
+                logger.exception(
+                    "Ask SAFIR stream: konusma gecmisi okunamadi: conversation_id=%s", conversation_id
+                )
+
+        try:
+            meta, chunks = get_ask_service().stream_answer(question, job_id, history=history)
+        except JobNotFound as exc:
+            yield f"event: error\ndata: {json.dumps({'detail': f'Analiz bulunamadi: {exc}'})}\n\n"
+            return
+        except ValueError as exc:
+            yield f"event: error\ndata: {json.dumps({'detail': str(exc)})}\n\n"
+            return
+
+        meta_payload = {
+            "sources": [
+                AskSource(type=s.type, text=s.text, score=s.score, label=s.label).model_dump() for s in meta.sources
+            ],
+            "job_id": meta.job_id,
+            "context_used": meta.context_used,
+        }
+        yield f"data: {json.dumps(meta_payload, ensure_ascii=False)}\n\n"
+
+        got_any = False
+        try:
+            for delta in chunks:
+                if delta:
+                    got_any = True
+                    yield f"data: {json.dumps({'delta': delta}, ensure_ascii=False)}\n\n"
+        except Exception:  # noqa: BLE001 - guvenli hata; ayrintilar loglarda
+            logger.exception("Ask SAFIR stream: LLM akisi basarisiz oldu")
+            yield f"event: error\ndata: {json.dumps({'detail': 'SAFIR su anda cevap olusturamadi.'})}\n\n"
+            return
+
+        if not got_any:
+            yield f"event: error\ndata: {json.dumps({'detail': 'SAFIR su anda cevap olusturamadi.'})}\n\n"
+            return
+
+        yield f"event: end\ndata: {json.dumps({'status': 'done'})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

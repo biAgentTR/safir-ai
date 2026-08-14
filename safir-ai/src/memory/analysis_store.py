@@ -58,6 +58,7 @@ class AnalysisRecord:
     risk_score: Optional[int]
     summary: Optional[str]
     report_json: Optional[str]
+    trace_json: Optional[str] = None
 
 
 class AnalysisStore:
@@ -74,8 +75,23 @@ class AnalysisStore:
         self._connection = sqlite3.connect(str(path), check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._connection.executescript(_SCHEMA)
+        self._migrate_add_trace_json_column()
         self._connection.commit()
         self._lock = threading.Lock()
+
+    def _migrate_add_trace_json_column(self) -> None:
+        """`analyses` tablosuna, daha eski veritabanlarinda eksik olabilecek `trace_json` kolonunu ekler.
+
+        Idempotenttir: kolon zaten varsa hicbir sey yapmaz. `report_json` ile
+        ayni amaca hizmet eder (kalici, JSON-serilestirilmis veri); yalnizca
+        pipeline'in tam trace olay listesini (`job.trace_events`) tasir, boylece
+        History'de gecmis bir analizin PipelineTimeline/StageCard gorunumu de
+        (canli analizle ayni veri yapisiyla) yeniden kurulabilir.
+        """
+        columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(analyses)").fetchall()}
+        if "trace_json" not in columns:
+            self._connection.execute("ALTER TABLE analyses ADD COLUMN trace_json TEXT")
+            logger.info("AnalysisStore semasi guncellendi: 'trace_json' kolonu eklendi.")
 
     # ---- yazim (lifecycle) ----
 
@@ -101,17 +117,26 @@ class AnalysisStore:
         risk_level: Optional[str],
         risk_score: Optional[int],
         summary: Optional[str],
+        trace_json: Optional[str] = None,
     ) -> None:
-        """Isi `completed` olarak isaretler ve nihai `SafirReport` JSON'unu saklar."""
+        """Isi `completed` olarak isaretler ve nihai `SafirReport` JSON'unu (+ varsa trace_json) saklar.
+
+        Args:
+            trace_json: Pipeline'in tam trace olay listesinin (`job.trace_events`)
+                JSON-serilestirilmis hali; History'de PipelineTimeline/StageCard
+                gorunumunu yeniden kurmak icin kullanilir. Opsiyoneldir (`None`
+                birakilirsa kolon dokunulmadan `NULL` kalir) — geriye donuk
+                uyumluluk icin mevcut cagiranlarin hicbiri bozulmaz.
+        """
         with self._lock:
             self._connection.execute(
                 """
                 UPDATE analyses
                    SET status='completed', updated_at=?, report_json=?,
-                       risk_level=?, risk_score=?, summary=?
+                       risk_level=?, risk_score=?, summary=?, trace_json=?
                  WHERE job_id=?
                 """,
-                (_now_iso(), report_json, risk_level, risk_score, summary, job_id),
+                (_now_iso(), report_json, risk_level, risk_score, summary, trace_json, job_id),
             )
             self._connection.commit()
 
@@ -171,6 +196,7 @@ class AnalysisStore:
             risk_score=d.get("risk_score"),
             summary=d.get("summary"),
             report_json=d.get("report_json"),
+            trace_json=d.get("trace_json"),
         )
 
     def close(self) -> None:

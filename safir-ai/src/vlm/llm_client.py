@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import List, Sequence
+from types import SimpleNamespace
+from typing import Iterator, List, Sequence
 
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.tools import StructuredTool
@@ -92,6 +93,21 @@ class LLMClient:
         """
         return self._chat.invoke(messages)
 
+    def stream(self, messages: Sequence[BaseMessage]) -> Iterator[AIMessage]:
+        """Mesaj gecmisini gercek LLM'e gonderip yanitini parca parca (streaming) dondurur.
+
+        `ChatOpenAI` (LangChain Runnable arayuzunun standart parcasi) uzerinden
+        calisir; SAFIR Asistan'in streaming sohbet deneyimi (`/ask/stream`)
+        icindir. `invoke()`in davranisini DEGISTIRMEZ, yalnizca yanindadir.
+
+        Args:
+            messages: Gonderilecek mesaj gecmisi.
+
+        Returns:
+            Her biri `.content` parcasi tasiyan, siradan mesaj-parcasi (chunk) iterator'u.
+        """
+        return self._chat.stream(messages)
+
     def invoke_json(self, messages: Sequence[BaseMessage]) -> AIMessage:
         """Mesajlari JSON-modunda (araci baglanmamis) LLM'e gonderip gecerli JSON yaniti dondurur.
 
@@ -157,6 +173,20 @@ class MockLLMClient:
     def invoke_json(self, messages: Sequence[BaseMessage]) -> AIMessage:
         """Mock modda JSON-modu ile normal `invoke` ayni sabit JSON karari dondurur."""
         return self.invoke(messages)
+
+    def stream(self, messages: Sequence[BaseMessage]) -> Iterator[SimpleNamespace]:
+        """Sahte streaming: `invoke()` ile AYNI sabit metni birkac parcaya bolup art arda dondurur.
+
+        Her parca, gercek `AIMessage`/`AIMessageChunk` ile ayni sozlesmeyi
+        (`.content` erisimi) tasiyan hafif bir nesnedir; `LLMClient.stream()`
+        ile ayni arayuzu (`Iterator[.content tasiyan nesne]`) saglar.
+        """
+        time.sleep(0.05)
+        logger.info("MockLLMClient: %d mesajlik gecmis icin sahte streaming yaniti uretildi", len(messages))
+        text = _MOCK_DECISION_TEXT
+        chunk_size = max(1, len(text) // 5)
+        for i in range(0, len(text), chunk_size):
+            yield SimpleNamespace(content=text[i : i + chunk_size])
 
 
 if __name__ == "__main__":

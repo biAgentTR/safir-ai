@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// Overview / landing. Entry point into a New Analysis; History/Reports are not
-// implemented in this step.
+// Overview / landing. Entry point into a New Analysis or History — both are
+// real, active features (kept in sync with AppSidebar's navigation).
 const { state } = useBackendHealth()
 </script>
 
@@ -32,9 +32,7 @@ const { state } = useBackendHealth()
         <NuxtLink to="/new-analysis" class="btn-primary">
           <span>＋</span> Yeni Analiz Başlat
         </NuxtLink>
-        <button class="btn-ghost cursor-not-allowed opacity-60" disabled title="Bu adımda etkin değil">
-          Geçmiş (yakında)
-        </button>
+        <NuxtLink to="/history" class="btn-ghost">Geçmiş Analizler</NuxtLink>
       </div>
     </section>
 

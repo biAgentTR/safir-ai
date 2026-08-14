@@ -162,14 +162,14 @@ def test_max_representative_frames_upper_bound_is_respected(long_video: str) -> 
     assert len(result) <= 6
 
 
-def test_default_max_representative_frames_is_eight(long_video: str) -> None:
-    """Varsayilan ust sinir 8'dir (istenen '6 veya 8'i gecmesin' araliginin ust ucu)."""
+def test_default_max_representative_frames_is_five(long_video: str) -> None:
+    """Varsayilan ust sinir 5'tir (Gemini payload/gecikme/kota baskisini sinirlamak icin 8'den dusuruldu)."""
     extractor = RepresentativeFrameExtractor(pre_event_sec=0.1, post_event_sec=0.1)
     peak = _evidence_frame(10.0)
 
     result = extractor.extract(long_video, peak, start_time=0.0, end_time=20.0)
 
-    assert len(result) <= 8
+    assert len(result) <= 5
 
 
 def test_constructor_rejects_max_representative_frames_below_three() -> None:

@@ -37,7 +37,11 @@ from src.sampler.schema import EvidenceFrame, RepresentativeFrame
 logger = logging.getLogger(__name__)
 
 _JPEG_QUALITY = 85
-_DEFAULT_MAX_REPRESENTATIVE_FRAMES = 8
+# Gemini payload/gecikme/kota baskisini sinirli tutmak icin ust sinir (bkz.
+# Hata #5: 8'e cikarilmasi payload'i buyutup VLM cagrisini yavaslatmis/
+# basarisiz kilmis olabilir; 5'e dusuruldu). Uzun olaylarda etkilidir;
+# kisa olaylarda hicbir etkisi yoktur (o modda zaten en fazla 3 kare uretilir).
+_DEFAULT_MAX_REPRESENTATIVE_FRAMES = 5
 
 
 class RepresentativeFrameExtractor:

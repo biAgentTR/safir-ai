@@ -111,17 +111,23 @@ onBeforeUnmount(() => stream.stop())
     <!-- KPI -->
     <KpiPanel />
 
-    <!-- main: pipeline rail + selected stage detail (LIVE only) -->
-    <div v-if="!isHistory" class="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-5 items-start">
+    <!-- main: pipeline rail + selected stage detail. LIVE always shows it (fed by
+         SSE); HISTORY shows the SAME components when a persisted trace exists
+         (store.traceEvents filled by loadHistory from trace_json) — otherwise
+         an honest fallback for analyses saved before trace persistence existed. -->
+    <div
+      v-if="!isHistory || store.traceEvents.length"
+      class="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-5 items-start"
+    >
       <PipelineTimeline />
       <StageCard @open-frame="() => { tab = 'evidence' }" />
     </div>
-    <!-- HISTORY: no live trace — honest fallback (no fabricated pipeline state) -->
-    <div v-else-if="store.report" class="card p-5">
+    <!-- HISTORY, no persisted trace for this analysis — honest fallback (no fabricated pipeline state) -->
+    <div v-else-if="isHistory && store.report" class="card p-5">
       <div class="text-sm font-semibold text-slate-200 mb-1">Boru Hattı</div>
       <p class="text-sm text-slate-500">
-        Geçmiş analiz — canlı pipeline trace mevcut değil. Aşağıdaki risk, KPI, zaman çizelgesi ve rapor
-        kalıcı olarak saklanmış veriden üretilmiştir.
+        Bu analiz için kalıcı boru hattı (pipeline) kaydı bulunmuyor. Aşağıdaki risk, KPI, zaman çizelgesi ve
+        rapor kalıcı olarak saklanmış veriden üretilmiştir.
       </p>
     </div>
 
