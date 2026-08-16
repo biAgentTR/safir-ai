@@ -14,7 +14,7 @@ import os
 import struct
 import wave
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # --- Servis / davranis sabitleri ---
 API_BASE_URL = os.environ.get("SAFIR_API_URL", "http://localhost:8000")
@@ -32,6 +32,7 @@ RISK_BADGE_MAP: Dict[str, Tuple[str, str]] = {
     "dusuk": ("LOW", "#2563eb"),
 }
 NORMAL_BADGE: Tuple[str, str] = ("NORMAL", "#16a34a")
+UNKNOWN_BADGE: Tuple[str, str] = ("BELIRSIZ", "#64748b")
 
 # Backend'in 3 asamali gercek ilerlemesini, panelde 5 adimli anlatima esler.
 STAGE_NARRATION: Dict[int, List[str]] = {
@@ -84,22 +85,26 @@ PAGE_STYLES = """
 """
 
 
-def resolve_risk_badge(risk_level: str, risk_score: int) -> Tuple[str, str]:
+def resolve_risk_badge(risk_level: str, risk_score: Optional[int]) -> Tuple[str, str]:
     """Risk seviyesi/skoruna gore `(etiket, renk)` rozetini cozer.
 
     Args:
-        risk_level: `dusuk`/`orta`/`yuksek`/`kritik`.
-        risk_score: 0-100 arasi skor (NORMAL esigini belirlemek icin).
+        risk_level: `dusuk`/`orta`/`yuksek`/`kritik`/`unknown`.
+        risk_score: 0-100 arasi skor (NORMAL esigini belirlemek icin); guvenilir
+            bir karar uretilemediyse `None` (bkz. `risk_status="unknown"`).
 
     Returns:
-        `(etiket, renk_kodu)` ikilisi.
+        `(etiket, renk_kodu)` ikilisi. `risk_score` `None` ise ASLA NORMAL/dusuk
+        risk olarak yorumlanmaz — ayri bir `UNKNOWN_BADGE` dondurulur.
     """
+    if risk_score is None:
+        return UNKNOWN_BADGE
     if risk_score <= 5:
         return NORMAL_BADGE
     return RISK_BADGE_MAP.get(risk_level, NORMAL_BADGE)
 
 
-def risk_badge_html(risk_level: str, risk_score: int) -> str:
+def risk_badge_html(risk_level: str, risk_score: Optional[int]) -> str:
     """Risk seviyesine gore renkli bir HTML rozet dondurur."""
     label, color = resolve_risk_badge(risk_level, risk_score)
     return f'<span class="risk-badge" style="background-color:{color};">{label}</span>'

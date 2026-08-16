@@ -28,7 +28,8 @@ const nearestFrame = computed<{ frame: EvidenceFrameOut; deltaSec: number } | nu
   return best ? { frame: best, deltaSec: bestDelta } : null
 })
 
-const tone = computed(() => riskTone(store.report?.risk_level))
+const isUnknownRisk = computed(() => store.report?.risk_status === 'unknown' || store.report?.risk_score == null)
+const tone = computed(() => (isUnknownRisk.value ? 'unknown' : riskTone(store.report?.risk_level)))
 </script>
 
 <template>
@@ -50,7 +51,7 @@ const tone = computed(() => riskTone(store.report?.risk_level))
 
       <div v-if="store.report" class="mb-4 flex items-center gap-2 text-xs">
         <span class="text-slate-500">Analiz risk seviyesi:</span>
-        <span class="font-semibold" :class="RISK_TEXT[tone]">{{ store.report.risk_score }} / 100 · {{ store.report.risk_level }}</span>
+        <span class="font-semibold" :class="RISK_TEXT[tone]">{{ isUnknownRisk ? 'Belirsiz' : `${store.report.risk_score} / 100 · ${store.report.risk_level}` }}</span>
       </div>
 
       <div v-if="nearestFrame">

@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS analyses (
     risk_level   TEXT,
     risk_score   INTEGER,
     summary      TEXT,
-    report_json  TEXT
+    report_json  TEXT,
+    risk_status  TEXT DEFAULT 'assessed'
 );
 CREATE INDEX IF NOT EXISTS idx_analyses_created ON analyses (created_at);
 """
@@ -59,6 +60,7 @@ class AnalysisRecord:
     summary: Optional[str]
     report_json: Optional[str]
     trace_json: Optional[str] = None
+    risk_status: str = "assessed"
 
 
 class AnalysisStore:
@@ -76,6 +78,7 @@ class AnalysisStore:
         self._connection.row_factory = sqlite3.Row
         self._connection.executescript(_SCHEMA)
         self._migrate_add_trace_json_column()
+        self._migrate_add_risk_status_column()
         self._connection.commit()
         self._lock = threading.Lock()
 
@@ -92,6 +95,18 @@ class AnalysisStore:
         if "trace_json" not in columns:
             self._connection.execute("ALTER TABLE analyses ADD COLUMN trace_json TEXT")
             logger.info("AnalysisStore semasi guncellendi: 'trace_json' kolonu eklendi.")
+
+    def _migrate_add_risk_status_column(self) -> None:
+        """`analyses` tablosuna eksik olabilecek `risk_status` kolonunu ekler (P0 fix).
+
+        Idempotenttir. Eski kayitlar `DEFAULT 'assessed'` alir — bu, geriye
+        donuk uyumlu ve guvenli bir varsayilandir: eski kayitlarin tumu zaten
+        (eski davranista) sayisal bir risk_score ile tamamlanmisti.
+        """
+        columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(analyses)").fetchall()}
+        if "risk_status" not in columns:
+            self._connection.execute("ALTER TABLE analyses ADD COLUMN risk_status TEXT DEFAULT 'assessed'")
+            logger.info("AnalysisStore semasi guncellendi: 'risk_status' kolonu eklendi.")
 
     # ---- yazim (lifecycle) ----
 
@@ -118,6 +133,7 @@ class AnalysisStore:
         risk_score: Optional[int],
         summary: Optional[str],
         trace_json: Optional[str] = None,
+        risk_status: str = "assessed",
     ) -> None:
         """Isi `completed` olarak isaretler ve nihai `SafirReport` JSON'unu (+ varsa trace_json) saklar.
 
@@ -127,16 +143,18 @@ class AnalysisStore:
                 gorunumunu yeniden kurmak icin kullanilir. Opsiyoneldir (`None`
                 birakilirsa kolon dokunulmadan `NULL` kalir) — geriye donuk
                 uyumluluk icin mevcut cagiranlarin hicbiri bozulmaz.
+            risk_status: `assessed` | `unknown` (bkz. `AgentDecision.risk_status`).
+                Varsayilan `assessed` geriye donuk uyumluluk icindir.
         """
         with self._lock:
             self._connection.execute(
                 """
                 UPDATE analyses
                    SET status='completed', updated_at=?, report_json=?,
-                       risk_level=?, risk_score=?, summary=?, trace_json=?
+                       risk_level=?, risk_score=?, summary=?, trace_json=?, risk_status=?
                  WHERE job_id=?
                 """,
-                (_now_iso(), report_json, risk_level, risk_score, summary, trace_json, job_id),
+                (_now_iso(), report_json, risk_level, risk_score, summary, trace_json, risk_status, job_id),
             )
             self._connection.commit()
 
@@ -197,6 +215,7 @@ class AnalysisStore:
             summary=d.get("summary"),
             report_json=d.get("report_json"),
             trace_json=d.get("trace_json"),
+            risk_status=d.get("risk_status") or "assessed",
         )
 
     def close(self) -> None:

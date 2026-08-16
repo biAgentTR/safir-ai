@@ -167,19 +167,40 @@ class EscalationPolicy:
         return EscalationTier.MONITOR
 
     def evaluate(
-        self, *, risk_score: int, risk_level: str, recommended_action: str, summary: str
+        self,
+        *,
+        risk_score: Optional[int],
+        risk_level: str,
+        recommended_action: str,
+        summary: str,
+        risk_status: str = "assessed",
     ) -> EscalationDecision:
         """Kademeyi belirler ve ALARM kademesinde saha alarmini OTOMATIK tetikler.
 
+        `risk_status != "assessed"` (guvenilir bir karar uretilemedi) durumunda,
+        sayisal esik karsilastirmasi HIC yapilmaz: dogrudan `NOTIFY` kademesine
+        dusulur (operator incelemesi icin yumusak sinyal) ve alarm OTOMATIK
+        tetiklenmez. `unknown -> MONITOR` (sessizce dusuk risk kabul etme) veya
+        `unknown -> ALARM` (sayisal olmayan veriyle otomatik alarm) ASLA yapilmaz.
+
         Args:
-            risk_score: 0-100 arasi risk skoru.
-            risk_level: `dusuk|orta|yuksek|kritik`.
+            risk_score: 0-100 arasi risk skoru; risk_status="unknown" ise None olabilir.
+            risk_level: `dusuk|orta|yuksek|kritik|unknown`.
             recommended_action: Alarma iliştirilecek birincil aksiyon onerisi.
             summary: Alarma iliştirilecek kisa durum ozeti.
+            risk_status: `assessed` | `unknown` (bkz. `AgentDecision.risk_status`).
 
         Returns:
             Secilen kademe, otomatik tetiklenip tetiklenmedigi ve (varsa) `alert_id`.
         """
+        if risk_status != "assessed" or risk_score is None:
+            return EscalationDecision(
+                tier=EscalationTier.NOTIFY,
+                auto_dispatched=False,
+                alert_id=None,
+                reason="Risk durumu belirsiz — analiz guvenilir sekilde tamamlanamadi; manuel inceleme gerekli.",
+            )
+
         tier = self.classify(risk_score)
 
         if tier is EscalationTier.ALARM:

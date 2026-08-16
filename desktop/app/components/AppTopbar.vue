@@ -8,6 +8,10 @@ const title = computed(() => {
   if (p === '/') return 'Overview'
   if (p.startsWith('/new-analysis')) return 'New Analysis'
   if (p.startsWith('/workspace')) return 'Analysis Workspace'
+  if (p.startsWith('/history')) return 'History'
+  if (p.startsWith('/reports')) return 'Reports'
+  if (p.startsWith('/assistant')) return 'SAFİR Asistan'
+  if (p.startsWith('/system')) return 'Sistem Verileri'
   return 'SAFİR'
 })
 

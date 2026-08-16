@@ -22,6 +22,10 @@ import type {
   ConversationCreateRequest,
   ConversationDetail,
   ConversationMessage,
+  ConversationContext,
+  ConversationContextCreateRequest,
+  ConversationDocument,
+  SystemOverview,
 } from '~/types/api'
 
 export function useSafirApi() {
@@ -108,6 +112,20 @@ export function useSafirApi() {
     return await $fetch(url(`/history/${encodeURIComponent(jobId)}`))
   }
 
+  /** Absolute (proxied) URL for the real, backend-generated PDF report. */
+  function getReportPdfUrl(jobId: string): string {
+    return url(`/history/${encodeURIComponent(jobId)}/report.pdf`)
+  }
+
+  /**
+   * GET /history/{job_id}/report.pdf -> real PDF bytes (reportlab, embedded
+   * evidence images — same `ReportExporter` the Operator Panel uses). Works
+   * for a live job still in memory OR an already-persisted History record.
+   */
+  async function getReportPdf(jobId: string): Promise<Blob> {
+    return await $fetch(getReportPdfUrl(jobId), { responseType: 'blob' })
+  }
+
   /** POST /ask -> grounded answer + sources (context-aware assistant). */
   async function ask(question: string, jobId?: string | null): Promise<AskResponse> {
     return await $fetch(url('/ask'), {
@@ -154,6 +172,55 @@ export function useSafirApi() {
     })
   }
 
+  /** GET /system/overview -> Data Center ozet KPI'lari (read-only). */
+  async function getSystemOverview(): Promise<SystemOverview> {
+    return await $fetch(url('/system/overview'))
+  }
+
+  /** POST /conversations/{id}/context -> sohbete kullanıcı notu ekler (Adım 3). */
+  async function addConversationContext(
+    conversationId: string,
+    payload: ConversationContextCreateRequest,
+  ): Promise<ConversationContext> {
+    return await $fetch(url(`/conversations/${encodeURIComponent(conversationId)}/context`), {
+      method: 'POST',
+      body: payload,
+    })
+  }
+
+  /** DELETE /conversations/{id}/context/{context_id} -> eklenen bağlamı kaldırır. */
+  async function removeConversationContext(conversationId: string, contextId: number): Promise<{ removed: boolean }> {
+    return await $fetch(
+      url(`/conversations/${encodeURIComponent(conversationId)}/context/${contextId}`),
+      { method: 'DELETE' },
+    )
+  }
+
+  /**
+   * POST /conversations/{id}/documents -> belge yükler (PDF/TXT/DOCX, multipart).
+   * Yanıt `status: "processing"` ile döner; metin çıkarımı arka planda sürer —
+   * çağıran taraf `getConversation(id)` ile durumu izlemelidir (polling).
+   */
+  async function uploadConversationDocument(conversationId: string, file: File): Promise<ConversationDocument> {
+    const form = new FormData()
+    form.append('file', file)
+    return await $fetch(url(`/conversations/${encodeURIComponent(conversationId)}/documents`), {
+      method: 'POST',
+      body: form,
+    })
+  }
+
+  /** DELETE /conversations/{id}/documents/{document_id} -> yüklenen belgeyi kaldırır. */
+  async function removeConversationDocument(
+    conversationId: string,
+    documentId: string,
+  ): Promise<{ removed: boolean }> {
+    return await $fetch(
+      url(`/conversations/${encodeURIComponent(conversationId)}/documents/${encodeURIComponent(documentId)}`),
+      { method: 'DELETE' },
+    )
+  }
+
   return {
     base,
     health,
@@ -166,11 +233,18 @@ export function useSafirApi() {
     triggerAlert,
     getHistory,
     getHistoryItem,
+    getReportPdfUrl,
+    getReportPdf,
     ask,
     askStreamUrl,
     createConversation,
     getConversations,
     getConversation,
     addConversationMessage,
+    addConversationContext,
+    removeConversationContext,
+    uploadConversationDocument,
+    removeConversationDocument,
+    getSystemOverview,
   }
 }

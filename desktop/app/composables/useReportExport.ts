@@ -1,11 +1,18 @@
 /**
- * Report export. The backend does NOT expose an export endpoint — `ReportExporter`
- * (HTML/PDF) is Python-only, used inside Streamlit. So we export the REAL report
- * data client-side (this is not a mock — every value is the backend's report):
- *   - JSON : full SafirReport, pretty-printed
- *   - HTML : a clean standalone document built from the report
- *   - PDF  : the same document opened in a print window -> the webview's native
- *            "Save as PDF" (works in the Tauri/Chromium webview)
+ * Report export — all three formats produce a REAL file, no placeholders:
+ *   - JSON : full SafirReport, pretty-printed, built client-side from the
+ *            already-loaded report (no extra request).
+ *   - HTML : a clean standalone document built client-side from the same data.
+ *   - PDF  : GET /history/{job_id}/report.pdf — a REAL backend-generated PDF
+ *            (reportlab, `ReportExporter.to_pdf()`, the exact class already
+ *            used by the Operator Panel/Streamlit — reused, not reimplemented).
+ *            This REPLACES the earlier window.print() workaround: printing to
+ *            PDF depends on the OS print dialog and could not be verified
+ *            headlessly, while this downloads real, testable PDF bytes.
+ *
+ * All three go through the same `download()` helper (Blob + `<a download>`),
+ * which is the standard web-platform download mechanism — supported by the
+ * Tauri v2 webview (WebView2/WebKitGTK) without any extra Tauri plugin.
  */
 import type { SafirReport } from '~/types/api'
 
@@ -14,8 +21,8 @@ function fileStub(r: SafirReport): string {
   return `safir_report_${ts}`
 }
 
-function download(filename: string, content: string, mime: string) {
-  const blob = new Blob([content], { type: mime })
+function download(filename: string, content: string | Blob, mime?: string) {
+  const blob = content instanceof Blob ? content : new Blob([content], { type: mime })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -42,6 +49,10 @@ export function buildReportHtml(r: SafirReport): string {
   const actions = (r.actions ?? []).map((a) => `<li>${esc(a)}</li>`).join('')
   const regs = (r.relevant_regulations ?? []).map((a) => `<li>${esc(a)}</li>`).join('')
   const st = r.sampler_stats
+  const isUnknownRisk = r.risk_status === 'unknown' || r.risk_score === null || r.risk_score === undefined
+  const riskText = isUnknownRisk
+    ? 'Belirsiz — analiz güvenilir şekilde tamamlanamadı, manuel inceleme gerekli'
+    : `${esc(r.risk_score)} / 100 — ${esc(r.risk_level)}`
   return `<!doctype html><html lang="tr"><head><meta charset="utf-8">
 <title>SAFİR Raporu</title>
 <style>
@@ -53,7 +64,7 @@ export function buildReportHtml(r: SafirReport): string {
 <h1>SAFİR — Saha Analiz Raporu</h1>
 <p class="muted">${esc(r.video_source)} · ${esc(r.generated_at)}</p>
 <h2>Executive Summary</h2><p>${esc(r.summary || r.natural_language_summary)}</p>
-<h2>Risk</h2><p class="risk">${esc(r.risk_score)} / 100 — ${esc(r.risk_level)}</p>
+<h2>Risk</h2><p class="risk">${riskText}</p>
 <p><b>Önerilen aksiyon:</b> ${esc(r.recommended_action)}</p>
 <h2>Aksiyonlar</h2><ul>${actions || '<li class="muted">—</li>'}</ul>
 <h2>Zaman Çizelgesi</h2><table><tr><th>Zaman</th><th>Olay</th></tr>${rows || '<tr><td colspan=2 class="muted">—</td></tr>'}</table>
@@ -65,20 +76,29 @@ export function buildReportHtml(r: SafirReport): string {
 }
 
 export function useReportExport() {
+  const api = useSafirApi()
+
   function exportJson(r: SafirReport) {
     download(`${fileStub(r)}.json`, JSON.stringify(r, null, 2), 'application/json')
   }
   function exportHtml(r: SafirReport) {
     download(`${fileStub(r)}.html`, buildReportHtml(r), 'text/html')
   }
-  function exportPdf(r: SafirReport) {
-    // Open the printable HTML and invoke the webview's native print -> Save as PDF.
-    const w = window.open('', '_blank')
-    if (!w) return
-    w.document.write(buildReportHtml(r))
-    w.document.close()
-    w.focus()
-    setTimeout(() => w.print(), 300)
+  /**
+   * Real backend PDF. Needs `jobId` (live job still in memory OR already
+   * persisted to History — the endpoint tries both). Throws a human-readable
+   * error on failure; callers surface it (no silent no-op).
+   */
+  async function exportPdf(jobId: string | null, r: SafirReport) {
+    if (!jobId) throw new Error('PDF dışa aktarmak için analiz kimliği bulunamadı.')
+    let blob: Blob
+    try {
+      blob = await api.getReportPdf(jobId)
+    } catch (e: unknown) {
+      const detail = (e as { data?: { detail?: string } })?.data?.detail
+      throw new Error(detail ?? 'PDF oluşturulamadı. Backend\'e ulaşılamıyor olabilir.')
+    }
+    download(`${fileStub(r)}.pdf`, blob)
   }
   return { exportJson, exportHtml, exportPdf }
 }

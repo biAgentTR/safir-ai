@@ -81,8 +81,18 @@ class SafirReport(BaseModel):
     summary: str = Field(
         default="", description="Ajanin urettigi, operatore yonelik sade Turkce durum ozeti (sartname 'summary')."
     )
-    risk_score: int = Field(ge=0, le=100, description="0-100 arasi hesaplanmis risk skoru.")
-    risk_level: str = Field(description="dusuk | orta | yuksek | kritik")
+    risk_score: Optional[int] = Field(
+        default=None, ge=0, le=100, description="0-100 arasi hesaplanmis risk skoru; guvenilir karar uretilemediyse None."
+    )
+    risk_level: str = Field(description="dusuk | orta | yuksek | kritik | unknown")
+    risk_status: str = Field(
+        default="assessed",
+        description=(
+            "'assessed': risk_score/risk_level guvenilir sekilde hesaplandi (0 dahil gecerli bir deger). "
+            "'unknown': VLM/LLM/ajan karar zincirinde hata olustu veya guvenilir bir karar uretilemedi; "
+            "bu durumda risk_score None'dir ve ASLA dusuk risk olarak yorumlanmamalidir."
+        ),
+    )
     recommended_action: str = Field(
         description="Saha operatorune yonelik birincil aksiyon onerisi (geriye-uyum: actions[0])."
     )
@@ -141,6 +151,7 @@ class SafirReport(BaseModel):
             ],
             "risk": self.risk_level,
             "risk_score": self.risk_score,
+            "risk_status": self.risk_status,
             "actions": self.actions or ([self.recommended_action] if self.recommended_action else []),
         }
 

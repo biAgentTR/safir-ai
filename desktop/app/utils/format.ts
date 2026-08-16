@@ -9,9 +9,20 @@ export function mmss(seconds: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
-/** Risk level -> tailwind text/ring/bg tone key. */
-export function riskTone(level?: string | null): 'low' | 'mid' | 'high' | 'crit' {
+/**
+ * Risk level -> tailwind text/ring/bg tone key.
+ *
+ * NOTE: this only maps `risk_level` strings. Callers with a `risk_status`
+ * field (SafirReport/HistoryListItem/Decision) MUST check
+ * `risk_status === 'unknown'` THEMSELVES before calling this — an unrecognized
+ * level string here falls back to 'low', which would silently misrender a
+ * failed/undetermined analysis as low risk (the exact P0 bug this step fixes).
+ */
+export function riskTone(level?: string | null): 'low' | 'mid' | 'high' | 'crit' | 'unknown' {
   switch ((level ?? '').toLowerCase()) {
+    case 'unknown':
+    case 'belirsiz':
+      return 'unknown'
     case 'kritik':
     case 'critical':
       return 'crit'
@@ -32,12 +43,14 @@ export const RISK_TEXT: Record<string, string> = {
   mid: 'text-risk-mid',
   high: 'text-risk-high',
   crit: 'text-risk-crit',
+  unknown: 'text-slate-400',
 }
 export const RISK_BG: Record<string, string> = {
   low: 'bg-risk-low',
   mid: 'bg-risk-mid',
   high: 'bg-risk-high',
   crit: 'bg-risk-crit',
+  unknown: 'bg-slate-500',
 }
 
 /** Canonical stage order + display labels (mirror trace_serializer). */
@@ -87,21 +100,25 @@ export function stageFlow(
         in: 'olaylar + mevzuat',
         out: data ? `${d.length ?? 0} karakter bağlam` : 'ajan bağlamı',
       }
-    case 'decision':
+    case 'decision': {
+      const riskOut = data ? (d.risk_status === 'unknown' || d.risk_score == null ? 'risk belirsiz' : `risk ${d.risk_score}/100`) : 'risk'
       return {
         in: 'ajan bağlamı',
-        out: data ? `risk ${d.risk_score}/100 · ${n(d.actions)} aksiyon` : 'risk / özet / aksiyonlar',
+        out: data ? `${riskOut} · ${n(d.actions)} aksiyon` : 'risk / özet / aksiyonlar',
       }
+    }
     case 'escalation':
       return {
         in: 'karar / risk',
         out: data ? `${d.tier}${d.auto_dispatched ? ' · oto-tetik' : ''}` : 'kademe / tetikleme',
       }
-    case 'report':
+    case 'report': {
+      const riskOut = data ? (d.risk_status === 'unknown' || d.risk_score == null ? 'risk belirsiz' : `risk ${d.risk_score}`) : 'risk'
       return {
         in: 'pipeline çıktıları',
-        out: data ? `risk ${d.risk_score} · nihai rapor` : 'nihai rapor',
+        out: data ? `${riskOut} · nihai rapor` : 'nihai rapor',
       }
+    }
     default:
       return { in: '—', out: '—' }
   }

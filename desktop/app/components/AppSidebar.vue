@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Desktop navigation rail. Every entry here is a real, working feature — no
-// "coming soon" placeholders (a report is already reachable via Workspace's
-// Final Report tab and via History, so there is no separate "Reports" item).
+// "coming soon" placeholders. Reports is a dedicated report center (list of
+// completed analyses -> single-document report view), distinct from History
+// (the full analysis run log, including running/failed/queued).
 interface NavItem {
   label: string
   to: string
@@ -12,7 +13,9 @@ const items: NavItem[] = [
   { label: 'Overview', to: '/', icon: '▤' },
   { label: 'New Analysis', to: '/new-analysis', icon: '＋' },
   { label: 'History', to: '/history', icon: '≡' },
+  { label: 'Reports', to: '/reports', icon: '▦' },
   { label: 'SAFİR Asistan', to: '/assistant', icon: '◆' },
+  { label: 'Sistem Verileri', to: '/system', icon: '⛁' },
 ]
 </script>
 

@@ -77,8 +77,14 @@ export interface SamplerStats {
   elapsed_sec: number
 }
 
-export type RiskLevel = 'dusuk' | 'orta' | 'yuksek' | 'kritik'
+export type RiskLevel = 'dusuk' | 'orta' | 'yuksek' | 'kritik' | 'unknown'
 export type EscalationTier = 'monitor' | 'notify' | 'alarm'
+/**
+ * 'assessed': risk_score/risk_level guvenilir sekilde hesaplandi (0 dahil gecerli deger).
+ * 'unknown': VLM/LLM/ajan karar zincirinde hata olustu; risk_score=null, ASLA dusuk risk
+ * olarak yorumlanmamali (bkz. src/agent/langgraph_agent.py: AgentDecision.risk_status).
+ */
+export type RiskStatus = 'assessed' | 'unknown'
 
 /** src/schemas/report.py: SafirReport (the polling `result`). */
 export interface SafirReport {
@@ -87,8 +93,9 @@ export interface SafirReport {
   generated_at: string
   natural_language_summary: string
   summary: string
-  risk_score: number
+  risk_score: number | null
   risk_level: RiskLevel | string
+  risk_status: RiskStatus | string
   recommended_action: string
   actions: string[]
   detected_event_types: string[]
@@ -189,8 +196,9 @@ export interface VlmStageData {
 
 /** decision stage — NOTE: raw_response is intentionally absent server-side. */
 export interface Decision {
-  risk_score: number
+  risk_score: number | null
   risk_level: string
+  risk_status: RiskStatus | string
   summary: string
   recommended_action: string
   actions: string[]
@@ -240,8 +248,9 @@ export interface ContextStageData {
 /** report stage (compact; full report comes from the polling endpoint). */
 export interface ReportStageData {
   event_id: number | null
-  risk_score: number
+  risk_score: number | null
   risk_level: string
+  risk_status: RiskStatus | string
   escalation_tier: string | null
   auto_dispatched: boolean
   alert_id: string | null
@@ -281,10 +290,12 @@ export interface AlertAcknowledgeResponse {
 export interface HistoryListItem {
   job_id: string
   created_at: string
+  updated_at: string
   video_source: string | null
   status: 'queued' | 'running' | 'completed' | 'failed' | string
   risk_level: string | null
   risk_score: number | null
+  risk_status: RiskStatus | string
   summary: string | null
 }
 
@@ -360,6 +371,7 @@ export interface Conversation {
   updated_at: string
   title: string | null
   job_id: string | null
+  message_count: number
 }
 
 /** src/main.py: ConversationMessageOut. */
@@ -370,9 +382,32 @@ export interface ConversationMessage {
   created_at: string
 }
 
-/** GET /conversations/{id} yaniti: ozet + tam mesaj gecmisi. */
+/** src/main.py: ConversationContextOut — kullanıcının sohbete eklediği metin/not (Adım 3). */
+export interface ConversationContext {
+  id: number
+  kind: 'note' | string
+  label: string | null
+  content: string
+  created_at: string
+}
+
+/** src/main.py: ConversationDocumentOut — yüklenen belge metadata + durumu (Adım 4). Ham dosya içeriği ASLA gelmez. */
+export interface ConversationDocument {
+  document_id: string
+  filename: string
+  file_ext: 'pdf' | 'txt' | 'docx' | string
+  file_size_bytes: number
+  page_count: number | null
+  status: 'processing' | 'ready' | 'error'
+  error_message: string | null
+  created_at: string
+}
+
+/** GET /conversations/{id} yaniti: ozet + tam mesaj gecmisi + ek bağlamlar + belgeler. */
 export interface ConversationDetail extends Conversation {
   messages: ConversationMessage[]
+  context: ConversationContext[]
+  documents: ConversationDocument[]
 }
 
 /** POST /conversations/{id}/messages istek govdesi. */
@@ -381,11 +416,38 @@ export interface ConversationMessageCreateRequest {
   content: string
 }
 
+/** POST /conversations/{id}/context istek govdesi (Adım 3: yalnızca metin/not). */
+export interface ConversationContextCreateRequest {
+  content: string
+  label?: string | null
+}
+
 /** GET /ask/stream ilk SSE olayi (meta) — sonraki olaylar {delta: string}. */
 export interface AskStreamMeta {
   sources: AskSource[]
   job_id: string | null
   context_used: string[]
+}
+
+// -------------------------------------------------- system (Data Center) ----
+
+/** GET /system/overview: src/main.py SystemOverviewTotals — gercek DB/disk sayimlari. */
+export interface SystemOverviewTotals {
+  total_analyses: number
+  completed_analyses: number
+  failed_analyses: number
+  running_or_queued_analyses: number
+  total_conversations: number
+  total_messages: number
+  analyses_with_trace: number
+  stored_representative_frame_count: number
+}
+
+/** GET /system/overview yaniti (src/main.py: SystemOverviewResponse). */
+export interface SystemOverview {
+  totals: SystemOverviewTotals
+  generated_at: string
+  scan_limit: number
 }
 
 // -------------------------------------------------------- SSE envelope ------

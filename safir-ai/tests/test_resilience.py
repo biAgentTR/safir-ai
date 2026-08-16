@@ -85,7 +85,11 @@ def test_agent_returns_degraded_decision_on_reasoning_failure(safir_config) -> N
     agent._llm.invoke = _boom
     decision = agent.run("## Gozlem\ntest")
 
-    assert decision.risk_score == 0
+    # P0 fix: analiz basarisiz -> risk_score=None + risk_status="unknown",
+    # ASLA 0/dusuk-risk'e sessizce dusmez (bkz. tests/agent/test_risk_status.py).
+    assert decision.risk_score is None
+    assert decision.risk_status == "unknown"
+    assert decision.risk_level == "unknown"
     assert "manuel" in decision.recommended_action.lower()
     assert decision.actions
     assert "[HATA]" in decision.raw_response

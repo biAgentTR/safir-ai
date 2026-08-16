@@ -12,7 +12,12 @@
 // yalnızca sınırlı sayıda (bkz. backend `_MAX_HISTORY_MESSAGES`) önceki mesaj
 // takip sorularını anlamak için gönderilir — SAFIR kendi önceki cevabını
 // kanıt olarak kabul etmez (bkz. backend `ASK_SYSTEM_PROMPT`).
-import type { AskSource, AskStreamMeta, Conversation, HistoryListItem } from '~/types/api'
+import type { AskSource, AskStreamMeta, Conversation, ConversationContext, ConversationDocument, HistoryListItem } from '~/types/api'
+
+const MAX_NOTE_LEN = 4000
+const MAX_LABEL_LEN = 80
+const ALLOWED_DOC_EXTENSIONS = ['pdf', 'txt', 'docx']
+const MAX_DOC_SIZE_BYTES = 10 * 1024 * 1024
 
 const api = useSafirApi()
 const askStream = useAskStream()
@@ -83,6 +88,109 @@ const messagesError = ref<string | null>(null)
 const lastSources = ref<AskSource[]>([])
 const showSources = ref(false)
 
+// ---- ek kullanıcı bağlamı (Adım 3: yalnızca metin/not; dosya Adım 4'te) ----
+// SAFIR'e ASLA sistem talimatı veya analiz kanıtı olarak sunulmaz — yalnızca
+// yardımcı bilgi (bkz. backend AskService._prepare / ASK_SYSTEM_PROMPT).
+const contextNotes = ref<ConversationContext[]>([])
+const showNoteForm = ref(false)
+const noteLabel = ref('')
+const noteContent = ref('')
+const noteSaving = ref(false)
+const noteError = ref<string | null>(null)
+const removingContextId = ref<number | null>(null)
+
+function openNoteForm() {
+  showNoteForm.value = true
+  noteLabel.value = ''
+  noteContent.value = ''
+  noteError.value = null
+}
+function cancelNoteForm() {
+  showNoteForm.value = false
+  noteError.value = null
+}
+
+// ---- ek kullanıcı bağlamı: yüklenen belgeler (PDF/TXT/DOCX) ----
+const documents = ref<ConversationDocument[]>([])
+const fileInputEl = ref<HTMLInputElement | null>(null)
+const uploading = ref(false)
+const uploadError = ref<string | null>(null)
+const removingDocumentId = ref<string | null>(null)
+
+function openFilePicker() {
+  uploadError.value = null
+  fileInputEl.value?.click()
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+async function pollDocumentUntilDone(conversationId: string, documentId: string) {
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 800))
+    if (activeConversationId.value !== conversationId) return // kullanıcı başka sohbete geçti
+    try {
+      const detail = await api.getConversation(conversationId)
+      const doc = detail.documents.find((d) => d.document_id === documentId)
+      if (!doc) return
+      const idx = documents.value.findIndex((d) => d.document_id === documentId)
+      if (idx !== -1) documents.value[idx] = doc
+      if (doc.status !== 'processing') return
+    } catch {
+      return // sessizce dur — kullanıcı sayfayı yenileyip son durumu görebilir
+    }
+  }
+}
+
+async function onFileSelected(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // aynı dosya art arda seçilebilsin
+  if (!file) return
+
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+  if (!ALLOWED_DOC_EXTENSIONS.includes(ext)) {
+    uploadError.value = `Desteklenmeyen dosya türü: .${ext || '?'} (yalnızca PDF/TXT/DOCX)`
+    return
+  }
+  if (file.size > MAX_DOC_SIZE_BYTES) {
+    uploadError.value = `Dosya çok büyük (azami ${MAX_DOC_SIZE_BYTES / (1024 * 1024)} MB).`
+    return
+  }
+
+  uploading.value = true
+  uploadError.value = null
+  try {
+    const conversationId = await ensureConversation()
+    const created = await api.uploadConversationDocument(conversationId, file)
+    documents.value = [...documents.value, created]
+    if (created.status === 'processing') {
+      void pollDocumentUntilDone(conversationId, created.document_id)
+    }
+  } catch (e) {
+    uploadError.value = humanError(e, 'Dosya yüklenemedi.')
+  } finally {
+    uploading.value = false
+  }
+}
+
+async function removeDocument(documentId: string) {
+  if (!activeConversationId.value) return
+  removingDocumentId.value = documentId
+  try {
+    await api.removeConversationDocument(activeConversationId.value, documentId)
+    documents.value = documents.value.filter((d) => d.document_id !== documentId)
+  } catch (e) {
+    uploadError.value = humanError(e, 'Belge kaldırılamadı.')
+  } finally {
+    removingDocumentId.value = null
+  }
+}
+
 // ---- otomatik kaydırma: yeni içerik geldiğinde en alta in, ama kullanıcı
 // yukarı kaydırdıysa (eski mesajları okuyorsa) araya girme ----
 const messageListEl = ref<HTMLElement | null>(null)
@@ -113,6 +221,10 @@ function startNewChat() {
   sendError.value = null
   lastSources.value = []
   question.value = ''
+  contextNotes.value = []
+  showNoteForm.value = false
+  documents.value = []
+  uploadError.value = null
 }
 
 async function openConversation(id: string) {
@@ -123,10 +235,19 @@ async function openConversation(id: string) {
   messagesError.value = null
   sendError.value = null
   lastSources.value = []
+  showNoteForm.value = false
+  uploadError.value = null
   try {
     const detail = await api.getConversation(id)
     activeJobId.value = detail.job_id
     messages.value = detail.messages.map((m) => ({ id: m.id, role: m.role, content: m.content }))
+    contextNotes.value = detail.context ?? []
+    documents.value = detail.documents ?? []
+    // Sayfa yenilenmeden/yeniden açılmadan önce hâlâ işlenmekte olan bir belge
+    // varsa (ör. yükleme sonrası hemen sayfa değiştirildiyse) izlemeye devam et.
+    for (const doc of documents.value) {
+      if (doc.status === 'processing') void pollDocumentUntilDone(id, doc.document_id)
+    }
     stickToBottom.value = true
     scrollToBottom()
   } catch (e) {
@@ -134,6 +255,52 @@ async function openConversation(id: string) {
     messages.value = []
   } finally {
     messagesLoading.value = false
+  }
+}
+
+/**
+ * İlk mesajda VEYA ilk not eklendiğinde sohbeti "tembel" (lazy) oluşturur —
+ * boş kayıt birikmez. `titleHint` verilirse (yalnızca ilk sorudan) başlık
+ * olarak kullanılır; not-önce akışında (henüz soru yokken) başlıksız oluşur.
+ */
+async function ensureConversation(titleHint?: string): Promise<string> {
+  if (activeConversationId.value) return activeConversationId.value
+  const title = titleHint ? truncateTitle(titleHint) : null
+  const created = await api.createConversation({ title, job_id: selectedJobId.value })
+  activeConversationId.value = created.conversation_id
+  activeJobId.value = created.job_id
+  void loadConversations()
+  return created.conversation_id
+}
+
+async function addNote() {
+  const content = noteContent.value.trim()
+  if (!content) return
+  noteSaving.value = true
+  noteError.value = null
+  try {
+    const conversationId = await ensureConversation()
+    const label = noteLabel.value.trim() || null
+    const created = await api.addConversationContext(conversationId, { content, label })
+    contextNotes.value = [...contextNotes.value, created]
+    showNoteForm.value = false
+  } catch (e) {
+    noteError.value = humanError(e, 'Not eklenemedi.')
+  } finally {
+    noteSaving.value = false
+  }
+}
+
+async function removeNote(contextId: number) {
+  if (!activeConversationId.value) return
+  removingContextId.value = contextId
+  try {
+    await api.removeConversationContext(activeConversationId.value, contextId)
+    contextNotes.value = contextNotes.value.filter((c) => c.id !== contextId)
+  } catch (e) {
+    noteError.value = humanError(e, 'Not kaldırılamadı.')
+  } finally {
+    removingContextId.value = null
   }
 }
 
@@ -180,14 +347,9 @@ async function submit() {
   scrollToBottom()
 
   try {
-    // İlk soruda sohbeti "tembel" (lazy) oluştur — boş "Yeni Sohbet" kayıtları birikmez.
-    let conversationId = activeConversationId.value
-    if (!conversationId) {
-      const created = await api.createConversation({ title: truncateTitle(q), job_id: selectedJobId.value })
-      conversationId = created.conversation_id
-      activeConversationId.value = conversationId
-      activeJobId.value = created.job_id
-    }
+    // İlk soruda sohbeti "tembel" (lazy) oluştur (veya bir not eklenerek zaten
+    // oluşturulmuşsa onu kullan) — boş "Yeni Sohbet" kayıtları birikmez.
+    const conversationId = await ensureConversation(q)
 
     let full = ''
     await new Promise<void>((resolve, reject) => {
@@ -309,6 +471,116 @@ onBeforeUnmount(() => askStream.stop())
           </template>
         </div>
 
+        <!-- ek kullanıcı bağlamı: operatörün kendi eklediği notlar/belgeler (analiz kanıtı DEĞİLDİR) -->
+        <div class="pb-3 mb-3 border-b border-edge">
+          <div class="flex items-center justify-between">
+            <span class="text-xs text-slate-500">Ek Bağlam</span>
+            <div class="flex gap-2">
+              <button
+                v-if="!showNoteForm"
+                type="button"
+                class="text-[11px] px-2 py-1 rounded border border-edge bg-surface-2 text-slate-400 hover:text-slate-200"
+                @click="openNoteForm"
+              >＋ Not ekle</button>
+              <button
+                type="button"
+                class="text-[11px] px-2 py-1 rounded border border-edge bg-surface-2 text-slate-400 hover:text-slate-200 disabled:opacity-50"
+                :disabled="uploading"
+                @click="openFilePicker"
+              >{{ uploading ? 'Yükleniyor…' : '＋ Dosya ekle' }}</button>
+              <input
+                ref="fileInputEl"
+                type="file"
+                accept=".pdf,.txt,.docx"
+                class="hidden"
+                @change="onFileSelected"
+              />
+            </div>
+          </div>
+          <p v-if="uploadError" class="mt-1.5 text-xs text-risk-crit">{{ uploadError }}</p>
+
+          <!-- not ekleme formu -->
+          <div v-if="showNoteForm" class="mt-2 space-y-2">
+            <input
+              v-model="noteLabel"
+              :maxlength="MAX_LABEL_LEN"
+              class="field-input text-sm"
+              placeholder="Kısa etiket (opsiyonel, ör. Tesis bilgisi)"
+            />
+            <textarea
+              v-model="noteContent"
+              :maxlength="MAX_NOTE_LEN"
+              rows="3"
+              class="field-input text-sm resize-none"
+              placeholder="Örn: Bu tesiste CO2 bazlı yangın söndürme sistemi kullanılmaktadır."
+            />
+            <div class="flex items-center justify-between text-[11px] text-slate-600">
+              <span>{{ noteContent.length }} / {{ MAX_NOTE_LEN }} karakter</span>
+              <div class="flex gap-2">
+                <button type="button" class="btn-ghost !px-2 !py-1 text-xs" @click="cancelNoteForm">Vazgeç</button>
+                <button
+                  type="button"
+                  class="btn-primary !px-3 !py-1 text-xs"
+                  :disabled="!noteContent.trim() || noteSaving"
+                  @click="addNote"
+                >{{ noteSaving ? 'Ekleniyor…' : 'Ekle' }}</button>
+              </div>
+            </div>
+            <p v-if="noteError" class="text-xs text-risk-crit">{{ noteError }}</p>
+          </div>
+
+          <!-- eklenen notlar -->
+          <div v-if="contextNotes.length" class="mt-2 space-y-1.5">
+            <div
+              v-for="note in contextNotes"
+              :key="note.id"
+              class="flex items-start gap-2 bg-surface-2 border border-edge rounded-md px-2.5 py-2 text-xs"
+            >
+              <span class="shrink-0 text-slate-500">📝</span>
+              <div class="min-w-0 flex-1">
+                <div v-if="note.label" class="text-slate-300 font-medium">{{ note.label }}</div>
+                <div class="text-slate-400 whitespace-pre-line break-words">{{ note.content }}</div>
+              </div>
+              <button
+                type="button"
+                class="shrink-0 text-slate-500 hover:text-risk-crit disabled:opacity-50"
+                :disabled="removingContextId === note.id"
+                @click="removeNote(note.id)"
+              >{{ removingContextId === note.id ? '…' : 'Kaldır' }}</button>
+            </div>
+          </div>
+
+          <!-- yüklenen belgeler -->
+          <div v-if="documents.length" class="mt-2 space-y-1.5">
+            <div
+              v-for="doc in documents"
+              :key="doc.document_id"
+              class="flex items-start gap-2 bg-surface-2 border border-edge rounded-md px-2.5 py-2 text-xs"
+            >
+              <span class="shrink-0 text-slate-500">📄</span>
+              <div class="min-w-0 flex-1">
+                <div class="text-slate-300 font-medium truncate">{{ doc.filename }}</div>
+                <div class="text-slate-500">
+                  {{ formatFileSize(doc.file_size_bytes) }}<span v-if="doc.page_count"> · {{ doc.page_count }} sayfa</span>
+                </div>
+                <div v-if="doc.status === 'processing'" class="mt-0.5 text-slate-400">Metin çıkarılıyor…</div>
+                <div v-else-if="doc.status === 'ready'" class="mt-0.5 text-risk-low">✓ Bağlama dahil</div>
+                <div v-else class="mt-0.5 text-risk-crit">Dosya işlenemedi{{ doc.error_message ? `: ${doc.error_message}` : '' }}</div>
+              </div>
+              <button
+                type="button"
+                class="shrink-0 text-slate-500 hover:text-risk-crit disabled:opacity-50"
+                :disabled="removingDocumentId === doc.document_id"
+                @click="removeDocument(doc.document_id)"
+              >{{ removingDocumentId === doc.document_id ? '…' : 'Kaldır' }}</button>
+            </div>
+          </div>
+
+          <p v-if="!showNoteForm && !contextNotes.length && !documents.length" class="mt-1.5 text-[11px] text-slate-600">
+            Henüz ek bağlam eklenmedi.
+          </p>
+        </div>
+
         <!-- mesaj gecmisi -->
         <div v-if="messagesLoading" class="flex-1 flex items-center justify-center text-sm text-slate-500">
           Sohbet yükleniyor…
@@ -358,8 +630,8 @@ onBeforeUnmount(() => askStream.stop())
             >
               <span
                 class="shrink-0 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide"
-                :class="s.type === 'analysis' ? 'bg-accent-soft text-accent' : 'bg-surface-3 text-slate-400'"
-              >{{ s.type === 'analysis' ? 'Analiz' : 'Mevzuat' }}</span>
+                :class="s.type === 'analysis' ? 'bg-accent-soft text-accent' : s.type === 'document' ? 'bg-surface-3 text-slate-300' : 'bg-surface-3 text-slate-400'"
+              >{{ s.type === 'analysis' ? 'Analiz' : s.type === 'document' ? 'Belge' : 'Mevzuat' }}</span>
               <span class="text-slate-300 min-w-0">
                 {{ s.label ?? s.text }}
                 <span v-if="s.score != null" class="text-slate-600"> · skor {{ s.score }}</span>

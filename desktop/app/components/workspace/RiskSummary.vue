@@ -5,9 +5,11 @@
 const store = useAnalysisStore()
 const ackNote = ref('')
 
-const tone = computed(() => riskTone(store.report?.risk_level))
+const isUnknownRisk = computed(() => store.report?.risk_status === 'unknown' || store.report?.risk_score == null)
+const tone = computed(() => (isUnknownRisk.value ? 'unknown' : riskTone(store.report?.risk_level)))
 const headline = computed(() => {
   const t = tone.value
+  if (t === 'unknown') return 'RİSK BELİRSİZ'
   if (t === 'crit') return 'CRITICAL RISK'
   if (t === 'high') return 'HIGH RISK'
   if (t === 'mid') return 'ELEVATED RISK'
@@ -25,11 +27,19 @@ const headline = computed(() => {
       🚨 KRİTİK RİSK TESPİT EDİLDİ — otomatik saha alarmı tetiklendi.
     </div>
 
+    <!-- unknown-risk banner: analysis failed to produce a reliable decision -->
+    <div
+      v-if="isUnknownRisk"
+      class="rounded-md border border-slate-500/50 bg-slate-500/10 px-4 py-2.5 text-sm font-medium text-slate-300 flex items-center gap-2"
+    >
+      ⚠️ Risk değerlendirilemedi — analiz güvenilir bir karar üretemedi. Manuel inceleme gerekli.
+    </div>
+
     <div class="card p-5 flex flex-col md:flex-row md:items-center gap-5">
       <div class="flex items-center gap-5">
         <div class="text-center">
-          <div class="text-5xl font-bold leading-none" :class="RISK_TEXT[tone]">{{ store.report.risk_score }}</div>
-          <div class="mt-1 text-xs text-slate-500">/ 100</div>
+          <div class="text-5xl font-bold leading-none" :class="RISK_TEXT[tone]">{{ isUnknownRisk ? '—' : store.report.risk_score }}</div>
+          <div class="mt-1 text-xs text-slate-500">{{ isUnknownRisk ? 'belirsiz' : '/ 100' }}</div>
         </div>
         <div>
           <div class="text-lg font-semibold tracking-wide" :class="RISK_TEXT[tone]">{{ headline }}</div>

@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
@@ -43,6 +43,7 @@ from src.event_analysis.temporal_reasoner import DEFAULT_RELATION_WINDOW_SEC, Te
 from src.memory.analysis_store import AnalysisStore
 from src.memory.context_builder import ContextBuilder
 from src.memory.conversation_store import ConversationStore
+from src.memory import document_extraction
 from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
 from src.sampler.adaptive_sampler import EventCluster, EvidenceFrame, sampler_from_config
@@ -320,10 +321,12 @@ class HistoryListItem(BaseModel):
 
     job_id: str
     created_at: str
+    updated_at: str
     video_source: Optional[str] = None
     status: str
     risk_level: Optional[str] = None
     risk_score: Optional[int] = None
+    risk_status: str = "assessed"
     summary: Optional[str] = None
 
 
@@ -394,6 +397,7 @@ class ConversationSummary(BaseModel):
     updated_at: str
     title: Optional[str] = None
     job_id: Optional[str] = None
+    message_count: int = 0
 
 
 class ConversationMessageOut(BaseModel):
@@ -405,10 +409,43 @@ class ConversationMessageOut(BaseModel):
     created_at: str
 
 
+_MAX_CONTEXT_CONTENT_LEN = 4000
+"""Kullanici tarafindan eklenen tek bir baglam (not) icin azami karakter
+sayisi. Sinirsiz metin -> sinirsiz prompt buyumesi/token maliyeti demek;
+operator notu icin bu sinir fazlasiyla yeterlidir (bkz. Adim 3 istegi:
+'uzun metinler icin makul bir limit')."""
+_MAX_CONTEXT_LABEL_LEN = 80
+
+
+class ConversationContextOut(BaseModel):
+    """Bir sohbete eklenmis tek bir ek baglam kaydi (`POST`/`GET .../context`)."""
+
+    id: int
+    kind: str
+    label: Optional[str] = None
+    content: str
+    created_at: str
+
+
+class ConversationDocumentOut(BaseModel):
+    """Bir sohbete yuklenmis tek bir belgenin metadata + durumu (Adim 4). Ham dosya icerigi ASLA doner."""
+
+    document_id: str
+    filename: str
+    file_ext: str
+    file_size_bytes: int
+    page_count: Optional[int] = None
+    status: str  # "processing" | "ready" | "error"
+    error_message: Optional[str] = None
+    created_at: str
+
+
 class ConversationDetailResponse(ConversationSummary):
-    """`GET /conversations/{id}` yaniti: ozet + tam mesaj gecmisi."""
+    """`GET /conversations/{id}` yaniti: ozet + tam mesaj gecmisi + ek baglamlar + belgeler."""
 
     messages: List[ConversationMessageOut] = Field(default_factory=list)
+    context: List[ConversationContextOut] = Field(default_factory=list)
+    documents: List[ConversationDocumentOut] = Field(default_factory=list)
 
 
 class ConversationMessageCreateRequest(BaseModel):
@@ -416,6 +453,13 @@ class ConversationMessageCreateRequest(BaseModel):
 
     role: str = Field(description="'user' veya 'assistant'.")
     content: str = Field(min_length=1)
+
+
+class ConversationContextCreateRequest(BaseModel):
+    """`POST /conversations/{id}/context` istek govdesi (Adim 3: yalnizca metin/not)."""
+
+    content: str = Field(min_length=1, max_length=_MAX_CONTEXT_CONTENT_LEN)
+    label: Optional[str] = Field(default=None, max_length=_MAX_CONTEXT_LABEL_LEN)
 
 
 class SafirPipeline:
@@ -573,10 +617,11 @@ class SafirPipeline:
             latest_timestamp=latest_timestamp,
         )
         logger.info(
-            "SAFIR pipeline tamamlandi: video=%s risk=%d(%s) sure=%.3fs",
+            "SAFIR pipeline tamamlandi: video=%s risk=%s(%s) status=%s sure=%.3fs",
             video_source,
             decision.risk_score,
             decision.risk_level,
+            decision.risk_status,
             time.perf_counter() - pipeline_started_at,
         )
         _emit("report", {"report": report})
@@ -698,6 +743,7 @@ class SafirPipeline:
             risk_level=decision.risk_level,
             recommended_action=decision.recommended_action,
             summary=decision.summary or vlm_response.description,
+            risk_status=decision.risk_status,
         )
         logger.info(
             "Otomatik eskalasyon: kademe=%s otomatik_tetik=%s alert_id=%s (%s)",
@@ -748,6 +794,7 @@ class SafirPipeline:
             summary=decision.summary or vlm_response.description,
             risk_score=decision.risk_score,
             risk_level=decision.risk_level,
+            risk_status=decision.risk_status,
             recommended_action=decision.recommended_action,
             actions=decision.actions,
             escalation_tier=escalation.tier.value,
@@ -924,6 +971,20 @@ def _history_frame_path(job_id: str, frame_id: str) -> Path:
     return Path(_DATA_DIR) / _HISTORY_FRAMES_DIR / job_id / f"{frame_id}.jpg"
 
 
+# Adim 4: SAFIR Asistan'a yuklenen belgelerin ham baytlari (History
+# representative-frame'lerle AYNI desen: `data/` altinda, kimlige gore
+# izole alt klasorler). `document_id` sunucu tarafinda uuid4 olarak
+# uretilir (bkz. ConversationStore.create_document) -> dosya YOLU HICBIR
+# ZAMAN kullanicinin verdigi `filename`den turetilmez; path traversal
+# riski yapisal olarak yoktur (yalnizca kimlik + sabit uzanti kullanilir).
+_CONVERSATION_FILES_DIR = "conversation_files"
+
+
+def _conversation_file_path(conversation_id: str, document_id: str, file_ext: str) -> Path:
+    """Bir yuklenen belgenin diskteki yolunu dondurur (dosya var olmayabilir)."""
+    return Path(_DATA_DIR) / _CONVERSATION_FILES_DIR / conversation_id / f"{document_id}.{file_ext}"
+
+
 def _persist_representative_frames_best_effort(
     job_id: str, trace_events: List[Dict[str, Any]], frames: Dict[str, bytes]
 ) -> None:
@@ -1050,6 +1111,7 @@ def _run_job(
                 report_json=report.model_dump_json(),
                 risk_level=report.risk_level,
                 risk_score=report.risk_score,
+                risk_status=report.risk_status,
                 summary=report.summary or report.natural_language_summary,
                 trace_json=json.dumps(trace_events_snapshot, ensure_ascii=False),
             )
@@ -1396,10 +1458,12 @@ def list_history(limit: int = 50, offset: int = 0) -> List[HistoryListItem]:
         HistoryListItem(
             job_id=r.job_id,
             created_at=r.created_at,
+            updated_at=r.updated_at,
             video_source=r.video_source,
             status=r.status,
             risk_level=r.risk_level,
             risk_score=r.risk_score,
+            risk_status=r.risk_status,
             summary=r.summary,
         )
         for r in records
@@ -1445,6 +1509,67 @@ def get_history_item(job_id: str) -> HistoryDetail:
         video_source=record.video_source,
         report=report,
         trace_events=trace_events,
+    )
+
+
+@app.get("/history/{job_id}/report.pdf")
+def get_history_report_pdf(job_id: str) -> Response:
+    """Bir analizin `SafirReport`'unu, kanit kareleri gomulu bicimli bir PDF olarak sunar.
+
+    Rapor kaynagi (`get_job_frame` ile ayni oncelik sirasi): once CANLI is
+    (`_jobs` icinde henuz tamamlanmis, disari henuz persist edilmis olsun/olmasin),
+    sonra HISTORY (kalici `AnalysisStore` kaydi). PDF uretimi, Operator Panelinde
+    (Streamlit) zaten kullanilan `ReportExporter.to_pdf()` (reportlab) ile
+    YENIDEN KULLANILIR — yeni bir rapor-bicimlendirme mantigi YAZILMAZ.
+
+    Args:
+        job_id: Analiz isinin kimligi.
+
+    Returns:
+        `application/pdf` yaniti (indirilebilir dosya adi ile).
+
+    Raises:
+        HTTPException: `job_id` gecersizse (400), rapor bulunamazsa (404) veya
+            PDF uretim bagimliligi (reportlab) kurulu degilse (503).
+    """
+    if not _JOB_ID_RE.match(job_id):
+        raise HTTPException(status_code=400, detail="Gecersiz job_id.")
+
+    report_dict: Optional[Dict[str, Any]] = None
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job and job.result:
+            report_dict = job.result.model_dump(mode="json")
+    if report_dict is None:
+        record = get_analysis_store().get(job_id)
+        if record and record.report_json:
+            try:
+                report_dict = json.loads(record.report_json)
+            except Exception:  # noqa: BLE001 - bozuk kayit PDF uretimini kirmamali
+                logger.exception("PDF export: kayitli rapor JSON'u cozulemedi: job_id=%s", job_id)
+
+    if report_dict is None:
+        raise HTTPException(status_code=404, detail=f"Bu analiz icin rapor bulunamadi: {job_id}")
+
+    try:
+        from src.ui.report_export import ReportExporter
+    except ImportError:
+        raise HTTPException(
+            status_code=503, detail="PDF disa aktarma su anda kullanilamiyor (reportlab kurulu degil)."
+        )
+
+    try:
+        pdf_bytes = ReportExporter(report_dict).to_pdf()
+    except Exception as exc:  # noqa: BLE001 - PDF uretim hatasi 500 yerine anlasilir 500 detayi versin
+        logger.exception("PDF export basarisiz: job_id=%s", job_id)
+        raise HTTPException(status_code=500, detail=f"PDF uretilemedi: {exc}") from exc
+
+    video_name = str(report_dict.get("video_source") or job_id)
+    video_name = video_name.replace("/", "_").replace("\\", "_")
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="safir_report_{video_name}.pdf"'},
     )
 
 
@@ -1522,7 +1647,7 @@ def list_conversations(limit: int = 50, offset: int = 0) -> List[ConversationSum
     """
     limit = max(1, min(int(limit), 200))
     offset = max(0, int(offset))
-    records = get_conversation_store().list(limit=limit, offset=offset)
+    records = get_conversation_store().list_with_message_counts(limit=limit, offset=offset)
     return [
         ConversationSummary(
             conversation_id=r.conversation_id,
@@ -1530,6 +1655,7 @@ def list_conversations(limit: int = 50, offset: int = 0) -> List[ConversationSum
             updated_at=r.updated_at,
             title=r.title,
             job_id=r.job_id,
+            message_count=r.message_count,
         )
         for r in records
     ]
@@ -1551,6 +1677,8 @@ def get_conversation(conversation_id: str) -> ConversationDetailResponse:
         raise HTTPException(status_code=404, detail=f"Sohbet bulunamadi: {conversation_id}")
 
     messages = store.list_messages(conversation_id)
+    context = store.list_context(conversation_id)
+    documents = store.list_documents(conversation_id)
     return ConversationDetailResponse(
         conversation_id=record.conversation_id,
         created_at=record.created_at,
@@ -1560,6 +1688,23 @@ def get_conversation(conversation_id: str) -> ConversationDetailResponse:
         messages=[
             ConversationMessageOut(id=m.id, role=m.role, content=m.content, created_at=m.created_at)
             for m in messages
+        ],
+        context=[
+            ConversationContextOut(id=c.id, kind=c.kind, label=c.label, content=c.content, created_at=c.created_at)
+            for c in context
+        ],
+        documents=[
+            ConversationDocumentOut(
+                document_id=d.document_id,
+                filename=d.filename,
+                file_ext=d.file_ext,
+                file_size_bytes=d.file_size_bytes,
+                page_count=d.page_count,
+                status=d.status,
+                error_message=d.error_message,
+                created_at=d.created_at,
+            )
+            for d in documents
         ],
     )
 
@@ -1594,6 +1739,310 @@ def add_conversation_message(
     return ConversationMessageOut(id=record.id, role=record.role, content=record.content, created_at=record.created_at)
 
 
+@app.post("/conversations/{conversation_id}/context", response_model=ConversationContextOut)
+def add_conversation_context(
+    conversation_id: str, request: ConversationContextCreateRequest
+) -> ConversationContextOut:
+    """Bir sohbete kullanicinin kendi ekledigi bir baglam notu ekler (Adim 3: yalnizca metin).
+
+    ONEMLI (bkz. `AskService._prepare`): bu not `/ask/stream` prompt'una AYRI
+    ve acikca "SISTEM TALIMATI DEGIL, ANALIZ KANITI DEGIL" etiketiyle eklenir;
+    hicbir zaman sistem talimati veya analiz kaniti olarak islenmez. Yalnizca
+    VERILEN sohbete baglidir — baska bir sohbete asla sizmaz (bkz.
+    `ConversationStore.list_context`/`remove_context`, her zaman
+    `conversation_id` ile filtrelenir).
+
+    Args:
+        conversation_id: Hedef sohbetin kimligi.
+        request: Not metni (`content`, azami `_MAX_CONTEXT_CONTENT_LEN` karakter) + opsiyonel kisa `label`.
+
+    Raises:
+        HTTPException: `conversation_id` bulunamazsa (404).
+    """
+    store = get_conversation_store()
+    if store.get(conversation_id) is None:
+        raise HTTPException(status_code=404, detail=f"Sohbet bulunamadi: {conversation_id}")
+
+    record = store.add_context(conversation_id, content=request.content.strip(), label=request.label)
+    return ConversationContextOut(
+        id=record.id, kind=record.kind, label=record.label, content=record.content, created_at=record.created_at
+    )
+
+
+@app.delete("/conversations/{conversation_id}/context/{context_id}")
+def remove_conversation_context(conversation_id: str, context_id: int) -> Dict[str, bool]:
+    """Bir sohbetten bir baglam notunu kaldirir; kaldirilan not bir daha AYNI sohbette bile ASK'a gonderilmez.
+
+    Args:
+        conversation_id: Hedef sohbetin kimligi.
+        context_id: Kaldirilacak baglam kaydinin kimligi.
+
+    Raises:
+        HTTPException: Kayit bu sohbette bulunamazsa (404) — baska bir
+            sohbete ait bir `context_id` verilirse de 404 doner (sizinti YOK).
+    """
+    removed = get_conversation_store().remove_context(conversation_id, context_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Baglam bulunamadi: {context_id}")
+    return {"removed": True}
+
+
+# -----------------------------------------------------------------------------
+# Adim 4 - SAFIR Asistan: kullanici belge yukleme (PDF/TXT/DOCX).
+#
+# Akis: dosya -> (uzanti/boyut/sayi dogrulamasi) -> diske YAZ (ham bayt, DB'ye
+# DEGIL) -> DB'de `status='processing'` kaydi olustur -> arka plan thread'inde
+# metin cikar + chunk'la + DB'ye yaz -> `status='ready'|'error'`. Ikili veri
+# hicbir zaman LLM'e gonderilmez (bkz. src/memory/document_extraction.py).
+# -----------------------------------------------------------------------------
+
+
+def _process_conversation_document(conversation_id: str, document_id: str, filename: str, raw: bytes) -> None:
+    """Arka plan thread'i: metni cikarir, chunk'lar, kalici olarak saklar, durumu gunceller.
+
+    ONEMLI: bu fonksiyon bir `threading.Thread` hedefi olarak calisir — hicbir
+    exception'in sessizce is parcaciğini coktumesine izin verilmez; her hata
+    `status='error'` + kullaniciya gosterilebilir kisa bir `error_message`
+    olarak DB'ye yazilir (analiz pipeline'indaki degraded-rapor deseniyle
+    tutarli: hata gizlenmez, ama sistem de cokmez).
+    """
+    store = get_conversation_store()
+    try:
+        page_texts, page_count = document_extraction.extract_text(filename, raw)
+        chunks = document_extraction.chunk_page_texts(page_texts)
+        if not chunks:
+            raise document_extraction.ExtractionError("Belgeden hicbir metin parcasi cikarilamadi.")
+        store.add_chunks(document_id, conversation_id, chunks)
+        store.update_document_status(document_id, status="ready", page_count=page_count)
+    except document_extraction.ExtractionError as exc:
+        store.update_document_status(document_id, status="error", error_message=str(exc))
+    except Exception:  # noqa: BLE001 - arka plan thread'i ASLA sessizce cokmemeli
+        logger.exception("Belge isleme basarisiz: document_id=%s", document_id)
+        store.update_document_status(
+            document_id, status="error", error_message="Belge islenemedi (beklenmeyen hata)."
+        )
+
+
+@app.post("/conversations/{conversation_id}/documents", response_model=ConversationDocumentOut)
+async def upload_conversation_document(
+    conversation_id: str, file: UploadFile = File(...)
+) -> ConversationDocumentOut:
+    """Bir sohbete belge yukler (yalnizca PDF/TXT/DOCX); metin cikarimi ARKA PLANDA yapilir.
+
+    Dogrulama sirasi: sohbet var mi (404) -> uzanti izinli mi (422) -> sohbet
+    basina azami belge sinirina ulasilmis mi (422) -> boyut siniri (413,
+    bellek-guvenli parca-parca okuma ile — tek seferde sinirsiz `read()` YOK).
+    Basarili yanit `status="processing"` doner; istemci `GET /conversations/{id}`
+    ile (zaten var olan uc nokta) durumu izler — ayrica bir "durum" uc noktasi
+    GEREKMEZ.
+
+    Args:
+        conversation_id: Hedef sohbetin kimligi.
+        file: Yuklenen dosya (multipart/form-data, alan adi `file`).
+
+    Raises:
+        HTTPException: Sohbet yoksa (404), uzanti desteklenmiyorsa/dosya
+            bossa (422), belge sinirina ulasildiysa (422), dosya cok
+            buyukse (413).
+    """
+    store = get_conversation_store()
+    if store.get(conversation_id) is None:
+        raise HTTPException(status_code=404, detail=f"Sohbet bulunamadi: {conversation_id}")
+
+    filename = (file.filename or "").strip() or "belge"
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in document_extraction.ALLOWED_EXTENSIONS:
+        allowed = "/".join(sorted(document_extraction.ALLOWED_EXTENSIONS))
+        raise HTTPException(status_code=422, detail=f"Desteklenmeyen dosya turu: .{ext or '?'} (yalnizca {allowed})")
+
+    if store.count_documents(conversation_id) >= document_extraction.MAX_FILES_PER_CONVERSATION:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Bu sohbette azami {document_extraction.MAX_FILES_PER_CONVERSATION} belge olabilir.",
+        )
+
+    # Bellek-guvenli parca-parca okuma: siniri asan bir yukleme, tamami
+    # belleğe alinmadan erken reddedilir.
+    max_bytes = document_extraction.MAX_FILE_SIZE_BYTES
+    pieces: List[bytes] = []
+    total = 0
+    while True:
+        piece = await file.read(1024 * 1024)
+        if not piece:
+            break
+        total += len(piece)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413, detail=f"Dosya cok buyuk (azami {max_bytes // (1024 * 1024)} MB)."
+            )
+        pieces.append(piece)
+    raw = b"".join(pieces)
+    if not raw:
+        raise HTTPException(status_code=422, detail="Dosya bos.")
+
+    record = store.create_document(conversation_id, filename=filename, file_ext=ext, file_size_bytes=len(raw))
+
+    file_path = _conversation_file_path(conversation_id, record.document_id, ext)
+    try:
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_bytes(raw)
+    except OSError:
+        logger.exception("Belge diske yazilamadi: document_id=%s", record.document_id)
+        store.update_document_status(record.document_id, status="error", error_message="Dosya diske yazilamadi.")
+        return ConversationDocumentOut(
+            document_id=record.document_id,
+            filename=filename,
+            file_ext=ext,
+            file_size_bytes=len(raw),
+            page_count=None,
+            status="error",
+            error_message="Dosya diske yazilamadi.",
+            created_at=record.created_at,
+        )
+
+    threading.Thread(
+        target=_process_conversation_document,
+        args=(conversation_id, record.document_id, filename, raw),
+        daemon=True,
+    ).start()
+
+    return ConversationDocumentOut(
+        document_id=record.document_id,
+        filename=filename,
+        file_ext=ext,
+        file_size_bytes=len(raw),
+        page_count=None,
+        status="processing",
+        error_message=None,
+        created_at=record.created_at,
+    )
+
+
+@app.delete("/conversations/{conversation_id}/documents/{document_id}")
+def remove_conversation_document(conversation_id: str, document_id: str) -> Dict[str, bool]:
+    """Bir belgeyi (ve tum chunk'larini + diskteki dosyasini) kaldirir; yalnizca VERILEN sohbete aitse.
+
+    Raises:
+        HTTPException: Belge bu sohbette bulunamazsa (404) — baska bir
+            sohbete ait bir `document_id` verilirse de 404 doner (sizinti YOK).
+    """
+    store = get_conversation_store()
+    record = store.get_document(conversation_id, document_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Belge bulunamadi: {document_id}")
+
+    store.remove_document(conversation_id, document_id)
+    try:
+        _conversation_file_path(conversation_id, document_id, record.file_ext).unlink(missing_ok=True)
+    except OSError:
+        logger.exception("Belge dosyasi diskten silinemedi: document_id=%s", document_id)
+    return {"removed": True}
+
+
+# -----------------------------------------------------------------------------
+# 11 - Sistem Verileri (Data Center): operatore, mevcut SQLite/disk depolarinda
+# GERCEKTEN neyin saklandigini gosteren, TAMAMEN read-only bir ozet uc noktasi.
+# Yeni bir depolama soyutlamasi/tablosu YOKTUR: mevcut AnalysisStore/
+# ConversationStore uzerinden SAYIM yapar; representative frame sayisi da
+# gercek diskteki dosyalarin (`_history_frame_path`) var olup olmadigina
+# bakilarak hesaplanir (best-effort persistence ile TUTARLI - yalnizca
+# GERCEKTEN yazilmis dosyalar sayilir). SQL calistirma/DELETE/UPDATE UC NOKTASI
+# BULUNMAZ; yalnizca sayim + zaten var olan `/history`, `/history/{id}`,
+# `/conversations*` uc noktalariyla birlikte kullanilmasi amaclanir (detay
+# drill-down icin YENI bir endpoint GEREKMEZ).
+# -----------------------------------------------------------------------------
+_SYSTEM_OVERVIEW_SCAN_LIMIT = 500
+"""Ozet sayimlar icin taranacak azami analiz/sohbet kaydi. Operator-tarafi
+tanilama sayfasi oldugu icin (yuksek trafikli bir uc nokta degil) basit bir
+sabit sinir yeterlidir; sinirsiz tarama/agir sayfalama gerektirmez."""
+
+
+class SystemOverviewTotals(BaseModel):
+    """Data Center ust KPI satiri icin gercek DB/disk sayimlari."""
+
+    total_analyses: int
+    completed_analyses: int
+    failed_analyses: int
+    running_or_queued_analyses: int
+    total_conversations: int
+    total_messages: int
+    analyses_with_trace: int
+    stored_representative_frame_count: int
+
+
+class SystemOverviewResponse(BaseModel):
+    """`GET /system/overview` yaniti."""
+
+    totals: SystemOverviewTotals
+    generated_at: str
+    scan_limit: int = Field(description="Sayimlarin tarandigi azami kayit sayisi (bkz. _SYSTEM_OVERVIEW_SCAN_LIMIT).")
+
+
+def _count_persisted_representative_frames(trace_json: Optional[str], job_id: str) -> int:
+    """Bir analizin trace'inde referans verilen representative frame'lerden DISKTE GERCEKTEN var olanlari sayar.
+
+    `_persist_representative_frames_best_effort` ile ayni frame_id kaynagini
+    (sampler asamasi `event_groups[].representative_frames[]`) kullanir;
+    diskte bulunmayan (best-effort yazma basarisiz olmus) kareler sayilmaz —
+    boylece bu sayim HER ZAMAN gercekten erisebilecek kare sayisini yansitir.
+    """
+    if not trace_json:
+        return 0
+    try:
+        events = json.loads(trace_json)
+    except Exception:  # noqa: BLE001 - bozuk/eski kayit sayimi kirmamali
+        return 0
+    sampler_event = next((e for e in events if e.get("stage") == "sampler"), None)
+    if sampler_event is None:
+        return 0
+    count = 0
+    for eg in sampler_event.get("data", {}).get("event_groups", []):
+        for rf in eg.get("representative_frames", []):
+            frame_id = rf.get("frame_id")
+            if frame_id and _history_frame_path(job_id, frame_id).is_file():
+                count += 1
+    return count
+
+
+@app.get("/system/overview", response_model=SystemOverviewResponse)
+def get_system_overview() -> SystemOverviewResponse:
+    """Operator icin 'Sistem Verileri' (Data Center) ozet KPI'lari — tamamen read-only.
+
+    Hicbir SQL sorgusu kullaniciya gosterilmez/calistirilmaz; yalnizca mevcut
+    `AnalysisStore`/`ConversationStore` uzerinden gercek sayimlar yapilir.
+
+    Returns:
+        Analiz/sohbet/mesaj/trace/representative-frame sayimlarini iceren ozet.
+    """
+    analysis_records = get_analysis_store().list(limit=_SYSTEM_OVERVIEW_SCAN_LIMIT, offset=0)
+    completed = sum(1 for r in analysis_records if r.status == "completed")
+    failed = sum(1 for r in analysis_records if r.status == "failed")
+    with_trace = sum(1 for r in analysis_records if r.trace_json)
+    stored_frames = sum(
+        _count_persisted_representative_frames(r.trace_json, r.job_id) for r in analysis_records
+    )
+
+    conversation_records = get_conversation_store().list_with_message_counts(
+        limit=_SYSTEM_OVERVIEW_SCAN_LIMIT, offset=0
+    )
+    total_messages = sum(c.message_count for c in conversation_records)
+
+    return SystemOverviewResponse(
+        totals=SystemOverviewTotals(
+            total_analyses=len(analysis_records),
+            completed_analyses=completed,
+            failed_analyses=failed,
+            running_or_queued_analyses=len(analysis_records) - completed - failed,
+            total_conversations=len(conversation_records),
+            total_messages=total_messages,
+            analyses_with_trace=with_trace,
+            stored_representative_frame_count=stored_frames,
+        ),
+        generated_at=datetime.datetime.utcnow().isoformat() + "Z",
+        scan_limit=_SYSTEM_OVERVIEW_SCAN_LIMIT,
+    )
+
+
 @app.get("/ask/stream")
 async def ask_safir_stream(
     question: str, job_id: Optional[str] = None, conversation_id: Optional[str] = None
@@ -1621,6 +2070,8 @@ async def ask_safir_stream(
 
     async def event_generator():
         history: List[Tuple[str, str]] = []
+        user_context: List[Tuple[Optional[str], str]] = []
+        document_context: List[Tuple[str, Optional[int], str]] = []
         if conversation_id:
             try:
                 history = [(m.role, m.content) for m in get_conversation_store().list_messages(conversation_id)]
@@ -1628,9 +2079,31 @@ async def ask_safir_stream(
                 logger.exception(
                     "Ask SAFIR stream: konusma gecmisi okunamadi: conversation_id=%s", conversation_id
                 )
+            try:
+                user_context = [
+                    (c.label, c.content) for c in get_conversation_store().list_context(conversation_id)
+                ]
+            except Exception:  # noqa: BLE001 - baglam okunamazsa baglamsiz (ama hatasiz) devam edilir
+                logger.exception(
+                    "Ask SAFIR stream: kullanici baglami okunamadi: conversation_id=%s", conversation_id
+                )
+            try:
+                # Belgenin TAMAMI DEGIL — yalnizca bu soruyla lexical olarak
+                # en ilgili birkac chunk (bkz. document_extraction.lexical_search).
+                all_chunks = get_conversation_store().list_chunks_for_conversation(conversation_id)
+                relevant_chunks = document_extraction.lexical_search(
+                    all_chunks, question, top_k=document_extraction.MAX_RETRIEVED_CHUNKS
+                )
+                document_context = [(c.filename, c.page_number, c.content) for c in relevant_chunks]
+            except Exception:  # noqa: BLE001 - belge baglami okunamazsa baglamsiz (ama hatasiz) devam edilir
+                logger.exception(
+                    "Ask SAFIR stream: belge baglami okunamadi: conversation_id=%s", conversation_id
+                )
 
         try:
-            meta, chunks = get_ask_service().stream_answer(question, job_id, history=history)
+            meta, chunks = get_ask_service().stream_answer(
+                question, job_id, history=history, user_context=user_context, document_context=document_context
+            )
         except JobNotFound as exc:
             yield f"event: error\ndata: {json.dumps({'detail': f'Analiz bulunamadi: {exc}'})}\n\n"
             return
