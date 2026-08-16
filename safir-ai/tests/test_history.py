@@ -179,3 +179,46 @@ def test_history_ordering_and_limit_via_api(mock_pipeline, video_in_data):
     assert len(lst) == 1 and lst[0]["job_id"] == j2  # en yeni once
     two = client.get("/history?limit=2").json()
     assert [x["job_id"] for x in two] == [j2, j1]
+
+
+# --------------------------- API: PDF export ---------------------------
+
+
+def test_report_pdf_for_completed_job_is_a_real_pdf(mock_pipeline, video_in_data):
+    """`ReportExporter.to_pdf()` gercekten cagriliyor mu — gercek PDF magic-byte + boyut kontrolu."""
+    client = TestClient(app)
+    job_id = _run_to_completion(client, video_in_data)
+
+    resp = client.get(f"/history/{job_id}/report.pdf")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "application/pdf"
+    assert "attachment" in resp.headers["content-disposition"]
+    assert resp.content.startswith(b"%PDF-")  # gercek PDF dosya imzasi
+    assert resp.content.rstrip().endswith(b"%%EOF")  # gecerli bir PDF govdesi tamamlanmis
+    assert len(resp.content) > 500  # bos/bozuk dosya degil
+
+
+def test_report_pdf_falls_back_to_persisted_history_when_job_leaves_memory(mock_pipeline, video_in_data):
+    """Is `_jobs` bellek-ici sozlugunden CIKARILSA bile (ör. sunucu yeniden baslasa),
+    kalici History kaydindan AYNI gecerli PDF uretilebilmeli."""
+    client = TestClient(app)
+    job_id = _run_to_completion(client, video_in_data)
+
+    with main._jobs_lock:
+        del main._jobs[job_id]
+
+    resp = client.get(f"/history/{job_id}/report.pdf")
+    assert resp.status_code == 200
+    assert resp.content.startswith(b"%PDF-")
+
+
+def test_report_pdf_unknown_job_404(mock_pipeline):
+    client = TestClient(app)
+    resp = client.get("/history/bilinmeyen-id/report.pdf")
+    assert resp.status_code == 404
+
+
+def test_report_pdf_invalid_job_id_400(mock_pipeline):
+    client = TestClient(app)
+    resp = client.get("/history/../../etc/report.pdf")
+    assert resp.status_code in (400, 404)  # path-traversal denemesi hicbir sekilde 200 olmamali

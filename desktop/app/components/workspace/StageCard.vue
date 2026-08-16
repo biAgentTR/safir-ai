@@ -222,10 +222,16 @@ const regulations = computed(() => store.report?.relevant_regulations ?? [])
         <div class="flex items-end gap-6">
           <div>
             <div class="field-label">Risk</div>
-            <div class="text-3xl font-bold" :class="RISK_TEXT[riskTone(decision.risk_level)]">
-              {{ decision.risk_score }}<span class="text-lg text-slate-500"> / 100</span>
-            </div>
-            <div class="text-sm uppercase tracking-wide" :class="RISK_TEXT[riskTone(decision.risk_level)]">{{ decision.risk_level }}</div>
+            <template v-if="decision.risk_status === 'unknown' || decision.risk_score == null">
+              <div class="text-3xl font-bold text-slate-400">Belirsiz</div>
+              <div class="text-sm uppercase tracking-wide text-slate-400">manuel inceleme gerekli</div>
+            </template>
+            <template v-else>
+              <div class="text-3xl font-bold" :class="RISK_TEXT[riskTone(decision.risk_level)]">
+                {{ decision.risk_score }}<span class="text-lg text-slate-500"> / 100</span>
+              </div>
+              <div class="text-sm uppercase tracking-wide" :class="RISK_TEXT[riskTone(decision.risk_level)]">{{ decision.risk_level }}</div>
+            </template>
           </div>
         </div>
         <div>
@@ -260,7 +266,10 @@ const regulations = computed(() => store.report?.relevant_regulations ?? [])
       <!-- ============ REPORT ============ -->
       <div v-else-if="report" class="space-y-4">
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <MetricCell label="Risk" :value="`${report.risk_score} (${report.risk_level})`" />
+          <MetricCell
+            label="Risk"
+            :value="report.risk_status === 'unknown' || report.risk_score == null ? 'Belirsiz' : `${report.risk_score} (${report.risk_level})`"
+          />
           <MetricCell label="Tier" :value="report.escalation_tier ?? '—'" />
           <MetricCell label="VLM" :value="report.vlm_model ?? '—'" mono />
           <MetricCell label="LLM" :value="report.llm_model ?? '—'" mono />

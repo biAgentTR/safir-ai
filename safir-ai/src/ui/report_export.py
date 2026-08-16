@@ -38,6 +38,14 @@ class ReportExporter:
             actions = [self._report["recommended_action"]]
         return actions
 
+    def _risk_score_text(self) -> str:
+        """Risk skoru metnini uretir; `risk_score=None` (risk_status='unknown') icin ASLA '.../100' gostermez."""
+        report = self._report
+        score = report.get("risk_score")
+        if score is None or report.get("risk_status") == "unknown":
+            return "Belirsiz (analiz guvenilir sekilde tamamlanamadi — manuel inceleme gerekli)"
+        return f"{score}/100"
+
     def to_html(self) -> str:
         """Kanit goruntulerini gomulu iceren, bagimsiz bir HTML ozet raporu uretir."""
         report = self._report
@@ -92,7 +100,7 @@ class ReportExporter:
 
 <div class="section">
 <h2>Risk Degerlendirmesi</h2>
-<p><b>Risk Skoru:</b> {report['risk_score']}/100 &nbsp;
+<p><b>Risk Skoru:</b> {self._risk_score_text()} &nbsp;
 <span class="risk-badge" style="background-color:{risk_color};">{report['risk_level'].upper()}</span>
 &nbsp; <b>Eskalasyon:</b> {report.get('escalation_tier') or '-'}
 {'(otomatik alarm tetiklendi)' if report.get('auto_dispatched') else ''}</p>
@@ -159,7 +167,7 @@ class ReportExporter:
             Paragraph("Ozet", styles["Heading2"]),
             Paragraph(summary, styles["BodyText"]),
             Spacer(1, 0.3 * cm),
-            Paragraph(f"Risk Skoru: {report['risk_score']}/100 — {report['risk_level'].upper()}", risk_style),
+            Paragraph(f"Risk Skoru: {self._risk_score_text()} — {report['risk_level'].upper()}", risk_style),
             Paragraph(
                 f"Eskalasyon: {report.get('escalation_tier') or '-'}"
                 + (" (otomatik alarm tetiklendi)" if report.get("auto_dispatched") else ""),

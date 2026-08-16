@@ -128,7 +128,7 @@ export const useAnalysisStore = defineStore('analysis', {
       return this.report ? this.report.risk_level : null
     },
     isCritical(): boolean {
-      return this.report != null && this.report.risk_score >= CRITICAL_ALARM_THRESHOLD
+      return this.report != null && this.report.risk_score != null && this.report.risk_score >= CRITICAL_ALARM_THRESHOLD
     },
     hasAutoAlert(): boolean {
       return !!(this.report && this.report.auto_dispatched && this.report.alert_id)
@@ -291,7 +291,10 @@ export const useAnalysisStore = defineStore('analysis', {
       this.manualAlert = { state: 'pending', message: '', alertId: null }
       try {
         const res = await api.triggerAlert({
-          risk_score: this.report.risk_score,
+          // Manuel/operatör tetikli alarm: risk belirsiz (null) olsa bile operatör
+          // bilinçli olarak override ediyor; 0 burada yalnızca dekoratif kayıt amaçlıdır,
+          // otomatik eskalasyon kararı DEĞİLDİR.
+          risk_score: this.report.risk_score ?? 0,
           risk_level: this.report.risk_level,
           recommended_action: this.report.actions?.[0] ?? this.report.recommended_action ?? '',
           operator_note: note,

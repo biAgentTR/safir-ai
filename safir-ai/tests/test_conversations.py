@@ -158,3 +158,108 @@ def test_conversation_title_is_truncated_server_side(conv_env):
     long_title = "a" * 500
     resp = client.post("/conversations", json={"title": long_title})
     assert len(resp.json()["title"]) <= 80
+
+
+# --------------------------- Adim 3: kullanici baglami (context) ---------------------------
+
+
+def test_add_context_creates_and_returns_it(conv_env):
+    client = TestClient(app)
+    conv_id = client.post("/conversations", json={}).json()["conversation_id"]
+
+    resp = client.post(
+        f"/conversations/{conv_id}/context",
+        json={"content": "Bu tesiste CO2 yangin sondurme sistemi kullanilmaktadir.", "label": "Tesis bilgisi"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["kind"] == "note"
+    assert body["label"] == "Tesis bilgisi"
+    assert body["content"] == "Bu tesiste CO2 yangin sondurme sistemi kullanilmaktadir."
+    assert body["id"]
+
+
+def test_conversation_detail_lists_added_context(conv_env):
+    client = TestClient(app)
+    conv_id = client.post("/conversations", json={}).json()["conversation_id"]
+    client.post(f"/conversations/{conv_id}/context", json={"content": "not 1"})
+    client.post(f"/conversations/{conv_id}/context", json={"content": "not 2", "label": "ikinci"})
+
+    detail = client.get(f"/conversations/{conv_id}").json()
+    assert len(detail["context"]) == 2
+    assert detail["context"][0]["content"] == "not 1"
+    assert detail["context"][1]["label"] == "ikinci"
+
+
+def test_remove_context_actually_removes_it(conv_env):
+    client = TestClient(app)
+    conv_id = client.post("/conversations", json={}).json()["conversation_id"]
+    ctx_id = client.post(f"/conversations/{conv_id}/context", json={"content": "silinecek not"}).json()["id"]
+
+    assert len(client.get(f"/conversations/{conv_id}").json()["context"]) == 1
+
+    resp = client.delete(f"/conversations/{conv_id}/context/{ctx_id}")
+    assert resp.status_code == 200
+    assert resp.json() == {"removed": True}
+
+    assert client.get(f"/conversations/{conv_id}").json()["context"] == []
+
+
+def test_context_isolated_between_conversations(conv_env):
+    """conv A'ya eklenen baglam conv B'nin detayinda ASLA gorunmemeli; conv B uzerinden silinmeye calisilirsa 404."""
+    client = TestClient(app)
+    conv_a = client.post("/conversations", json={}).json()["conversation_id"]
+    conv_b = client.post("/conversations", json={}).json()["conversation_id"]
+
+    ctx_id = client.post(f"/conversations/{conv_a}/context", json={"content": "yalnizca A'ya ait"}).json()["id"]
+
+    detail_b = client.get(f"/conversations/{conv_b}").json()
+    assert detail_b["context"] == []
+
+    # B uzerinden A'nin context_id'sini silmeye calismak -> 404, ve A'da hala duruyor olmali
+    resp = client.delete(f"/conversations/{conv_b}/context/{ctx_id}")
+    assert resp.status_code == 404
+    assert len(client.get(f"/conversations/{conv_a}").json()["context"]) == 1
+
+
+def test_add_context_to_unknown_conversation_404(conv_env):
+    client = TestClient(app)
+    resp = client.post("/conversations/yok-boyle-sohbet/context", json={"content": "x"})
+    assert resp.status_code == 404
+
+
+def test_remove_unknown_context_404(conv_env):
+    client = TestClient(app)
+    conv_id = client.post("/conversations", json={}).json()["conversation_id"]
+    resp = client.delete(f"/conversations/{conv_id}/context/999999")
+    assert resp.status_code == 404
+
+
+def test_add_context_too_long_is_rejected(conv_env):
+    client = TestClient(app)
+    conv_id = client.post("/conversations", json={}).json()["conversation_id"]
+    resp = client.post(f"/conversations/{conv_id}/context", json={"content": "a" * 5000})
+    assert resp.status_code == 422
+
+
+def test_add_context_empty_is_rejected(conv_env):
+    client = TestClient(app)
+    conv_id = client.post("/conversations", json={}).json()["conversation_id"]
+    resp = client.post(f"/conversations/{conv_id}/context", json={"content": ""})
+    assert resp.status_code == 422
+
+
+def test_context_persists_across_store_reopen(tmp_path):
+    """Sayfa yenilense/sunucu yeniden baslasa bile eklenen baglam kaybolmamali."""
+    db = tmp_path / "c.db"
+    s1 = ConversationStore(db)
+    conv = s1.create(title="kalici")
+    s1.add_context(conv.conversation_id, content="kalici not", label="etiket")
+    s1.close()
+
+    s2 = ConversationStore(db)
+    contexts = s2.list_context(conv.conversation_id)
+    assert len(contexts) == 1
+    assert contexts[0].content == "kalici not"
+    assert contexts[0].label == "etiket"
+    s2.close()

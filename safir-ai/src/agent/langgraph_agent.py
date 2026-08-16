@@ -56,15 +56,23 @@ class AgentState(TypedDict):
 
 @dataclass
 class AgentDecision:
-    """Ajan durum makinesinin nihai muhakeme sonucu (sartname JSON'u ile hizali)."""
+    """Ajan durum makinesinin nihai muhakeme sonucu (sartname JSON'u ile hizali).
 
-    risk_score: int
+    `risk_status`: "assessed" (risk_score gecerli bir 0-100 sayidir, GUVENILIR
+    sekilde uretilmistir) | "unknown" (ajan muhakemesi basarisiz oldu VEYA
+    modelin ciktisindan gecerli bir risk_score cikarilamadi — bu durumda
+    `risk_score` HER ZAMAN `None`'dur). "unknown", ASLA "dusuk risk" ile
+    KARISTIRILMAMALIDIR (bkz. `_degraded_decision`/`_coerce_risk_score`).
+    """
+
+    risk_score: Optional[int]
     risk_level: str
     recommended_action: str                       # geriye-uyum: actions[0]
     raw_response: str
     summary: str = ""                             # operatore yonelik Turkce durum ozeti
     actions: List[str] = field(default_factory=list)   # somut aksiyon onerileri listesi
     events: List[Dict[str, str]] = field(default_factory=list)  # [{"time": "MM:SS", "event": "..."}]
+    risk_status: str = "assessed"                 # "assessed" | "unknown"
 
 
 class SafirAgent:
@@ -214,15 +222,19 @@ class SafirAgent:
             return "tools"
         return "decision"
 
-    def _resolve_risk_level(self, risk_score: int) -> str:
+    def _resolve_risk_level(self, risk_score: Optional[int]) -> str:
         """Sayisal risk skorunu config esiklerine gore risk seviyesi etiketine cevirir.
 
         Args:
-            risk_score: 0-100 arasi risk skoru.
+            risk_score: 0-100 arasi risk skoru; `None` ise (guvenilir bir skor
+                uretilemedi) risk seviyesi de belirsizdir.
 
         Returns:
-            "dusuk", "orta", "yuksek" veya "kritik".
+            `risk_score is None` ise `"unknown"`; aksi halde "dusuk", "orta",
+            "yuksek" veya "kritik".
         """
+        if risk_score is None:
+            return "unknown"
         thresholds = self._agent_config.risk_thresholds
         if risk_score <= thresholds.low:
             return "dusuk"
@@ -269,17 +281,20 @@ class SafirAgent:
     def _degraded_decision(self, error: str) -> AgentDecision:
         """Muhakeme hatasinda operatoru manuel incelemeye yonlendiren guvenli karar.
 
-        Risk skoru uydurulmaz (0 -> dusuk) ancak ozet ve aksiyon, otomatik
+        Risk skoru UYDURULMAZ: `risk_score=None`, `risk_status="unknown"` —
+        (eskiden `0` idi; bu, "dusuk risk" ile "analiz basarisiz" ayrimini
+        ORTADAN KALDIRIYORDU, bkz. P0 duzeltmesi). Ozet ve aksiyon, otomatik
         analizin BASARISIZ oldugunu ve insan mudahalesi gerektigini acikca belirtir.
         """
         return AgentDecision(
-            risk_score=0,
-            risk_level=self._resolve_risk_level(0),
+            risk_score=None,
+            risk_level=self._resolve_risk_level(None),
             recommended_action="Otomatik muhakeme basarisiz; sahayi manuel inceleyin.",
             raw_response=f"[HATA] Ajan muhakemesi tamamlanamadi: {error}",
             summary="Otomatik risk muhakemesi bir hata nedeniyle tamamlanamadi; manuel inceleme gerekli.",
             actions=["Sahayi manuel inceleyin", "Sistemi/kayitlari kontrol edin"],
             events=[],
+            risk_status="unknown",
         )
 
     def _guided_json_retry(self, messages: Sequence[BaseMessage], fallback_text: str) -> str:
@@ -322,7 +337,11 @@ class SafirAgent:
 
         Returns:
             Ayristirilmis `AgentDecision`. Risk seviyesi her zaman config
-            esiklerinden yeniden hesaplanir (modelin iddia ettigi seviyeye guvenilmez).
+            esiklerinden yeniden hesaplanir (modelin iddia ettigi seviyeye
+            guvenilmez). `risk_score` gecerli sekilde cikarilamazsa (JSON'da
+            alan eksik/gecersiz VEYA regex hic eslesme bulamazsa) `None` doner
+            ve `risk_status="unknown"` olur — ASLA `0`'a (dusuk risk) SESSIZCE
+            DUSMEZ (bkz. P0 duzeltmesi).
         """
         parsed = self._extract_json(final_text)
 
@@ -342,6 +361,7 @@ class SafirAgent:
             events = []
 
         recommended_action = actions[0] if actions else "Ek aksiyon onerisi uretilemedi."
+        risk_status = "assessed" if risk_score is not None else "unknown"
 
         return AgentDecision(
             risk_score=risk_score,
@@ -351,6 +371,7 @@ class SafirAgent:
             summary=summary,
             actions=actions,
             events=events,
+            risk_status=risk_status,
         )
 
     @staticmethod
@@ -366,12 +387,19 @@ class SafirAgent:
         return data if isinstance(data, dict) else None
 
     @staticmethod
-    def _coerce_risk_score(value: Any) -> int:
-        """Risk skorunu 0-100 araligina kirpilmis bir tam sayiya cevirir (gecersizse 0)."""
+    def _coerce_risk_score(value: Any) -> Optional[int]:
+        """Risk skorunu 0-100 araligina kirpilmis bir tam sayiya cevirir.
+
+        Deger eksik/gecersizse (ör. `None`, sayisal olmayan bir metin) artik
+        `0` DEGIL, `None` doner — cagiran taraf (`_parse_decision`) bunu
+        `risk_status="unknown"`e cevirir. Onceki davranis (`0` varsayilani),
+        "gecerli bir dusuk risk skoru" ile "skor hic uretilemedi" durumunu
+        AYIRT EDEMIYORDU (bkz. P0 duzeltmesi).
+        """
         try:
             score = int(float(value))
         except (TypeError, ValueError):
-            return 0
+            return None
         return max(0, min(100, score))
 
     @staticmethod

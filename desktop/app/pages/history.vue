@@ -95,7 +95,11 @@ onMounted(() => load(true))
           <div class="text-xs text-slate-500 mt-0.5 truncate">{{ item.summary || 'Özet yok' }}</div>
           <div class="text-[11px] text-slate-600 mt-0.5 font-mono">{{ fmtDate(item.created_at) }} · {{ item.job_id.slice(0, 8) }}</div>
         </div>
-        <div v-if="item.risk_score != null" class="text-right shrink-0">
+        <div v-if="item.risk_status === 'unknown' || item.risk_score == null" class="text-right shrink-0">
+          <div class="text-lg font-bold text-slate-400">—</div>
+          <div class="text-[10px] uppercase tracking-wide text-slate-400">Belirsiz</div>
+        </div>
+        <div v-else class="text-right shrink-0">
           <div class="text-lg font-bold" :class="RISK_TEXT[riskTone(item.risk_level)]">{{ item.risk_score }}</div>
           <div class="text-[10px] uppercase tracking-wide" :class="RISK_TEXT[riskTone(item.risk_level)]">{{ item.risk_level }}</div>
         </div>

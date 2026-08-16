@@ -24,13 +24,17 @@ numpy>=1.26,<3
 # --- VLM / LLM (vLLM servis altyapisi + istemci) ---
 # NOT: vllm, kendi uyumlu torch/CUDA wheel'lerini pip araciligiyla getirir;
 # VM'de ayrica CUDA toolkit veya Docker kurulmasina GEREK YOKTUR — yalnizca
-# NVIDIA surucusu yeterlidir. Alt sinir (>0.7.2), Qwen2.5-VL destegi icin
-# gereken DOGRULANMIS minimum surumdur (bkz. vLLM PR/release notes); UST
-# SINIR KASTEN KONULMADI — bu VM'de standalone `pip install vllm` zaten
-# calisip Blackwell (RTX 5090) destegini kanitlamisti (bkz. KURULUM.md Faz 1),
-# ve tam olarak HANGI guncel surumun cozulecegi VM'nin torch/CUDA ortamina
-# birakilir; burada rastgele bir surum numarasi SABITLENMEZ.
-vllm>0.7.2
+# NVIDIA surucusu yeterlidir. UST SINIR KASTEN KONULMADI — tam olarak HANGI
+# guncel surumun cozulecegi VM'nin torch/CUDA ortamina birakilir; burada
+# rastgele bir surum numarasi SABITLENMEZ.
+#
+# Alt sinir >=0.17.0: aktif VLM (Qwen/Qwen3.5-9B, native multimodal, Subat
+# 2026) icin bildirilen minimum vLLM surumu (DOGRULANMAMIS — kaynak web
+# arastirmasi, birincil vLLM/Qwen dokumantasyonu degil; KURULUM.md Faz 1'de
+# `vllm --version` ile bu VM'de gercekten hangi surumun cozuldugunu dogrulayin).
+# Eski Qwen2.5-VL kurulumuna donerseniz (>0.7.2 yeterliydi) bu alt sinira
+# gerek kalmaz.
+vllm>=0.17.0
 # outlines: vllm'in guided/structured-decoding fallback'i icin ic bagimlilik
 # (import zamaninda, backend'den bagimsiz olarak yuklenir). outlines<0.1.0
 # (orn. 0.0.46), artik PyPI'da islevsiz/sahte bir "pyairports" paketine
@@ -55,6 +59,28 @@ langchain-openai==0.1.17
 faiss-cpu==1.8.0.post1
 sentence-transformers==3.0.1
 
-# Not: Operator Paneli (Streamlit) ayri, opsiyonel bir surectir
-# (bkz. requirements-dashboard.txt) — backend'in ana ortamini gereksiz yere
-# buyutmemek icin streamlit/reportlab burada tutulmaz.
+# --- Rapor Disa Aktarma (PDF) ---
+# reportlab: GET /history/{job_id}/report.pdf tarafindan kullanilan
+# ReportExporter.to_pdf() (src/ui/report_export.py) icin GERCEK bagimlilik —
+# bu siniif hem Operator Paneli (Streamlit) hem artik ana API tarafindan
+# PAYLASILIR (kod TEKRARLANMADI). Surum, requirements-dashboard.txt'teki ile
+# AYNI tutulur.
+reportlab==4.2.2
+
+# --- SAFIR Asistan: kullanici belge yukleme (Adim 4) ---
+# pypdf: GERCEK, sayfa-bazli PDF metin cikarimi (src/memory/document_extraction.py).
+# Saf Python (C uzantisi/derleyici GEREKMEZ), aktif bakimda, hafif.
+pypdf==6.0.0
+# python-docx: GERCEK DOCX metin cikarimi (ayni modul). Bu iki paket, kucuk
+# yerel modellerin/agentin ihtiyaci olan TEK is: dosya -> duz metin.
+python-docx==1.1.2
+# python-multipart: FastAPI/Starlette'in `UploadFile` (multipart form) istek
+# govdesini ayristirmasi icin GEREKLI (belge yukleme uc noktasi olmadan
+# gerek yoktu; simdi GERCEK bir bagimlilik). Ust sinir yok (fastapi/starlette
+# ile ayni ilke — bkz. dosyanin basindaki ILKE notu).
+python-multipart>=0.0.9
+
+# Not: Operator Paneli (Streamlit) hala ayri, opsiyonel bir surectir (bkz.
+# requirements-dashboard.txt, kendi izole venv'inde calisir) — streamlit'in
+# kendisi burada tutulmaz, yalnizca reportlab artik ikisi arasinda PAYLASILAN
+# gercek bir ana-API bagimliligidir.

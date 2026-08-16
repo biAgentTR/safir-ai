@@ -248,15 +248,20 @@ def serialize_decision(
 ) -> Tuple[str, Dict[str, Any], Dict[str, bytes], str, Optional[str]]:
     """`decision` emit'ini GUVENLI alanlarla serialize eder (`raw_response` DAHIL EDILMEZ)."""
     d = payload["decision"]
+    risk_status = getattr(d, "risk_status", "assessed")
     data = {
         "risk_score": d.risk_score,
         "risk_level": d.risk_level,
+        "risk_status": risk_status,
         "summary": d.summary,
         "recommended_action": d.recommended_action,
         "actions": d.actions,
         "events": d.events,
     }
-    summary = f"Risk {d.risk_level.upper()} ({d.risk_score}/100)"
+    if risk_status == "unknown" or d.risk_score is None:
+        summary = "Risk BELIRSIZ (analiz guvenilir sekilde tamamlanamadi)"
+    else:
+        summary = f"Risk {d.risk_level.upper()} ({d.risk_score}/100)"
     return summary, data, {}, "completed", None
 
 
@@ -281,10 +286,12 @@ def serialize_report(
 ) -> Tuple[str, Dict[str, Any], Dict[str, bytes], str, Optional[str]]:
     """`report` emit'ini base64 icermeyen kompakt bir ozete cevirir (tam rapor polling endpoint'inde)."""
     r = payload["report"]
+    risk_status = getattr(r, "risk_status", "assessed")
     data = {
         "event_id": r.event_id,
         "risk_score": r.risk_score,
         "risk_level": r.risk_level,
+        "risk_status": risk_status,
         "escalation_tier": r.escalation_tier,
         "auto_dispatched": r.auto_dispatched,
         "alert_id": r.alert_id,
@@ -294,7 +301,10 @@ def serialize_report(
         "timeline": [{"timestamp": round(e.timestamp, 2), "description": e.description} for e in r.timeline],
         "sartname_json": r.to_sartname_json(),
     }
-    summary = f"Final rapor uretildi — risk {r.risk_level.upper()} ({r.risk_score}/100)"
+    if risk_status == "unknown" or r.risk_score is None:
+        summary = "Final rapor uretildi — risk BELIRSIZ (manuel inceleme gerekli)"
+    else:
+        summary = f"Final rapor uretildi — risk {r.risk_level.upper()} ({r.risk_score}/100)"
     return summary, data, {}, "completed", None
 
 

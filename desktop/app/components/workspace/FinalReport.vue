@@ -1,14 +1,45 @@
 <script setup lang="ts">
 // User-friendly final report: executive summary, risk recap, recommended
 // actions, RAG regulations, escalation (+ manual override trigger), technical
-// metrics, and export (JSON / HTML / PDF, client-side from real data).
-// Timeline and Evidence live in their own tabs.
+// metrics, and export (JSON / HTML client-side, PDF from the real backend
+// endpoint — see useReportExport.ts). Timeline and Evidence live in their own tabs.
 const store = useAnalysisStore()
 const { exportJson, exportHtml, exportPdf } = useReportExport()
 const manualNote = ref('')
 
 const r = computed(() => store.report)
-const tone = computed(() => riskTone(r.value?.risk_level))
+const isUnknownRisk = computed(() => r.value?.risk_status === 'unknown' || r.value?.risk_score == null)
+const tone = computed(() => (isUnknownRisk.value ? 'unknown' : riskTone(r.value?.risk_level)))
+
+type ExportKind = 'json' | 'html' | 'pdf'
+type ExportPhase = 'idle' | 'loading' | 'ok' | 'error'
+const exportPhase = reactive<Record<ExportKind, ExportPhase>>({ json: 'idle', html: 'idle', pdf: 'idle' })
+const exportError = reactive<Record<ExportKind, string>>({ json: '', html: '', pdf: '' })
+
+async function runExport(kind: ExportKind, fn: () => void | Promise<void>) {
+  exportPhase[kind] = 'loading'
+  exportError[kind] = ''
+  try {
+    await fn()
+    exportPhase[kind] = 'ok'
+    setTimeout(() => {
+      if (exportPhase[kind] === 'ok') exportPhase[kind] = 'idle'
+    }, 2000)
+  } catch (e) {
+    exportPhase[kind] = 'error'
+    exportError[kind] = e instanceof Error ? e.message : 'Dışa aktarma başarısız oldu.'
+  }
+}
+
+function doExportJson() {
+  if (r.value) runExport('json', () => exportJson(r.value as NonNullable<typeof r.value>))
+}
+function doExportHtml() {
+  if (r.value) runExport('html', () => exportHtml(r.value as NonNullable<typeof r.value>))
+}
+function doExportPdf() {
+  if (r.value) runExport('pdf', () => exportPdf(store.jobId, r.value as NonNullable<typeof r.value>))
+}
 </script>
 
 <template>
@@ -24,7 +55,10 @@ const tone = computed(() => riskTone(r.value?.risk_level))
       <section class="space-y-4">
         <div>
           <div class="field-label">Risk</div>
-          <div class="text-2xl font-bold" :class="RISK_TEXT[tone]">{{ r.risk_score }} / 100 · <span class="uppercase text-base">{{ r.risk_level }}</span></div>
+          <div v-if="isUnknownRisk" class="text-2xl font-bold" :class="RISK_TEXT[tone]">
+            Risk Belirsiz <span class="uppercase text-base font-normal text-slate-400">— manuel inceleme gerekli</span>
+          </div>
+          <div v-else class="text-2xl font-bold" :class="RISK_TEXT[tone]">{{ r.risk_score }} / 100 · <span class="uppercase text-base">{{ r.risk_level }}</span></div>
         </div>
         <div>
           <div class="field-label">Önerilen aksiyonlar</div>
@@ -89,12 +123,29 @@ const tone = computed(() => riskTone(r.value?.risk_level))
     </section>
 
     <!-- export -->
-    <section class="flex items-center gap-3 pt-2 border-t border-edge">
-      <span class="text-xs text-slate-500">Dışa aktar:</span>
-      <button class="btn-ghost" @click="exportJson(r)">JSON</button>
-      <button class="btn-ghost" @click="exportHtml(r)">HTML</button>
-      <button class="btn-ghost" @click="exportPdf(r)">PDF</button>
-      <span class="text-[11px] text-slate-600 ml-2">(gerçek rapor verisinden, istemci tarafında)</span>
+    <section class="pt-2 border-t border-edge">
+      <div class="flex items-center gap-3">
+        <span class="text-xs text-slate-500">Dışa aktar:</span>
+        <button class="btn-ghost" :disabled="exportPhase.json === 'loading'" @click="doExportJson">
+          <span v-if="exportPhase.json === 'loading'">…</span>
+          <span v-else-if="exportPhase.json === 'ok'">✓ JSON</span>
+          <span v-else>JSON</span>
+        </button>
+        <button class="btn-ghost" :disabled="exportPhase.html === 'loading'" @click="doExportHtml">
+          <span v-if="exportPhase.html === 'loading'">…</span>
+          <span v-else-if="exportPhase.html === 'ok'">✓ HTML</span>
+          <span v-else>HTML</span>
+        </button>
+        <button class="btn-ghost" :disabled="exportPhase.pdf === 'loading'" @click="doExportPdf">
+          <span v-if="exportPhase.pdf === 'loading'">PDF oluşturuluyor…</span>
+          <span v-else-if="exportPhase.pdf === 'ok'">✓ PDF</span>
+          <span v-else>PDF</span>
+        </button>
+        <span class="text-[11px] text-slate-600 ml-2">(JSON/HTML gerçek rapor verisinden; PDF backend'de reportlab ile üretilir)</span>
+      </div>
+      <p v-if="exportPhase.json === 'error'" class="mt-2 text-xs text-risk-crit">JSON: {{ exportError.json }}</p>
+      <p v-if="exportPhase.html === 'error'" class="mt-2 text-xs text-risk-crit">HTML: {{ exportError.html }}</p>
+      <p v-if="exportPhase.pdf === 'error'" class="mt-2 text-xs text-risk-crit">PDF: {{ exportError.pdf }}</p>
     </section>
   </div>
 
