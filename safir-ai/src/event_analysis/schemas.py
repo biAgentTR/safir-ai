@@ -104,6 +104,9 @@ class EventType(str, Enum):
     GENEL_GOZLEM = "genel_gozlem"
     """Fallback kategori: hicbir kural kategorisi eslesmedigi durumlar icin (mevzuat karsiligi yok)."""
 
+    SINIFLANDIRILAMADI = "siniflandirilamadi"
+    """Siniflandirilamayan olay kategorisi: 8 temel ISG mevzuat kuralindan birine oturtulamayan riskli/anormal durumlar."""
+
 
 EVENT_TYPE_REGULATION_MAP: Dict[EventType, Optional[str]] = {
     EventType.DUSME_RISKI: "ISG Yonetmeligi Madde 12",
@@ -116,6 +119,7 @@ EVENT_TYPE_REGULATION_MAP: Dict[EventType, Optional[str]] = {
     EventType.AGIR_YUK_RISKI: "ISG Yonetmeligi Madde 52",
     EventType.YETKISIZ_ERISIM: None,
     EventType.GENEL_GOZLEM: None,
+    EventType.SINIFLANDIRILAMADI: None,
 }
 """`EventType` -> ilgili mevzuat maddesinin kisa referans etiketi.
 

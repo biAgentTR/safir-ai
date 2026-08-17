@@ -48,9 +48,17 @@ class VLMPayloadBuilder:
 
         for cluster in clusters:
             peak = cluster.peak_frame
+            start_m, start_s = divmod(int(cluster.start_time), 60)
+            start_str = f"{start_m:02d}:{start_s:02d}"
+            
+            end_m, end_s = divmod(int(cluster.end_time), 60)
+            end_str = f"{end_m:02d}:{end_s:02d}"
+
             metadata_text = (
-                f"[Olay #{cluster.event_id}] zaman araligi={peak.timestamp_str} "
-                f"({cluster.start_time:.2f}s - {cluster.end_time:.2f}s), "
+                f"[Olay #{cluster.event_id}] "
+                f"OLAY BAŞLANGIÇ ZAMANI (ILK AN): {start_str} ({cluster.start_time:.2f}s) | "
+                f"ZIRVE ZAMAN: {peak.timestamp_str} ({peak.timestamp_sec:.2f}s) | "
+                f"BITIŞ ZAMAN: {end_str} ({cluster.end_time:.2f}s) | "
                 f"aday_kare_sayisi={cluster.total_candidate_frames}, "
                 f"degisim_skoru={peak.change_score:.4f}"
             )

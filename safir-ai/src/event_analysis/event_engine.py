@@ -144,6 +144,13 @@ _KEYWORD_RULES: Dict[EventType, List[str]] = {
         "yasakli alan",
         "guvenlik ihlali",
     ],
+    EventType.SINIFLANDIRILAMADI: [
+        "siniflandirilamayan",
+        "tanimlanamayan risk",
+        "belirsiz ihlal",
+        "anormallik",
+        "bilinmeyen durum",
+    ],
 }
 
 _BASE_CONFIDENCE = 0.5

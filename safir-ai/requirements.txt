@@ -14,50 +14,27 @@
 fastapi>=0.111
 uvicorn[standard]>=0.30
 pydantic>=2.7,<3
-PyYAML==6.0.1
+PyYAML>=6.0.1
 httpx>=0.27
 
 # --- Hafif Suzgec Katmani (CPU) ---
-opencv-python-headless==4.10.0.84
+opencv-python-headless>=4.10.0.84
 numpy>=1.26,<3
 
 # --- VLM / LLM (vLLM servis altyapisi + istemci) ---
-# NOT: vllm, kendi uyumlu torch/CUDA wheel'lerini pip araciligiyla getirir;
-# VM'de ayrica CUDA toolkit veya Docker kurulmasina GEREK YOKTUR — yalnizca
-# NVIDIA surucusu yeterlidir. UST SINIR KASTEN KONULMADI — tam olarak HANGI
-# guncel surumun cozulecegi VM'nin torch/CUDA ortamina birakilir; burada
-# rastgele bir surum numarasi SABITLENMEZ.
-#
-# Alt sinir >=0.17.0: aktif VLM (Qwen/Qwen3.5-9B, native multimodal, Subat
-# 2026) icin bildirilen minimum vLLM surumu (DOGRULANMAMIS — kaynak web
-# arastirmasi, birincil vLLM/Qwen dokumantasyonu degil; KURULUM.md Faz 1'de
-# `vllm --version` ile bu VM'de gercekten hangi surumun cozuldugunu dogrulayin).
-# Eski Qwen2.5-VL kurulumuna donerseniz (>0.7.2 yeterliydi) bu alt sinira
-# gerek kalmaz.
-vllm>=0.17.0
-# outlines: vllm'in guided/structured-decoding fallback'i icin ic bagimlilik
-# (import zamaninda, backend'den bagimsiz olarak yuklenir). outlines<0.1.0
-# (orn. 0.0.46), artik PyPI'da islevsiz/sahte bir "pyairports" paketine
-# (Author: "John Doe", gercek NICTA/pyairports DEGIL) bagimliydi ve
-# `ModuleNotFoundError: No module named 'pyairports'` ile CALISMAZ. Bu sorun
-# outlines>=0.1.0'da KALICI OLARAK giderildi (PR #1156, pyairports bagimliligi
-# tamamen kaldirildi) — bkz. github.com/dottxt-ai/outlines/issues/1093. Alt
-# sinir burada ACIKCA belirtiliyor ki pip, hangi vllm surumunu secerse secsin
-# eski/kirik outlines'a ASLA geri donmesin.
+# NOT: vllm Linux tabanli bir sunucu paketidir. Windows/Mock modunda atlanir.
+vllm>=0.17.0; sys_platform != 'win32'
 outlines>=0.1.0
-# openai: vllm'in KENDISI de bu paketi ic bagimlilik olarak listeler (bkz.
-# `pip show vllm` -> Requires). Tam (==) pin, vllm'in istedigi surumle
-# CATISABILIR; bu yuzden alt sinir birakildi.
 openai>=1.35
 
 # --- Ajan ve Muhakeme Katmani (LangGraph) ---
-langgraph==0.1.9
-langchain-core==0.2.28
-langchain-openai==0.1.17
+langgraph>=0.1.9
+langchain-core>=0.2.28
+langchain-openai>=0.1.17
 
 # --- Hibrit Bellek Katmani ---
-faiss-cpu==1.8.0.post1
-sentence-transformers==3.0.1
+faiss-cpu>=1.8.0
+sentence-transformers>=3.0.1
 
 # --- Rapor Disa Aktarma (PDF) ---
 # reportlab: GET /history/{job_id}/report.pdf tarafindan kullanilan
@@ -65,15 +42,15 @@ sentence-transformers==3.0.1
 # bu siniif hem Operator Paneli (Streamlit) hem artik ana API tarafindan
 # PAYLASILIR (kod TEKRARLANMADI). Surum, requirements-dashboard.txt'teki ile
 # AYNI tutulur.
-reportlab==4.2.2
+reportlab>=4.2.2
 
 # --- SAFIR Asistan: kullanici belge yukleme (Adim 4) ---
 # pypdf: GERCEK, sayfa-bazli PDF metin cikarimi (src/memory/document_extraction.py).
 # Saf Python (C uzantisi/derleyici GEREKMEZ), aktif bakimda, hafif.
-pypdf==6.0.0
+pypdf>=6.0.0
 # python-docx: GERCEK DOCX metin cikarimi (ayni modul). Bu iki paket, kucuk
 # yerel modellerin/agentin ihtiyaci olan TEK is: dosya -> duz metin.
-python-docx==1.1.2
+python-docx>=1.1.2
 # python-multipart: FastAPI/Starlette'in `UploadFile` (multipart form) istek
 # govdesini ayristirmasi icin GEREKLI (belge yukleme uc noktasi olmadan
 # gerek yoktu; simdi GERCEK bir bagimlilik). Ust sinir yok (fastapi/starlette

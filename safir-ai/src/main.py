@@ -15,6 +15,13 @@ import datetime
 import json
 import logging
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
 import re
 import threading
 import time
@@ -705,8 +712,9 @@ class SafirPipeline:
             `(detected_events, temporal_events, rule_matches, latest_timestamp)`.
             `temporal_events`/`rule_matches`, cagrilar arasi kalici buffer uzerinden hesaplanir.
         """
-        latest_timestamp = clusters[-1].end_time
-        engine_input = EventEngineInput.from_vlm_response(vlm_response, timestamp=latest_timestamp)
+        onset_timestamp = clusters[0].start_time if clusters else 0.0
+        latest_timestamp = clusters[-1].end_time if clusters else 0.0
+        engine_input = EventEngineInput.from_vlm_response(vlm_response, timestamp=onset_timestamp)
         detected_events = self._event_engine.detect(engine_input)
         self._event_history_buffer.extend(detected_events)
         _prune_stale_events(self._event_history_buffer, latest_timestamp, self._event_buffer_retention_sec)
@@ -797,6 +805,9 @@ class SafirPipeline:
             risk_status=decision.risk_status,
             recommended_action=decision.recommended_action,
             actions=decision.actions,
+            onset_timestamp_str=getattr(decision, "onset_timestamp", None) or (f"{int(clusters[0].start_time//60):02d}:{int(clusters[0].start_time%60):02d}" if clusters else None),
+            safe_timestamps=getattr(decision, "safe_timestamps", []),
+            incident_timestamps=getattr(decision, "incident_timestamps", []),
             escalation_tier=escalation.tier.value,
             auto_dispatched=escalation.auto_dispatched,
             alert_id=escalation.alert_id,

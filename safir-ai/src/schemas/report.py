@@ -89,8 +89,9 @@ class SafirReport(BaseModel):
         default="assessed",
         description=(
             "'assessed': risk_score/risk_level guvenilir sekilde hesaplandi (0 dahil gecerli bir deger). "
-            "'unknown': VLM/LLM/ajan karar zincirinde hata olustu veya guvenilir bir karar uretilemedi; "
-            "bu durumda risk_score None'dir ve ASLA dusuk risk olarak yorumlanmamalidir."
+            "'unclassified': olay/risk tespit edildi veya kumeleme yapildi ancak 8 temel ISG kategorisine oturtulamadi; "
+            "bu durumda risk_score null (None) olarak set edilir ve 'risk yok' (0 risk) durumundan kesin olarak ayrilir. "
+            "'unknown': VLM/LLM/ajan karar zincirinde hata olustu veya guvenilir karar uretilemedi."
         ),
     )
     recommended_action: str = Field(
@@ -98,6 +99,15 @@ class SafirReport(BaseModel):
     )
     actions: List[str] = Field(
         default_factory=list, description="Operatore yonelik somut aksiyon onerileri listesi (sartname 'actions')."
+    )
+    onset_timestamp_str: Optional[str] = Field(
+        default=None, description="Olayin/kazanin ILK BAŞLADIGI kareden alinan zaman damgasi (MM:SS)."
+    )
+    safe_timestamps: List[str] = Field(
+        default_factory=list, description="Hicbir kazanin/riskin olmadigi rutin karesel zaman damgalari (orn. 00:07, 00:10, 00:12, 00:15)."
+    )
+    incident_timestamps: List[str] = Field(
+        default_factory=list, description="Tehlikenin/kazanin aktif oldugu zaman damgalari (orn. 00:18, 00:22, 00:25)."
     )
     detected_event_types: List[str] = Field(
         default_factory=list,
@@ -132,19 +142,12 @@ class SafirReport(BaseModel):
         return f"{total // 60:02d}:{total % 60:02d}"
 
     def to_sartname_json(self) -> dict:
-        """Raporu sartnamedeki mock ornekle birebir ayni sekle indirger.
-
-        Sartname ornegi: `{"summary", "events":[{"time","event"}], "risk", "actions"}`.
-        `events`, `timeline` girislerinden (`MM:SS` zaman damgasiyla) uretilir;
-        `risk`, insan-okur risk seviyesidir. Tam/zengin cikti icin
-        `model_dump()` (tum alanlar) kullanilabilir; bu yardimci yalnizca
-        sartname-uyumlu ozet gorunumu icindir.
-
-        Returns:
-            Sartname semasiyla uyumlu, JSON-serilestirilebilir sozluk.
-        """
+        """Raporu sartnamedeki mock ornekle birebir ayni sekle indirger."""
         return {
             "summary": self.summary or self.natural_language_summary,
+            "onset_timestamp": self.onset_timestamp_str or (self._seconds_to_mmss(self.timeline[0].timestamp) if self.timeline else "00:00"),
+            "safe_timestamps": self.safe_timestamps,
+            "incident_timestamps": self.incident_timestamps,
             "events": [
                 {"time": self._seconds_to_mmss(entry.timestamp), "event": entry.description}
                 for entry in self.timeline

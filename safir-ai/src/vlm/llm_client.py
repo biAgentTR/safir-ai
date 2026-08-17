@@ -158,17 +158,60 @@ class MockLLMClient:
         return self
 
     def invoke(self, messages: Sequence[BaseMessage]) -> AIMessage:
-        """Sahte gecikme sonrasi arac cagrisi icermeyen sabit bir karar dondurur.
-
-        Args:
-            messages: LangGraph durum makinesinin biriktirdigi mesaj gecmisi (yalnizca loglanir).
-
-        Returns:
-            `RISK_SKORU`/`AKSIYON_ONERISI` iceren, `tool_calls=[]` bir `AIMessage`.
-        """
+        """VLM ciktisini inceleyerek dinamik veya sahte bir karar dondurur."""
         time.sleep(0.1)
-        logger.info("MockLLMClient: %d mesajlik gecmis icin sahte karar uretildi", len(messages))
-        return AIMessage(content=_MOCK_DECISION_TEXT, tool_calls=[])
+        logger.info("MockLLMClient: %d mesajlik gecmis inceleniyor...", len(messages))
+        
+        full_text = " ".join([str(m.content) for m in messages])
+        full_text_lower = full_text.lower()
+        
+        # Olay baslangic zamanini (start_time / onset moment) dinamik yakala:
+        import re
+        match = re.search(r"OLAY BAŞLANGIÇ ZAMANI[^:]*:\s*(\d{2}:\d{2})", full_text)
+        if not match:
+            match = re.search(r"Başlangıç Zamanı:\s*(\d{2}:\d{2})", full_text)
+        start_time_str = match.group(1) if match else "00:19"
+        
+        if any(w in full_text_lower for w in ["duman", "yangın", "yangin", "ates", "ateş", "fire", "smoke", "alev", "patlama"]):
+            decision = (
+                "{\n"
+                f'  "summary": "Görsel VLM Analizi: Sahada 00:07 - 00:15 saniyeleri arasında kaza/ihlal bulunmamaktadır. {start_time_str} anındaki kareden itibaren duman ve yangın başlangıcı (onset) tespit edilmiştir.",\n'
+                f'  "onset_timestamp": "{start_time_str}",\n'
+                '  "safe_timestamps": ["00:07", "00:10", "00:12", "00:15"],\n'
+                f'  "incident_timestamps": ["{start_time_str}", "01:15"],\n'
+                '  "events": [\n'
+                '    {"time": "00:07", "event": "Kare #1 [00:07]: Rutin saha - Güvenli (Kaza yok)"},\n'
+                '    {"time": "00:10", "event": "Kare #2 [00:10]: Rutin saha - Güvenli (Kaza yok)"},\n'
+                '    {"time": "00:12", "event": "Kare #3 [00:12]: Rutin saha - Güvenli (Kaza yok)"},\n'
+                '    {"time": "00:15", "event": "Kare #4 [00:15]: Rutin saha - Güvenli (Kaza yok)"},\n'
+                f'    {{"time": "{start_time_str}", "event": "Kare #5 [{start_time_str}]: RISK BAŞLANGICI (ONSET) - Duman ve yangın başlangıcı"}},\n'
+                '    {"time": "01:15", "event": "Kare #6 [01:15]: Duman yayılımı ve yangın zirve noktası"}\n'
+                '  ],\n'
+                '  "risk_score": 90,\n'
+                '  "risk_level": "kritik",\n'
+                '  "actions": ["Acil durum ve yangın alarmını başlatın", "Saha bölgesini tahliye edin", "Yangın söndürme ekiplerine bildirin"]\n'
+                "}"
+            )
+        else:
+            decision = (
+                "{\n"
+                '  "summary": "Sahada rutin faaliyet gözlenmiştir; kaza veya risk unsuru bulunmamaktadır.",\n'
+                '  "onset_timestamp": None,\n'
+                '  "safe_timestamps": ["00:07", "00:10", "00:12", "00:15"],\n'
+                '  "incident_timestamps": [],\n'
+                '  "events": [\n'
+                '    {"time": "00:07", "event": "Kare #1 [00:07]: Rutin saha - Güvenli"},\n'
+                '    {"time": "00:10", "event": "Kare #2 [00:10]: Rutin saha - Güvenli"},\n'
+                '    {"time": "00:12", "event": "Kare #3 [00:12]: Rutin saha - Güvenli"},\n'
+                '    {"time": "00:15", "event": "Kare #4 [00:15]: Rutin saha - Güvenli"}\n'
+                '  ],\n'
+                '  "risk_score": 15,\n'
+                '  "risk_level": "dusuk",\n'
+                '  "actions": ["Rutin saha gözlemine devam edin"]\n'
+                "}"
+            )
+
+        return AIMessage(content=decision, tool_calls=[])
 
     def invoke_json(self, messages: Sequence[BaseMessage]) -> AIMessage:
         """Mock modda JSON-modu ile normal `invoke` ayni sabit JSON karari dondurur."""

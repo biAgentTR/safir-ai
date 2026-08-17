@@ -73,6 +73,9 @@ class AgentDecision:
     actions: List[str] = field(default_factory=list)   # somut aksiyon onerileri listesi
     events: List[Dict[str, str]] = field(default_factory=list)  # [{"time": "MM:SS", "event": "..."}]
     risk_status: str = "assessed"                 # "assessed" | "unknown"
+    onset_timestamp: Optional[str] = None
+    safe_timestamps: List[str] = field(default_factory=list)
+    incident_timestamps: List[str] = field(default_factory=list)
 
 
 class SafirAgent:
@@ -350,6 +353,9 @@ class SafirAgent:
             summary = str(parsed.get("summary", "")).strip()
             actions = self._coerce_actions(parsed.get("actions"))
             events = self._coerce_events(parsed.get("events"))
+            onset_timestamp = parsed.get("onset_timestamp")
+            safe_timestamps = parsed.get("safe_timestamps") or []
+            incident_timestamps = parsed.get("incident_timestamps") or []
         else:
             logger.warning("Ajan yaniti JSON olarak ayristirilamadi, regex fallback kullaniliyor.")
             risk_match = _RISK_LINE_PATTERN.search(final_text)
@@ -359,9 +365,19 @@ class SafirAgent:
             single_action = action_match.group(1).strip() if action_match else ""
             actions = [single_action] if single_action else []
             events = []
+            onset_timestamp = None
+            safe_timestamps = []
+            incident_timestamps = []
 
         recommended_action = actions[0] if actions else "Ek aksiyon onerisi uretilemedi."
-        risk_status = "assessed" if risk_score is not None else "unknown"
+        raw_status = parsed.get("risk_status") if parsed else None
+        if raw_status in ("assessed", "unclassified", "unknown"):
+            risk_status = raw_status
+        else:
+            risk_status = "assessed" if risk_score is not None else "unknown"
+
+        if risk_status == "unclassified":
+            risk_score = None
 
         return AgentDecision(
             risk_score=risk_score,
@@ -372,6 +388,9 @@ class SafirAgent:
             actions=actions,
             events=events,
             risk_status=risk_status,
+            onset_timestamp=onset_timestamp,
+            safe_timestamps=safe_timestamps,
+            incident_timestamps=incident_timestamps,
         )
 
     @staticmethod
