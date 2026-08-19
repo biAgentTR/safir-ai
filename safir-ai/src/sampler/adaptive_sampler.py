@@ -36,10 +36,14 @@ damgasi + sabit boyutlu bir "supheli-erken" penceresi) ile gecis yapar:
   1. SAKIN: `max_temporal_gap_sec` araligiyla (mevcut coverage davranisi).
   2. ERKEN DEGISIM: ana esigin ALTINDA ama `early_change_min_count` kadar
      ardisik/pencere-ici "supheli-erken" (`early_change_score_ratio *
-     min_change_threshold`i gecen) sinyal SURDURULDUGUNDE tetiklenir; bu
-     durumun BASLADIGI kare (ana esik beklenmeden) DOGRUDAN secilir - boylece
-     bir olayin baslangic karesi (ör. izmaritin atildigi an, dumanin ilk
-     gorulme ani) geriye donuk bir buffer gerekmeden korunur. Aktifken
+     min_change_threshold`i gecen) sinyal SURDURULDUGUNDE tetiklenir. Secilen
+     kare, ONAYIN GERCEKLESTIGI (min_count'a ulasilan) kare DEGIL, zincirin
+     SAKIN durumdayken ILK supheli-erken sinyali verdigi kareDIR (bkz.
+     `pending_early_candidate` - `_PendingSelectionCandidate`nin bu amacla
+     yeniden kullanilan tek-ornekli hali; buyuyen bir gecmis buffer'i
+     DEGILDIR). Boylece bir olayin baslangic karesi (ör. izmaritin atildigi
+     an, dumanin ilk gorulme ani), onay `early_change_min_count` kareyi
+     bulana kadar geciken 1-2 karelik bir gecikme OLMADAN korunur. Aktifken
      `early_change_selection_interval_sec` ile daha sik secim yapilir.
   3. GUCLU DEGISIM: ana esik gecildiginde (mevcut `threshold_exceeded`
      davranisi DEGISMEDEN korunur - HER esik-gecen kare secilir). Esik
@@ -102,6 +106,31 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEFAULT_EVIDENCE_OUTPUT_DIR = "outputs/evidence_frames"
+
+
+def _insert_chronologically(frames: List[EvidenceFrame], new_frame: EvidenceFrame) -> None:
+    """`new_frame`i, `frames` listesindeki dogru KRONOLOJIK konuma ekler.
+
+    Coklu evidence akisinda (esik/coverage/erken/guclu-hysteresis) HER ZAMAN
+    en son islenmekte olan karenin zaman damgasi eklenir - bu her zaman
+    listenin sonuna dogru artan sirada olur. TEK istisna: bir
+    `pending_early_candidate` (bkz. `process_video`), onaylanana kadar
+    zaman icinde TUTULUR ve confirm edildiginde KENDI (eski) zaman
+    damgasiyla eklenir; bu sirada araya (daha yeni zaman damgali) bir
+    `temporal_coverage` karesi girmis olabilir. Bu fonksiyon, listeyi
+    HER ZAMAN kronolojik tutmak icin dogru konumu geriye dogru arar
+    (pratikte en fazla birkac elemanlik bir kaydirma - buyuyen bir STATE
+    buffer'i DEGILDIR, yalnizca zaten var olan CIKTI listesine dogru
+    sirada ekleme yapar).
+
+    Args:
+        frames: Su ana kadar biriktirilmis `EvidenceFrame` listesi (yerinde degistirilir).
+        new_frame: Eklenecek yeni kare.
+    """
+    idx = len(frames)
+    while idx > 0 and frames[idx - 1].timestamp_sec > new_frame.timestamp_sec:
+        idx -= 1
+    frames.insert(idx, new_frame)
 
 
 @dataclass
@@ -578,6 +607,13 @@ class AdaptiveFrameSampler:
         last_selected_gray: Optional[np.ndarray] = None
         strong_cooldown_until: float = float("-inf")
         early_cooldown_until: float = float("-inf")
+        # `pending_early_candidate`: SAKIN durumdayken bir erken-degisim
+        # zincirinin ILK supheli-erken karesi (bkz. modul docstring'i).
+        # `_PendingSelectionCandidate` (pending_best ile AYNI dataclass,
+        # yeniden kullanilir - ayri bir veri modeli GEREKMEZ) tek bir
+        # ornek olarak tutulur; onaylandiginda (`early_change_min_count`ye
+        # ulasildiginda) BU kare secilir, doğrulama aninin karesi DEGIL.
+        pending_early_candidate: Optional[_PendingSelectionCandidate] = None
 
         try:
             while cap.isOpened():
@@ -624,6 +660,33 @@ class AdaptiveFrameSampler:
                         # AYNIDIR: HER esik-gecen kare kosulsuz secilir, dedup
                         # UYGULANMAZ (bkz. `_is_near_duplicate` docstring'i).
                         motion_bbox = self._bbox_from_mask(thresh)
+
+                        # Ana esik, erken-degisim onayi TAMAMLANMADAN gecilmis
+                        # olabilir (ör. sinyal cok hizli buyudu). Eger su an
+                        # onaylanmamis bir `pending_early_candidate` (ayni
+                        # surekli degisim zincirinin BASLANGIC karesi) varsa,
+                        # ana esik karesinin "golgesinde" kaybolmasin diye
+                        # ONCE o (kendi eski zaman damgasiyla, kronolojik
+                        # dogru konuma) eklenir - boylece zincirin GERCEK
+                        # baslangici, dogrudan esige sicrayan olaylarda da
+                        # korunur (bkz. gorev notu #6).
+                        if pending_early_candidate is not None and not self._is_near_duplicate(
+                            pending_early_candidate.gray, last_selected_gray
+                        ):
+                            _insert_chronologically(
+                                evidence_frames,
+                                self._build_evidence_frame(
+                                    pending_early_candidate.frame,
+                                    pending_early_candidate.frame_id,
+                                    pending_early_candidate.timestamp_sec,
+                                    pending_early_candidate.net_change_score,
+                                    pending_early_candidate.motion_bbox,
+                                    selection_reason=_SELECTION_REASON_EARLY_CHANGE,
+                                ),
+                            )
+                            last_selected_gray = pending_early_candidate.gray
+                        pending_early_candidate = None
+
                         evidence_frames.append(
                             self._build_evidence_frame(
                                 frame,
@@ -660,8 +723,37 @@ class AdaptiveFrameSampler:
                         is_early_suspicious = net_change_score >= (
                             self.early_change_score_ratio * self.min_change_threshold
                         )
-                        if self._confirm_early_change(is_early_suspicious):
+
+                        # Zincirin ILK karesini yakala: yalnizca SAKIN
+                        # durumdan cikan YENI bir zincir icin (pre_density_state
+                        # == CALM) ve henuz bir pending_early_candidate yokken.
+                        # `_PendingSelectionCandidate` (pending_best ile AYNI
+                        # dataclass) yeniden kullanilir - O(1), tek ornek.
+                        if (
+                            is_early_suspicious
+                            and pending_early_candidate is None
+                            and pre_density_state == _DENSITY_CALM
+                        ):
+                            pending_early_candidate = _PendingSelectionCandidate(
+                                frame=frame.copy(),
+                                gray=curr_gray,
+                                frame_id=frame_id,
+                                timestamp_sec=timestamp_sec,
+                                net_change_score=net_change_score,
+                                motion_bbox=motion_bbox,
+                            )
+
+                        confirmed_early_now = self._confirm_early_change(is_early_suspicious)
+                        if confirmed_early_now:
                             early_cooldown_until = timestamp_sec + self.early_change_cooldown_sec
+
+                        # Zincir onaya ULASMADAN tamamen sonduyse (pencerede
+                        # artik hicbir "supheli-erken" karar kalmadiysa),
+                        # pending adayi GUVENLI sekilde temizle - aksi halde
+                        # SONRAKI, ILGISIZ bir zincirin onayinda yanlislikla
+                        # bu eski kare secilebilir (bkz. gorev notu #6/#7).
+                        if pending_early_candidate is not None and sum(self._recent_early_decisions) == 0:
+                            pending_early_candidate = None
 
                         density_state = self._density_state(
                             timestamp_sec, strong_cooldown_until, early_cooldown_until
@@ -671,29 +763,46 @@ class AdaptiveFrameSampler:
                         )
 
                         selected_this_frame = False
-                        # SAKIN -> ERKEN gecisinin TAM O ANI: olayin baslangic
-                        # karesi (ör. izmaritin atildigi an), ana esik VE secim
-                        # araligi beklenmeden, GERIYE DONUK bir buffer
-                        # gerekmeden dogrudan secilir - o an elimizdeki TEK
-                        # kare budur (mevcut kare); `pending_best` eski/farkli
-                        # bir kareyi tutuyor olabilir, o yuzden bu ozel durumda
-                        # `pending_best` KULLANILMAZ.
+                        # SAKIN -> ERKEN gecisinin TAM O ANI: zincirin
+                        # BASLANGIC karesi (`pending_early_candidate` -
+                        # ONAYIN GERCEKLESTIGI mevcut kare DEGIL) secilir; ana
+                        # esik VE secim araligi beklenmeden, GERIYE DONUK bir
+                        # video-buffer'i gerekmeden. `pending_best` (genel
+                        # pencere biriktirici) bu ozel durumda KULLANILMAZ.
                         if pre_density_state == _DENSITY_CALM and density_state == _DENSITY_EARLY:
-                            if not self._is_near_duplicate(curr_gray, last_selected_gray):
-                                evidence_frames.append(
+                            # Yapisal olarak `pending_early_candidate`, tam da
+                            # bu gecisi tetikleyen onay anindan once (bu kare
+                            # dahil, is_early_suspicious ilk True oldugunda)
+                            # zaten set edilmis olmalidir; yine de savunmaci
+                            # bir yedek olarak mevcut kare kullanilir.
+                            onset_source = pending_early_candidate or _PendingSelectionCandidate(
+                                frame=frame.copy(),
+                                gray=curr_gray,
+                                frame_id=frame_id,
+                                timestamp_sec=timestamp_sec,
+                                net_change_score=net_change_score,
+                                motion_bbox=motion_bbox,
+                            )
+                            if not self._is_near_duplicate(onset_source.gray, last_selected_gray):
+                                _insert_chronologically(
+                                    evidence_frames,
                                     self._build_evidence_frame(
-                                        frame,
-                                        frame_id,
-                                        timestamp_sec,
-                                        net_change_score,
-                                        motion_bbox,
+                                        onset_source.frame,
+                                        onset_source.frame_id,
+                                        onset_source.timestamp_sec,
+                                        onset_source.net_change_score,
+                                        onset_source.motion_bbox,
                                         selection_reason=_SELECTION_REASON_EARLY_CHANGE,
-                                    )
+                                    ),
                                 )
-                                last_evidence_timestamp = timestamp_sec
-                                last_selected_gray = curr_gray
+                                last_evidence_timestamp = onset_source.timestamp_sec
+                                last_selected_gray = onset_source.gray
                                 pending_best = None
                                 selected_this_frame = True
+                            # Pending aday, secildi VEYA dedup ile reddedildi -
+                            # her iki durumda da bu zincir icin TUKETILDI,
+                            # temizlenir (gorev notu #5).
+                            pending_early_candidate = None
 
                         if not selected_this_frame:
                             # Genel pencere biriktirme: esitlikte (ör. sabit bir
@@ -757,6 +866,15 @@ class AdaptiveFrameSampler:
                 frame_id += 1
         finally:
             cap.release()
+
+        # `pending_early_candidate` video sonuna kadar ONAYLANMAMISSA
+        # (min_count'a hicbir zaman ulasilmadi), GUVENLI sekilde birakilir -
+        # ne ayrica emit edilir ne de hataya yol acar (gorev notu #8):
+        # onaylanmamis bir sinyal, tanim geregi "surdurulen bir egilim"
+        # olarak dogrulanamamis demektir; sessizce dusurmek veri kaybi
+        # DEGILDIR (ayni ilkeler: esik/coverage icin de "asilmadiysa
+        # birakilir" - asagida). Ekstra kod GEREKMEZ - fonksiyon dondugunde
+        # kapsam disina cikar.
 
         # Video sonu: pencere kapanmadan (bir sonraki ornek gelmeden) video
         # bitmis olabilir. Su ana kadarki en iyi aday varsa VE (o anki

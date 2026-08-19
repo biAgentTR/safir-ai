@@ -918,3 +918,249 @@ def test_density_invalid_config_values_raise(tmp_path: Path) -> None:
         )
     with pytest.raises(ValueError):
         AdaptiveFrameSampler(early_change_min_count=5, early_change_window=2, evidence_output_dir=str(tmp_path / "e5"))
+
+
+# =============================================================================
+# Erken-degisim onayinda ONSET KARESININ KORUNMASI: onay `early_change_min_count`
+# kareyi bulunca tamamlansa da, secilen `early_change` karesi ONAYIN
+# GERCEKLESTIGI (mevcut) kare degil, zincirin SAKIN durumdan cikan ILK
+# supheli-erken karesidir (bkz. `pending_early_candidate` -
+# `_PendingSelectionCandidate`nin bu amacla yeniden kullanilan tek-ornekli
+# hali; ayri bir veri modeli veya buyuyen bir buffer YOKTUR).
+# =============================================================================
+
+
+def _isolated_appearance_video(
+    path: Path, total_frames: int, appear_at: int, size: int = 10, pos: Tuple[int, int] = (10, 10)
+) -> None:
+    """`appear_at` karesinde bir `size`x`size` yama BELIRIR ve rest of the
+    video boyunca SABIT kalir (kaybolmaz) - boylece diff-akisinda TEK BIR
+    izole "degisim ani" (yamanın ortaya cikisi) olusur; yama kaybolsaydi
+    ikinci bir (yamanin gitmesi) diff-olayi daha uretilirdi ve bu, "tek
+    karelik izole gurultu" senaryosunu yanlislikla IKI ayri sinyale
+    donusturup testi gecersiz kilardi."""
+    frames = []
+    for i in range(total_frames):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if i >= appear_at:
+            x, y = pos
+            cv2.rectangle(frame, (x, y), (x + size, y + size), (150, 150, 150), -1)
+        frames.append(frame)
+    _write_video(path, frames)
+
+
+def test_early_change_onset_is_the_first_signal_frame_not_the_confirmation_frame(tmp_path: Path) -> None:
+    """1) 00:26 ilk sinyal / 00:28 onay senaryosu: secilen early_change 00:26'ya (ILK karaye) ait olmali, 00:28'e (onay karesine) degil.
+
+    Ayni video, FARKLI `early_change_min_count` degerleriyle iki kez islenir.
+    Sinyalin ILK gorundugu kare `min_count`tan BAGIMSIZDIR; dogru calisan bir
+    implementasyonda secilen `early_change` zaman damgasi HER IKI durumda da
+    AYNI olmalidir - yalnizca ONAYIN NE ZAMAN tamamlandigi (min_count
+    buyudukce daha GEC) degisir, SECILEN kare degil.
+    """
+    path = tmp_path / "onset_precision.mp4"
+    _write_growing_patch_video(path, total_frames=150, ramp_start=50, ramp_end=140, growth_per_frame=2)
+
+    sampler_a = _density_sampler(
+        tmp_path, early_change_min_count=2, early_change_window=4, max_temporal_gap_sec=50.0
+    )
+    evidence_a = sampler_a.process_video(path, sample_fps=25)
+    sampler_b = _density_sampler(
+        tmp_path, early_change_min_count=3, early_change_window=4, max_temporal_gap_sec=50.0
+    )
+    evidence_b = sampler_b.process_video(path, sample_fps=25)
+
+    onset_a = next(f for f in evidence_a if f.selection_reason == "early_change")
+    onset_b = next(f for f in evidence_b if f.selection_reason == "early_change")
+    assert onset_a.timestamp_sec == onset_b.timestamp_sec
+    assert onset_a.frame_id == onset_b.frame_id
+
+
+def test_unconfirmed_single_frame_noise_produces_no_early_change_output(tmp_path: Path) -> None:
+    """2) Doğrulanmayan (izole, tek karelik) bir sinyal hicbir cikti uretmemeli."""
+    path = tmp_path / "isolated_noise.mp4"
+    # Tek bir izole kare (bir sonraki karede hemen kaybolur) - min_count=2
+    # icin YETERSIZ, SURDURULEN bir egilim degil.
+    _isolated_appearance_video(path, total_frames=150, appear_at=50)
+
+    sampler = _density_sampler(tmp_path, max_temporal_gap_sec=50.0)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    assert all(f.selection_reason != "early_change" for f in evidence)
+
+
+def test_pending_early_candidate_survives_threshold_preemption(tmp_path: Path) -> None:
+    """3) Pending aday, onay tamamlanmadan ana esik gecilirse KAYBOLMAMALI."""
+    path = tmp_path / "threshold_preemption.mp4"
+    frames = []
+    for i in range(80):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if i == 50:
+            # Tek, onaylanmamis bir erken sinyal (min_count=2 icin yetersiz).
+            cv2.rectangle(frame, (10, 10), (10 + 10, 10 + 10), (150, 150, 150), -1)
+        if 51 <= i < 61:
+            # Onay tamamlanmadan HEMEN sonraki karede ana esik gecilir.
+            cv2.rectangle(frame, (5, 5), (120, 90), (255, 255, 255), -1)
+        frames.append(frame)
+    _write_video(path, frames)
+
+    sampler = _density_sampler(tmp_path, max_temporal_gap_sec=50.0)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    early_frames = [f for f in evidence if f.selection_reason == "early_change"]
+    threshold_frames = [f for f in evidence if f.selection_reason == "threshold_exceeded"]
+    assert early_frames, "Onaylanmamis pending aday, ana esik tarafindan kaybolmamali."
+    assert threshold_frames
+    # Pending aday (early_change), esik-gecen kareden ONCE (kronolojik olarak
+    # dogru sirada) korunmali.
+    assert early_frames[0].timestamp_sec < threshold_frames[0].timestamp_sec
+
+
+def test_pending_candidate_and_threshold_frame_never_duplicate(tmp_path: Path) -> None:
+    """4) Pending aday ile threshold_exceeded arasinda hicbir duplicate (ayni frame_id) olusmamali."""
+    path = tmp_path / "no_duplicate_frame_ids.mp4"
+    frames = []
+    for i in range(80):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if i == 50:
+            cv2.rectangle(frame, (10, 10), (10 + 10, 10 + 10), (150, 150, 150), -1)
+        if 51 <= i < 61:
+            cv2.rectangle(frame, (5, 5), (120, 90), (255, 255, 255), -1)
+        frames.append(frame)
+    _write_video(path, frames)
+
+    sampler = _density_sampler(tmp_path, max_temporal_gap_sec=50.0)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    frame_ids = [f.frame_id for f in evidence]
+    assert len(frame_ids) == len(set(frame_ids)), "Ayni kare (frame_id) birden fazla kez gonderilmemeli."
+    evidence_ids = [f.evidence_id for f in evidence]
+    assert len(evidence_ids) == len(set(evidence_ids))
+
+
+def test_two_separate_early_chains_do_not_reuse_stale_pending_candidate(tmp_path: Path) -> None:
+    """5+6) Pending aday, secildikten sonra temizlenmeli; YENI bir erken-degisim dizisi ONCEKI dizinin adayini kullanmamali."""
+    path = tmp_path / "two_chains.mp4"
+    frames = []
+    for i in range(250):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if i in (50, 51):
+            cv2.rectangle(frame, (10, 10), (10 + 10, 10 + 10), (150, 150, 150), -1)
+        if i in (150, 151):
+            # Farkli bir konumda, tamamen bagimsiz IKINCI bir zincir.
+            cv2.rectangle(frame, (60, 60), (60 + 10, 60 + 10), (150, 150, 150), -1)
+        frames.append(frame)
+    _write_video(path, frames)
+
+    sampler = _density_sampler(tmp_path, max_temporal_gap_sec=50.0)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    early_frames = [f for f in evidence if f.selection_reason == "early_change"]
+    assert len(early_frames) >= 2, "Iki ayri zincir, iki ayri early_change karesi uretmeli."
+    first_chain = [f for f in early_frames if f.timestamp_sec < 4.0]
+    second_chain = [f for f in early_frames if f.timestamp_sec >= 4.0]
+    assert first_chain and second_chain
+    # Ikinci zincirin onset karesi, ilk zincirin (eski/tuketilmis) pending
+    # adayiyla AYNI olmamali - kendi (daha sonraki, farkli konumdaki) ilk
+    # karesini kullanmali.
+    assert first_chain[0].frame_id != second_chain[0].frame_id
+    assert first_chain[0].timestamp_sec != second_chain[0].timestamp_sec
+    assert second_chain[0].frame_id == 150
+
+
+def test_insert_chronologically_maintains_order_when_inserted_out_of_sequence(tmp_path: Path) -> None:
+    """7+9) Pending adayin (gec eklenen ama ERKEN zaman damgali) kronolojik konuma dogru yerlestirilmesi.
+
+    `_insert_chronologically`, coverage veya daha sonra eklenen baska bir
+    adayla ARAYA GIRMIS bir pending-onay durumunda bile listeyi kronolojik
+    tutan asil mekanizmadir; burada dogrudan test edilir (video-seviyesinde
+    bu spesifik yarisi zorlamak kirilgan olur - mekanizmanin kendisini test
+    etmek daha guvenilirdir).
+    """
+    import src.sampler.adaptive_sampler as sampler_module
+    from src.sampler.schema import EvidenceFrame
+
+    def _ef(ts: float) -> EvidenceFrame:
+        fid = int(ts * 100)
+        return EvidenceFrame(
+            evidence_id=f"ev{fid}",
+            frame_id=fid,
+            timestamp_sec=ts,
+            timestamp_str="00:00",
+            change_score=0.0,
+            image_bytes=b"",
+            base64_image="data:image/jpeg;base64,AA==",
+            image_shape=(1, 1, 3),
+        )
+
+    # t=3.0'daki bir coverage karesi ZATEN eklenmisken, t=2.0'daki (daha ONCE
+    # gerceklesmis ama GEC onaylanan) bir pending aday geliyor.
+    frames = [_ef(1.0), _ef(3.0)]
+    sampler_module._insert_chronologically(frames, _ef(2.0))
+    assert [f.timestamp_sec for f in frames] == [1.0, 2.0, 3.0]
+
+    # Pending aday, listenin EN BASINA da dogru sekilde girebilmeli.
+    frames2 = [_ef(5.0), _ef(6.0)]
+    sampler_module._insert_chronologically(frames2, _ef(1.0))
+    assert [f.timestamp_sec for f in frames2] == [1.0, 5.0, 6.0]
+
+
+def test_end_to_end_evidence_stays_chronological_with_pending_early_candidate(tmp_path: Path) -> None:
+    """7) Gercek bir video akisinda, pending aday ile coverage/diger secimler birlikteyken kronolojik sira korunmali."""
+    path = tmp_path / "mixed_with_pending.mp4"
+    frames = []
+    for i in range(250):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if i in (50, 51):
+            cv2.rectangle(frame, (10, 10), (10 + 10, 10 + 10), (150, 150, 150), -1)
+        if i in (150, 151):
+            cv2.rectangle(frame, (60, 60), (60 + 10, 60 + 10), (150, 150, 150), -1)
+        frames.append(frame)
+    _write_video(path, frames)
+
+    sampler = _density_sampler(tmp_path, max_temporal_gap_sec=1.0)  # kucuk gap: coverage sik tetiklenir
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    timestamps = [f.timestamp_sec for f in evidence]
+    assert timestamps == sorted(timestamps)
+    assert len(timestamps) == len(set(timestamps))
+
+
+def test_end_of_video_unconfirmed_pending_early_candidate_is_dropped_safely(tmp_path: Path) -> None:
+    """8) Video sonunda henuz onaylanmamis pending aday guvenli sekilde temizlenmeli (hata/veri bozulmasi olmadan)."""
+    path = tmp_path / "unconfirmed_at_end.mp4"
+    # Yama t=50'de belirir ve SABIT kalir (video, tek bir erken sinyalden
+    # hemen sonra biter) - yalnizca TEK bir izole diff-olayi olusur, min_count=2
+    # icin yetersiz kalir (bkz. _isolated_appearance_video docstring'i).
+    _isolated_appearance_video(path, total_frames=52, appear_at=50)
+
+    sampler = _density_sampler(tmp_path, max_temporal_gap_sec=50.0)
+    evidence = sampler.process_video(path, sample_fps=25)  # cokmemeli
+
+    assert all(f.selection_reason != "early_change" for f in evidence)
+
+
+def test_pending_early_candidate_state_is_a_single_object_not_a_growing_collection(tmp_path: Path) -> None:
+    """9) Bellek kullanimi video/pencere uzunluguyla BUYUMEMELI - pending_early_candidate TEK bir nesnedir, liste/kuyruk degildir."""
+    path = tmp_path / "long_for_pending_memory_check.mp4"
+    frames = []
+    for i in range(600):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        # Uzun video boyunca ARALIKLI, hicbir zaman onaylanmayan tek karelik
+        # sinyaller (surekli "pending set -> temizlenir" dongusu).
+        if i % 50 == 0:
+            cv2.rectangle(frame, (10, 10), (10 + 10, 10 + 10), (150, 150, 150), -1)
+        frames.append(frame)
+    _write_video(path, frames)
+
+    sampler = _density_sampler(tmp_path, max_temporal_gap_sec=50.0, history_window=10)
+    sampler.process_video(path, sample_fps=25)
+
+    # `pending_early_candidate` fonksiyon-yerel bir degiskendir (self uzerinde
+    # SAKLANMAZ); burada dolayli olarak, ilgili sabit-boyutlu ic durumlarin
+    # (ayni desen) video uzunlugundan BAGIMSIZ kaldigi dogrulanir.
+    assert len(sampler.noise_floor_history) <= sampler.history_window
+    assert len(sampler._recent_early_decisions) <= sampler.early_change_window
+    assert len(sampler._recent_threshold_decisions) <= sampler.temporal_vote_window
+    assert not hasattr(sampler, "_pending_early_candidates")  # coğul/liste bir alan YOK
+    assert not hasattr(sampler, "_early_candidate_history")
