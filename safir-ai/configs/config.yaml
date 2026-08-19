@@ -42,9 +42,10 @@ sampler:
 
   # --- Olay kumeleme / zamansal oylama (cluster_events) ---
   # NOT: Kanit Karesi sayisinda sabit bir ust sinir (eski max_evidence_buffer)
-  # ve eski seek-tabanli pre_peak_offset_sec/post_peak_offset_sec pencereleri
+  # ve eski seek-tabanli, sabit konumsal zaman-penceresi ofsetleri
   # KALDIRILMISTIR. VLM/API kapasitesi artik OLAY BASINA (video geneli DEGIL)
-  # FrameSelector.TARGET_FRAME_COUNT ile korunur (bkz. src/sampler/context/frame_selector.py).
+  # FrameSelector.TARGET_FRAME_COUNT ile korunur; secilen kareler konumsal
+  # bir role sahip DEGILDIR (bkz. src/sampler/context/frame_selector.py).
   cluster_merge_gap_sec: 20.0        # Iki HAM olay grubunu tek Olay Grubunda birlestirmek icin izin verilen bosluk (sn)
   bbox_iou_merge_threshold: 0.10     # Sinir kutusu IoU tabanli birlestirme esigi
   max_cluster_duration_sec: 120.0    # Bir Olay Grubunun izin verilen azami toplam suresi (sn); asilirsa YENI grup baslar (kare silinmez)

@@ -129,18 +129,21 @@ def serialize_sampler(
     for c in clusters:
         rep = []
         for rf in c.representative_frames:
-            # `rf.frame_id` (gercek video kare kimligi) kullanilir, `rf.label` DEGIL:
-            # FrameSelector artik bir olay icin birden fazla "context" etiketli kare
-            # secebildigi icin yalnizca label ile anahtarlamak cakismaya (ayni thumbnail
-            # anahtarinin farkli karelerin ustune yazilmasina) yol acardi.
-            fid = f"c{c.event_id}_{rf.frame_id}"
+            # `rf.frame_index` (gercek video kare kimligi) kullanilir: bir olay
+            # icin birden fazla evidence karesi ayni `selection_reason`i
+            # tasiyabildigi icin yalnizca gerekce ile anahtarlamak cakismaya
+            # (ayni thumbnail anahtarinin farkli karelerin ustune yazilmasina)
+            # yol acardi. Hicbir kare kalici bir 'pre'/'peak'/'post' rolu
+            # TASIMAZ (bkz. RepresentativeFrame schema docstring'i).
+            fid = f"c{c.event_id}_{rf.frame_index}"
             try:
                 raw = base64.b64decode(rf.base64_image.split(",", 1)[1])
             except (ValueError, IndexError):
                 raw = b""
             rep.append(
                 {
-                    "label": rf.label,
+                    "selection_reason": rf.selection_reason,
+                    "evidence_score": round(rf.evidence_score, 4),
                     "timestamp_str": rf.timestamp_str,
                     "frame_id": fid,
                     "thumbnail_url": _add_frame(fid, raw),

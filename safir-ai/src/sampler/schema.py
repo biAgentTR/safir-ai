@@ -38,25 +38,28 @@ class EvidenceFrame(BaseModel):
 
 class RepresentativeFrame(BaseModel):
     """`FrameSelector` tarafindan bir Olay Grubu icin secilen, hem VLM'e gonderilen hem de
-    (istege bagli) diske arsivlenen ORTAK temsili kare.
+    (istege bagli) diske arsivlenen ORTAK evidence karesi.
+
+    ONEMLI: Bu model HICBIR sekilde 'pre'/'peak'/'post' gibi konumsal bir ROL
+    tasimaz - her kayit, ait oldugu Olay Grubuna dahil, evidence esigini
+    gecmis TEKIL bir evidence karesidir; aralarindaki tek fark
+    `selection_reason` (neden secildigi) ve `timestamp_sec`dir (bkz.
+    `FrameSelector`). En yuksek evidence skoruna sahip kare de listede yer
+    alir, ancak kalici bir konumsal etiketle ISARETLENMEZ.
 
     Bu model, `EvidenceFrame.frame_id`/`base64_image` degerlerinin dogrudan kopyasidir
     (yeniden JPEG kodlama YAPILMAZ); boylece VLM'in analiz ettigi kare ile
     diske yazilan/kullaniciya gosterilen kare HER ZAMAN ayni kaynaktan gelir.
     """
 
-    label: str = Field(
-        description="Karenin olay icindeki rolu: 'peak' (zirve), 'pre_context' (zirve oncesi baglam) "
-        "veya 'post_context' (zirve sonrasi baglam)."
-    )
-    frame_id: int = Field(description="Kaynak `EvidenceFrame.frame_id` (kimlik tutarliligi icin).")
+    frame_index: int = Field(description="Kaynak `EvidenceFrame.frame_id` (kimlik tutarliligi icin).")
     event_id: int = Field(description="Bu karenin ait oldugu `EventCluster.event_id`.")
     timestamp_sec: float = Field(description="Karenin saniye cinsinden zaman damgasi.")
     timestamp_str: str = Field(description="`MM:SS` formatinda okunabilir zaman damgasi.")
-    change_score: float = Field(description="Kaynak `EvidenceFrame.change_score` (Evidence/risk skoru).")
+    evidence_score: float = Field(description="Kaynak `EvidenceFrame.change_score` (Evidence/risk skoru).")
     selection_reason: str = Field(
-        description="Bu karenin neden secildigini aciklayan kisa, insan-okur gerekce "
-        "(orn. 'en yuksek evidence skoru (zirve)', 'zirve oncesi baglam (esit dagitilmis)')."
+        description="Bu karenin neden secildigini aciklayan, konumsal ROL ICERMEYEN kisa gerekce "
+        "(orn. `'highest_evidence_score'` veya `'temporal_coverage'`)."
     )
     base64_image: str = Field(description="`data:image/jpeg;base64,...` formatinda goruntu.")
 
@@ -75,10 +78,11 @@ class EventCluster(BaseModel):
     representative_frames: list["RepresentativeFrame"] = Field(
         default_factory=list,
         description=(
-            "`FrameSelector` tarafindan secilen, zaman sirali, en fazla 5 benzersiz temsili "
-            "kare (zirve dahil); VLM'e ve diske/rapora AYNI kaynaktan gonderilir. Bu grubun "
-            "benzersiz Kanit Karesi sayisi 5'ten azsa, kare COGALTILMADAN mevcut tum benzersiz "
-            "kareler kullanilir (gercek sayi icin `len(representative_frames)`e bakin). Bos ise "
+            "`FrameSelector` tarafindan secilen, zaman sirali, en fazla 5 benzersiz evidence "
+            "karesi (en yuksek skorlu kare dahil, ama HICBIR konumsal 'pre/peak/post' rolu "
+            "TASIMADAN); VLM'e ve diske/rapora AYNI kaynaktan gonderilir. Bu grubun benzersiz "
+            "Kanit Karesi sayisi 5'ten azsa, kare COGALTILMADAN mevcut tum benzersiz kareler "
+            "kullanilir (gercek sayi icin `len(representative_frames)`e bakin). Bos ise "
             "VLMPayloadBuilder yalnizca `peak_frame` ile eski (tek-kare) davranisa duser."
         ),
     )

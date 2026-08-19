@@ -51,10 +51,11 @@ class SamplerConfig(BaseModel):
     uyumluluk ve ince ayar icin saklanir.
 
     ONEMLI: `max_evidence_buffer` (Kanit Karesi sayisinda sabit ust sinir) ve
-    `pre_peak_offset_sec`/`post_peak_offset_sec` (eski seek-tabanli pre/post
-    pencere ofsetleri) KALDIRILMISTIR: kare sayisinda video geneli sabit bir
-    limit YOKTUR, VLM/API kapasitesi olay basina `FrameSelector.
-    TARGET_FRAME_COUNT` ile korunur (bkz. `src/sampler/context/frame_selector.py`).
+    eski seek-tabanli, sabit konumsal zaman-penceresi ofsetleri
+    KALDIRILMISTIR: kare sayisinda video geneli sabit bir limit YOKTUR,
+    VLM/API kapasitesi olay basina `FrameSelector.TARGET_FRAME_COUNT` ile
+    korunur; secilen kareler konumsal bir role de sahip DEGILDIR (bkz.
+    `src/sampler/context/frame_selector.py`).
     """
 
     min_change_threshold: float

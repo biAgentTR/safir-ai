@@ -163,8 +163,15 @@ export interface EvidenceFrameRef {
   thumbnail_url: string | null
 }
 
+/**
+ * A single selected evidence frame for an event. Carries no positional role
+ * ("pre"/"peak"/"post") — every entry is just an evidence frame for its
+ * event, distinguished only by timestamp and `selection_reason` (e.g.
+ * "highest_evidence_score" or "temporal_coverage").
+ */
 export interface RepresentativeFrameRef {
-  label: string
+  selection_reason: string
+  evidence_score: number
   timestamp_str: string
   frame_id: string
   thumbnail_url: string | null

@@ -195,16 +195,16 @@ def build(dev_default: bool) -> nbf.NotebookNode:
         "print(f'Olay Gruplari   : {len(clusters)}')\n"
         "print('\\nKanit kareleri (kirmizi kutu = motion_bbox):')\n"
         "display(widgets.HBox([_img(_draw_bbox(f.image_bytes, f.motion_bbox)) for f in evidence]))\n"
-        "print('\\nHer Olay Grubu icin VLM\\'e gidecek pre/peak/post kareler:')\n"
+        "print('\\nHer Olay Grubu icin VLM\\'e gidecek evidence kareleri (hicbiri konumsal olarak etiketlenmez):')\n"
         "for c in clusters:\n"
-        "    print(f\"  Olay #{c.event_id} ({c.start_time:.1f}-{c.end_time:.1f}s): {[rf.label for rf in c.representative_frames]}\")\n"
+        "    print(f\"  Olay #{c.event_id} ({c.start_time:.1f}-{c.end_time:.1f}s): {[rf.selection_reason for rf in c.representative_frames]}\")\n"
         "    display(widgets.HBox([_img(_b64(rf.base64_image)) for rf in c.representative_frames]))"
     )
 
     # 5 - stage_vlm
     md(
         "## 5) `pipeline.stage_vlm()` → VLM (Gemini) Girdi & Ham Yanit\n"
-        "**INPUT (Gemini'ye giden):** pre/peak/post kareler + prompt · **PROCESSING:** gercek `GeminiVLM.describe_events` · "
+        "**INPUT (Gemini'ye giden):** evidence kareleri + prompt · **PROCESSING:** gercek `GeminiVLM.describe_events` · "
         "**OUTPUT:** modelin **ham** yaniti + `EVENTS_JSON`."
     )
     code(

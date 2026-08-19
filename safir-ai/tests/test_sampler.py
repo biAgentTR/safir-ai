@@ -258,15 +258,19 @@ def test_representative_frames_include_peak_and_are_chronological(
     clusters = sampler.cluster_events(frames)
 
     for cluster in clusters:
-        peak_entries = [rf for rf in cluster.representative_frames if rf.label == "peak"]
-        assert len(peak_entries) == 1
-        assert peak_entries[0].frame_id == cluster.peak_frame.frame_id
+        # En yuksek skorlu kare kalici bir 'peak' etiketi TASIMAZ; kimligi
+        # `cluster.peak_frame.frame_id` ile eslesen kayittan bulunur.
+        highest_score_entries = [
+            rf for rf in cluster.representative_frames if rf.frame_index == cluster.peak_frame.frame_id
+        ]
+        assert len(highest_score_entries) == 1
+        assert highest_score_entries[0].selection_reason == "highest_evidence_score"
 
         timestamps = [rf.timestamp_sec for rf in cluster.representative_frames]
         assert timestamps == sorted(timestamps)
 
-        frame_ids = [rf.frame_id for rf in cluster.representative_frames]
-        assert len(frame_ids) == len(set(frame_ids))
+        frame_indices = [rf.frame_index for rf in cluster.representative_frames]
+        assert len(frame_indices) == len(set(frame_indices))
 
 
 def test_short_event_does_not_produce_duplicate_or_fabricated_frames(
@@ -281,8 +285,8 @@ def test_short_event_does_not_produce_duplicate_or_fabricated_frames(
 
     assert len(clusters) == 1
     rep_frames = clusters[0].representative_frames
-    frame_ids = [rf.frame_id for rf in rep_frames]
-    assert len(frame_ids) == len(set(frame_ids))
+    frame_indices = [rf.frame_index for rf in rep_frames]
+    assert len(frame_indices) == len(set(frame_indices))
     # Fallback tek kareyle kapanan bir olay -> tek temsili kare (cogaltma yok).
     assert len(rep_frames) == 1
 
@@ -290,7 +294,7 @@ def test_short_event_does_not_produce_duplicate_or_fabricated_frames(
 def test_vlm_and_disk_output_share_identical_frame_identity(
     tmp_path: Path, long_multi_event_video: str
 ) -> None:
-    """VLM'e giden (`representative_frames`) ve diske yazilan kareler AYNI frame_id/timestamp setini kullanmali."""
+    """VLM'e giden (`representative_frames`) ve diske yazilan kareler AYNI frame_index/timestamp setini kullanmali."""
     from src.sampler.context.frame_archiver import FrameArchiver
 
     sampler = AdaptiveFrameSampler(
@@ -306,9 +310,9 @@ def test_vlm_and_disk_output_share_identical_frame_identity(
     for cluster in clusters:
         event_dir = output_dir / f"event_{cluster.event_id:04d}"
         metadata = __import__("json").loads((event_dir / "metadata.json").read_text(encoding="utf-8"))
-        disk_frame_ids = {f["frame_id"] for f in metadata["frames"]}
-        vlm_frame_ids = {rf.frame_id for rf in cluster.representative_frames}
-        assert disk_frame_ids == vlm_frame_ids
+        disk_frame_indices = {f["frame_index"] for f in metadata["frames"]}
+        vlm_frame_indices = {rf.frame_index for rf in cluster.representative_frames}
+        assert disk_frame_indices == vlm_frame_indices
 
     # FrameArchiver de ayni ciktiyi (bagimsiz secim yapmadan) uretebilmeli.
     event_dirs = FrameArchiver.export(clusters, output_dir=str(tmp_path / "manual_export"))
@@ -462,4 +466,77 @@ def test_representative_frames_only_come_from_evidence_threshold_passing_frames(
         for rf in cluster.representative_frames:
             # Her secilen kare, process_video'nun urettigi (esigi gecmis)
             # Kanit Kareleri kumesinden gelmis olmali.
-            assert rf.frame_id in evidence_frame_ids
+            assert rf.frame_index in evidence_frame_ids
+
+
+# =============================================================================
+# Pre/peak/post konumsal bilgisi TAMAMEN kaldirilmis olmali: sampler ciktisinda,
+# VLM payload'inda, disk metadata'sinda hicbir konumsal rol/etiket bulunmamali.
+# =============================================================================
+
+
+def test_sampler_output_has_no_pre_peak_post_role_labels(tmp_path: Path, long_multi_event_video: str) -> None:
+    sampler = AdaptiveFrameSampler(
+        min_change_threshold=0.001,
+        min_event_interval_sec=0.5,
+        cluster_merge_gap_sec=1.0,
+        evidence_output_dir=str(tmp_path / "evidence"),
+    )
+    frames = sampler.process_video(long_multi_event_video, sample_fps=25)
+    clusters = sampler.cluster_events(frames)
+
+    for cluster in clusters:
+        for rf in cluster.representative_frames:
+            field_names = set(type(rf).model_fields.keys())
+            assert "label" not in field_names
+            assert "frame_role" not in field_names
+            assert "frame_type" not in field_names
+            assert "position_type" not in field_names
+            reason_lower = rf.selection_reason.lower()
+            assert "pre" not in reason_lower
+            assert "post" not in reason_lower
+            assert "peak" not in reason_lower
+
+
+def test_vlm_payload_contains_no_pre_peak_post_tags(tmp_path: Path, long_multi_event_video: str) -> None:
+    from src.sampler.payload_builder import VLMPayloadBuilder
+
+    sampler = AdaptiveFrameSampler(
+        min_change_threshold=0.001,
+        min_event_interval_sec=0.5,
+        cluster_merge_gap_sec=1.0,
+        evidence_output_dir=str(tmp_path / "evidence"),
+    )
+    frames = sampler.process_video(long_multi_event_video, sample_fps=25)
+    clusters = sampler.cluster_events(frames)
+
+    content = VLMPayloadBuilder.build_content_blocks(clusters, prompt="test")
+    text_blocks = " ".join(b["text"].lower() for b in content if b["type"] == "text")
+
+    assert "pre-event" not in text_blocks
+    assert "post-event" not in text_blocks
+    assert "kare rolu" not in text_blocks
+    assert "pre_context" not in text_blocks
+    assert "post_context" not in text_blocks
+
+
+def test_no_pre_peak_post_named_files_written_to_disk(tmp_path: Path, long_multi_event_video: str) -> None:
+    sampler = AdaptiveFrameSampler(
+        min_change_threshold=0.001,
+        min_event_interval_sec=0.5,
+        cluster_merge_gap_sec=1.0,
+        evidence_output_dir=str(tmp_path / "evidence"),
+    )
+    frames = sampler.process_video(long_multi_event_video, sample_fps=25)
+    clusters = sampler.cluster_events(frames, export_to_disk=True)
+    assert clusters
+
+    all_files = list((tmp_path / "evidence").rglob("*"))
+    assert all_files
+    for path in all_files:
+        lowered = path.name.lower()
+        assert "pre_peak" not in lowered
+        assert "post_peak" not in lowered
+        assert not lowered.startswith("peak.")
+        assert not lowered.startswith("pre_peak.")
+        assert not lowered.startswith("post_peak.")

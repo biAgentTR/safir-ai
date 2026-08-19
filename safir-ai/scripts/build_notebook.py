@@ -129,9 +129,10 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
 
     # 2 - clusters + representative frames SHOWN
     md(
-        "## 2) Olay Kumeleme + VLM'e Gidecek Kareler (pre / peak / post)\n"
-        "Kanit kareleri **Olay Gruplari**na kumelenir; her grup icin zirvenin oncesi/sonrasi da eklenir. "
-        "**Asagida VLM'e GONDERILECEK kareler tam olarak gorunur** — model bunlari bir dizi olarak yorumlayacak."
+        "## 2) Olay Kumeleme + VLM'e Gidecek Kareler\n"
+        "Kanit kareleri **Olay Gruplari**na kumelenir; her grup icin zaman ekseninde dengeli dagitilmis "
+        "evidence kareleri secilir (hicbiri kalici bir konumsal rolle etiketlenmez). "
+        "**Asagida VLM'e GONDERILECEK kareler tam olarak gorunur** — model bunlari zaman sirali bir dizi olarak yorumlayacak."
     )
     code(
         "import base64\n"
@@ -148,7 +149,7 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
         "    for rf in c.representative_frames:\n"
         "        _, b64 = rf.base64_image.split(',', 1)\n"
         "        imgs.append(IPyImage(data=base64.b64decode(b64), width=200))\n"
-        "        print(f'  • {rf.label:<11} @ {rf.timestamp_str}')\n"
+        "        print(f'  • {rf.selection_reason:<24} @ {rf.timestamp_str}')\n"
         "    display(widgets.HBox([widgets.Image(value=i.data, format='jpeg', width=200) for i in imgs]))"
     )
 

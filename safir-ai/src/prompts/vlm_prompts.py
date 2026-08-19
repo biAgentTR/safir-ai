@@ -3,7 +3,9 @@
 VLM'in gorevi risk PUANLAMAK degil; yalnizca kanit karelerinde GORUNENI nesnel,
 erken-teshis zaman damgali ve yapilandirilmis bir sekilde Turkce betimlemektir.
 Olay zaman damgasi her zaman olayin ILK BASLADIGI (start_time / onset) andir;
-zirve an (peak) yalnizca detay ipucu olarak kullanilir.
+en yuksek evidence skoruna sahip an yalnizca detay ipucu olarak kullanilir.
+Kareler arasinda sabit bir konumsal rol ayrimi YOKTUR; her kare, olayin
+zaman akisina ait tekil bir evidence karesidir.
 """
 
 from __future__ import annotations
@@ -39,9 +41,10 @@ VLM_OBSERVER_SYSTEM_PROMPT = (
     "Sana bir veya daha fazla 'Olay Grubu' verilir. Her grup '[Olay #N]' ile "
     "etiketlenmistir ve o olayin ZAMAN AKISINI icerir:\n"
     "- OLAY BAŞLANGIÇ ZAMANI (start_time): Tehlikenin veya hareketin ILK TESPIT EDILDIGI AN (Erken Uyari Zamani).\n"
-    "- ZIRVE ZAMAN (peak_time): Değişimin ve riskin en yüksek seviyeye ulaştığı an.\n"
+    "- EN YÜKSEK EVIDENCE ANI: Değişimin ve riskin en yüksek seviyeye ulaştığı an.\n"
     "- BİTİŞ ZAMAN (end_time): Olayın sona erdiği veya sabitlendiği an.\n"
-    "Ayrıca her gruba ait temsilci kareler ('pre-event', 'peak', 'post-event') verilir.\n\n"
+    "Ayrıca her gruba ait, zaman sırasıyla verilmiş birden fazla evidence "
+    "karesi bulunur; bu kareler arasında sabit bir konumsal rol AYRIMI YOKTUR.\n\n"
     "## Detayli Analiz Odak Alanlari\n"
     "1. **Erken Tespit ve Baslangic Anı**: Tehlikenin (duman, alev, dusme, kaza, kisisel ihlal) tam olarak hangi zaman damgasinda (MM:SS) basladigini belirle.\n"
     "2. **Duman ve Yangin**: Dumanin rengi (gri/siyah/beyaz), kaynağı, yayilim hizi ve alev varligi.\n"
@@ -49,12 +52,12 @@ VLM_OBSERVER_SYSTEM_PROMPT = (
     "4. **Arac ve Ekipman**: Forklift, vinc, is makinesi hareketi, yaya ile yakinlik ve tehlikeli manevra.\n"
     "5. **Tehlikeli Alan ve Düşme/Saçılma**: Yuksekten dusme, kayma/takilma, dökülme, kısıtlı alana izinsiz giriş.\n\n"
     "## Cikti Bicimi (HER Olay Grubu icin ayri blok)\n"
-    "Olay #<N> (Başlangıç Zamanı: MM:SS | Zirve Zamanı: MM:SS):\n"
+    "Olay #<N> (Başlangıç Zamanı: MM:SS | En Yüksek Evidence Anı: MM:SS):\n"
     "- Başlangıç Anı ve Erken Uyarı: <olayın İLK başladığı tam saniye ve belirti>\n"
     "- Görsel Bulgular (Duman/Yangın/İhlal): <sahnedeki nesnel detaylar>\n"
     "- Personel ve KKD Durumu: <sayı, durus ve KKD detayları>\n"
     "- Araç/Ekipman Etkileşimi: <araç türü ve yaya yakınlığı>\n"
-    "- Olay Gelişimi (Pre -> Peak -> Post): <zaman içindeki değişim akışı>\n"
+    "- Olay Gelişimi (kronolojik akış): <zaman içindeki değişim akışı>\n"
     "- Güven Skoru: <yüksek | orta | düşük>\n\n"
     "## Kurallar\n"
     "1. Olay zaman damgasini HER ZAMAN olayin ILK BASLADIGI saniyeye (start_time) gore ver.\n"

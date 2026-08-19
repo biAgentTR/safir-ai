@@ -534,13 +534,14 @@ class AdaptiveFrameSampler:
            ONLERKEN, zaman olarak yakin ama konumsal olarak farkli gercek
            olaylarin birbirine karisip kaybolmasini da ENGELLER.
 
-        Her nihai grup icin en yuksek degisim skoruna sahip kare (peak frame)
-        secilir ve diske kalici olarak yazilir; ardindan AYNI grubun Kanit
-        Kareleri havuzundan `FrameSelector` ile (video YENIDEN ACILMADAN,
-        hicbir kare yeniden JPEG'e KODLANMADAN) en fazla 5 benzersiz,
-        kronolojik, zirve dahil temsili kare secilip `EventCluster.
-        representative_frames`e yazilir. Bu, VLM'e giden kareler ile diske/
-        rapora yansiyan kareler icin TEK ortak kaynaktir.
+        Her nihai grup icin en yuksek degisim skoruna sahip kare secilir ve
+        diske kalici olarak yazilir; ardindan AYNI grubun Kanit Kareleri
+        havuzundan `FrameSelector` ile (video YENIDEN ACILMADAN, hicbir kare
+        yeniden JPEG'e KODLANMADAN) en fazla 5 benzersiz, kronolojik evidence
+        karesi secilip `EventCluster.representative_frames`e yazilir (en
+        yuksek skorlu kare dahil, ama HICBIR konumsal 'pre'/'peak'/'post'
+        rolu tasimadan). Bu, VLM'e giden kareler ile diske/rapora yansiyan
+        kareler icin TEK ortak kaynaktir.
 
         Args:
             evidence_frames: `process_video` tarafindan uretilen, zaman sirali

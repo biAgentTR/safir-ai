@@ -2,19 +2,15 @@
 
 Onceki iki bagimsiz mekanizmanin (RepresentativeFrameExtractor + PeakFrameExporter)
 yerini alan TEK ortak kare secim mekanizmasini dogrular: her Olay Grubu icin
-1 zirve + en fazla 2 zirve-oncesi + en fazla 2 zirve-sonrasi (toplam en fazla
-5) benzersiz, kronolojik kare secilir; video/dosya sistemine HICBIR erisim
-olmadan, tamamen bellekteki `EvidenceFrame` nesneleri uzerinden calisir.
+en yuksek skorlu evidence karesi + zaman ekseninde dengeli dagitilmis en fazla
+4 ek evidence karesi (toplam en fazla 5) secilir. HICBIR kare kalici bir
+'pre'/'peak'/'post' konumsal rolle ETIKETLENMEZ; video/dosya sistemine hicbir
+erisim olmadan, tamamen bellekteki `EvidenceFrame` nesneleri uzerinden calisir.
 """
 
 from __future__ import annotations
 
-from src.sampler.context.frame_selector import (
-    POST_CONTEXT_BUDGET,
-    PRE_CONTEXT_BUDGET,
-    TARGET_FRAME_COUNT,
-    FrameSelector,
-)
+from src.sampler.context.frame_selector import TARGET_FRAME_COUNT, FrameSelector
 from src.sampler.schema import EvidenceFrame
 
 _EVENT_ID = 7
@@ -35,7 +31,7 @@ def _evidence_frame(frame_id: int, timestamp_sec: float, change_score: float = 0
 
 
 def test_selects_at_most_target_frame_count() -> None:
-    """Uzun bir olayda (20 aday) en fazla TARGET_FRAME_COUNT (5) kare secilmeli: 1 peak + 2 pre + 2 post."""
+    """Uzun bir olayda (20 aday) en fazla TARGET_FRAME_COUNT (5) kare secilmeli."""
     candidates = [_evidence_frame(i, float(i)) for i in range(20)]
     peak = candidates[10]
     peak.change_score = 10.0
@@ -43,23 +39,20 @@ def test_selects_at_most_target_frame_count() -> None:
     result = FrameSelector.select(peak, candidates, event_id=_EVENT_ID)
 
     assert len(result) == TARGET_FRAME_COUNT == 5
-    assert sum(1 for rf in result if rf.label == "peak") == 1
-    assert sum(1 for rf in result if rf.label == "pre_context") == PRE_CONTEXT_BUDGET
-    assert sum(1 for rf in result if rf.label == "post_context") == POST_CONTEXT_BUDGET
 
 
-def test_peak_frame_always_included() -> None:
+def test_highest_score_frame_always_included() -> None:
     candidates = [_evidence_frame(i, float(i)) for i in range(20)]
-    peak = _evidence_frame(999, 7.5, change_score=10.0)
-    candidates_with_peak = candidates + [peak]
+    highest = _evidence_frame(999, 7.5, change_score=10.0)
+    candidates_with_highest = candidates + [highest]
 
-    result = FrameSelector.select(peak, candidates_with_peak, event_id=_EVENT_ID)
+    result = FrameSelector.select(highest, candidates_with_highest, event_id=_EVENT_ID)
 
-    peak_entries = [rf for rf in result if rf.frame_id == peak.frame_id]
-    assert len(peak_entries) == 1
-    assert peak_entries[0].label == "peak"
-    assert peak_entries[0].base64_image == peak.base64_image
-    assert peak_entries[0].event_id == _EVENT_ID
+    matches = [rf for rf in result if rf.frame_index == highest.frame_id]
+    assert len(matches) == 1
+    assert matches[0].base64_image == highest.base64_image
+    assert matches[0].event_id == _EVENT_ID
+    assert matches[0].selection_reason == "highest_evidence_score"
 
 
 def test_selected_frames_are_chronologically_sorted() -> None:
@@ -82,40 +75,40 @@ def test_short_event_does_not_duplicate_frames() -> None:
     result = FrameSelector.select(peak, candidates, event_id=_EVENT_ID)
 
     assert len(result) == 2  # cogaltma yok, mevcut 2 benzersiz kare kullanildi
-    frame_ids = [rf.frame_id for rf in result]
-    assert len(frame_ids) == len(set(frame_ids))
+    frame_indices = [rf.frame_index for rf in result]
+    assert len(frame_indices) == len(set(frame_indices))
 
 
-def test_single_frame_event_returns_only_peak() -> None:
-    """Tek karelik bir olayda (yalnizca zirve) cikti da tek kare olmali; kare uydurulmaz."""
+def test_single_frame_event_returns_only_highest_score_frame() -> None:
+    """Tek karelik bir olayda cikti da tek kare olmali; kare uydurulmaz."""
     peak = _evidence_frame(42, 3.3)
 
     result = FrameSelector.select(peak, [peak], event_id=_EVENT_ID)
 
     assert len(result) == 1
-    assert result[0].label == "peak"
-    assert result[0].frame_id == 42
+    assert result[0].frame_index == 42
+    assert result[0].selection_reason == "highest_evidence_score"
 
 
-def test_peak_not_in_candidates_is_still_included() -> None:
+def test_highest_score_frame_not_in_candidates_is_still_included() -> None:
     """`peak_frame` candidate_frames listesinde olmasa bile secime dahil edilir."""
     candidates = [_evidence_frame(i, float(i)) for i in range(3)]
-    peak = _evidence_frame(100, 50.0, change_score=99.0)
+    highest = _evidence_frame(100, 50.0, change_score=99.0)
 
-    result = FrameSelector.select(peak, candidates, event_id=_EVENT_ID)
+    result = FrameSelector.select(highest, candidates, event_id=_EVENT_ID)
 
-    assert any(rf.frame_id == 100 and rf.label == "peak" for rf in result)
+    assert any(rf.frame_index == 100 for rf in result)
 
 
-def test_no_duplicate_frame_ids_in_large_pool() -> None:
+def test_no_duplicate_frame_indices_in_large_pool() -> None:
     candidates = [_evidence_frame(i, float(i) * 0.5) for i in range(50)]
     peak = candidates[25]
     peak.change_score = 10.0
 
     result = FrameSelector.select(peak, candidates, event_id=_EVENT_ID)
 
-    frame_ids = [rf.frame_id for rf in result]
-    assert len(frame_ids) == len(set(frame_ids))
+    frame_indices = [rf.frame_index for rf in result]
+    assert len(frame_indices) == len(set(frame_indices))
     assert len(result) <= TARGET_FRAME_COUNT
 
 
@@ -128,10 +121,10 @@ def test_representative_frame_reuses_existing_base64_no_reencode() -> None:
     result = FrameSelector.select(peak, candidates, event_id=_EVENT_ID)
 
     for rf in result:
-        source = next(f for f in candidates if f.frame_id == rf.frame_id)
+        source = next(f for f in candidates if f.frame_id == rf.frame_index)
         assert rf.base64_image == source.base64_image
         assert rf.timestamp_str == source.timestamp_str
-        assert rf.change_score == source.change_score
+        assert rf.evidence_score == source.change_score
 
 
 # --------------------------- Evidence-esigi disi kareler asla secilmemeli ---------------------------
@@ -146,42 +139,40 @@ def test_only_frames_passed_in_pool_can_be_selected() -> None:
 
     result = FrameSelector.select(peak, candidates, event_id=_EVENT_ID)
 
-    assert all(rf.frame_id in pool_ids for rf in result)
+    assert all(rf.frame_index in pool_ids for rf in result)
 
 
-# --------------------------- Zirve basta/sonda: butce diger tarafa aktarilir ---------------------------
+# --------------------------- En yuksek skorlu kare basta/sonda: butce dengelenir ---------------------------
 
 
-def test_peak_at_start_shifts_budget_to_post_context() -> None:
-    """Zirve olayin en basindaysa, pre-context butcesi kullanilamaz; post-context'e aktarilmali (kare kaybi yok)."""
+def test_highest_score_at_start_still_reaches_target_count() -> None:
+    """En yuksek skorlu kare olayin en basindaysa, kalan butce diger tarafa aktarilip yine 5 kareye ulasilmali."""
     candidates = [_evidence_frame(i, float(i)) for i in range(10)]
     peak = candidates[0]
     peak.change_score = 10.0
 
     result = FrameSelector.select(peak, candidates, event_id=_EVENT_ID)
 
-    assert sum(1 for rf in result if rf.label == "pre_context") == 0
-    assert sum(1 for rf in result if rf.label == "post_context") == PRE_CONTEXT_BUDGET + POST_CONTEXT_BUDGET
     assert len(result) == TARGET_FRAME_COUNT
+    assert any(rf.frame_index == 0 for rf in result)
 
 
-def test_peak_at_end_shifts_budget_to_pre_context() -> None:
+def test_highest_score_at_end_still_reaches_target_count() -> None:
     candidates = [_evidence_frame(i, float(i)) for i in range(10)]
     peak = candidates[-1]
     peak.change_score = 10.0
 
     result = FrameSelector.select(peak, candidates, event_id=_EVENT_ID)
 
-    assert sum(1 for rf in result if rf.label == "post_context") == 0
-    assert sum(1 for rf in result if rf.label == "pre_context") == PRE_CONTEXT_BUDGET + POST_CONTEXT_BUDGET
     assert len(result) == TARGET_FRAME_COUNT
+    assert any(rf.frame_index == 9 for rf in result)
 
 
 # --------------------------- Metadata: frame kimligi/timestamp/skor/event/gerekce ---------------------------
 
 
 def test_representative_frame_carries_full_metadata() -> None:
-    """Her secilen kare icin frame_id, timestamp, evidence skoru, event_id ve secilme nedeni korunmali."""
+    """Her secilen kare icin frame_index, timestamp, evidence skoru, event_id ve secilme nedeni korunmali."""
     candidates = [_evidence_frame(i, float(i), change_score=float(i)) for i in range(5)]
     peak = candidates[2]
     peak.change_score = 99.0
@@ -189,8 +180,42 @@ def test_representative_frame_carries_full_metadata() -> None:
     result = FrameSelector.select(peak, candidates, event_id=_EVENT_ID)
 
     for rf in result:
-        assert isinstance(rf.frame_id, int)
+        assert isinstance(rf.frame_index, int)
         assert rf.event_id == _EVENT_ID
         assert isinstance(rf.timestamp_sec, float)
-        assert isinstance(rf.change_score, float)
+        assert isinstance(rf.evidence_score, float)
         assert rf.selection_reason  # bos olmayan, insan-okur bir gerekce
+
+
+# --------------------------- Pre/peak/post konumsal etiketi TAMAMEN kaldirilmis olmali ---------------------------
+
+
+def test_representative_frame_model_has_no_positional_role_field() -> None:
+    """Cikti modelinde artik 'label'/'frame_role'/'position_type' gibi konumsal bir alan bulunmamali."""
+    candidates = [_evidence_frame(i, float(i)) for i in range(5)]
+    peak = candidates[2]
+    peak.change_score = 99.0
+
+    result = FrameSelector.select(peak, candidates, event_id=_EVENT_ID)
+
+    for rf in result:
+        field_names = set(type(rf).model_fields.keys())
+        assert "label" not in field_names
+        assert "frame_role" not in field_names
+        assert "frame_type" not in field_names
+        assert "position_type" not in field_names
+
+
+def test_no_pre_peak_post_strings_anywhere_in_selection_reasons() -> None:
+    """`selection_reason` degerleri 'pre'/'peak'/'post' gibi konumsal kelimeler ICERMEMELI."""
+    candidates = [_evidence_frame(i, float(i)) for i in range(20)]
+    peak = candidates[10]
+    peak.change_score = 10.0
+
+    result = FrameSelector.select(peak, candidates, event_id=_EVENT_ID)
+
+    for rf in result:
+        reason_lower = rf.selection_reason.lower()
+        assert "pre" not in reason_lower
+        assert "post" not in reason_lower
+        assert "peak" not in reason_lower

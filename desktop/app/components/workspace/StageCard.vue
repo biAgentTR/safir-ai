@@ -145,7 +145,7 @@ const regulations = computed(() => store.report?.relevant_regulations ?? [])
               @click="emit('open-frame', rf.frame_id)"
             >
               <img :src="frameUrl(rf.frame_id)" :alt="rf.frame_id" class="w-full h-20 object-cover" loading="lazy" />
-              <div class="px-2 py-1 text-[10px] font-mono text-slate-400">{{ rf.label }} · {{ rf.timestamp_str }}</div>
+              <div class="px-2 py-1 text-[10px] font-mono text-slate-400">{{ rf.timestamp_str }} · {{ rf.evidence_score.toFixed(3) }}</div>
             </button>
           </div>
         </div>

@@ -390,12 +390,13 @@ def test_high_risk_auto_dispatches_alarm_in_pipeline(
 def test_pipeline_sends_representative_frame_sequence_to_vlm(
     pipeline: SafirPipeline, motion_video: str
 ) -> None:
-    """Pipeline, VLM'e tek zirve kare yerine zaman sirali temsili kare DIZISI gondermeli.
+    """Pipeline, VLM'e tek zirve kare yerine zaman sirali evidence kare DIZISI gondermeli.
 
-    Zirve karenin oncesi/sonrasindan (pre-event/post-event) kareler cikarilip
-    `cluster.representative_frames` doldurulmali; boylece VLM olayin akisini
-    (baslangic->gelisim->sonuc) muhakeme edebilir. VLM'e gecirilen kumeler
-    yakalanarak dogrulanir.
+    En yuksek skorlu karenin oncesinden/sonrasindan ek evidence kareleri
+    secilip `cluster.representative_frames` doldurulmali (hicbirine kalici
+    bir 'pre'/'peak'/'post' konumsal ROL verilmeden); boylece VLM olayin
+    akisini (baslangic->gelisim->sonuc) muhakeme edebilir. VLM'e gecirilen
+    kumeler yakalanarak dogrulanir.
     """
     captured = {}
     original_describe = pipeline._vlm.describe_events
@@ -409,10 +410,13 @@ def test_pipeline_sends_representative_frame_sequence_to_vlm(
 
     clusters = captured["clusters"]
     assert clusters, "VLM'e en az bir Olay Grubu gitmeli."
-    # En az bir kume, pre/peak/post iceren bir DIZI tasimali (tek kare degil).
+    # En az bir kume, birden fazla evidence karesi iceren bir DIZI tasimali (tek kare degil).
     assert any(len(c.representative_frames) >= 2 for c in clusters)
-    labels = {rf.label for c in clusters for rf in c.representative_frames}
-    assert "peak" in labels
+    # En yuksek skorlu kare secime dahil, ama hicbir kare 'label' gibi konumsal bir alan TASIMIYOR.
+    for c in clusters:
+        assert all("label" not in type(rf).model_fields for rf in c.representative_frames)
+        highest_score_ids = {rf.frame_index for rf in c.representative_frames if rf.selection_reason == "highest_evidence_score"}
+        assert c.peak_frame.frame_id in highest_score_ids
 
 
 def test_pipeline_produces_degraded_report_when_vlm_fails(

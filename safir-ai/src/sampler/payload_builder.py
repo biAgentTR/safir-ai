@@ -1,11 +1,13 @@
-"""04 - VLM Payload Builder: zirve karelerini vLLM'e gonderilecek JSON'a donusturur.
+"""04 - VLM Payload Builder: Olay Gruplarinin evidence karelerini vLLM'e gonderilecek JSON'a donusturur.
 
 Bu modul, `AdaptiveFrameSampler.cluster_events` tarafindan uretilen Olay
-Gruplarinin zirve karelerini (peak frames) alip her biri icin zaman damgasi
-ve olay metadatasi iceren bir metin blogu ile birlikte, OpenAI/vLLM
-`chat/completions` API'sinin bekledigi `image_url` (base64) icerik bloklarina
-donusturur. VLM katmani (`BaseVLM`), bu modulun uretttigi icerik bloklarini
-model adi/sicaklik gibi model-ozel alanlarla sarmalayarak nihai istegi olusturur.
+Gruplarinin `FrameSelector` ile secilmis evidence karelerini alip her biri
+icin zaman damgasi ve olay metadatasi iceren bir metin blogu ile birlikte,
+OpenAI/vLLM `chat/completions` API'sinin bekledigi `image_url` (base64)
+icerik bloklarina donusturur. Kareler arasinda hicbir konumsal ('pre'/
+'peak'/'post') ROL bilgisi VLM'e AKTARILMAZ; VLM katmani (`BaseVLM`), bu
+modulun uretttigi icerik bloklarini model adi/sicaklik gibi model-ozel
+alanlarla sarmalayarak nihai istegi olusturur.
 """
 
 from __future__ import annotations
@@ -23,12 +25,15 @@ class VLMPayloadBuilder:
 
     @staticmethod
     def build_content_blocks(clusters: List[EventCluster], prompt: str) -> List[Dict[str, Any]]:
-        """Zirve karelerini, zaman damgasi/metadata metniyle birlikte icerik bloklarina cevirir.
+        """Evidence karelerini, zaman damgasi/metadata metniyle birlikte icerik bloklarina cevirir.
 
         Her Olay Grubu icin once o grubu tanimlayan bir metin blogu (zaman
-        araligi, aday kare sayisi, degisim skoru), ardindan zirve karenin
-        base64 goruntusu eklenir. Bu, VLM'in her karenin hangi olaya ait
-        oldugunu ayirt edebilmesini saglar.
+        araligi, aday kare sayisi, en yuksek evidence skoru), ardindan
+        `FrameSelector` ile secilmis evidence karelerinin base64 goruntuleri
+        eklenir. Bu, VLM'in her karenin hangi olaya ait oldugunu ayirt
+        edebilmesini saglar; kareler arasinda HICBIR konumsal ('pre'/'peak'/
+        'post') rol/sira bilgisi VERILMEZ - yalnizca zaman damgasi ve
+        evidence skoru.
 
         Args:
             clusters: `cluster_events` tarafindan uretilen Olay Gruplari.
@@ -50,17 +55,17 @@ class VLMPayloadBuilder:
             peak = cluster.peak_frame
             start_m, start_s = divmod(int(cluster.start_time), 60)
             start_str = f"{start_m:02d}:{start_s:02d}"
-            
+
             end_m, end_s = divmod(int(cluster.end_time), 60)
             end_str = f"{end_m:02d}:{end_s:02d}"
 
             metadata_text = (
                 f"[Olay #{cluster.event_id}] "
                 f"OLAY BAŞLANGIÇ ZAMANI (ILK AN): {start_str} ({cluster.start_time:.2f}s) | "
-                f"ZIRVE ZAMAN: {peak.timestamp_str} ({peak.timestamp_sec:.2f}s) | "
+                f"EN YUKSEK EVIDENCE ANI: {peak.timestamp_str} ({peak.timestamp_sec:.2f}s) | "
                 f"BITIŞ ZAMAN: {end_str} ({cluster.end_time:.2f}s) | "
                 f"aday_kare_sayisi={cluster.total_candidate_frames}, "
-                f"degisim_skoru={peak.change_score:.4f}"
+                f"en_yuksek_evidence_skoru={peak.change_score:.4f}"
             )
             content.append({"type": "text", "text": metadata_text})
 
@@ -70,8 +75,8 @@ class VLMPayloadBuilder:
                         {
                             "type": "text",
                             "text": (
-                                f"[Olay #{rf.event_id} | Kare rolu: {rf.label} | zaman: {rf.timestamp_str} | "
-                                f"evidence_skoru={rf.change_score:.4f}]"
+                                f"[Olay #{rf.event_id} | zaman: {rf.timestamp_str} | "
+                                f"evidence_skoru={rf.evidence_score:.4f}]"
                             ),
                         }
                     )
@@ -103,8 +108,8 @@ class VLMPayloadBuilder:
                 "event_id": cluster.event_id,
                 "start_time": cluster.start_time,
                 "end_time": cluster.end_time,
-                "peak_timestamp": cluster.peak_frame.timestamp_sec,
-                "peak_change_score": cluster.peak_frame.change_score,
+                "highest_evidence_timestamp": cluster.peak_frame.timestamp_sec,
+                "highest_evidence_score": cluster.peak_frame.change_score,
                 "total_candidate_frames": cluster.total_candidate_frames,
             }
             for cluster in clusters

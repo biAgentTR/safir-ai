@@ -129,18 +129,20 @@ const traceEvents = computed<TraceEvent[]>(() => selectedDetail.value?.trace_eve
 
 interface StoredFrameRow {
   event_id: number
-  label: string
+  selection_reason: string
   timestamp_str: string
   frame_id: string
 }
 const storedFrames = computed<StoredFrameRow[]>(() => {
   const samplerEvent = traceEvents.value.find((e) => e.stage === 'sampler')
   if (!samplerEvent) return []
-  const data = samplerEvent.data as { event_groups?: { event_id: number; representative_frames: { label: string; timestamp_str: string; frame_id: string }[] }[] }
+  const data = samplerEvent.data as {
+    event_groups?: { event_id: number; representative_frames: { selection_reason: string; timestamp_str: string; frame_id: string }[] }[]
+  }
   const rows: StoredFrameRow[] = []
   for (const eg of data.event_groups ?? []) {
     for (const rf of eg.representative_frames ?? []) {
-      rows.push({ event_id: eg.event_id, label: rf.label, timestamp_str: rf.timestamp_str, frame_id: rf.frame_id })
+      rows.push({ event_id: eg.event_id, selection_reason: rf.selection_reason, timestamp_str: rf.timestamp_str, frame_id: rf.frame_id })
     }
   }
   return rows
@@ -365,7 +367,7 @@ onMounted(() => {
               <figure v-for="f in storedFrames" :key="f.frame_id" class="border border-edge rounded-lg overflow-hidden bg-surface-2">
                 <img :src="api.getFrameUrl(selectedJobId!, f.frame_id)" :alt="f.frame_id" class="w-full h-28 object-cover" loading="lazy" />
                 <figcaption class="px-2 py-1.5 text-[11px] text-slate-400">
-                  <div class="text-slate-300">Olay #{{ f.event_id }} · {{ f.label }}</div>
+                  <div class="text-slate-300">Olay #{{ f.event_id }} · {{ f.selection_reason }}</div>
                   <div class="font-mono">{{ f.timestamp_str }} · {{ f.frame_id }}</div>
                 </figcaption>
               </figure>
