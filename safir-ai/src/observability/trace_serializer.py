@@ -129,7 +129,11 @@ def serialize_sampler(
     for c in clusters:
         rep = []
         for rf in c.representative_frames:
-            fid = f"c{c.event_id}_{rf.label}"
+            # `rf.frame_id` (gercek video kare kimligi) kullanilir, `rf.label` DEGIL:
+            # FrameSelector artik bir olay icin birden fazla "context" etiketli kare
+            # secebildigi icin yalnizca label ile anahtarlamak cakismaya (ayni thumbnail
+            # anahtarinin farkli karelerin ustune yazilmasina) yol acardi.
+            fid = f"c{c.event_id}_{rf.frame_id}"
             try:
                 raw = base64.b64decode(rf.base64_image.split(",", 1)[1])
             except (ValueError, IndexError):

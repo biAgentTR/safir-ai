@@ -1,17 +1,20 @@
-"""Kayitli video (VOD) icin pre/peak/post temsili kare cikarma katmani.
+"""Olay Gruplari icin ORTAK kare secim + (istege bagli) diske arsivleme katmani.
 
-`AdaptiveFrameSampler`'in evidence/clustering/peak-secim mantigindan
-tamamen ayri, opsiyonel bir katmandir; yalnizca zirve kare etrafindaki
-kisa zaman penceresinden pre-event/post-event JPEG kareleri seek ile
-cikarir (diske `.mp4` yazmaz).
+Onceden iki bagimsiz mekanizma vardi (VLM icin `RepresentativeFrameExtractor`,
+disk arsivi icin `PeakFrameExporter`); ikisi de kaynak videoyu ayri ayri
+seek ediyor, VLM'in gordugu kareler ile diske yazilan kareler farklilasabiliyordu.
+Artik TEK bir secim kaynagi var:
 
-- `RepresentativeFrameExtractor`: VLM'e gonderilecek base64 JPEG'leri
-  bellekte uretir (diske yazmaz).
-- `PeakFrameExporter`: her Olay Grubu icin `pre_peak.jpg`/`peak.jpg`/
-  `post_peak.jpg` + `metadata.json`'i diske yazar.
+- `FrameSelector`: `AdaptiveFrameSampler.cluster_events` icinde her Olay Grubu
+  icin, zaten bellekte JPEG/base64 encode edilmis Kanit Karelerinden
+  (video YENIDEN acilmadan) en fazla 5 benzersiz, kronolojik, zirve dahil
+  temsili kare secer.
+- `FrameArchiver`: `FrameSelector`'in sectigi kareleri (bagimsiz bir secim
+  YAPMADAN) `event_XXXX/frame_NN_<label>.jpg` + `metadata.json` olarak
+  diske yazan pasif persistence bileseni.
 """
 
-from src.sampler.context.peak_frame_exporter import PeakFrameExporter
-from src.sampler.context.representative_frame_extractor import RepresentativeFrameExtractor
+from src.sampler.context.frame_archiver import FrameArchiver
+from src.sampler.context.frame_selector import FrameSelector
 
-__all__ = ["PeakFrameExporter", "RepresentativeFrameExtractor"]
+__all__ = ["FrameArchiver", "FrameSelector"]

@@ -54,7 +54,6 @@ from src.memory import document_extraction
 from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
 from src.sampler.adaptive_sampler import EventCluster, EvidenceFrame, sampler_from_config
-from src.sampler.context.representative_frame_extractor import RepresentativeFrameExtractor
 from src.schemas.report import EvidenceFrameOut, SafirReport, SamplerStats, TimelineEntry
 from src.utils.config_loader import SafirConfig, load_config
 from src.vlm.base_vlm import VLMResponse
@@ -210,15 +209,6 @@ def normalize_video_source(video_source: str) -> str:
     normalized_slashes = stripped.replace("\\", "/")
     filename = os.path.basename(normalized_slashes)
     return os.path.join(_DATA_DIR, filename)
-
-
-def is_live_source(video_source: str) -> bool:
-    """`video_source` canli bir yayin URI'si (RTSP/HTTP) ise `True` dondurur.
-
-    Temsili kare cikarici (seek tabanli) yalnizca kayitli (VOD) dosyalarda
-    calisir; canli yayinlarda geriye seek yapilamayacagi icin bu ayrim gerekir.
-    """
-    return video_source.strip().lower().startswith(("rtsp://", "http://", "https://"))
 
 
 class AnalyzeRequest(BaseModel):
@@ -647,11 +637,13 @@ class SafirPipeline:
         sample_fps_override: Optional[int] = None,
         min_change_threshold_override: Optional[float] = None,
     ):
-        """01-02: Adaptive Frame Sampler + Olay Kumeleme + Temsili Kare Cikarimi.
+        """01-02: Adaptive Frame Sampler + Olay Kumeleme (+ ortak FrameSelector secimi).
 
         Returns:
-            `(sampler, evidence_frames, clusters)` — clusters, VLM'e gonderilecek
-            pre/peak/post `representative_frames` ile doldurulmustur (VOD dosyalari).
+            `(sampler, evidence_frames, clusters)` — clusters, VLM'e gonderilecek/diske
+            arsivlenecek `representative_frames` ile `cluster_events` icinde,
+            video/kaynak turunden BAGIMSIZ (canli/VOD ayrimi olmadan) doldurulmustur;
+            bkz. `AdaptiveFrameSampler.cluster_events`/`FrameSelector`.
         """
         sampler = sampler_from_config(self._config.sampler, min_change_threshold_override)
         sample_fps = sample_fps_override or self._default_sample_fps
@@ -663,25 +655,6 @@ class SafirPipeline:
         clusters: List[EventCluster] = sampler.cluster_events(evidence_frames)
         if not clusters:
             raise RuntimeError(f"Kanit karelerinden Olay Grubu uretilemedi: {video_source}")
-
-        # 02b - Temsili Kare Cikarimi (seek tabanli -> yalnizca VOD dosyalari).
-        if not is_live_source(video_source):
-            rep_extractor = RepresentativeFrameExtractor(
-                pre_event_sec=self._config.sampler.pre_peak_offset_sec,
-                post_event_sec=self._config.sampler.post_peak_offset_sec,
-            )
-            for cluster in clusters:
-                try:
-                    cluster.representative_frames = rep_extractor.extract(
-                        video_source,
-                        cluster.peak_frame,
-                        start_time=cluster.start_time,
-                        end_time=cluster.end_time,
-                    )
-                except (ValueError, RuntimeError) as exc:
-                    logger.warning(
-                        "Temsili kare cikarilamadi (Olay #%d), tek kareye dusuluyor: %s", cluster.event_id, exc
-                    )
 
         logger.info(
             "VLM oncesi katman ozeti: %d Kanit Karesi -> %d Olay Grubu -> %d temsili kare VLM'e gonderiliyor",
@@ -971,8 +944,8 @@ def get_conversation_store() -> ConversationStore:
 
 
 # History icin kalici representative-frame depolamasi: yalnizca VLM'e fiilen
-# gonderilen kareler (cluster basina RepresentativeFrameExtractor ciktisi),
-# TUM evidence frame'ler DEGIL. `data/` altinda, projenin mevcut kalici veri
+# gonderilen kareler (cluster basina FrameSelector ciktisi, `cluster.
+# representative_frames`), TUM evidence frame'ler DEGIL. `data/` altinda, projenin mevcut kalici veri
 # dizin desenine (analyses.db/events.db) uygun bir alt klasor.
 _HISTORY_FRAMES_DIR = "history_frames"
 

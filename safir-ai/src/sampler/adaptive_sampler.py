@@ -23,7 +23,8 @@ from typing import TYPE_CHECKING, Deque, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from src.sampler.context.peak_frame_exporter import PeakFrameExporter
+from src.sampler.context.frame_archiver import FrameArchiver
+from src.sampler.context.frame_selector import FrameSelector
 from src.sampler.schema import EventCluster, EvidenceFrame
 
 if TYPE_CHECKING:
@@ -78,13 +79,10 @@ class AdaptiveFrameSampler:
         history_window: int = 30,
         min_event_interval_sec: float = 2.0,
         evidence_output_dir: str = _DEFAULT_EVIDENCE_OUTPUT_DIR,
-        max_evidence_buffer: Optional[int] = None,
         cluster_merge_gap_sec: float = 20.0,
         bbox_iou_merge_threshold: float = 0.10,
         temporal_vote_window: int = 1,
         temporal_vote_min_count: int = 1,
-        pre_peak_offset_sec: float = 2.0,
-        post_peak_offset_sec: float = 2.0,
     ) -> None:
         """AdaptiveFrameSampler'i esik ve pencere parametreleriyle baslatir.
 
@@ -103,23 +101,13 @@ class AdaptiveFrameSampler:
                 (bkz. `cluster_merge_gap_sec`).
             evidence_output_dir: Her Kanit Karesinin `.jpg` olarak diske
                 yazilacagi klasor (UI ve denetim/log amacli kalicilik icin).
-            max_evidence_buffer: Bir `process_video` cagrisi basina bellekte/diskte
-                tutulacak azami Kanit Karesi sayisi. `None` ise sinirsizdir (varsayilan,
-                mevcut davranisi korur); asilirsa fazla kareler islenmez/atlanir.
-                ONEMLI: Bu sinir `process_video` icinde, `cluster_events`
-                cagrilmadan (dolayisiyla `cluster_merge_gap_sec` ile HAM
-                gruplarin surekli tek bir olayda birlestirilmesinden) ONCE
-                uygulanir. Yani uzun/surekli TEK bir olay (ör. uzun sureli bir
-                yangin) bu sinirdan fazla Kanit Karesi uretirse, olayin geri
-                kalani `process_video` seviyesinde sessizce atlanir; bu durumda
-                `cluster_events`in urettigi nihai `EventCluster.end_time`/
-                `duration_sec` degerleri olayin GERCEK bitisini degil, buffer'in
-                doldugu ani yansitir ve gercek zirve (peak) kare buffer
-                dolduktan SONRA olustuysa hic yakalanamaz. Bu etkilesim
-                `max_evidence_buffer` ile `cluster_merge_gap_sec` arasinda
-                herhangi bir koordinasyon YAPMAZ; uzun olaylar bekleniyorsa
-                `max_evidence_buffer`i yeterince buyuk tutun (bkz.
-                `test_max_evidence_buffer_truncates_long_event_before_merge`).
+                ONEMLI: Kanit Karesi sayisinda sabit bir ust sinir YOKTUR
+                (eski `max_evidence_buffer` kaldirildi); uzun/surekli bir
+                olay ne kadar sürerse sürsün hicbir Kanit Karesi
+                `process_video` seviyesinde sessizce atlanmaz. VLM'e giden
+                kare sayisi, bu asamada DEGIL, `cluster_events` icinde
+                `FrameSelector` tarafindan olay basina (video geneli DEGIL)
+                sinirlanir (bkz. `FrameSelector.TARGET_FRAME_COUNT`).
             cluster_merge_gap_sec: `cluster_events` icinde, `min_event_interval_sec`
                 ile olusturulan ardisik HAM Olay Gruplarini, aralarindaki bosluk bu
                 degeri asmadigi surece TEK bir nihai Olay Grubunda (EventCluster)
@@ -162,10 +150,6 @@ class AdaptiveFrameSampler:
                 izole supheli kareleri elemek icin `temporal_vote_window`i
                 artirmakla birlikte kullanilir (ör. window=5, min_count=3).
                 `temporal_vote_window`den buyuk olamaz.
-            pre_peak_offset_sec: `export_event_frames` ile diske yazilan
-                `pre_peak.jpg`in, zirve kareden kac saniye once alinacagi.
-            post_peak_offset_sec: `export_event_frames` ile diske yazilan
-                `post_peak.jpg`in, zirve kareden kac saniye sonra alinacagi.
 
         Raises:
             ValueError: `temporal_vote_window` veya `temporal_vote_min_count`
@@ -191,13 +175,10 @@ class AdaptiveFrameSampler:
         self.history_window = history_window
         self.min_event_interval_sec = min_event_interval_sec
         self.evidence_output_dir = Path(evidence_output_dir)
-        self.max_evidence_buffer = max_evidence_buffer
         self.cluster_merge_gap_sec = cluster_merge_gap_sec
         self.bbox_iou_merge_threshold = bbox_iou_merge_threshold
         self.temporal_vote_window = temporal_vote_window
         self.temporal_vote_min_count = temporal_vote_min_count
-        self.pre_peak_offset_sec = pre_peak_offset_sec
-        self.post_peak_offset_sec = post_peak_offset_sec
 
         self.prev_gray: np.ndarray | None = None
         self.noise_floor_history: List[float] = []
@@ -411,24 +392,17 @@ class AdaptiveFrameSampler:
                     # BIREBIR AYNIDIR (bkz. `_confirm_candidate` docstring'i).
                     is_suspicious = net_change_score >= self.min_change_threshold
                     if self._confirm_candidate(is_suspicious):
-                        # DIKKAT: Bu sinir, cluster_events/cluster_merge_gap_sec (surekli tek
-                        # olayin ham gruplarini birlestirme) calismadan ONCE uygulanir. Uzun
-                        # surekli bir olay bu sinirdan fazla Kanit Karesi uretirse, olayin geri
-                        # kalani burada sessizce atlanir; bkz. __init__ docstring'i
-                        # (max_evidence_buffer) ve test_max_evidence_buffer_truncates_long_event_before_merge.
-                        if self.max_evidence_buffer is None or len(evidence_frames) < self.max_evidence_buffer:
-                            motion_bbox = self._bbox_from_mask(thresh)
-                            evidence_frames.append(
-                                self._build_evidence_frame(
-                                    frame, frame_id, timestamp_sec, net_change_score, motion_bbox
-                                )
+                        # Sabit bir ust sinir YOKTUR (eski max_evidence_buffer kaldirildi):
+                        # video ne kadar uzun/olay ne kadar surekli olursa olsun, hicbir
+                        # Kanit Karesi burada sessizce atlanmaz. Kare sayisi kontrolu,
+                        # bunun yerine cluster_events icinde OLAY BASINA (video geneli
+                        # DEGIL) FrameSelector tarafindan yapilir.
+                        motion_bbox = self._bbox_from_mask(thresh)
+                        evidence_frames.append(
+                            self._build_evidence_frame(
+                                frame, frame_id, timestamp_sec, net_change_score, motion_bbox
                             )
-                        elif len(evidence_frames) == self.max_evidence_buffer:
-                            logger.warning(
-                                "max_evidence_buffer (%d) asildi; bu videodan sonraki Kanit "
-                                "Kareleri islenmeyecek.",
-                                self.max_evidence_buffer,
-                            )
+                        )
 
                 self.prev_gray = curr_gray
                 frame_id += 1
@@ -517,9 +491,9 @@ class AdaptiveFrameSampler:
         )
 
     def cluster_events(
-        self, evidence_frames: List[EvidenceFrame], video_path: Optional[str] = None
+        self, evidence_frames: List[EvidenceFrame], export_to_disk: bool = False
     ) -> List[EventCluster]:
-        """Suzulen kareleri zaman araligina gore kumeleyip zirve karelerini secer.
+        """Suzulen kareleri zaman araligina gore kumeleyip zirve karelerini ve temsili kareleri secer.
 
         Iki gecisli calisir:
 
@@ -540,20 +514,23 @@ class AdaptiveFrameSampler:
            olaylarin birbirine karisip kaybolmasini da ENGELLER.
 
         Her nihai grup icin en yuksek degisim skoruna sahip kare (peak frame)
-        VLM'e gonderilecek temsilci olarak secilir ve YALNIZCA bu kare diske
-        yazilir; boylece merge sonrasi elenen ham gruplarin zirve adaylari
-        icin gereksiz disk I/O yapilmaz.
+        secilir ve diske kalici olarak yazilir; ardindan AYNI grubun Kanit
+        Kareleri havuzundan `FrameSelector` ile (video YENIDEN ACILMADAN,
+        hicbir kare yeniden JPEG'e KODLANMADAN) en fazla 5 benzersiz,
+        kronolojik, zirve dahil temsili kare secilip `EventCluster.
+        representative_frames`e yazilir. Bu, VLM'e giden kareler ile diske/
+        rapora yansiyan kareler icin TEK ortak kaynaktir.
 
         Args:
             evidence_frames: `process_video` tarafindan uretilen, zaman sirali
                 Kanit Kareleri listesi.
-            video_path: Verilirse, her nihai Olay Grubu icin peak'e ek olarak
-                pre_peak/post_peak kareleri de kaynak videodan seek edilip
-                `evidence_output_dir` altina (`event_XXXX/` alt klasoruyle)
-                diske yazilir ve sonucu ozetleyen bir log satiri basilir
-                (bkz. `export_event_frames`). `None` ise (varsayilan) bu
-                adim hic calismaz ve davranis, bu parametre eklenmeden
-                onceki mevcut peak-only akisla BIREBIR AYNIDIR.
+            export_to_disk: `True` verilirse, her nihai Olay Grubu icin
+                `FrameSelector`in sectigi kareler (bagimsiz bir secim
+                YAPILMADAN) `FrameArchiver` ile `evidence_output_dir` altina
+                (`event_XXXX/` alt klasoruyle) diske yazilir. Varsayilan
+                `False`: bu adim VLM'e gonderilecek `representative_frames`i
+                ETKILEMEZ (o her zaman doldurulur), yalnizca ekstra disk
+                arsivlemesini acar/kapatir.
 
         Returns:
             Zaman sirali, birlestirilmis `EventCluster` listesi. Girdi bossa
@@ -609,67 +586,59 @@ class AdaptiveFrameSampler:
             merge_count,
         )
 
-        if video_path is not None:
-            self._export_and_log_pre_post_peak_frames(video_path, clusters)
+        if export_to_disk:
+            self._export_and_log_representative_frames(clusters)
 
         return clusters
 
-    def _export_and_log_pre_post_peak_frames(self, video_path: str, clusters: List[EventCluster]) -> None:
-        """Her Olay Grubu icin pre_peak/peak/post_peak `.jpg`lerini diske yazar ve ozetler.
+    def _export_and_log_representative_frames(self, clusters: List[EventCluster]) -> None:
+        """`FrameSelector`in ZATEN sectigi temsili kareleri diske yazar ve ozetler.
 
-        `evidence_output_dir` altina (peak'in zaten yazildigi ayni kok
-        klasor) her olay icin bir `event_XXXX/` alt klasoru olusturur (bkz.
-        `PeakFrameExporter`/`export_event_frames`). Diske yazma basarisiz
-        olursa (ör. video acilamadi) hata sessizce loglanir; `cluster_events`
-        cokmez ve zaten hesaplanmis `clusters` degismeden donulur.
+        Bagimsiz bir kare secimi YAPMAZ: yalnizca her `EventCluster.
+        representative_frames`i (VLM'e giden AYNI kareler) `FrameArchiver` ile
+        `evidence_output_dir` altina yazar. Diske yazma basarisiz olursa hata
+        sessizce loglanir; `cluster_events` cokmez.
 
         Args:
-            video_path: Kaynak video dosyasinin yolu.
-            clusters: `cluster_events` tarafindan az once uretilen Olay Gruplari.
+            clusters: `cluster_events` tarafindan az once uretilen, `representative_frames`i
+                zaten dolu Olay Gruplari.
         """
         try:
-            event_dirs = self.export_event_frames(
-                video_path, clusters, output_dir=str(self.evidence_output_dir)
-            )
-        except (ValueError, RuntimeError) as exc:
-            logger.warning(
-                "Olay basina pre_peak/post_peak kareleri diske yazilamadi (%s): %s",
-                video_path,
-                exc,
-            )
+            event_dirs = self.export_event_frames(clusters, output_dir=str(self.evidence_output_dir))
+        except OSError as exc:
+            logger.warning("Temsili kareler diske yazilamadi: %s", exc)
             return
 
         for cluster, event_dir in zip(clusters, event_dirs):
-            peak = cluster.peak_frame
             logger.info(
-                "Olay #%d kareleri diske yazildi | pre_peak=%s/pre_peak.jpg | "
-                "peak=%s/peak.jpg (t=%.2fs) | post_peak=%s/post_peak.jpg",
+                "Olay #%d icin %d temsili kare diske yazildi: %s",
                 cluster.event_id,
-                event_dir,
-                event_dir,
-                peak.timestamp_sec,
+                len(cluster.representative_frames),
                 event_dir,
             )
 
     def _close_group(self, group: List[EvidenceFrame], event_id: int) -> EventCluster:
-        """Bir Kanit Karesi grubunu kapatip zirve karesini secerek `EventCluster` uretir.
+        """Bir Kanit Karesi grubunu kapatip zirve/temsili kareleri secerek `EventCluster` uretir.
 
-        Yalnizca burada secilen zirve (peak) kare diske kalici olarak yazilir;
-        gruptaki diger adaylar hic diske yazilmadan atlanmis olur. Boylece
-        `cluster_events` sonrasinda hicbir zaman VLM'e gonderilmeyecek/kullanilmayacak
-        kareler icin gereksiz disk I/O yapilmaz.
+        Yalnizca zirve (peak) kare `evidence_output_dir` altina kalici olarak
+        tekil `.jpg` yazilir. Ardindan `FrameSelector`, AYNI grubun (video
+        YENIDEN acilmadan, hicbir kare yeniden JPEG'e kodlanmadan) bellekteki
+        Kanit Karelerinden en fazla 5 benzersiz temsili kare secer; bu secim
+        hem VLM payload'ina hem (istege bagli) disk arsivine tek kaynaktir.
 
         Args:
             group: Ayni zaman araligina dusen Kanit Kareleri.
             event_id: Bu gruba atanacak olay kimligi.
 
         Returns:
-            `peak_frame.saved_path` doldurulmus, grubun ozetini tasiyan `EventCluster`.
+            `peak_frame.saved_path` ve `representative_frames` doldurulmus,
+            grubun ozetini tasiyan `EventCluster`.
         """
         peak = max(group, key=lambda ef: ef.change_score)
         peak.saved_path = self._persist_frame(peak.frame_id, peak.timestamp_str, peak.image_bytes)
         start_time = group[0].timestamp_sec
         end_time = group[-1].timestamp_sec
+        representative_frames = FrameSelector.select(peak, group)
         return EventCluster(
             event_id=event_id,
             start_time=start_time,
@@ -677,37 +646,28 @@ class AdaptiveFrameSampler:
             peak_frame=peak,
             total_candidate_frames=len(group),
             duration_sec=round(end_time - start_time, 2),
+            representative_frames=representative_frames,
         )
 
     def export_event_frames(
-        self, video_path: str, clusters: List[EventCluster], output_dir: str = "outputs/sampler"
+        self, clusters: List[EventCluster], output_dir: str = "outputs/sampler"
     ) -> List[str]:
-        """Her Olay Grubu icin `pre_peak.jpg`/`peak.jpg`/`post_peak.jpg` + `metadata.json` yazar.
+        """Her Olay Grubu icin `FrameSelector`in ZATEN sectigi kareleri + `metadata.json` yazar.
 
-        `PeakFrameExporter`'a ince bir sarmalayicidir; `self.pre_peak_offset_sec`/
-        `self.post_peak_offset_sec` kullanir. `context.mp4` gibi hicbir video
-        klibi URETMEZ (bkz. modul docstring'i). Cluster/peak secim mantigina
-        (bu metod cagrilmadan once `cluster_events` ile uretilmis olmalidir)
-        dokunmaz.
+        `FrameArchiver`e ince bir sarmalayicidir; bagimsiz bir kare secimi
+        YAPMAZ ve kaynak videoya erismez (bkz. modul docstring'i). Cluster/
+        peak/temsili-kare secim mantigina (bu metod cagrilmadan once
+        `cluster_events` ile uretilmis olmalidir) dokunmaz.
 
         Args:
-            video_path: `cluster_events`i ureten `EventCluster`lerin ait
-                oldugu kaynak video dosyasinin yolu.
-            clusters: `cluster_events` ciktisi Olay Gruplari.
+            clusters: `cluster_events` ciktisi, `representative_frames`i
+                zaten dolu Olay Gruplari.
             output_dir: `event_XXXX/` alt klasorlerinin olusturulacagi kok dizin.
 
         Returns:
             Yazilan her `event_XXXX` klasorunun yolu (string listesi).
-
-        Raises:
-            ValueError: Video acilamazsa.
-            RuntimeError: Video FPS degeri gecersizse.
         """
-        exporter = PeakFrameExporter(
-            pre_peak_offset_sec=self.pre_peak_offset_sec,
-            post_peak_offset_sec=self.post_peak_offset_sec,
-        )
-        return exporter.export(video_path, clusters, output_dir=output_dir)
+        return FrameArchiver.export(clusters, output_dir=output_dir)
 
 
 def sampler_from_config(
@@ -738,13 +698,10 @@ def sampler_from_config(
         blur_kernel_size=tuple(config.blur_kernel_size),
         history_window=config.history_window,
         min_event_interval_sec=config.min_event_interval_sec,
-        max_evidence_buffer=config.max_evidence_buffer,
         cluster_merge_gap_sec=config.cluster_merge_gap_sec,
         bbox_iou_merge_threshold=config.bbox_iou_merge_threshold,
         temporal_vote_window=config.temporal_vote_window,
         temporal_vote_min_count=config.temporal_vote_min_count,
-        pre_peak_offset_sec=config.pre_peak_offset_sec,
-        post_peak_offset_sec=config.post_peak_offset_sec,
     )
 
 
@@ -769,7 +726,7 @@ if __name__ == "__main__":
 
     demo_sampler = AdaptiveFrameSampler()
     demo_evidence_frames = demo_sampler.process_video(demo_video_path)
-    demo_clusters = demo_sampler.cluster_events(demo_evidence_frames, video_path=demo_video_path)
+    demo_clusters = demo_sampler.cluster_events(demo_evidence_frames, export_to_disk=True)
     demo_stats = demo_sampler.last_run_stats
 
     print(f"Video: {demo_video_path}")
@@ -784,9 +741,8 @@ if __name__ == "__main__":
     for demo_cluster in demo_clusters:
         demo_event_dir = demo_sampler.evidence_output_dir / f"event_{demo_cluster.event_id:04d}"
         print(
-            f"Olay #{demo_cluster.event_id} | pre_peak={demo_event_dir}/pre_peak.jpg | "
-            f"peak={demo_event_dir}/peak.jpg (t={demo_cluster.peak_frame.timestamp_sec:.2f}s) | "
-            f"post_peak={demo_event_dir}/post_peak.jpg"
+            f"Olay #{demo_cluster.event_id} | {len(demo_cluster.representative_frames)} temsili kare "
+            f"-> {demo_event_dir}/ | zirve t={demo_cluster.peak_frame.timestamp_sec:.2f}s"
         )
 
     demo_output_path = Path("data/mock_evidence.json")

@@ -42,7 +42,7 @@ def build(dev_default: bool) -> nbf.NotebookNode:
         "### Gercek pipeline (koddan cikarilmis) ve cagrilan metotlar\n"
         "```\n"
         "VIDEO\n"
-        "  ↓  SafirPipeline.stage_sample()   -> AdaptiveFrameSampler.process_video + cluster_events + RepresentativeFrameExtractor\n"
+        "  ↓  SafirPipeline.stage_sample()   -> AdaptiveFrameSampler.process_video + cluster_events (FrameSelector dahil)\n"
         "  ↓  SafirPipeline.stage_vlm()      -> GeminiVLM.describe_events            → GEMINI\n"
         "  ↓  SafirPipeline.stage_events()   -> EventEngine.detect + TemporalReasoner.reason + RuleEngine.evaluate\n"
         "  ↓  SafirPipeline.stage_context()  -> ContextBuilder.build (SQLite + FAISS RAG)\n"
@@ -182,7 +182,7 @@ def build(dev_default: bool) -> nbf.NotebookNode:
     # 4 - stage_sample
     md(
         "## 4) `pipeline.stage_sample()` → Frame Sampling & Motion Region\n"
-        "**INPUT:** video · **PROCESSING:** gercek `AdaptiveFrameSampler` (CPU) + `RepresentativeFrameExtractor` · "
+        "**INPUT:** video · **PROCESSING:** gercek `AdaptiveFrameSampler` (CPU) + `FrameSelector` · "
         "**OUTPUT:** kanit kareleri + `motion_bbox` + Olay Gruplari."
     )
     code(

@@ -37,9 +37,16 @@ class EvidenceFrame(BaseModel):
 
 
 class RepresentativeFrame(BaseModel):
-    """Bir Olay Grubu icin VLM'e gonderilen tekil temsili kare (pre/peak/post)."""
+    """`FrameSelector` tarafindan bir Olay Grubu icin secilen, hem VLM'e gonderilen hem de
+    (istege bagli) diske arsivlenen ORTAK temsili kare.
 
-    label: str = Field(description="Karenin olay icindeki rolu: 'pre-event', 'peak' veya 'post-event'.")
+    Bu model, `EvidenceFrame.frame_id`/`base64_image` degerlerinin dogrudan kopyasidir
+    (yeniden JPEG kodlama YAPILMAZ); boylece VLM'in analiz ettigi kare ile
+    diske yazilan/kullaniciya gosterilen kare HER ZAMAN ayni kaynaktan gelir.
+    """
+
+    label: str = Field(description="Karenin olay icindeki rolu: 'peak' (zirve) veya 'context' (baglam).")
+    frame_id: int = Field(description="Kaynak `EvidenceFrame.frame_id` (kimlik tutarliligi icin).")
     timestamp_sec: float = Field(description="Karenin saniye cinsinden zaman damgasi.")
     timestamp_str: str = Field(description="`MM:SS` formatinda okunabilir zaman damgasi.")
     base64_image: str = Field(description="`data:image/jpeg;base64,...` formatinda goruntu.")
@@ -59,8 +66,10 @@ class EventCluster(BaseModel):
     representative_frames: list["RepresentativeFrame"] = Field(
         default_factory=list,
         description=(
-            "Zaman sirali pre-event/peak/post-event temsili kareler (0-3 adet arasi); "
-            "VLM'e context.mp4 yerine dogrudan gonderilir. Bos ise VLMPayloadBuilder yalnizca "
-            "peak_frame ile eski (tek-kare) davranisa duser."
+            "`FrameSelector` tarafindan secilen, zaman sirali, en fazla 5 benzersiz temsili "
+            "kare (zirve dahil); VLM'e ve diske/rapora AYNI kaynaktan gonderilir. Bu grubun "
+            "benzersiz Kanit Karesi sayisi 5'ten azsa, kare COGALTILMADAN mevcut tum benzersiz "
+            "kareler kullanilir (gercek sayi icin `len(representative_frames)`e bakin). Bos ise "
+            "VLMPayloadBuilder yalnizca `peak_frame` ile eski (tek-kare) davranisa duser."
         ),
     )

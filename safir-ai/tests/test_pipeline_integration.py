@@ -102,7 +102,6 @@ def _build_test_config(tmp_path: Path) -> SafirConfig:
             "motion_threshold": 0.02,
             "scene_change_threshold": 0.15,
             "resize_width": 640,
-            "max_evidence_buffer": 100,
             "warmup_frames": 30,
         },
         "vlm": {

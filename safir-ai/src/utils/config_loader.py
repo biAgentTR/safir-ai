@@ -46,9 +46,15 @@ class SamplerConfig(BaseModel):
     `min_event_interval_sec`/`sample_fps` `AdaptiveFrameSampler` tarafindan
     dogrudan kullanilan aktif parametrelerdir (bkz. `sampler_from_config`).
     Geri kalan alanlar (idle_interval_sec, active_fps, noise_floor,
-    motion_threshold, scene_change_threshold, resize_width,
-    max_evidence_buffer, warmup_frames), sahadaki alternatif/eski sampler
-    konfigurasyonlariyla geriye donuk uyumluluk ve ince ayar icin saklanir.
+    motion_threshold, scene_change_threshold, resize_width, warmup_frames),
+    sahadaki alternatif/eski sampler konfigurasyonlariyla geriye donuk
+    uyumluluk ve ince ayar icin saklanir.
+
+    ONEMLI: `max_evidence_buffer` (Kanit Karesi sayisinda sabit ust sinir) ve
+    `pre_peak_offset_sec`/`post_peak_offset_sec` (eski seek-tabanli pre/post
+    pencere ofsetleri) KALDIRILMISTIR: kare sayisinda video geneli sabit bir
+    limit YOKTUR, VLM/API kapasitesi olay basina `FrameSelector.
+    TARGET_FRAME_COUNT` ile korunur (bkz. `src/sampler/context/frame_selector.py`).
     """
 
     min_change_threshold: float
@@ -57,7 +63,7 @@ class SamplerConfig(BaseModel):
     min_event_interval_sec: float
     sample_fps: int
 
-    # --- Olay kumeleme / zamansal oylama / temsili kare ayarlari ---
+    # --- Olay kumeleme / zamansal oylama ayarlari ---
     # `sampler_from_config` bu alanlari `AdaptiveFrameSampler.__init__`e gecirir.
     # Varsayilanlar constructor imzasiyla birebir ayni tutulur; config.yaml'da
     # tanimlanmalari zorunlu degildir (verilmezse bu varsayilanlar kullanilir).
@@ -65,8 +71,6 @@ class SamplerConfig(BaseModel):
     bbox_iou_merge_threshold: float = 0.10
     temporal_vote_window: int = 1
     temporal_vote_min_count: int = 1
-    pre_peak_offset_sec: float = 2.0
-    post_peak_offset_sec: float = 2.0
 
     idle_interval_sec: float
     active_fps: float
@@ -74,7 +78,6 @@ class SamplerConfig(BaseModel):
     motion_threshold: float
     scene_change_threshold: float
     resize_width: int
-    max_evidence_buffer: int
     warmup_frames: int
 
 
