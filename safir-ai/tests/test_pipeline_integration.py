@@ -409,12 +409,19 @@ def test_pipeline_sends_all_evidence_frames_to_vlm_with_no_positional_role(
     evidence_frames = captured["evidence_frames"]
     assert evidence_frames, "VLM'e en az bir evidence karesi gitmeli."
     # Hicbir evidence karesi 'label' gibi konumsal bir alan TASIMIYOR.
-    # `selection_reason` (threshold_exceeded/temporal_coverage/fallback) bir
-    # konumsal ROL DEGILDIR - yalnizca "bu kare neden secildi" bilgisidir.
+    # `selection_reason` (threshold_exceeded/temporal_coverage/early_change/
+    # significant_change/fallback) bir konumsal ROL DEGILDIR - yalnizca "bu
+    # kare neden secildi" bilgisidir.
     for ef in evidence_frames:
         field_names = set(type(ef).model_fields.keys())
         assert "label" not in field_names
-        assert ef.selection_reason in {"threshold_exceeded", "temporal_coverage", "fallback"}
+        assert ef.selection_reason in {
+            "threshold_exceeded",
+            "temporal_coverage",
+            "early_change",
+            "significant_change",
+            "fallback",
+        }
 
 
 def test_pipeline_produces_degraded_report_when_vlm_fails(

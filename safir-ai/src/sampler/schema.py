@@ -18,7 +18,9 @@ from typing import Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
-SelectionReason = Literal["threshold_exceeded", "temporal_coverage", "fallback"]
+SelectionReason = Literal[
+    "threshold_exceeded", "temporal_coverage", "early_change", "significant_change", "fallback"
+]
 
 
 class EvidenceFrame(BaseModel):
@@ -53,13 +55,19 @@ class EvidenceFrame(BaseModel):
         default="threshold_exceeded",
         description=(
             "Bu karenin evidence listesine GIRME NEDENI (pozisyonel bir rol "
-            "DEGILDIR): 'threshold_exceeded' = kare normal esik testini "
-            "gecti; 'temporal_coverage' = son evidence karesinden bu yana "
-            "`max_temporal_gap_sec` asildigi icin, o pencerede degerlendirilen "
-            "esik-alti adaylar arasindan en yuksek `change_score`'a sahip "
-            "olan bu kare zamansal kor noktayi kapatmak icin secildi; "
-            "'fallback' = videoda hicbir kare esigi gecemedi, sistem cokmesin "
-            "diye ilk kare temsilen kullanildi (bkz. `is_fallback`)."
+            "DEGILDIR, olay sinifi DEGILDIR - yalnizca sampler'in kendi secim "
+            "gerekcesidir): 'threshold_exceeded' = kare ana esik testini "
+            "gecti; 'temporal_coverage' = sakin bolgede son evidence "
+            "karesinden bu yana `max_temporal_gap_sec` asildigi icin secildi; "
+            "'early_change' = ana esigin ALTINDA ama surdurulen (tek karelik "
+            "sicrama degil) bir onset sinyali tespit edildiginde, ana esik "
+            "beklenmeden secildi - olayin baslangic karesini geriye donuk "
+            "buffer gerektirmeden korur; 'significant_change' = ana esik "
+            "gecildikten sonraki kisa bir hysteresis/cooldown penceresinde, "
+            "skor tekrar esigin altina dustugunde bile hala yuksek yogunlukta "
+            "secilen bir kare; 'fallback' = videoda hicbir kare esigi "
+            "gecemedi, sistem cokmesin diye ilk kare temsilen kullanildi "
+            "(bkz. `is_fallback`)."
         ),
     )
     motion_bbox: Optional[Tuple[int, int, int, int]] = Field(

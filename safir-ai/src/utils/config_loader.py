@@ -64,6 +64,17 @@ class SamplerConfig(BaseModel):
     kor kalmasini onleyen bir GUVENLIK AGIDIR - kumeleme DEGILDIR ve
     pre/peak/post gibi bir konumsal rol getirmez (bkz.
     `AdaptiveFrameSampler.process_video`, `EvidenceFrame.selection_reason`).
+
+    ONEMLI (yogunluk-uyarlamali secim): Sampler videoyu HER ZAMAN tek bir
+    sabit `sample_fps` ile okur (kaynak/analiz hizi degismez); adaptif olan
+    yalnizca VLM'e GONDERILECEK karelerin secim SIKLIGIDIR. Uc yogunluk
+    seviyesi vardir - sakin (`max_temporal_gap_sec`), erken degisim
+    (`early_change_*`) ve guclu degisim/hysteresis (`significant_change_*`,
+    `strong_change_cooldown_sec`). Bu, ana esik gecilmeden ONCE baslayan
+    kucuk-ama-surekli degisimlerin (ör. bir izmaritin atilma ani, hafif
+    dumanin ilk gorulme ani) tamamen kacirilmasini onler; hicbiri olay
+    kumelemesi veya pre/peak/post degildir - sadece sampler'in KENDI secim
+    gerekcesidir (bkz. `EvidenceFrame.selection_reason`).
     """
 
     min_change_threshold: float
@@ -75,14 +86,68 @@ class SamplerConfig(BaseModel):
     temporal_vote_window: int = 1
     temporal_vote_min_count: int = 1
 
-    # --- Zamansal kapsama (coverage) ayari ---
+    # --- Zamansal kapsama (coverage) ayari: SAKIN bolgede secim araligi ---
     max_temporal_gap_sec: float = 15.0
     """Son evidence karesinden (esik-gecen VEYA coverage) bu yana gecen sure
     bu degeri asarsa, o ana kadar degerlendirilen esik-alti adaylar arasindan
     `net_change_score`'u en yuksek olan kare `selection_reason=
     "temporal_coverage"` ile evidence listesine eklenir. Rastgele veya sabit
     periyodik bir kare DEGILDIR; pencere icindeki en bilgi-degeri yuksek
-    adaydir (bkz. `AdaptiveFrameSampler.process_video`)."""
+    adaydir (bkz. `AdaptiveFrameSampler.process_video`). Bu, en GEVSEK
+    (en seyrek) secim araligidir - erken/guclu degisimde daha SIK secim
+    yapilir (bkz. asagidaki alanlar)."""
+
+    # --- Erken degisim (onset) ayarlari: ana esik gecilmeden ONCE, kucuk-ama-
+    # -surekli bir sinyal baslarsa secim sikligini artiran esikler. Sabit,
+    # olceksiz bir sayi DEGIL - `min_change_threshold`in bir ORANI olarak
+    # tanimlanir, boylece hangi hassasiyet secilirse secilsin ayni oranti
+    # korunur. ---
+    early_change_score_ratio: float = 0.4
+    """`net_change_score >= early_change_score_ratio * min_change_threshold`
+    ise bu kare 'supheli-erken' sayilir (ana esigin ALTINDA ama gurultu
+    tabanindan da belirgin sekilde yuksek bir sinyal). `0 < oran < 1`
+    olmalidir."""
+    early_change_window: int = 3
+    """Erken-degisim onayinda dikkate alinan, en son kac 'supheli-erken'
+    karar sonucunun tutulacagi (sabit boyutlu pencere - bkz.
+    `AdaptiveFrameSampler._confirm_candidate` ile ayni desen)."""
+    early_change_min_count: int = 2
+    """`early_change_window` icinde erken-degisim DURUMUNUN onaylanmasi icin
+    gereken minimum 'supheli-erken' karar sayisi. `1`den buyuk tutulmasi,
+    TEK bir anlik skor sicramasinin (kamera titremesi vb.) erken-degisim
+    tetiklemesini engeller - surdurulen bir egilim gerekir."""
+    early_change_selection_interval_sec: float = 3.0
+    """Erken-degisim durumu aktifken (onaylandiktan sonra) uygulanan azami
+    secim araligi (saniye); `max_temporal_gap_sec`den KUCUK olmalidir -
+    boylece olayin gelisimi sakin moddan daha sik izlenir."""
+    early_change_cooldown_sec: float = 4.0
+    """Erken-degisim sinyali kesildikten (artik 'supheli-erken' gelmemeye
+    basladiktan) sonra, sakin moda donmeden once beklenen sure (hysteresis).
+    Tek bir dususu hemen sakin secime donusturmez; ancak sonsuza kadar da
+    acik tutmaz."""
+
+    # --- Guclu degisim (ana esik + hysteresis) ayarlari: ana esik gecildikten
+    # sonra secim sikligini en fazla artiran ve kisa bir sure koruyan esikler. ---
+    significant_change_selection_interval_sec: float = 1.0
+    """Ana esik gecildikten sonraki hysteresis penceresinde (skor tekrar
+    esigin altina dustugunde bile) uygulanan azami secim araligi (saniye);
+    uc seviye arasinda EN SIK olanidir (`< early_change_selection_interval_sec
+    < max_temporal_gap_sec` olmalidir)."""
+    strong_change_cooldown_sec: float = 4.0
+    """Ana esik gecildikten sonra 'guclu degisim' durumunun korunacagi sure
+    (saniye); bu sure icinde skor esigin altina dusse bile secim sikligi
+    yuksek kalir (Skor dustugunde TEK kareye bakip hemen sakin secime
+    donulmez - kisa bir hysteresis/cooldown uygulanir)."""
+
+    # --- Duplicate onleme: yalnizca coverage/early_change/significant_change
+    # (esik-alti) secimlerine uygulanir - `threshold_exceeded` kareler ASLA
+    # bu kontrolle elenmez (bkz. AdaptiveFrameSampler._is_near_duplicate). ---
+    dedup_similarity_ratio: float = 0.5
+    """Bir esik-alti aday, SON SECILEN evidence karesine gore fark orani
+    `dedup_similarity_ratio * min_change_threshold`den DUSUKSE, gorsel
+    olarak 'neredeyse ayni' sayilip SECILMEZ (zaman olarak uzak, gercekten
+    farkli iki durumu SILMEZ - yalnizca ardisik, gorsel olarak ayirt
+    edilemeyen tekrarlari engeller)."""
 
     idle_interval_sec: float
     active_fps: float

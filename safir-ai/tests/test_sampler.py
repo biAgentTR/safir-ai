@@ -336,6 +336,8 @@ def test_threshold_frames_selected_exactly_as_before(tmp_path: Path, motion_vide
     with_short_gap = AdaptiveFrameSampler(
         min_change_threshold=0.001,
         max_temporal_gap_sec=1.0,
+        early_change_selection_interval_sec=0.5,
+        significant_change_selection_interval_sec=0.2,
         evidence_output_dir=str(tmp_path / "ev_b"),
     ).process_video(motion_video, sample_fps=5)
 
@@ -355,6 +357,12 @@ def test_long_gap_selects_highest_net_change_score_candidate_in_window(
     sampler = AdaptiveFrameSampler(
         min_change_threshold=0.001,
         max_temporal_gap_sec=2.0,
+        early_change_selection_interval_sec=1.0,
+        significant_change_selection_interval_sec=0.5,
+        # Bu test yalnizca SAKIN/coverage davranisini izole eder: guclu/erken
+        # hysteresis cok kisa tutulup hizla sakine donsun.
+        strong_change_cooldown_sec=0.1,
+        early_change_cooldown_sec=0.1,
         evidence_output_dir=str(tmp_path / "evidence"),
     )
     evidence = sampler.process_video(long_silence_video, sample_fps=25)
@@ -382,6 +390,8 @@ def test_coverage_frame_not_added_before_gap_exceeded(tmp_path: Path) -> None:
     sampler = AdaptiveFrameSampler(
         min_change_threshold=0.001,
         max_temporal_gap_sec=2.0,
+        early_change_selection_interval_sec=1.0,
+        significant_change_selection_interval_sec=0.5,
         evidence_output_dir=str(tmp_path / "evidence"),
     )
     evidence = sampler.process_video(path, sample_fps=25)
@@ -394,6 +404,10 @@ def test_gap_counter_resumes_from_coverage_frame_timestamp(tmp_path: Path, long_
     sampler = AdaptiveFrameSampler(
         min_change_threshold=0.001,
         max_temporal_gap_sec=2.0,
+        early_change_selection_interval_sec=1.0,
+        significant_change_selection_interval_sec=0.5,
+        strong_change_cooldown_sec=0.1,
+        early_change_cooldown_sec=0.1,
         evidence_output_dir=str(tmp_path / "evidence"),
     )
     evidence = sampler.process_video(long_silence_video, sample_fps=25)
@@ -420,6 +434,8 @@ def test_evidence_frames_remain_chronological_and_without_timestamp_duplicates(
     sampler = AdaptiveFrameSampler(
         min_change_threshold=0.001,
         max_temporal_gap_sec=2.0,
+        early_change_selection_interval_sec=1.0,
+        significant_change_selection_interval_sec=0.5,
         evidence_output_dir=str(tmp_path / "evidence"),
     )
     evidence = sampler.process_video(long_silence_video, sample_fps=25)
@@ -450,6 +466,10 @@ def test_end_of_video_pending_candidate_flushed_when_gap_already_exceeded(tmp_pa
     sampler = AdaptiveFrameSampler(
         min_change_threshold=0.001,
         max_temporal_gap_sec=2.0,
+        early_change_selection_interval_sec=1.0,
+        significant_change_selection_interval_sec=0.5,
+        strong_change_cooldown_sec=0.1,
+        early_change_cooldown_sec=0.1,
         evidence_output_dir=str(tmp_path / "evidence"),
     )
     evidence = sampler.process_video(path, sample_fps=25)
@@ -472,6 +492,8 @@ def test_end_of_video_pending_candidate_dropped_safely_when_gap_not_exceeded(tmp
     sampler = AdaptiveFrameSampler(
         min_change_threshold=0.001,
         max_temporal_gap_sec=2.0,
+        early_change_selection_interval_sec=1.0,
+        significant_change_selection_interval_sec=0.5,
         evidence_output_dir=str(tmp_path / "evidence"),
     )
     evidence = sampler.process_video(path, sample_fps=25)
@@ -484,6 +506,8 @@ def test_empty_candidate_buffer_does_not_crash(tmp_path: Path, static_video: str
     sampler = AdaptiveFrameSampler(
         min_change_threshold=0.001,
         max_temporal_gap_sec=2.0,
+        early_change_selection_interval_sec=1.0,
+        significant_change_selection_interval_sec=0.5,
         evidence_output_dir=str(tmp_path / "evidence"),
     )
     evidence = sampler.process_video(static_video, sample_fps=5)
@@ -513,6 +537,10 @@ def test_coverage_frame_carries_temporal_coverage_reason_not_positional_role(
     sampler = AdaptiveFrameSampler(
         min_change_threshold=0.001,
         max_temporal_gap_sec=2.0,
+        early_change_selection_interval_sec=1.0,
+        significant_change_selection_interval_sec=0.5,
+        strong_change_cooldown_sec=0.1,
+        early_change_cooldown_sec=0.1,
         evidence_output_dir=str(tmp_path / "evidence"),
     )
     evidence = sampler.process_video(long_silence_video, sample_fps=25)
@@ -530,6 +558,8 @@ def test_no_event_clustering_or_positional_fields_introduced_by_coverage(
     sampler = AdaptiveFrameSampler(
         min_change_threshold=0.001,
         max_temporal_gap_sec=2.0,
+        early_change_selection_interval_sec=1.0,
+        significant_change_selection_interval_sec=0.5,
         evidence_output_dir=str(tmp_path / "evidence"),
     )
     evidence = sampler.process_video(long_silence_video, sample_fps=25)
@@ -547,3 +577,344 @@ def test_sampler_config_has_max_temporal_gap_sec_field(safir_config) -> None:
     """Sabit deger kod icine gomulmemis: config uzerinden geliyor olmali."""
     assert hasattr(safir_config.sampler, "max_temporal_gap_sec")
     assert safir_config.sampler.max_temporal_gap_sec > 0
+
+
+# =============================================================================
+# Yogunluk-uyarlamali secim (adaptive selection density): sakin/erken-degisim/
+# guclu-degisim uc seviyesi. Kaynak/analiz `sample_fps`'i SABIT kalir - yalnizca
+# VLM'e gonderilecek karelerin SECIM SIKLIGI degisir. Bu, ana esik gecilmeden
+# ONCE baslayan kucuk-ama-surekli degisimlerin (ör. izmarit atma ani, hafif
+# dumanin ilk gorulme ani) tamamen kacirilmasini onler; kumeleme/olay
+# baslangic-bitis zamani DEGILDIR.
+#
+# NOT: `blur_kernel_size=(3, 3)` (varsayilan (21, 21) yerine) ve daha buyuk
+# bir kare (96x128) kullanilir - kucuk/erken bir sinyalin gercek video
+# kodlama/gri-tonlama/bulaniklastirma zincirinden GECEREK olcneklenebilir
+# (sifira yuvarlanmayan) bir `net_change_score` uretmesini saglamak icin;
+# `min_change_threshold`/`early_change_score_ratio` formulunu DEGISTIRMEZ.
+# =============================================================================
+
+
+def _write_growing_patch_video(
+    path: Path,
+    total_frames: int,
+    ramp_start: int,
+    ramp_end: int,
+    growth_per_frame: int = 2,
+    strong_burst: Optional[Tuple[int, int]] = None,
+) -> None:
+    """`ramp_start`den `ramp_end`e kadar KARE BUYUKLUGU dogrusal artan (ivmeli)
+    bir yama iceren sentetik video yazar - bu, ana esik altinda ama SURDURULEN
+    (rastgele degil, gercekten buyuyen) bir onset sinyalini (ör. izmaritin
+    atildigi/dumanin ilk goruldugu an, buyuyerek gelisen bir olay) taklit eder.
+    Dogrusal buyume, adaptif (medyan-tabanli) gurultu tabaninin surekli
+    GERIDEN takip etmesine yol acar, boylece `net_change_score` sifira
+    donmeden kademeli yukselir. `ramp_end`den sonra yama KAYBOLMAZ - SON
+    boyutunda sabit kalir (abrupt kaybolma, kendi basina yapay/istenmeyen bir
+    "ani degisim" sinyali uretir - bu yanlislikla ayri bir esik-gecisi
+    taklit etmesin diye). `strong_burst=(start, end)` verilirse, o aralikta
+    TAM ekran kaplayan, ana esigi kesin gecen ayri bir patlama eklenir.
+    """
+    frames = []
+    for i in range(total_frames):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if i >= ramp_start:
+            size = 6 + min(i - ramp_start, ramp_end - ramp_start - 1) * growth_per_frame
+            cv2.rectangle(frame, (10, 10), (10 + size, 10 + size), (150, 150, 150), -1)
+        if strong_burst is not None and strong_burst[0] <= i < strong_burst[1]:
+            cv2.rectangle(frame, (5, 5), (120, 90), (255, 255, 255), -1)
+        frames.append(frame)
+    _write_video(path, frames)
+
+
+def _density_sampler(tmp_path: Path, **overrides) -> AdaptiveFrameSampler:
+    """Yogunluk testleri icin, gercek video zincirinde dogrulanmis parametrelerle
+    (bkz. modul notu) taze bir `AdaptiveFrameSampler` uretir."""
+    params = dict(
+        min_change_threshold=0.02,
+        blur_kernel_size=(3, 3),
+        early_change_score_ratio=0.4,
+        early_change_window=3,
+        early_change_min_count=2,
+        max_temporal_gap_sec=5.0,
+        early_change_selection_interval_sec=1.0,
+        significant_change_selection_interval_sec=0.3,
+        strong_change_cooldown_sec=2.0,
+        early_change_cooldown_sec=2.0,
+        dedup_similarity_ratio=0.5,
+        evidence_output_dir=str(tmp_path / "evidence"),
+    )
+    params.update(overrides)
+    return AdaptiveFrameSampler(**params)
+
+
+def test_fully_calm_video_only_selects_sparse_coverage_frames(tmp_path: Path) -> None:
+    """1) Tamamen sakin videoda yalnizca seyrek coverage frameleri secilmeli (hicbir early/significant kare yok)."""
+    frames = [np.full((96, 128, 3), 30, dtype=np.uint8) for _ in range(150)]  # 6s @ 25fps, tamamen durgun
+    path = tmp_path / "fully_calm.mp4"
+    _write_video(path, frames)
+
+    sampler = _density_sampler(tmp_path, max_temporal_gap_sec=2.0)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    reasons = {f.selection_reason for f in evidence}
+    assert reasons <= {"temporal_coverage", "fallback"}
+    assert "early_change" not in reasons
+    assert "significant_change" not in reasons
+    assert "threshold_exceeded" not in reasons
+
+
+def test_sustained_change_below_main_threshold_is_captured_as_early_change(tmp_path: Path) -> None:
+    """2) Ana esik gecilmeden once baslayan SURDURULEN kucuk degisim, early_change olarak yakalanmali."""
+    path = tmp_path / "sustained_ramp.mp4"
+    # Yalnizca yavas buyuyen bir yama; ana esigi (0.02) hicbir zaman gecmeyecek
+    # kadar kisa tutulur (bkz. onceki manuel dogrulama: ~80 kare sonra plato
+    # civarinda kalir, ana esigi gecmez).
+    _write_growing_patch_video(path, total_frames=100, ramp_start=50, ramp_end=75, growth_per_frame=1)
+
+    sampler = _density_sampler(tmp_path)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    early_frames = [f for f in evidence if f.selection_reason == "early_change"]
+    assert early_frames, "Surdurulen esik-alti degisim en az bir early_change karesi uretmeli."
+    assert all(f.selection_reason != "threshold_exceeded" for f in evidence), (
+        "Bu senaryoda ana esik hic gecilmemeli (yalnizca erken sinyal test ediliyor)."
+    )
+
+
+def test_light_smoke_onset_selected_before_smoke_grows_large(tmp_path: Path) -> None:
+    """3) Hafif duman baslangici secilmeli; yalnizca duman buyudukten sonraki kare degil."""
+    path = tmp_path / "smoke_onset.mp4"
+    _write_growing_patch_video(
+        path, total_frames=250, ramp_start=50, ramp_end=130, growth_per_frame=2, strong_burst=(200, 210)
+    )
+
+    sampler = _density_sampler(tmp_path)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    early_frames = [f for f in evidence if f.selection_reason == "early_change"]
+    threshold_frames = [f for f in evidence if f.selection_reason == "threshold_exceeded"]
+    assert early_frames, "Hafif duman baslangici en az bir early_change karesi uretmeli."
+    assert threshold_frames, "Duman buyuyup ana esigi gecmeli (dogrulama icin)."
+    # Erken kare, "duman buyudukten sonraki" (ana esigi gecen) ilk kareden
+    # ONCE gelmeli - yalnizca buyudukten sonraki kare secilmis olmamali.
+    assert early_frames[0].timestamp_sec < threshold_frames[0].timestamp_sec
+
+
+def test_cigarette_flick_short_onset_is_preserved(tmp_path: Path) -> None:
+    """4) Izmarit atilmasi gibi KISA bir hareketin baslangic karesi, ana esik hic gecilmese de korunmali."""
+    path = tmp_path / "cigarette_flick.mp4"
+    # Kisa, tek seferlik bir "bump": buyur ama esigi gecmeden hemen durur
+    # (izmaritin atildigi anlik hareket - surekli bir olay DEGIL).
+    _write_growing_patch_video(path, total_frames=90, ramp_start=40, ramp_end=60, growth_per_frame=1)
+
+    sampler = _density_sampler(tmp_path)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    early_frames = [f for f in evidence if f.selection_reason == "early_change"]
+    assert early_frames, "Kisa baslangic hareketi, ana esik hic gecilmese bile en az bir early_change uretmeli."
+    # Baslangic karesi, hareketin baslangicina (t~1.6s) yakin olmali - cok
+    # geriye buffer gerektirmeden, GERCEK zamanina yakin yakalanmis olmali.
+    assert early_frames[0].timestamp_sec < 3.0
+
+
+def test_single_frame_noise_does_not_hold_dense_selection_open_for_long(tmp_path: Path) -> None:
+    """5) Tek karelik gurultu (izole bir sicrama), erken-degisim durumunu SURDURMEMELI (min_count>=2 gerekir)."""
+    frames = [np.full((96, 128, 3), 30, dtype=np.uint8) for _ in range(150)]
+    # Tek bir izole karede kisa bir yama (bir sonraki karede hemen kaybolur) -
+    # SURDURULEN bir egilim DEGIL, tek karelik bir sicrama.
+    cv2.rectangle(frames[50], (10, 10), (10 + 20, 10 + 20), (150, 150, 150), -1)
+    path = tmp_path / "single_spike.mp4"
+    _write_video(path, frames)
+
+    sampler = _density_sampler(tmp_path, max_temporal_gap_sec=2.0)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    # Izole sicrama, early_change_min_count=2 pencere-onayini GECEMEZ; hicbir
+    # early_change/significant_change uretilmemeli - yalnizca (varsa) coverage.
+    assert all(f.selection_reason not in {"early_change", "significant_change"} for f in evidence)
+
+
+def test_main_threshold_exceeded_increases_selection_frequency(tmp_path: Path) -> None:
+    """6) Ana esik gecildiginde frame secim sikligi (sakin araliga kiyasla) artmali."""
+    path = tmp_path / "strong_then_calm.mp4"
+    _write_growing_patch_video(
+        path, total_frames=300, ramp_start=50, ramp_end=130, growth_per_frame=2, strong_burst=(150, 160)
+    )
+
+    sampler = _density_sampler(tmp_path, max_temporal_gap_sec=5.0)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    threshold_ts = next(f.timestamp_sec for f in evidence if f.selection_reason == "threshold_exceeded")
+    post_threshold = [f for f in evidence if f.timestamp_sec > threshold_ts and f.selection_reason == "significant_change"]
+    assert post_threshold, "Ana esik sonrasi hysteresis penceresinde significant_change kareleri beklenir."
+
+    # Ardisik significant_change kareleri arasindaki fark, SAKIN araliktan
+    # (max_temporal_gap_sec) KUCUK olmali - yani secim sikligi artmis olmali.
+    all_post = sorted(post_threshold, key=lambda f: f.timestamp_sec)
+    if len(all_post) >= 2:
+        gaps = [b.timestamp_sec - a.timestamp_sec for a, b in zip(all_post, all_post[1:])]
+        assert all(g < sampler.max_temporal_gap_sec for g in gaps)
+
+
+def test_density_returns_to_calm_after_change_ends(tmp_path: Path) -> None:
+    """7) Degisim sona erdiginde secim tekrar seyreklesmeli (sakin/coverage araligina donmeli)."""
+    path = tmp_path / "strong_then_silence.mp4"
+    frames = []
+    for i in range(400):  # 16s @ 25fps
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if 20 <= i < 30:
+            cv2.rectangle(frame, (5, 5), (120, 90), (255, 255, 255), -1)
+        frames.append(frame)
+    _write_video(path, frames)
+
+    sampler = _density_sampler(
+        tmp_path,
+        max_temporal_gap_sec=3.0,
+        strong_change_cooldown_sec=1.0,
+        early_change_cooldown_sec=1.0,
+    )
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    coverage_frames = [f for f in evidence if f.selection_reason == "temporal_coverage"]
+    assert coverage_frames, "Degisim (kisa patlama) sona erdikten sonra sakin coverage'a donulmeli."
+    # Coverage kareleri, guclu olayin (t~0.4-1.2s hysteresis penceresi)
+    # BITISINDEN sonra gelmeli.
+    assert all(f.timestamp_sec > 1.5 for f in coverage_frames)
+
+
+def test_dedup_does_not_delete_the_first_meaningful_onset_frame(tmp_path: Path) -> None:
+    """8) Duplicate eleme, ilk anlamli baslangic (early_change) karesini SILMEMELI."""
+    path = tmp_path / "onset_dedup.mp4"
+    _write_growing_patch_video(path, total_frames=100, ramp_start=50, ramp_end=75, growth_per_frame=1)
+
+    sampler = _density_sampler(tmp_path)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    early_frames = [f for f in evidence if f.selection_reason == "early_change"]
+    assert early_frames, "Dedup, sakin taban cizgisinden farkli olan onset karesini yanlislikla SILMEMELI."
+
+
+def test_density_evidence_frames_remain_chronological_and_correctly_timestamped(tmp_path: Path) -> None:
+    """9) Frameler (coverage+early+significant+threshold karisik) kronolojik ve dogru zaman damgali kalmali."""
+    path = tmp_path / "mixed_density.mp4"
+    _write_growing_patch_video(
+        path, total_frames=300, ramp_start=50, ramp_end=130, growth_per_frame=2, strong_burst=(150, 160)
+    )
+
+    sampler = _density_sampler(tmp_path)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    timestamps = [f.timestamp_sec for f in evidence]
+    assert timestamps == sorted(timestamps)
+    assert len(timestamps) == len(set(timestamps))
+    for f in evidence:
+        assert f.timestamp_sec == round(f.frame_id / 25.0, 2)
+
+
+def test_video_is_processed_in_a_single_pass(tmp_path: Path) -> None:
+    """10) Video yalnizca TEK gecişte islenmeli (ikinci okuma/rewind yok)."""
+    path = tmp_path / "single_pass.mp4"
+    total_frames = 120
+    _write_growing_patch_video(path, total_frames=total_frames, ramp_start=50, ramp_end=75, growth_per_frame=1)
+
+    sampler = _density_sampler(tmp_path)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    # Taranan toplam ham kare sayisi, videonun GERCEK kare sayisiyla BIREBIR
+    # esit olmali - ne eksik (atlama) ne fazla (ikinci gecis/rewind).
+    assert sampler.last_run_stats.total_frames_scanned == total_frames
+    assert evidence  # sanity: en az bir kare secilmis olmali
+
+
+def test_no_growing_buffer_internal_state_stays_bounded(tmp_path: Path) -> None:
+    """11) Buyuyen bir frame buffer'i/ring buffer/max-buffer OLUSMAMALI - ic durum sabit boyutlu kalmali."""
+    path = tmp_path / "long_for_buffer_check.mp4"
+    _write_growing_patch_video(
+        path, total_frames=500, ramp_start=50, ramp_end=400, growth_per_frame=1
+    )  # uzun, surekli degisen bir video
+
+    sampler = _density_sampler(tmp_path, history_window=10)
+    sampler.process_video(path, sample_fps=25)
+
+    # Video ne kadar uzun/degisken olursa olsun, bu ic durumlar SABIT
+    # boyutludur (buyuyen bir liste/kuyruk DEGILDIR):
+    assert len(sampler.noise_floor_history) <= sampler.history_window
+    assert len(sampler._recent_threshold_decisions) <= sampler.temporal_vote_window
+    assert len(sampler._recent_early_decisions) <= sampler.early_change_window
+    # `pending_best`, TEK bir aday tutar (bir liste/pencere DEGIL).
+    import src.sampler.adaptive_sampler as sampler_module
+
+    assert not hasattr(sampler, "_evidence_buffer")
+    assert not hasattr(sampler, "_frame_ring_buffer")
+    assert sampler_module._PendingSelectionCandidate  # dataclass tek-ornek tutar (liste degil)
+
+
+def test_density_mechanism_produces_no_event_clustering_or_boundaries(tmp_path: Path) -> None:
+    """12) Yogunluk mekanizmasi, sampler'a olay kumelemesi veya olay baslangic/bitis zamani GETIRMEMELI."""
+    path = tmp_path / "density_no_clustering.mp4"
+    _write_growing_patch_video(
+        path, total_frames=300, ramp_start=50, ramp_end=130, growth_per_frame=2, strong_burst=(150, 160)
+    )
+
+    sampler = _density_sampler(tmp_path)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    assert not hasattr(AdaptiveFrameSampler, "cluster_events")
+    for f in evidence:
+        field_names = set(type(f).model_fields.keys())
+        assert "event_id" not in field_names
+        assert "cluster_id" not in field_names
+        assert "start_time" not in field_names
+        assert "end_time" not in field_names
+        assert "label" not in field_names
+        assert "frame_role" not in field_names
+        assert f.selection_reason in {
+            "threshold_exceeded",
+            "temporal_coverage",
+            "early_change",
+            "significant_change",
+            "fallback",
+        }
+
+
+def test_density_config_fields_are_ratio_or_config_driven_not_hardcoded(safir_config) -> None:
+    """Yeni esik/araliklar config'ten geliyor olmali (koda gomulu sabit degil)."""
+    s = safir_config.sampler
+    for field in (
+        "early_change_score_ratio",
+        "early_change_window",
+        "early_change_min_count",
+        "early_change_selection_interval_sec",
+        "early_change_cooldown_sec",
+        "significant_change_selection_interval_sec",
+        "strong_change_cooldown_sec",
+        "dedup_similarity_ratio",
+    ):
+        assert hasattr(s, field), f"SamplerConfig alani eksik: {field}"
+        assert getattr(s, field) > 0
+
+    sampler = sampler_from_config(safir_config.sampler)
+    assert sampler.early_change_score_ratio == s.early_change_score_ratio
+    assert sampler.significant_change_selection_interval_sec == s.significant_change_selection_interval_sec
+    assert sampler.dedup_similarity_ratio == s.dedup_similarity_ratio
+
+
+def test_density_invalid_config_values_raise(tmp_path: Path) -> None:
+    """Gecersiz oran/aralik degerleri (0 disinda) acikca ValueError vermeli."""
+    with pytest.raises(ValueError):
+        AdaptiveFrameSampler(early_change_score_ratio=0.0, evidence_output_dir=str(tmp_path / "e1"))
+    with pytest.raises(ValueError):
+        AdaptiveFrameSampler(early_change_score_ratio=1.5, evidence_output_dir=str(tmp_path / "e2"))
+    with pytest.raises(ValueError):
+        AdaptiveFrameSampler(dedup_similarity_ratio=0.0, evidence_output_dir=str(tmp_path / "e3"))
+    with pytest.raises(ValueError):
+        # significant > early siralamayi bozar
+        AdaptiveFrameSampler(
+            significant_change_selection_interval_sec=10.0,
+            early_change_selection_interval_sec=1.0,
+            max_temporal_gap_sec=5.0,
+            evidence_output_dir=str(tmp_path / "e4"),
+        )
+    with pytest.raises(ValueError):
+        AdaptiveFrameSampler(early_change_min_count=5, early_change_window=2, evidence_output_dir=str(tmp_path / "e5"))

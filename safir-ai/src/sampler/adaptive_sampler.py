@@ -25,6 +25,38 @@ periyodik bir kare DEGIL) `selection_reason="temporal_coverage"` ile
 evidence listesine ekler. Bu bir OLAY KUMELEMESI DEGILDIR ve pre/peak/post
 gibi bir konumsal rol getirmez - yalnizca "bu kare neden secildi" bilgisini
 tasiyan bir metadata alanidir (bkz. `EvidenceFrame.selection_reason`).
+
+ONEMLI (yogunluk-uyarlamali secim / adaptive selection density): Video HER
+ZAMAN tek geciste, tek bir sabit `sample_fps` ile okunur - bu, kaynak/analiz
+hizidir ve DEGISMEZ. Adaptif olan yalnizca VLM'e GONDERILECEK karelerin
+SECIM SIKLIGIDIR. `process_video()`, her ornekte hesaplanan `net_change_score`
+uzerinden UC yogunluk seviyesi arasinda O(1) durum (iki cooldown zaman
+damgasi + sabit boyutlu bir "supheli-erken" penceresi) ile gecis yapar:
+
+  1. SAKIN: `max_temporal_gap_sec` araligiyla (mevcut coverage davranisi).
+  2. ERKEN DEGISIM: ana esigin ALTINDA ama `early_change_min_count` kadar
+     ardisik/pencere-ici "supheli-erken" (`early_change_score_ratio *
+     min_change_threshold`i gecen) sinyal SURDURULDUGUNDE tetiklenir; bu
+     durumun BASLADIGI kare (ana esik beklenmeden) DOGRUDAN secilir - boylece
+     bir olayin baslangic karesi (ör. izmaritin atildigi an, dumanin ilk
+     gorulme ani) geriye donuk bir buffer gerekmeden korunur. Aktifken
+     `early_change_selection_interval_sec` ile daha sik secim yapilir.
+  3. GUCLU DEGISIM: ana esik gecildiginde (mevcut `threshold_exceeded`
+     davranisi DEGISMEDEN korunur - HER esik-gecen kare secilir). Esik
+     gecildikten sonra `strong_change_cooldown_sec` boyunca bir hysteresis
+     penceresi acilir; bu pencerede skor esigin altina dusse bile
+     `significant_change_selection_interval_sec` ile (en sik) secim
+     surdurulur - boylece tek bir anlik skor dususunde hemen sakin secime
+     donulmez.
+
+Bu mekanizma OLAY KUMELEMESI YAPMAZ, olay baslangic/bitis zamani URETMEZ ve
+pre/peak/post gibi bir konumsal rol GETIRMEZ; yalnizca sampler'in HANGI
+SIKLIKTA kare sectigini kontrol eder. Esik-alti secimler (coverage/erken/
+guclu-hysteresis) icin, son SECILEN evidence karesine gore gorsel olarak
+"neredeyse ayni" olan adaylar `dedup_similarity_ratio` ile elenir; bu kontrol
+`threshold_exceeded` karelere ASLA uygulanmaz ve olayin ilk ortaya ciktigi
+(baseline'dan farkli olan) erken-degisim karesini yanlislikla SILEMEZ (bkz.
+`_is_near_duplicate`).
 """
 
 from __future__ import annotations
@@ -44,7 +76,17 @@ from src.sampler.schema import EvidenceFrame
 
 _SELECTION_REASON_THRESHOLD = "threshold_exceeded"
 _SELECTION_REASON_COVERAGE = "temporal_coverage"
+_SELECTION_REASON_EARLY_CHANGE = "early_change"
+_SELECTION_REASON_SIGNIFICANT_CHANGE = "significant_change"
 _SELECTION_REASON_FALLBACK = "fallback"
+
+# Yogunluk durum makinesi (bkz. modul docstring'i): iki O(1) cooldown zaman
+# damgasi ile turetilen, kalici olarak SAKLANMAYAN, her karede yeniden
+# hesaplanan durum etiketleri (kumeleme/olay DEGIL - yalnizca secim
+# yogunlugu kontrolu).
+_DENSITY_CALM = "calm"
+_DENSITY_EARLY = "early"
+_DENSITY_STRONG = "strong"
 
 if TYPE_CHECKING:
     # Yalnizca tip ipucu icin gereklidir (bkz. `sampler_from_config`); modul
@@ -75,12 +117,16 @@ class SamplerRunStats:
 
 
 @dataclass
-class _PendingCoverageCandidate:
-    """Zamansal kapsama penceresi icinde su ana kadar goeruelen EN IYI (en yuksek
-    `net_change_score`'lu) esik-alti aday; pencere kapanana kadar tek bir ornek
-    olarak tutulur (tum pencereyi bellekte biriktirmez)."""
+class _PendingSelectionCandidate:
+    """Mevcut secim penceresi (sakin/erken/guclu-hysteresis fark etmez) icinde
+    su ana kadar goeruelen EN IYI (en yuksek `net_change_score`'lu) esik-alti
+    aday; pencere kapanana kadar tek bir ornek olarak tutulur (TUM pencere
+    bellekte biriktirilmez - O(1) durum). `gray`, olusturuldugu andaki
+    `_preprocess_frame` ciktisidir - secim aninda dedup karsilastirmasi icin
+    yeniden hesaplanmasina gerek kalmaz."""
 
     frame: np.ndarray
+    gray: np.ndarray
     frame_id: int
     timestamp_sec: float
     net_change_score: float
@@ -104,6 +150,14 @@ class AdaptiveFrameSampler:
         temporal_vote_window: int = 1,
         temporal_vote_min_count: int = 1,
         max_temporal_gap_sec: float = 15.0,
+        early_change_score_ratio: float = 0.4,
+        early_change_window: int = 3,
+        early_change_min_count: int = 2,
+        early_change_selection_interval_sec: float = 3.0,
+        early_change_cooldown_sec: float = 4.0,
+        significant_change_selection_interval_sec: float = 1.0,
+        strong_change_cooldown_sec: float = 4.0,
+        dedup_similarity_ratio: float = 0.5,
     ) -> None:
         """AdaptiveFrameSampler'i esik parametreleriyle baslatir.
 
@@ -144,13 +198,50 @@ class AdaptiveFrameSampler:
                 olan kare `selection_reason="temporal_coverage"` ile
                 evidence listesine eklenir (bkz. modul docstring'i). Bu bir
                 OLAY KUMELEMESI DEGILDIR; yalnizca uzun zamansal kor
-                noktalari onleyen bir guvenlik agidir.
+                noktalari onleyen bir guvenlik agidir. Uc seviye arasinda EN
+                GEVSEK (en seyrek) secim araligi budur.
+            early_change_score_ratio: `net_change_score >=
+                early_change_score_ratio * min_change_threshold` ise bu kare
+                "supheli-erken" sayilir (`0 < oran < 1`).
+            early_change_window: Erken-degisim onayinda dikkate alinan, en
+                son kac "supheli-erken" karar sonucunun tutulacagi (sabit
+                boyutlu pencere - `_confirm_candidate` ile ayni desen).
+            early_change_min_count: `early_change_window` icinde
+                erken-degisim DURUMUNUN onaylanmasi icin gereken minimum
+                "supheli-erken" karar sayisi; tek bir anlik skor
+                sicramasinin erken-degisim tetiklemesini engeller.
+            early_change_selection_interval_sec: Erken-degisim durumu
+                aktifken uygulanan azami secim araligi (saniye);
+                `max_temporal_gap_sec`den KUCUK olmalidir.
+            early_change_cooldown_sec: Erken-degisim sinyali kesildikten
+                sonra sakin moda donmeden once beklenen sure (hysteresis).
+            significant_change_selection_interval_sec: Ana esik gecildikten
+                sonraki hysteresis penceresinde uygulanan azami secim araligi
+                (saniye); uc seviye arasinda EN SIK olanidir.
+            strong_change_cooldown_sec: Ana esik gecildikten sonra "guclu
+                degisim" durumunun korunacagi sure (saniye); skor tekrar
+                esigin altina dusse bile bu sure boyunca secim sikligi
+                yuksek kalir.
+            dedup_similarity_ratio: Esik-alti (coverage/erken/guclu-
+                hysteresis) bir aday, SON SECILEN evidence karesine gore fark
+                orani `dedup_similarity_ratio * min_change_threshold`den
+                DUSUKSE, gorsel olarak "neredeyse ayni" sayilip SECILMEZ. Bu
+                kontrol `threshold_exceeded` karelere ASLA uygulanmaz.
 
         Raises:
             ValueError: `temporal_vote_window` veya `temporal_vote_min_count`
                 1'den kucukse, `temporal_vote_min_count`,
-                `temporal_vote_window`den buyukse, ya da
-                `max_temporal_gap_sec` 0'dan kucuk/esitse.
+                `temporal_vote_window`den buyukse, `max_temporal_gap_sec`,
+                `early_change_selection_interval_sec`,
+                `early_change_cooldown_sec`,
+                `significant_change_selection_interval_sec` veya
+                `strong_change_cooldown_sec` 0'dan kucuk/esitse,
+                `early_change_score_ratio` veya `dedup_similarity_ratio`
+                `(0, 1]` araliginda degilse, `early_change_window`/
+                `early_change_min_count` 1'den kucukse veya
+                `early_change_min_count` penceresinden buyukse, ya da
+                secim araliklari beklenen `significant < early < calm`
+                sirasini bozuyorsa.
         """
         if temporal_vote_window < 1:
             raise ValueError(
@@ -169,6 +260,56 @@ class AdaptiveFrameSampler:
             raise ValueError(
                 f"max_temporal_gap_sec 0'dan buyuk olmalidir, verilen: {max_temporal_gap_sec}"
             )
+        if not (0.0 < early_change_score_ratio <= 1.0):
+            raise ValueError(
+                f"early_change_score_ratio (0, 1] araliginda olmalidir, verilen: {early_change_score_ratio}"
+            )
+        if early_change_window < 1:
+            raise ValueError(
+                f"early_change_window en az 1 olmalidir, verilen: {early_change_window}"
+            )
+        if early_change_min_count < 1:
+            raise ValueError(
+                f"early_change_min_count en az 1 olmalidir, verilen: {early_change_min_count}"
+            )
+        if early_change_min_count > early_change_window:
+            raise ValueError(
+                f"early_change_min_count ({early_change_min_count}) "
+                f"early_change_window'dan ({early_change_window}) buyuk olamaz."
+            )
+        if early_change_selection_interval_sec <= 0:
+            raise ValueError(
+                "early_change_selection_interval_sec 0'dan buyuk olmalidir, "
+                f"verilen: {early_change_selection_interval_sec}"
+            )
+        if early_change_cooldown_sec <= 0:
+            raise ValueError(
+                f"early_change_cooldown_sec 0'dan buyuk olmalidir, verilen: {early_change_cooldown_sec}"
+            )
+        if significant_change_selection_interval_sec <= 0:
+            raise ValueError(
+                "significant_change_selection_interval_sec 0'dan buyuk olmalidir, "
+                f"verilen: {significant_change_selection_interval_sec}"
+            )
+        if strong_change_cooldown_sec <= 0:
+            raise ValueError(
+                f"strong_change_cooldown_sec 0'dan buyuk olmalidir, verilen: {strong_change_cooldown_sec}"
+            )
+        if not (0.0 < dedup_similarity_ratio <= 1.0):
+            raise ValueError(
+                f"dedup_similarity_ratio (0, 1] araliginda olmalidir, verilen: {dedup_similarity_ratio}"
+            )
+        if not (
+            significant_change_selection_interval_sec
+            <= early_change_selection_interval_sec
+            <= max_temporal_gap_sec
+        ):
+            raise ValueError(
+                "Secim araliklari significant_change_selection_interval_sec "
+                f"({significant_change_selection_interval_sec}) <= "
+                f"early_change_selection_interval_sec ({early_change_selection_interval_sec}) <= "
+                f"max_temporal_gap_sec ({max_temporal_gap_sec}) sirasini izlemelidir."
+            )
 
         self.min_change_threshold = min_change_threshold
         self.blur_kernel_size = blur_kernel_size
@@ -177,11 +318,22 @@ class AdaptiveFrameSampler:
         self.temporal_vote_window = temporal_vote_window
         self.temporal_vote_min_count = temporal_vote_min_count
         self.max_temporal_gap_sec = max_temporal_gap_sec
+        self.early_change_score_ratio = early_change_score_ratio
+        self.early_change_window = early_change_window
+        self.early_change_min_count = early_change_min_count
+        self.early_change_selection_interval_sec = early_change_selection_interval_sec
+        self.early_change_cooldown_sec = early_change_cooldown_sec
+        self.significant_change_selection_interval_sec = significant_change_selection_interval_sec
+        self.strong_change_cooldown_sec = strong_change_cooldown_sec
+        self.dedup_similarity_ratio = dedup_similarity_ratio
 
         self.prev_gray: np.ndarray | None = None
         self.noise_floor_history: List[float] = []
         self.last_run_stats: Optional[SamplerRunStats] = None
         self._recent_threshold_decisions: Deque[bool] = deque(maxlen=temporal_vote_window)
+        # Erken-degisim onayi icin sabit boyutlu pencere (bkz.
+        # `_confirm_early_change` - `_confirm_candidate` ile ayni desen).
+        self._recent_early_decisions: Deque[bool] = deque(maxlen=early_change_window)
 
     def _preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
         """Goruntuyu gri tonlamaya cevirip Gauss bulaniklastirma ile gurultuyu yumusatir.
@@ -240,6 +392,106 @@ class AdaptiveFrameSampler:
         vote_count = sum(self._recent_threshold_decisions)
         return vote_count >= self.temporal_vote_min_count
 
+    def _confirm_early_change(self, is_early_suspicious: bool) -> bool:
+        """Erken-degisim onayi: ana esigin ALTINDAKI bir sinyalin, TEK bir
+        anlik skor sicramasi degil, SURDURULEN bir egilim olup olmadigina
+        `early_change_window` icindeki son kararlara bakarak karar verir.
+
+        `_confirm_candidate` ile AYNI desen (sabit boyutlu deque + oy
+        sayimi); `min_change_threshold`/`net_change_score` formulunu
+        DEGISTIRMEZ, yalnizca `early_change_score_ratio * min_change_threshold`
+        esigini gecen kareleri girdi olarak alir.
+
+        Args:
+            is_early_suspicious: Bu karenin `net_change_score >=
+                early_change_score_ratio * min_change_threshold` testini
+                gecip gecmedigi.
+
+        Returns:
+            `True` ise erken-degisim DURUMU onaylanir (pencere icinde
+            yeterli sayida "supheli-erken" karar birikmis); `False` ise
+            (izole bir sicrama ya da hic sinyal yok) onaylanmaz.
+        """
+        self._recent_early_decisions.append(is_early_suspicious)
+        if not is_early_suspicious:
+            return False
+        vote_count = sum(self._recent_early_decisions)
+        return vote_count >= self.early_change_min_count
+
+    def _is_near_duplicate(
+        self, candidate_gray: np.ndarray, reference_gray: Optional[np.ndarray]
+    ) -> bool:
+        """Bir esik-alti adayin, SON SECILEN evidence karesine gore gorsel
+        olarak "neredeyse ayni" olup olmadigini kontrol eder.
+
+        YALNIZCA coverage/early_change/significant_change (esik-alti)
+        secimlerine uygulanir - `threshold_exceeded` kareler bu kontrolden
+        HICBIR ZAMAN gecirilmez (cagiran taraf sorumlulugundadir), boylece
+        "esigi gecen hicbir kare ... deduplication ... nedeniyle elenmesin"
+        garantisi korunur. Zaman olarak uzak ama GORSEL olarak farkli iki
+        kareyi (ör. bir olayin baslangic karesi, ondan once secilmis sakin
+        bir kareye kiyasla) yanlislikla "duplicate" saymaz - yalnizca
+        `reference_gray`ye (en son secilen kare) gore ayirt edilemeyecek
+        kadar benzer olan kareleri eler.
+
+        Args:
+            candidate_gray: Aday karenin (`_preprocess_frame` ciktisi)
+                gri-tonlamali hali.
+            reference_gray: Son SECILEN evidence karesinin gri-tonlamali
+                hali; henuz hic evidence secilmediyse `None` (bu durumda
+                karsilastirilacak bir referans yoktur, duplicate SAYILMAZ).
+
+        Returns:
+            `True` ise aday, son secilen kareyle gorsel olarak ayirt
+            edilemeyecek kadar benzer (SECILMEMELI); aksi halde `False`.
+        """
+        if reference_gray is None:
+            return False
+        diff = cv2.absdiff(candidate_gray, reference_gray)
+        _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+        diff_ratio = np.sum(thresh > 0) / float(thresh.size)
+        return diff_ratio < (self.dedup_similarity_ratio * self.min_change_threshold)
+
+    @staticmethod
+    def _density_state(timestamp_sec: float, strong_cooldown_until: float, early_cooldown_until: float) -> str:
+        """Su anki YOGUNLUK durumunu, iki O(1) cooldown zaman damgasindan turetir.
+
+        Kalici olarak SAKLANMAZ - her karede bu fonksiyonla yeniden
+        hesaplanir (bkz. modul docstring'i). Olay kumelemesi/baslangic-bitis
+        zamani DEGILDIR; yalnizca secim sikligi kontrolu icindir.
+
+        Args:
+            timestamp_sec: Degerlendirilen karenin zaman damgasi.
+            strong_cooldown_until: Ana esik gecisinin GUCLU DEGISIM
+                durumunu koruyacagi zaman damgasi (bkz. `strong_change_cooldown_sec`).
+            early_cooldown_until: Erken-degisim onayinin durumu koruyacagi
+                zaman damgasi (bkz. `early_change_cooldown_sec`).
+
+        Returns:
+            `_DENSITY_STRONG` | `_DENSITY_EARLY` | `_DENSITY_CALM`.
+        """
+        if timestamp_sec < strong_cooldown_until:
+            return _DENSITY_STRONG
+        if timestamp_sec < early_cooldown_until:
+            return _DENSITY_EARLY
+        return _DENSITY_CALM
+
+    def _selection_interval_and_reason(self, density_state: str) -> Tuple[float, str]:
+        """Verilen yogunluk durumu icin uygulanacak azami secim araligini ve
+        `selection_reason` degerini dondurur (bkz. modul docstring'i).
+
+        Args:
+            density_state: `_density_state()` ciktisi.
+
+        Returns:
+            `(secim_araligi_saniye, selection_reason)` ikilisi.
+        """
+        if density_state == _DENSITY_STRONG:
+            return self.significant_change_selection_interval_sec, _SELECTION_REASON_SIGNIFICANT_CHANGE
+        if density_state == _DENSITY_EARLY:
+            return self.early_change_selection_interval_sec, _SELECTION_REASON_EARLY_CHANGE
+        return self.max_temporal_gap_sec, _SELECTION_REASON_COVERAGE
+
     def _encode_frame_jpeg(self, frame: np.ndarray) -> bytes:
         """Kareyi tek seferde JPEG'e kodlar (disk ve base64 tarafindan ortak kullanilir).
 
@@ -266,12 +518,17 @@ class AdaptiveFrameSampler:
         kodlanir (bkz. `_encode_frame_jpeg`); VLM katmani ayni baytlari
         yeniden kullanir (bkz. `src/sampler/payload_builder.py`).
 
-        Ayrica, son evidence karesinden (esik-gecen VEYA coverage) bu yana
-        `max_temporal_gap_sec` asilirsa, o pencerede degerlendirilen
-        esik-alti adaylar arasindan `net_change_score`'u EN YUKSEK olan kare
-        `selection_reason="temporal_coverage"` ile evidence listesine
-        eklenir (bkz. modul docstring'i, `_PendingCoverageCandidate`); bu
-        kumeleme degildir, yalnizca zamansal kor noktalari onler.
+        Ayrica, VLM'e gonderilecek karelerin SECIM SIKLIGI uc yogunluk
+        seviyesi arasinda uyarlanir (kaynak/analiz `sample_fps`'i SABIT
+        kalir - bkz. modul docstring'i): sakin bolgede `max_temporal_gap_sec`
+        araligiyla (`selection_reason="temporal_coverage"`), ana esigin
+        ALTINDA ama surdurulen bir onset sinyali basladiginda
+        `early_change_selection_interval_sec` araligiyla
+        (`"early_change"` - onaylanan ilk kare ANINDA secilir), ve ana esik
+        gecildikten sonraki hysteresis penceresinde
+        `significant_change_selection_interval_sec` araligiyla
+        (`"significant_change"`). Bu kumeleme degildir, olay baslangic/bitis
+        zamani URETMEZ.
 
         Args:
             video_path: `.mp4` dosya yolu veya RTSP URI'si.
@@ -292,10 +549,11 @@ class AdaptiveFrameSampler:
         native_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
         frame_step = max(1, int(native_fps / sample_fps))
 
-        # Temporal voting durumu (bkz. `_confirm_candidate`) her yeni video
-        # icin sifirlanir; onceki bir `process_video` cagrisinin (varsa) son
-        # kararlari bu videoya tasinmaz.
+        # Temporal voting VE erken-degisim penceresi (bkz. `_confirm_candidate`/
+        # `_confirm_early_change`) her yeni video icin sifirlanir; onceki bir
+        # `process_video` cagrisinin (varsa) son kararlari bu videoya tasinmaz.
         self._recent_threshold_decisions.clear()
+        self._recent_early_decisions.clear()
 
         evidence_frames: List[EvidenceFrame] = []
         frame_id = 0
@@ -303,14 +561,23 @@ class AdaptiveFrameSampler:
         first_frame_raw: Optional[np.ndarray] = None
         first_frame_timestamp: float = 0.0
 
-        # Zamansal kapsama durumu: `last_evidence_timestamp`, gap sayacinin
-        # baslangic referansidir (video basindan itibaren izlenir, boylece
-        # video BASLARKEN gecen sessiz sure de kapsama tetigine dahildir).
-        # `pending_best`, mevcut pencerede su ana kadar goeruelen EN IYI
-        # esik-alti adaydir (TUM pencere bellekte tutulmaz, yalnizca bu tek
-        # ornek - bkz. `_PendingCoverageCandidate`).
+        # Secim durumu (TUMU O(1), buyuyen bir buffer/ring buffer DEGIL):
+        # - `last_evidence_timestamp`: son SECILEN evidence karesinin zaman
+        #   damgasi (gap sayacinin referansi; video BASLARKEN gecen sessiz
+        #   sure de kapsama tetigine dahil olsun diye video basinda ayarlanir).
+        # - `pending_best`: mevcut secim penceresinde su ana kadar goeruelen
+        #   EN IYI esik-alti aday (tum pencere degil, TEK ornek).
+        # - `last_selected_gray`: son SECILEN evidence karesinin gri-tonlamasi
+        #   (yalnizca esik-alti secimler icin duplicate kontrolu referansi -
+        #   bkz. `_is_near_duplicate`; `threshold_exceeded` kareleri ASLA etkilemez).
+        # - `strong_cooldown_until`/`early_cooldown_until`: guclu/erken
+        #   durumun korunacagi zaman damgasi (video ile ayni birimde, saniye);
+        #   hicbir zaman tetiklenmediyse `-inf` (her zaman "gecmis").
         last_evidence_timestamp: Optional[float] = None
-        pending_best: Optional[_PendingCoverageCandidate] = None
+        pending_best: Optional[_PendingSelectionCandidate] = None
+        last_selected_gray: Optional[np.ndarray] = None
+        strong_cooldown_until: float = float("-inf")
+        early_cooldown_until: float = float("-inf")
 
         try:
             while cap.isOpened():
@@ -352,7 +619,10 @@ class AdaptiveFrameSampler:
                     if self._confirm_candidate(is_suspicious):
                         # Sabit bir ust sinir YOKTUR: video ne kadar uzun/olay ne kadar
                         # surekli olursa olsun, hicbir Kanit Karesi burada sessizce
-                        # atlanmaz. Kumeleme artik VLM katmaninda yapilir.
+                        # atlanmaz. Kumeleme artik VLM katmaninda yapilir. Bu dal,
+                        # yogunluk mekanizmasi eklenmeden ONCEKI davranisla BIREBIR
+                        # AYNIDIR: HER esik-gecen kare kosulsuz secilir, dedup
+                        # UYGULANMAZ (bkz. `_is_near_duplicate` docstring'i).
                         motion_bbox = self._bbox_from_mask(thresh)
                         evidence_frames.append(
                             self._build_evidence_frame(
@@ -364,54 +634,124 @@ class AdaptiveFrameSampler:
                                 selection_reason=_SELECTION_REASON_THRESHOLD,
                             )
                         )
-                        # Esik-gecen bir kare eklendiginde gap sayaci ve pencere
-                        # sifirlanir: bu kare zaten o anki en guncel "gorulme"dir.
                         last_evidence_timestamp = timestamp_sec
+                        last_selected_gray = curr_gray
                         pending_best = None
+                        # Guclu-degisim hysteresis penceresini ac/uzat; erken-
+                        # degisim cooldown'unu da en azindan bu kadar uzat ki
+                        # olay yatisirken GUCLU -> ERKEN -> SAKIN diye kademeli
+                        # dussun (dogrudan sakine sicramasin).
+                        strong_cooldown_until = timestamp_sec + self.strong_change_cooldown_sec
+                        early_cooldown_until = max(
+                            early_cooldown_until, timestamp_sec + self.early_change_cooldown_sec
+                        )
+                        self._recent_early_decisions.clear()
                     else:
-                        # Esik-alti aday: zamansal kapsama penceresinin bir
-                        # parcasi olarak degerlendirilir (kumeleme DEGIL -
-                        # yalnizca "bu pencerede en yuksek skorlu kare hangisi"
-                        # sorusuna cevap arar). Esitlikte (ör. tamamen durgun
-                        # bir sahnede tum adaylar net_change_score=0.0) EN
-                        # GUNCEL aday kazanir (`>=`); aksi halde pending_best
-                        # pencerenin basindaki eski bir karede "sikisip kalir"
-                        # ve coverage karesinin zaman damgasi asiri geriye
-                        # sarkar - bu da bir sonraki pencerede gap sayacinin
-                        # hemen tekrar dolup ARKA ARKAYA, gereksiz bir ikinci
-                        # coverage karesi uretmesine yol acar (duplicate-benzeri
-                        # yigilma). Guncel-aday tercihi bunu engeller ve
-                        # coverage karelerini gercekten `max_temporal_gap_sec`
-                        # araliklarla, duzgun dagitir.
+                        # Esik-alti aday. Once bu karenin "supheli-erken" olup
+                        # olmadigini (ana esigin ALTINDA ama gurultu tabanindan
+                        # belirgin sekilde yuksek) degerlendir; SURDURULEN bir
+                        # egilimse (tek karelik sicrama DEGIL) erken-degisim
+                        # cooldown'unu ac/uzat.
                         motion_bbox = self._bbox_from_mask(thresh)
-                        if pending_best is None or net_change_score >= pending_best.net_change_score:
-                            pending_best = _PendingCoverageCandidate(
-                                frame=frame.copy(),
-                                frame_id=frame_id,
-                                timestamp_sec=timestamp_sec,
-                                net_change_score=net_change_score,
-                                motion_bbox=motion_bbox,
-                            )
+                        pre_density_state = self._density_state(
+                            timestamp_sec, strong_cooldown_until, early_cooldown_until
+                        )
 
-                        if (
-                            last_evidence_timestamp is not None
-                            and (timestamp_sec - last_evidence_timestamp) >= self.max_temporal_gap_sec
-                        ):
-                            evidence_frames.append(
-                                self._build_evidence_frame(
-                                    pending_best.frame,
-                                    pending_best.frame_id,
-                                    pending_best.timestamp_sec,
-                                    pending_best.net_change_score,
-                                    pending_best.motion_bbox,
-                                    selection_reason=_SELECTION_REASON_COVERAGE,
+                        is_early_suspicious = net_change_score >= (
+                            self.early_change_score_ratio * self.min_change_threshold
+                        )
+                        if self._confirm_early_change(is_early_suspicious):
+                            early_cooldown_until = timestamp_sec + self.early_change_cooldown_sec
+
+                        density_state = self._density_state(
+                            timestamp_sec, strong_cooldown_until, early_cooldown_until
+                        )
+                        selection_interval, selection_reason = self._selection_interval_and_reason(
+                            density_state
+                        )
+
+                        selected_this_frame = False
+                        # SAKIN -> ERKEN gecisinin TAM O ANI: olayin baslangic
+                        # karesi (ör. izmaritin atildigi an), ana esik VE secim
+                        # araligi beklenmeden, GERIYE DONUK bir buffer
+                        # gerekmeden dogrudan secilir - o an elimizdeki TEK
+                        # kare budur (mevcut kare); `pending_best` eski/farkli
+                        # bir kareyi tutuyor olabilir, o yuzden bu ozel durumda
+                        # `pending_best` KULLANILMAZ.
+                        if pre_density_state == _DENSITY_CALM and density_state == _DENSITY_EARLY:
+                            if not self._is_near_duplicate(curr_gray, last_selected_gray):
+                                evidence_frames.append(
+                                    self._build_evidence_frame(
+                                        frame,
+                                        frame_id,
+                                        timestamp_sec,
+                                        net_change_score,
+                                        motion_bbox,
+                                        selection_reason=_SELECTION_REASON_EARLY_CHANGE,
+                                    )
                                 )
-                            )
-                            # Gap sayaci, TETIKLEYEN ornegin degil, EKLENEN
-                            # coverage karesinin KENDI zaman damgasindan devam
-                            # eder (o kare artik "en son gorulen" evidence'tir).
-                            last_evidence_timestamp = pending_best.timestamp_sec
-                            pending_best = None
+                                last_evidence_timestamp = timestamp_sec
+                                last_selected_gray = curr_gray
+                                pending_best = None
+                                selected_this_frame = True
+
+                        if not selected_this_frame:
+                            # Genel pencere biriktirme: esitlikte (ör. sabit bir
+                            # skorda) EN GUNCEL aday kazanir (`>=`) - aksi
+                            # halde pending_best eski bir karede sikisip kalir
+                            # ve secim zaman damgasi geriye sarkar (bkz.
+                            # onceki gorev notlari).
+                            if pending_best is None or net_change_score >= pending_best.net_change_score:
+                                pending_best = _PendingSelectionCandidate(
+                                    frame=frame.copy(),
+                                    gray=curr_gray,
+                                    frame_id=frame_id,
+                                    timestamp_sec=timestamp_sec,
+                                    net_change_score=net_change_score,
+                                    motion_bbox=motion_bbox,
+                                )
+
+                            if (
+                                last_evidence_timestamp is not None
+                                and (timestamp_sec - last_evidence_timestamp) >= selection_interval
+                            ):
+                                # ONEMLI: dedup SADECE early_change/significant_change
+                                # (aktif-olay yogunlugu) secimlerine uygulanir.
+                                # temporal_coverage (sakin bolge) ASLA dedup ile
+                                # elenmez - aksi halde tamamen durgun/degismeyen
+                                # uzun bir sessizlikte pending_best HER ZAMAN son
+                                # secilen kareyle "ayni" cikar ve "uzun araliklar
+                                # tamamen bos birakilmasin" garantisi (onceki
+                                # gorevde eklenen coverage mekanizmasi) bozulur.
+                                blocked_by_dedup = (
+                                    selection_reason != _SELECTION_REASON_COVERAGE
+                                    and self._is_near_duplicate(pending_best.gray, last_selected_gray)
+                                )
+                                if blocked_by_dedup:
+                                    # Son secilen kareyle gorsel olarak ayirt
+                                    # edilemeyecek kadar benzer: SECILMEZ, ama
+                                    # last_evidence_timestamp/pending_best
+                                    # DEGISMEZ - bir sonraki ornekte (muhtemelen
+                                    # farkli bir pending_best ile) tekrar
+                                    # denenir; hicbir yigilma/veri kaybi olusmaz.
+                                    pass
+                                else:
+                                    evidence_frames.append(
+                                        self._build_evidence_frame(
+                                            pending_best.frame,
+                                            pending_best.frame_id,
+                                            pending_best.timestamp_sec,
+                                            pending_best.net_change_score,
+                                            pending_best.motion_bbox,
+                                            selection_reason=selection_reason,
+                                        )
+                                    )
+                                    # Gap sayaci, TETIKLEYEN ornegin degil, EKLENEN
+                                    # karenin KENDI zaman damgasindan devam eder
+                                    # (o kare artik "en son gorulen" evidence'tir).
+                                    last_evidence_timestamp = pending_best.timestamp_sec
+                                    last_selected_gray = pending_best.gray
+                                    pending_best = None
 
                 self.prev_gray = curr_gray
                 frame_id += 1
@@ -419,26 +759,35 @@ class AdaptiveFrameSampler:
             cap.release()
 
         # Video sonu: pencere kapanmadan (bir sonraki ornek gelmeden) video
-        # bitmis olabilir. Su ana kadarki en iyi aday varsa VE gap zaten
-        # asilmissa, kayipsizlik icin GUVENLI sekilde son bir coverage
-        # karesi olarak eklenir; asilmadiysa (video coverage'i gerektirecek
-        # kadar uzun surmedi) hicbir seye elenmez/hata verilmez - sessizce
-        # birakilir (bu veri kaybi degildir, esik zaten hic gecilmedi).
-        if (
-            pending_best is not None
-            and last_evidence_timestamp is not None
-            and (pending_best.timestamp_sec - last_evidence_timestamp) >= self.max_temporal_gap_sec
-        ):
-            evidence_frames.append(
-                self._build_evidence_frame(
-                    pending_best.frame,
-                    pending_best.frame_id,
-                    pending_best.timestamp_sec,
-                    pending_best.net_change_score,
-                    pending_best.motion_bbox,
-                    selection_reason=_SELECTION_REASON_COVERAGE,
-                )
+        # bitmis olabilir. Su ana kadarki en iyi aday varsa VE (o anki
+        # yogunluk durumuna gore) gap zaten asilmissa, kayipsizlik icin
+        # GUVENLI sekilde son bir kare olarak eklenir (dedup kontrolu dahil);
+        # asilmadiysa (video, gerektirecek kadar uzun surmedi) hicbir seye
+        # elenmez/hata verilmez - sessizce birakilir (bu veri kaybi degildir,
+        # esik zaten hic gecilmedi).
+        if pending_best is not None and last_evidence_timestamp is not None:
+            final_density_state = self._density_state(
+                pending_best.timestamp_sec, strong_cooldown_until, early_cooldown_until
             )
+            final_interval, final_reason = self._selection_interval_and_reason(final_density_state)
+            final_blocked_by_dedup = (
+                final_reason != _SELECTION_REASON_COVERAGE
+                and self._is_near_duplicate(pending_best.gray, last_selected_gray)
+            )
+            if (
+                (pending_best.timestamp_sec - last_evidence_timestamp) >= final_interval
+                and not final_blocked_by_dedup
+            ):
+                evidence_frames.append(
+                    self._build_evidence_frame(
+                        pending_best.frame,
+                        pending_best.frame_id,
+                        pending_best.timestamp_sec,
+                        pending_best.net_change_score,
+                        pending_best.motion_bbox,
+                        selection_reason=final_reason,
+                    )
+                )
 
         if not evidence_frames:
             if first_frame_raw is None:
@@ -558,6 +907,14 @@ def sampler_from_config(
         temporal_vote_window=config.temporal_vote_window,
         temporal_vote_min_count=config.temporal_vote_min_count,
         max_temporal_gap_sec=config.max_temporal_gap_sec,
+        early_change_score_ratio=config.early_change_score_ratio,
+        early_change_window=config.early_change_window,
+        early_change_min_count=config.early_change_min_count,
+        early_change_selection_interval_sec=config.early_change_selection_interval_sec,
+        early_change_cooldown_sec=config.early_change_cooldown_sec,
+        significant_change_selection_interval_sec=config.significant_change_selection_interval_sec,
+        strong_change_cooldown_sec=config.strong_change_cooldown_sec,
+        dedup_similarity_ratio=config.dedup_similarity_ratio,
     )
 
 
