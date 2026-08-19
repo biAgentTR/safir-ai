@@ -355,9 +355,18 @@ class AdaptiveFrameSampler:
         Raises:
             ValueError: Video dosyasi acilamazsa.
         """
+        is_live = video_path.strip().lower().startswith(("rtsp://", "http://", "https://"))
+        if not is_live and not Path(video_path).exists():
+            raise FileNotFoundError(
+                f"Video dosyasi sunucuda bulunamadi: '{video_path}'. "
+                "Lutfen dosyanin sunucuya yuklendiginden veya gecerli bir mutlak yol girildiginden emin olun."
+            )
+
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
-            raise ValueError(f"Video dosyasi acilamadi: {video_path}")
+            raise ValueError(
+                f"Video dosyasi OpenCV ile acilamadi veya gecerli bir video formati degil: '{video_path}'"
+            )
 
         started_at = time.perf_counter()
         native_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0

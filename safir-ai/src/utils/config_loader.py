@@ -7,6 +7,15 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    _pkg_root = Path(__file__).resolve().parents[2]
+    load_dotenv(_pkg_root / ".env")
+    load_dotenv(_pkg_root / "safir-ai" / ".env")
+except Exception:
+    pass
+
 import yaml
 from pydantic import BaseModel, Field
 

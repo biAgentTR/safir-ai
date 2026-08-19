@@ -73,6 +73,7 @@ class AgentDecision:
     actions: List[str] = field(default_factory=list)   # somut aksiyon onerileri listesi
     events: List[Dict[str, str]] = field(default_factory=list)  # [{"time": "MM:SS", "event": "..."}]
     risk_status: str = "assessed"                 # "assessed" | "unknown"
+    confidence: str = "yuksek"                    # "yuksek" | "orta" | "dusuk"
 
 
 class SafirAgent:
@@ -324,6 +325,42 @@ class SafirAgent:
             logger.warning("JSON-modu yeniden denemesi basarisiz: %s", exc)
         return fallback_text
 
+    @staticmethod
+    def _has_active_unnegated_hazard(text: str, keywords: List[str]) -> bool:
+        """Metin icinde GERCEKTEN aktif (olumsuzlanmamis) bir tehlike/kaza olup olmadigini kontrol eder.
+
+        "Tehlike gorulmedi", "ihlal yoktur", "yangin tespit edilmedi" gibi cumlelerdeki
+        olumsuzlanmis anahtar kelimelerin yanlislikla pozitif tehlike gibi algilanmasini
+        engeller (False Positive korumasi).
+        """
+        negation_cues = {
+            "degil", "yok", "yoktur", "olmadi", "bulunmuyor", "gorulmedi",
+            "gozlemlenmedi", "gozlenmedi", "tespit edilmedi", "rastlanmadi",
+            "yokdur", "yokur", "yoktur.", "olmadigi", "yapilmadi"
+        }
+        lowered = text.lower()
+        clauses = [c.strip() for c in re.split(r"[.!?;]+", lowered) if c.strip()]
+        for clause in clauses:
+            for kw in keywords:
+                if kw in clause:
+                    words = clause.split()
+                    kw_word = kw.split()[0]
+                    matching_indices = [i for i, w in enumerate(words) if kw_word in w]
+                    is_negated = False
+                    for idx in matching_indices:
+                        start_i = max(0, idx - 4)
+                        end_i = min(len(words), idx + 5)
+                        window_words = words[start_i:end_i]
+                        if any(cue in window_words for cue in negation_cues) or any(
+                            w.endswith("madi") or w.endswith("medi") or w.endswith("siz") or w.endswith("suz")
+                            for w in window_words
+                        ):
+                            is_negated = True
+                            break
+                    if not is_negated:
+                        return True
+        return False
+
     def _parse_decision(self, final_text: str) -> AgentDecision:
         """Ajanin son yanitini `AgentDecision`'a cevirir (once JSON, sonra regex fallback).
 
@@ -347,9 +384,13 @@ class SafirAgent:
 
         if parsed is not None:
             risk_score = self._coerce_risk_score(parsed.get("risk_score"))
+            if risk_score is None:
+                risk_score = self._coerce_risk_score(parsed.get("risk") or parsed.get("risk_level"))
             summary = str(parsed.get("summary", "")).strip()
             actions = self._coerce_actions(parsed.get("actions"))
             events = self._coerce_events(parsed.get("events"))
+            raw_conf = str(parsed.get("confidence", "yuksek")).strip().lower()
+            confidence = raw_conf if raw_conf in ("yuksek", "orta", "dusuk") else "yuksek"
         else:
             logger.warning("Ajan yaniti JSON olarak ayristirilamadi, regex fallback kullaniliyor.")
             risk_match = _RISK_LINE_PATTERN.search(final_text)
@@ -359,9 +400,48 @@ class SafirAgent:
             single_action = action_match.group(1).strip() if action_match else ""
             actions = [single_action] if single_action else []
             events = []
+            confidence = "orta" if risk_score is None else "yuksek"
 
         recommended_action = actions[0] if actions else "Ek aksiyon onerisi uretilemedi."
         risk_status = "assessed" if risk_score is not None else "unknown"
+
+        # Guvenlik Korumasi: Sahada kaza, yaralanma, dusme, anormallik veya tehlike emaresi varsa risk skoru ASLA 0 olamaz!
+        # Ancak "tehlike gorulmedi", "ihlal yoktur" gibi olumsuzlama cumlelerinde 0 skoru DOKUNULMADAN KORUNMALIDIR.
+        _CRITICAL_INJURY_KEYWORDS = [
+            "yaralanma", "yarali", "kaza", "is kazasi", "dusme", "dustu", "dusecek",
+            "kanama", "sikisma", "ezilme", "carpma", "carpisma", "takilma", "kayma",
+            "bayilma", "hareketsiz", "acili", "yaralanan", "darbe", "kemik", "kirik",
+            "ambulans", "ilk yardim", "kesik", "can kaybi", "yere yigil", "yangin", "alev"
+        ]
+        _GENERAL_ANOMALY_KEYWORDS = [
+            "anormallik", "sizinti", "dokulme", "bozukluk", "ariza", "supheli",
+            "kontrolsuz", "tahrip", "hasar", "devrilme", "tehlikeli"
+        ]
+
+        if risk_score == 0 or risk_score is None:
+            if _has_active_unnegated_hazard(final_text, _CRITICAL_INJURY_KEYWORDS):
+                logger.warning(
+                    "Guvenlik Korumasi: Sahada AKTIF kaza/yaralanma emaresi tespit edildi ancak risk skoru 0 uretilmisti. Skor 80 (Kritik Risk) olarak DÜZELTİLDİ."
+                )
+                risk_score = 80
+                risk_status = "assessed"
+                if not actions or actions == ["Ek aksiyon onerisi uretilemedi."]:
+                    actions = ["Acil Ilk Yardım ve Saglik Ekibini Yonlendirin", "Alani guvenlik altina alin"]
+                    recommended_action = actions[0]
+            elif _has_active_unnegated_hazard(final_text, _GENERAL_ANOMALY_KEYWORDS):
+                logger.warning(
+                    "Guvenlik Korumasi: Sahada AKTIF genel anormallik/tanimlanmamis tehlike tespit edildi. Skor 60 (Yuksek Risk - Unclassified) olarak DÜZELTİLDİ."
+                )
+                risk_score = 60
+                risk_status = "unclassified"
+                if not actions or actions == ["Ek aksiyon onerisi uretilemedi."]:
+                    actions = ["Saha denetimi yapin ve guvenlik tedbiri alin"]
+                    recommended_action = actions[0]
+            else:
+                # Hicbir aktif tehlike yok, olumsuzlanmis veya rutin durum -> risk_score 0 (Dusuk Risk) korunur
+                if risk_score is None:
+                    risk_score = 0
+                    risk_status = "assessed"
 
         return AgentDecision(
             risk_score=risk_score,
@@ -372,6 +452,7 @@ class SafirAgent:
             actions=actions,
             events=events,
             risk_status=risk_status,
+            confidence=confidence,
         )
 
     @staticmethod
@@ -390,12 +471,19 @@ class SafirAgent:
     def _coerce_risk_score(value: Any) -> Optional[int]:
         """Risk skorunu 0-100 araligina kirpilmis bir tam sayiya cevirir.
 
-        Deger eksik/gecersizse (ör. `None`, sayisal olmayan bir metin) artik
-        `0` DEGIL, `None` doner — cagiran taraf (`_parse_decision`) bunu
-        `risk_status="unknown"`e cevirir. Onceki davranis (`0` varsayilani),
-        "gecerli bir dusuk risk skoru" ile "skor hic uretilemedi" durumunu
-        AYIRT EDEMIYORDU (bkz. P0 duzeltmesi).
+        Metin olarak "Yüksek", "Kritik", "Orta", "Düşük" verilirse sayisal skora cevirir
+        (TEKNOFEST 3. Senaryo Sartnamesi Sayfa 8 mock JSON uyumlulugu).
         """
+        if isinstance(value, str):
+            v_clean = value.strip().lower()
+            if v_clean in ("kritik", "critical"):
+                return 90
+            if v_clean in ("yuksek", "yüksek", "high"):
+                return 75
+            if v_clean in ("orta", "medium", "elevated"):
+                return 40
+            if v_clean in ("dusuk", "düşük", "low"):
+                return 10
         try:
             score = int(float(value))
         except (TypeError, ValueError):

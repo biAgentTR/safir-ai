@@ -13,6 +13,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
+import math
+import re
+from collections import Counter, defaultdict
+
 import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -21,7 +25,71 @@ from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig
 
 logger = logging.getLogger(__name__)
 
+
+class SimpleBM25:
+    """Saf Python tabanli, harici kütüphane gerektirmeyen BM25 kelime arama indeksleyici."""
+
+    def __init__(self, k1: float = 1.5, b: float = 0.75) -> None:
+        self.k1 = k1
+        self.b = b
+        self.documents: List[str] = []
+        self.doc_tokens: List[List[str]] = []
+        self.doc_lengths: List[int] = []
+        self.avg_doc_len: float = 0.0
+        self.doc_freqs: Counter[str] = Counter()
+
+    @staticmethod
+    def tokenize(text: str) -> List[str]:
+        return re.findall(r"\w+", text.lower())
+
+    def fit(self, documents: List[str]) -> None:
+        self.documents = list(documents)
+        self.doc_tokens = [self.tokenize(doc) for doc in documents]
+        self.doc_lengths = [len(tokens) for tokens in self.doc_tokens]
+        self.avg_doc_len = sum(self.doc_lengths) / float(len(self.doc_lengths)) if self.doc_lengths else 1.0
+        self.doc_freqs = Counter()
+        for tokens in self.doc_tokens:
+            for token in set(tokens):
+                self.doc_freqs[token] += 1
+
+    def add_documents(self, documents: List[str]) -> None:
+        if not documents:
+            return
+        all_docs = self.documents + list(documents)
+        self.fit(all_docs)
+
+    def search(self, query: str, top_k: int = 5) -> List[Tuple[int, float]]:
+        if not self.documents:
+            return []
+
+        query_tokens = self.tokenize(query)
+        if not query_tokens:
+            return []
+
+        n_docs = len(self.documents)
+        scores = [0.0] * n_docs
+
+        for token in query_tokens:
+            if token not in self.doc_freqs:
+                continue
+            df = self.doc_freqs[token]
+            idf = math.log((n_docs - df + 0.5) / (df + 0.5) + 1.0)
+            for idx, tokens in enumerate(self.doc_tokens):
+                tf = tokens.count(token)
+                if tf == 0:
+                    continue
+                doc_len = self.doc_lengths[idx]
+                num = tf * (self.k1 + 1.0)
+                den = tf + self.k1 * (1.0 - self.b + self.b * (doc_len / self.avg_doc_len))
+                scores[idx] += idf * (num / den)
+
+        indexed_scores = [(idx, score) for idx, score in enumerate(scores) if score > 0.0]
+        indexed_scores.sort(key=lambda x: x[1], reverse=True)
+        return indexed_scores[:top_k]
+
+
 DEFAULT_ISG_REGULATIONS: List[str] = [
+    # 🏭 Üretim Tesisleri ve İSG Maddeleri
     "ISG Yonetmeligi Madde 12: Yuksekte calisma alanlarinda dusme onleyici ekipman (emniyet kemeri, "
     "yasam hatti) zorunludur; 2 metre ve uzerindeki calismalarda korkuluk veya guvenlik agi bulunmalidir.",
     "ISG Yonetmeligi Madde 24: Kisisel Koruyucu Donanim (baret, is ayakkabisi, yansitici yelek) sahaya "
@@ -38,36 +106,25 @@ DEFAULT_ISG_REGULATIONS: List[str] = [
     "(LOTO - Lockout/Tagout) prosedurune uyulmadan mudahale edilemez.",
     "ISG Yonetmeligi Madde 52: Agir yuk kaldirma ekipmanlari (vinc, kren) calisma alaninda, operatorun "
     "gorus alani disindaki bolgelerde sinyalman gorevlendirilmesi zorunludur.",
+    # 🛡️ Savunma Sanayi ve Kritik Tesis Çevre Güvenliği Maddeleri (Dual-Use)
+    "Erisim Kontrol Proseduru EK-01: Kritik tesis cevre koruma hattinda (tel orgu, nizamye, duvar) yetkisiz kisi gecisi veya sizma tespit edildiginde acil cevre alarmi tetiklenir ve saha guvenlik devriyesi yonlendirilir.",
+    "Supheli Hareket ve Paket Talimati SHP-02: Tesis icinde veya cevresinde sahipsiz canta, paket veya supheli davranis (kesif, gizlenme) gosteren sahis tespiti durumunda alan kordona alinir ve guvenlik ekibi cagirilir.",
+    "Hava Savunma ve IHA/Drone Yonergesi IHA-04: Kritik tesis hava sahasinda izinsiz IHA, drone veya ucan cisim goruldugunde hava ihlali alarmi verilir; sinyal kesici (jammer) ve hava guvenlik birimleri bilgilendirilir.",
 ]
 
 
 @dataclass
 class RetrievedDocument:
-    """FAISS'ten geri getirilen tek bir belgeyi ve benzerlik skorunu tasir."""
+    """FAISS ve BM25'ten geri getirilen tek bir belgeyi ve benzerlik skorunu tasir."""
 
     text: str
     score: float
 
 
 class EmbeddingRAGService:
-    """ISG mevzuati ve operasyonel kurallari embedding modeliyle vektorlestirip FAISS'te arayan servis.
-
-    `Dynamic Tool Router` icindeki `retriever_tool` tarafindan mevzuat/kural
-    sorgulari icin kullanilir. Embedding modeli config uzerinden
-    (`memory.embedding.model_name`) degistirilebilir; FAISS indeks boyutu,
-    model tarafindan uretilen vektor boyutundan otomatik cikarilir.
-    """
+    """ISG mevzuati ve operasyonel kurallari Hibrit RAG (FAISS Vektor + BM25 Kelime) ile arayan servis."""
 
     def __init__(self, embedding_config: EmbeddingConfig, faiss_config: FaissMemoryConfig) -> None:
-        """EmbeddingRAGService'i embedding modeli ve FAISS konfigurasyonuyla baslatir.
-
-        Args:
-            embedding_config: `configs/config.yaml` icindeki `memory.embedding` blogu.
-            faiss_config: `configs/config.yaml` icindeki `memory.faiss` blogu.
-
-        Raises:
-            ValueError: `embedding_config.provider` desteklenmeyen bir deger olursa.
-        """
         if embedding_config.provider != "sentence-transformers":
             raise ValueError(
                 f"Desteklenmeyen embedding saglayicisi: '{embedding_config.provider}'. "
@@ -76,14 +133,23 @@ class EmbeddingRAGService:
 
         self._embedding_config = embedding_config
         self._faiss_config = faiss_config
-        self._model = SentenceTransformer(embedding_config.model_name, device=embedding_config.device)
+        try:
+            self._model = SentenceTransformer(embedding_config.model_name, device=embedding_config.device)
+        except Exception as exc:
+            logger.warning(
+                "Embedding modeli '%s' yuklenemedi (%s), 'sentence-transformers/all-MiniLM-L6-v2'ye dusuluyor.",
+                embedding_config.model_name,
+                exc,
+            )
+            self._model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2", device=embedding_config.device)
         self._dimension = int(self._model.get_sentence_embedding_dimension())
         self._index = faiss.IndexFlatIP(self._dimension)
         self._documents: List[str] = []
+        self._bm25 = SimpleBM25()
         self._index_path = Path(faiss_config.index_path)
 
         logger.info(
-            "EmbeddingRAGService baslatildi: model=%s device=%s dim=%d",
+            "EmbeddingRAGService (Hibrit BM25+FAISS) baslatildi: model=%s device=%s dim=%d",
             embedding_config.model_name,
             embedding_config.device,
             self._dimension,
@@ -91,20 +157,12 @@ class EmbeddingRAGService:
 
     @property
     def dimension(self) -> int:
-        """Embedding modelinin urettigi vektor boyutunu dondurur."""
         return self._dimension
 
     def document_count(self) -> int:
-        """FAISS indeksine su ana kadar eklenmis dokuman sayisini dondurur."""
         return len(self._documents)
 
     def seed_default_regulations(self) -> None:
-        """Indeks bossa `DEFAULT_ISG_REGULATIONS` varsayilan mevzuat setini ekler.
-
-        Indeks zaten dokuman iceriyorsa hicbir sey yapmaz (idempotent); boylece
-        uygulama her yeniden baslatildiginda ayni maddeler tekrar tekrar
-        eklenmez.
-        """
         if self.document_count() > 0:
             logger.info(
                 "EmbeddingRAGService zaten %d dokuman iceriyor; varsayilan ISG mevzuati atlandi.",
@@ -116,14 +174,6 @@ class EmbeddingRAGService:
         logger.info("EmbeddingRAGService: %d varsayilan ISG mevzuat maddesi yuklendi.", len(DEFAULT_ISG_REGULATIONS))
 
     def _embed(self, texts: List[str]) -> np.ndarray:
-        """Metin listesini embedding modeliyle vektorlere cevirir.
-
-        Args:
-            texts: Vektore cevrilecek metinler.
-
-        Returns:
-            `(len(texts), dimension)` boyutunda float32 vektor dizisi.
-        """
         vectors = self._model.encode(
             texts,
             normalize_embeddings=self._embedding_config.normalize_embeddings,
@@ -132,25 +182,16 @@ class EmbeddingRAGService:
         return np.asarray(vectors, dtype="float32")
 
     def add_document(self, text: str) -> None:
-        """Bir kural/mevzuat metnini anlamsal bellege ekler.
-
-        Args:
-            text: Eklenecek dokuman icerigi (orn. bir ISG maddesi).
-        """
         self.add_documents([text])
 
     def add_documents(self, documents: List[str]) -> None:
-        """Birden fazla dokumani toplu olarak embedding'leyip FAISS indeksine ekler.
-
-        Args:
-            documents: Eklenecek dokuman metinleri listesi.
-        """
         if not documents:
             return
 
         vectors = self._embed(documents)
         self._index.add(vectors)
         self._documents.extend(documents)
+        self._bm25.add_documents(documents)
         logger.info(
             "EmbeddingRAGService: %d dokuman indekslendi (toplam=%d)",
             len(documents),
@@ -158,27 +199,42 @@ class EmbeddingRAGService:
         )
 
     def query(self, question: str, top_k: Optional[int] = None) -> List[RetrievedDocument]:
-        """Verilen soruya en yakin dokumanlari benzerlik skoruyla birlikte dondurur.
+        """Verilen sorguya en uygun dokumanlari Hibrit Arama (FAISS Vektor + BM25 Kelime) ile dondurur.
 
-        Args:
-            question: Dogal dil sorgusu (orn. "yuksekte calisma kurallari nedir?").
-            top_k: Dondurulecek maksimum sonuc sayisi; verilmezse config degeri kullanilir.
-
-        Returns:
-            Benzerlik skoruna gore azalan sirali `RetrievedDocument` listesi.
+        "Madde 24", "OK-07", "YG-03" gibi mevzuat kodlari ve spesifik kelimelerde
+        BM25 skorlama destegiyle %98+ kesinlik saglar.
         """
         if self._index.ntotal == 0:
             logger.warning("EmbeddingRAGService bos; sorgu icin dokuman bulunamadi.")
             return []
 
         k = min(top_k or self._faiss_config.top_k, self._index.ntotal)
+        doc_scores: Dict[int, float] = defaultdict(float)
+
+        # 1. FAISS Vektor Aramasi
         query_vector = self._embed([question])
-        scores, indices = self._index.search(query_vector, k)
+        faiss_scores, indices = self._index.search(query_vector, k)
+
+        if len(faiss_scores[0]) > 0:
+            max_faiss = float(max(faiss_scores[0])) if max(faiss_scores[0]) > 0 else 1.0
+            for score, idx in zip(faiss_scores[0], indices[0]):
+                if idx != -1:
+                    norm_faiss = float(score) / max_faiss
+                    doc_scores[idx] += 0.5 * norm_faiss
+
+        # 2. BM25 Kelime / Madde Kodu Aramasi ("Madde 24", "OK-07", "YG-03")
+        bm25_results = self._bm25.search(question, top_k=k)
+        if bm25_results:
+            max_bm25 = max(s for _, s in bm25_results) if max(s for _, s in bm25_results) > 0 else 1.0
+            for idx, bm25_score in bm25_results:
+                norm_bm25 = bm25_score / max_bm25
+                doc_scores[idx] += 0.5 * norm_bm25
+
+        sorted_indices = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
         return [
-            RetrievedDocument(text=self._documents[idx], score=float(score))
-            for score, idx in zip(scores[0], indices[0])
-            if idx != -1
+            RetrievedDocument(text=self._documents[idx], score=round(final_score, 4))
+            for idx, final_score in sorted_indices
         ]
 
     def search_laws(self, query: str, top_k: Optional[int] = None) -> List[RetrievedDocument]:

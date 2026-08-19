@@ -95,11 +95,22 @@ class EventType(str, Enum):
     """ISG Yonetmeligi Madde 52 (sinyalman olmadan vinc/kren ile agir yuk kaldirma)."""
 
     YETKISIZ_ERISIM = "yetkisiz_erisim"
-    """Mevzuat disi, operasyonel izleme kategorisi: mevcut `DEFAULT_ISG_REGULATIONS`
-    setinde dogrudan karsiligi yoktur, ancak yasakli/yetkisiz alana giris
-    saha guvenligi acisindan izlenmesi gereken yaygin bir durum oldugundan
-    enum'da tutulur. Mevzuat seti genisledikce (orn. erisim kontrolu maddesi
-    eklenirse) `EVENT_TYPE_REGULATION_MAP`'e baglanabilir."""
+    """Erisim Kontrol Proseduru EK-01 (yasakli/yetkisiz alana giris)."""
+
+    SIZMA_YETKISIZ_ERISIM = "sizma_yetkisiz_erisim"
+    """Savunma Sanayi & Kritik Tesis Cevre Koruma Hattinda (tel orgu, duvar, nizamye) sizma ve yetkisiz erisim ihlali."""
+
+    SUPHELI_PAKET_HAREKET = "supheli_paket_hareket"
+    """Tesis icinde veya cevresinde sahipsiz paket/canta veya supheli davranis (kesif, gizlenme)."""
+
+    DRONE_IHA_TEHDIDI = "drone_iha_tehdidi"
+    """Kritik tesis hava sahasinda izinsiz IHA, drone veya ucan cisim gorulmesi."""
+
+    YARALANMA_KAZA = "yaralanma_kaza"
+    """Fiziki is kazasi, yaralanma, dusme, kanama, ezilme, carpisma veya acil mudahale gerektiren durumlar."""
+
+    SINIFLANDIRILAMADI = "siniflandirilamadi"
+    """8 ana ISG kurali disinda supheli risk / anormallik / inceleme bekleyen tehlike durumu."""
 
     GENEL_GOZLEM = "genel_gozlem"
     """Fallback kategori: hicbir kural kategorisi eslesmedigi durumlar icin (mevzuat karsiligi yok)."""
@@ -114,7 +125,12 @@ EVENT_TYPE_REGULATION_MAP: Dict[EventType, Optional[str]] = {
     EventType.DAR_ALAN_IHLALI: "ISG Yonetmeligi Madde 45",
     EventType.ENERJI_KESME_IHLALI: "Operasyonel Kural OK-15",
     EventType.AGIR_YUK_RISKI: "ISG Yonetmeligi Madde 52",
-    EventType.YETKISIZ_ERISIM: None,
+    EventType.YETKISIZ_ERISIM: "Erisim Kontrol Proseduru EK-01",
+    EventType.SIZMA_YETKISIZ_ERISIM: "Erisim Kontrol Proseduru EK-01 (Cevre Guvenligi ve Sizma Tespiti)",
+    EventType.SUPHELI_PAKET_HAREKET: "Supheli Hareket ve Paket Talimati SHP-02",
+    EventType.DRONE_IHA_TEHDIDI: "Hava Savunma ve IHA/Drone Yonergesi IHA-04",
+    EventType.YARALANMA_KAZA: "Genel ISG Kanunu Madde 4 (Is Kazasi ve Acil Mudahale)",
+    EventType.SINIFLANDIRILAMADI: "8 Ana ISG Kurali Disinda Supheli Risk / Inceleme Bekliyor",
     EventType.GENEL_GOZLEM: None,
 }
 """`EventType` -> ilgili mevzuat maddesinin kisa referans etiketi.

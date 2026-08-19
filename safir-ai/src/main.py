@@ -170,39 +170,28 @@ def _is_absolute_path(path: str) -> bool:
 
 
 def normalize_video_source(video_source: str) -> str:
-    """`video_source` degerini, canli yayin URI'lerini ve MUTLAK yollari koruyarak normalize eder.
-
-    Operator panelinden veya harici istemcilerden gelen deger su sekilde ele alinir:
-      - RTSP/HTTP(S) canli yayin adresleri: OLDUGU GIBI birakilir.
-      - MUTLAK yol (POSIX `/...`, Windows `C:\\...`/`C:/...`, UNC `\\\\sunucu\\pay`):
-        OLDUGU GIBI KORUNUR — kullanicinin isaret ettigi GERCEK dosya okunur.
-        (Onceden bu durumda da dosya adi ayiklanip `data/<ad>` altina
-        yonlendiriliyordu; bu, ayni dosya adina sahip FARKLI videolarin
-        sunucuda CAKISIP yanlislikla ayni/eski dosyanin okunmasina yol
-        aciyordu — bkz. kok neden analizi, Hata #1.)
-      - BAGIL yol veya yalnizca dosya adi: MEVCUT (degismemis) davranis
-        korunur — dosya adi ayiklanip `data/<dosya_adi>` seklinde yeniden
-        yazilir; boylece konteyner icindeki `./data` bind mount'una gore
-        calisma DEVAM eder.
-
-    Args:
-        video_source: `/analyze` istegindeki ham `video_source` degeri.
-
-    Returns:
-        Canli yayin URI'si veya mutlak yol ise degistirilmeden; bagil/dosya-adi
-        girdiyse `data/<dosya_adi>` seklinde normalize edilmis yol.
-    """
-    lowered = video_source.strip().lower()
-    if lowered.startswith(("rtsp://", "http://", "https://")):
-        return video_source
-
+    """`video_source` degerini, canli yayin URI'lerini, yuklenen dosyalari ve mutlak yollari koruyarak normalize eder."""
     stripped = video_source.strip()
+    lowered = stripped.lower()
+    if lowered.startswith(("rtsp://", "http://", "https://")):
+        return stripped
+
+    # 1. Dosya verildigi gibi (mutlak veya bagil `data/uploads/video.mp4`, `data/duman_video.mp4`) diskte varsa koru
+    if os.path.exists(stripped):
+        return stripped
+
+    # 2. Mutlak yol ise koru
     if _is_absolute_path(stripped):
         return stripped
 
+    # 3. Yalnizca dosya adi veya bagil yol verildiyse `data/` klasorunde ara
     normalized_slashes = stripped.replace("\\", "/")
     filename = os.path.basename(normalized_slashes)
-    return os.path.join(_DATA_DIR, filename)
+    fallback_path = os.path.join(_DATA_DIR, filename)
+    if os.path.exists(fallback_path):
+        return fallback_path
+
+    return stripped
 
 
 def is_live_source(video_source: str) -> bool:
@@ -795,6 +784,7 @@ class SafirPipeline:
             risk_score=decision.risk_score,
             risk_level=decision.risk_level,
             risk_status=decision.risk_status,
+            confidence=getattr(decision, "confidence", "yuksek"),
             recommended_action=decision.recommended_action,
             actions=decision.actions,
             escalation_tier=escalation.tier.value,
@@ -1126,8 +1116,8 @@ def _run_job(
         with _jobs_lock:
             job = _jobs[job_id]
             job.status = "error"
-            # Guvenli hata mesaji (stack trace/secret UI'a donmez).
-            job.error = "Analiz basarisiz oldu. Ayrintilar sunucu loglarinda."
+            err_detail = str(exc).strip()
+            job.error = err_detail if err_detail else "Analiz basarisiz oldu. Ayrintilar sunucu loglarinda."
             failed_stage = job.current_stage or "sampler"
             job.trace_events.append(
                 {
@@ -1915,6 +1905,53 @@ async def upload_conversation_document(
         status="processing",
         error_message=None,
         created_at=record.created_at,
+    )
+
+
+class VideoUploadResponse(BaseModel):
+    video_source: str
+    filename: str
+    size_bytes: int
+
+
+_ALLOWED_VIDEO_EXTENSIONS = {"mp4", "avi", "mov", "mkv", "webm"}
+
+
+@app.post("/upload/video", response_model=VideoUploadResponse)
+async def upload_video(file: UploadFile = File(...)) -> VideoUploadResponse:
+    """Video dosyasini sunucuya yukler ve `data/uploads/` altina kaydeder."""
+    filename = (file.filename or "").strip() or "uploaded_video.mp4"
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in _ALLOWED_VIDEO_EXTENSIONS:
+        allowed = "/".join(sorted(_ALLOWED_VIDEO_EXTENSIONS))
+        raise HTTPException(status_code=422, detail=f"Desteklenmeyen video turu: .{ext or '?'} (yalnizca {allowed})")
+
+    safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", filename)
+    uploads_dir = Path(_DATA_DIR) / "uploads"
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    target_path = uploads_dir / safe_name
+
+    total_bytes = 0
+    try:
+        with open(target_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):  # 1MB parcalar halinde oku
+                f.write(chunk)
+                total_bytes += len(chunk)
+    except Exception as exc:
+        logger.exception("Video sunucuya yazilamadi: %s", filename)
+        raise HTTPException(status_code=500, detail=f"Video dosyasi kaydedilemedi: {exc}")
+
+    if total_bytes == 0:
+        if target_path.exists():
+            target_path.unlink()
+        raise HTTPException(status_code=422, detail="Yuklenen video dosyasi bos (0 bayt).")
+
+    rel_source = os.path.relpath(target_path, start=os.getcwd()).replace("\\", "/")
+    logger.info("Video yuklendi: filename=%s path=%s size=%d bayt", filename, rel_source, total_bytes)
+    return VideoUploadResponse(
+        video_source=rel_source,
+        filename=filename,
+        size_bytes=total_bytes,
     )
 
 

@@ -89,7 +89,7 @@ sampler:
 #   vlm.active_model: "gemini" + llm.active_model: "gemini" + GEMINI_API_KEY.
 # =============================================================================
 vlm:
-  active_model: "qwen"             # qwen | gemma | gemini  (VLMFactory tarafindan okunur) — AKTIF: qwen (yerel, Qwen3.5-9B)
+  active_model: "gemini"             # qwen | gemma | gemini  (VLMFactory tarafindan okunur) — AKTIF: gemini
   models:
     qwen:
       model_name: "Qwen/Qwen3.5-9B"   # native gorsel destekli; 32 GB'de vLLM FP8 ile
@@ -122,19 +122,19 @@ memory:
     db_path: "data/events.db"
   embedding:
     provider: "sentence-transformers"
-    model_name: "BAAI/bge-m3"          # alternatif: "Qwen/Qwen3-VL-Embedding"
+    model_name: "sentence-transformers/all-MiniLM-L6-v2"          # hizli & kararli CPU embedding modeli
     device: "cpu"                      # RAG embedding hesaplama CPU'da yapilir, GPU'yu VLM/LLM'e ayirir
     normalize_embeddings: true
   faiss:
     index_path: "data/faiss_index"
-    embedding_model: "BAAI/bge-m3"     # alternatif: "Qwen/Qwen3-VL-Embedding" (memory.embedding.model_name ile senkron)
+    embedding_model: "sentence-transformers/all-MiniLM-L6-v2"     # memory.embedding.model_name ile senkron
     top_k: 5
 
 # -----------------------------------------------------------------------------
 # 05 - Ajan ve Muhakeme Katmani (LangGraph) - GPU / vLLM
 # -----------------------------------------------------------------------------
 llm:
-  active_model: "qwen3"              # qwen3 | gemma3 | gemini (VLM'den bagimsiz saf muhakeme modeli) — AKTIF: qwen3 (yerel, duz Qwen3)
+  active_model: "gemini"              # qwen3 | gemma3 | gemini (VLM'den bagimsiz saf muhakeme modeli) — AKTIF: gemini
   models:
     qwen3:                           # aktif model Qwen3-4B-Instruct-2507'dir (VLM'den (Qwen3.5) FARKLI aile — bilerek: olgun/kararli, metin-only, gorsele ihtiyaci yok)
       model_name: "Qwen/Qwen3-4B-Instruct-2507"   # non-thinking mod (<think> bloklari yok), Nisan 2025'ten beri olgun vLLM destegi

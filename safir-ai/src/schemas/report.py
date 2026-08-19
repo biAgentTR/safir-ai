@@ -93,11 +93,23 @@ class SafirReport(BaseModel):
             "bu durumda risk_score None'dir ve ASLA dusuk risk olarak yorumlanmamalidir."
         ),
     )
+    confidence: Optional[str] = Field(
+        default="yuksek", description="Karar zincirinin guven derecesi (yuksek | orta | dusuk)."
+    )
     recommended_action: str = Field(
         description="Saha operatorune yonelik birincil aksiyon onerisi (geriye-uyum: actions[0])."
     )
     actions: List[str] = Field(
         default_factory=list, description="Operatore yonelik somut aksiyon onerileri listesi (sartname 'actions')."
+    )
+    onset_timestamp_str: Optional[str] = Field(
+        default=None, description="Olayin/kazanin ILK BAŞLADIGI kareden alinan zaman damgasi (MM:SS)."
+    )
+    safe_timestamps: List[str] = Field(
+        default_factory=list, description="Hicbir kazanin/riskin olmadigi rutin karesel zaman damgalari (orn. 00:07, 00:10, 00:12, 00:15)."
+    )
+    incident_timestamps: List[str] = Field(
+        default_factory=list, description="Tehlikenin/kazanin aktif oldugu zaman damgalari (orn. 00:18, 00:22, 00:25)."
     )
     detected_event_types: List[str] = Field(
         default_factory=list,

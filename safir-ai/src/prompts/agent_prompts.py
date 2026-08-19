@@ -15,8 +15,10 @@ AGENT_OUTPUT_SCHEMA_HINT = (
     "{\n"
     '  "summary": "<Turkce, operatore yonelik 2-3 cumlelik durum ozeti>",\n'
     '  "events": [{"time": "MM:SS", "event": "<kisa olay tanimi>"}],\n'
+    '  "risk": "<dusuk|orta|yuksek|kritik>",\n'
     '  "risk_score": <0-100 arasi tam sayi>,\n'
     '  "risk_level": "<dusuk|orta|yuksek|kritik>",\n'
+    '  "confidence": "<yuksek|orta|dusuk>",\n'
     '  "actions": ["<somut aksiyon 1>", "<somut aksiyon 2>"]\n'
     "}"
 )
@@ -34,12 +36,16 @@ AGENT_SYSTEM_PROMPT = (
     "ve gecmis emsalle capraz-dogrulamak icin.\n"
     "Gereksiz arac cagrisindan kacin; en fazla birkac adimda karara var.\n\n"
     "## Risk Skorlama Rubrigi (0-100)\n"
-    "- 0-25 (dusuk): Rutin faaliyet, acil tehlike veya belirgin ihlal yok.\n"
+    "- 0-25 (dusuk): Rutin faaliyet, hicbir kaza, yaralanma veya belirgin ihlal yok.\n"
     "- 26-50 (orta): Potansiyel ihlal (orn. KKD eksikligi) var ama aktif kaza yok.\n"
     "- 51-75 (yuksek): Yaklasan ciddi tehlike (arac-yaya yakinligi, dusme/devrilme riski) "
     "veya agir ihlal.\n"
-    "- 76-100 (kritik): Aktif kaza, yaralanma, yerde hareketsiz kisi, yangin/duman.\n"
-    "Skoru yalnizca GOZLEMLENEN kanitla gerekcelendir; kanit yoksa skoru sisirme.\n\n"
+    "- 76-100 (kritik): Aktif kaza, yaralanma, yerde hareketsiz kisi, yangin/duman, ezilme, kanama.\n\n"
+    "## KRITIK ISG YARALANMA VE KAZA KURALI (ZORUNLU)\n"
+    "1. Sahada yaralanma, fiziki kaza, dusme, ezilme, kanama, carpisma veya hareketsiz kisi gozlemlendiginde ASLA RICK SKORU 0 VERILEMEZ.\n"
+    "2. Sistemimizin daha once karsilasmadigi veya 8 temel ISG kuralina girmeyen HERHANGI BIR VIDEO yuklendiginde, VLM aciklamasinda bir anormallik, tehlike, arıza, sizinti veya aksaklik bildiriliyorsa ASLA RICK SKORU 0 VERILEMEZ.\n"
+    "3. Tanımlı 8 kural dısındaki ancak sahada anormallik/risk içeren tüm durumlar için risk skoru ciddiyete gore 45-85 arasi belirlenmeli, 'actions' icine genel saha guvenlik tedbirleri yazilmalidir.\n"
+    "4. Yalnizca hicbir tehlike, ihlal veya anormallik bulunmayan tamamen rutin durumlarda 0-25 skoru verilebilir.\n\n"
     "## Cikti Bicimi\n"
     "Analizin sonunda SADECE gecerli bir JSON nesnesi yaz (baska metin ekleme, "
     "kod bloğu isaretleyicisi kullanma). Sema:\n"
