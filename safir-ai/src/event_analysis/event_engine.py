@@ -336,9 +336,13 @@ class EventEngine:
 
         Yalnizca `EventType` enum'unda tanimli tipler kabul edilir (gecersiz
         tipler atlanir); guven skoru 0-1 araligina kirpilir ve zaman damgasi
-        item'da yoksa cagrinin zaman damgasina duser. Gecerli hicbir olay
-        yoksa bos liste doner ve cagiran (`detect`) anahtar-kelime fallback'ine
-        gecer.
+        item'da yoksa cagrinin zaman damgasina duser. `event_id`/`evidence_ids`/
+        `end_time`/`risk_score` (VLM'in olay kumeleme ciktisi - bkz.
+        `src/prompts/vlm_prompts.py`) varsa aynen tasinir; hicbiri VLM
+        katmaninda UYDURULMAZ, yalnizca burada oldugu gibi aktarilir (kimlik
+        dogrulamasi/`unassigned` yonetimi `src/main.py` katmaninda yapilir).
+        Gecerli hicbir olay yoksa bos liste doner ve cagiran (`detect`)
+        anahtar-kelime fallback'ine gecer.
 
         Args:
             engine_input: (varsa) `structured_events` tasiyan girdi.
@@ -360,18 +364,36 @@ class EventEngine:
             if confidence < self._min_confidence:
                 continue
 
-            evidence = str(item.get("evidence") or "").strip() or engine_input.vlm_description
+            evidence = str(item.get("description") or item.get("evidence") or "").strip() or engine_input.vlm_description
+            start_time = self._coerce_timestamp(
+                item.get("start_time", item.get("timestamp")), engine_input.timestamp
+            )
+            end_time_raw = item.get("end_time")
+            evidence_ids = [str(eid) for eid in (item.get("evidence_ids") or []) if isinstance(eid, (str, int))]
             detections.append(
                 DetectedEvent(
                     event_type=raw_type,
                     description=evidence,
-                    timestamp=self._coerce_timestamp(item.get("timestamp"), engine_input.timestamp),
+                    timestamp=start_time,
+                    end_timestamp=self._coerce_timestamp(end_time_raw, start_time) if end_time_raw is not None else None,
                     confidence=confidence,
                     matched_keywords=[],
                     source_model=engine_input.source_model,
+                    vlm_event_id=str(item.get("event_id")) if item.get("event_id") is not None else None,
+                    evidence_ids=evidence_ids,
+                    risk_hint=self._coerce_risk_hint(item.get("risk_score")),
                 )
             )
         return detections
+
+    @staticmethod
+    def _coerce_risk_hint(value: Any) -> Optional[int]:
+        """VLM'in kaba `risk_score` ipucunu 0-100 araligina kirpilmis bir int'e cevirir (gecersizse `None`)."""
+        try:
+            risk = int(round(float(value)))
+        except (TypeError, ValueError):
+            return None
+        return max(0, min(100, risk))
 
     @staticmethod
     def _coerce_confidence(value: Any, default: float = 0.5) -> float:

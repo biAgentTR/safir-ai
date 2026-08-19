@@ -47,6 +47,7 @@ class EventBuilder:
             related_rule_matches=list(rule_matches),
             occurrence_count=temporal_event.occurrence_count,
             duration=temporal_event.duration,
+            evidence_ids=list(temporal_event.evidence_ids),
         )
 
     def build_batch(

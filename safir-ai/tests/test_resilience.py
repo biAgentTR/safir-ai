@@ -10,7 +10,7 @@ import httpx
 import pytest
 
 import src.vlm.base_vlm as base_vlm
-from src.sampler.schema import EventCluster, EvidenceFrame
+from src.sampler.schema import EvidenceFrame
 from src.utils.config_loader import VLLMEndpointConfig
 from src.vlm.qwen_vlm import QwenVLM
 
@@ -23,8 +23,9 @@ class _OkResponse:
         return {"choices": [{"message": {"content": "Gozlem metni."}}]}
 
 
-def _cluster() -> EventCluster:
-    frame = EvidenceFrame(
+def _evidence_frame() -> EvidenceFrame:
+    return EvidenceFrame(
+        evidence_id="ev0",
         frame_id=0,
         timestamp_sec=1.0,
         timestamp_str="00:01",
@@ -33,7 +34,6 @@ def _cluster() -> EventCluster:
         base64_image="data:image/jpeg;base64,AA==",
         image_shape=(1, 1, 3),
     )
-    return EventCluster(event_id=1, start_time=1.0, end_time=1.0, peak_frame=frame, total_candidate_frames=1)
 
 
 @pytest.fixture
@@ -58,7 +58,7 @@ def test_vlm_retries_transient_error_then_succeeds(monkeypatch, _no_sleep) -> No
         return _OkResponse()
 
     monkeypatch.setattr(base_vlm.httpx, "post", _post)
-    response = _vlm().describe_events([_cluster()], "test")
+    response = _vlm().analyze_evidence([_evidence_frame()], "test")
 
     assert calls["n"] == 3  # 2 basarisiz + 1 basarili
     assert response.description == "Gozlem metni."
@@ -70,7 +70,7 @@ def test_vlm_raises_after_exhausting_retries(monkeypatch, _no_sleep) -> None:
 
     monkeypatch.setattr(base_vlm.httpx, "post", _post)
     with pytest.raises(RuntimeError, match="denemede basarisiz"):
-        _vlm().describe_events([_cluster()], "test")
+        _vlm().analyze_evidence([_evidence_frame()], "test")
 
 
 def test_agent_returns_degraded_decision_on_reasoning_failure(safir_config) -> None:

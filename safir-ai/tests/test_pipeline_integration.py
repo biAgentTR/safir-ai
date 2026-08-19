@@ -387,36 +387,32 @@ def test_high_risk_auto_dispatches_alarm_in_pipeline(
     assert record.acknowledged is True
 
 
-def test_pipeline_sends_representative_frame_sequence_to_vlm(
+def test_pipeline_sends_all_evidence_frames_to_vlm_with_no_positional_role(
     pipeline: SafirPipeline, motion_video: str
 ) -> None:
-    """Pipeline, VLM'e tek zirve kare yerine zaman sirali evidence kare DIZISI gondermeli.
+    """Pipeline, VLM'e sampler'in urettigi TUM evidence karelerini (kumelenmeden) gondermeli.
 
-    En yuksek skorlu karenin oncesinden/sonrasindan ek evidence kareleri
-    secilip `cluster.representative_frames` doldurulmali (hicbirine kalici
-    bir 'pre'/'peak'/'post' konumsal ROL verilmeden); boylece VLM olayin
-    akisini (baslangic->gelisim->sonuc) muhakeme edebilir. VLM'e gecirilen
-    kumeler yakalanarak dogrulanir.
+    Sampler artik olay kumelemesi yapmaz; VLM'e giden evidence karelerinin
+    hicbirine kalici bir 'pre'/'peak'/'post' konumsal ROL verilmez. VLM'e
+    gecirilen kareler yakalanarak dogrulanir.
     """
     captured = {}
-    original_describe = pipeline._vlm.describe_events
+    original_analyze = pipeline._vlm.analyze_evidence
 
-    def _capture(clusters, prompt):
-        captured["clusters"] = clusters
-        return original_describe(clusters, prompt)
+    def _capture(evidence_frames, prompt):
+        captured["evidence_frames"] = evidence_frames
+        return original_analyze(evidence_frames, prompt)
 
-    pipeline._vlm.describe_events = _capture  # type: ignore[assignment]
+    pipeline._vlm.analyze_evidence = _capture  # type: ignore[assignment]
     pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
 
-    clusters = captured["clusters"]
-    assert clusters, "VLM'e en az bir Olay Grubu gitmeli."
-    # En az bir kume, birden fazla evidence karesi iceren bir DIZI tasimali (tek kare degil).
-    assert any(len(c.representative_frames) >= 2 for c in clusters)
-    # En yuksek skorlu kare secime dahil, ama hicbir kare 'label' gibi konumsal bir alan TASIMIYOR.
-    for c in clusters:
-        assert all("label" not in type(rf).model_fields for rf in c.representative_frames)
-        highest_score_ids = {rf.frame_index for rf in c.representative_frames if rf.selection_reason == "highest_evidence_score"}
-        assert c.peak_frame.frame_id in highest_score_ids
+    evidence_frames = captured["evidence_frames"]
+    assert evidence_frames, "VLM'e en az bir evidence karesi gitmeli."
+    # Hicbir evidence karesi 'label'/'selection_reason' gibi konumsal bir alan TASIMIYOR.
+    for ef in evidence_frames:
+        field_names = set(type(ef).model_fields.keys())
+        assert "label" not in field_names
+        assert "selection_reason" not in field_names
 
 
 def test_pipeline_produces_degraded_report_when_vlm_fails(
@@ -424,10 +420,10 @@ def test_pipeline_produces_degraded_report_when_vlm_fails(
 ) -> None:
     """VLM analizi patlarsa pipeline cokmemeli; degraded (hata notlu) bir rapor uretmeli."""
 
-    def _boom(clusters, prompt):
+    def _boom(evidence_frames, prompt):
         raise RuntimeError("VLM servisi erisilemez")
 
-    pipeline._vlm.describe_events = _boom  # type: ignore[assignment]
+    pipeline._vlm.analyze_evidence = _boom  # type: ignore[assignment]
     report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
 
     # Is "error" ile cokmedi; rapor uretildi ve hata operatore gorunur.

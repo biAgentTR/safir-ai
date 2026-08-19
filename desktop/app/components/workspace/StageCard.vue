@@ -42,12 +42,13 @@ const decision = computed(() => view<Decision>('decision'))
 const escalation = computed(() => view<Escalation>('escalation'))
 const report = computed(() => view<ReportStageData>('report'))
 
-// Fix 3: the frames actually sent to the VLM are the sampler's representative
-// frames (they live in the sampler stage payload, referenced by thumbnail_url).
+// The sampler no longer clusters: EVERY evidence frame it produced is sent
+// to the VLM (they live in the sampler stage payload, referenced by
+// thumbnail_url). Event clustering happens inside the VLM stage instead.
 const vlmInputFrames = computed(() => {
   if (stage.value !== 'vlm') return []
   const s = store.eventForStage('sampler')?.data as unknown as SamplerStageData | undefined
-  return s?.event_groups?.flatMap((g) => g.representative_frames) ?? []
+  return s?.evidence_frames ?? []
 })
 
 // Fix 4: real regulations retrieved by the agent (report.relevant_regulations).
@@ -118,9 +119,6 @@ const regulations = computed(() => store.report?.relevant_regulations ?? [])
           </div>
         </div>
 
-        <div v-if="sampler.event_groups.length" class="text-xs text-slate-500">
-          {{ sampler.event_groups.length }} olay grubu · temsili kareler VLM'e gönderildi.
-        </div>
       </div>
 
       <!-- ============ VLM ============ -->
@@ -138,14 +136,14 @@ const regulations = computed(() => store.report?.relevant_regulations ?? [])
           <div class="field-label">Input · VLM'e gönderilen kareler ({{ vlmInputFrames.length }})</div>
           <div class="flex flex-wrap gap-3">
             <button
-              v-for="rf in vlmInputFrames"
-              :key="rf.frame_id"
+              v-for="ef in vlmInputFrames"
+              :key="ef.frame_id"
               type="button"
               class="w-28 border border-edge rounded-md overflow-hidden bg-surface-2 text-left hover:ring-1 hover:ring-accent"
-              @click="emit('open-frame', rf.frame_id)"
+              @click="emit('open-frame', ef.frame_id)"
             >
-              <img :src="frameUrl(rf.frame_id)" :alt="rf.frame_id" class="w-full h-20 object-cover" loading="lazy" />
-              <div class="px-2 py-1 text-[10px] font-mono text-slate-400">{{ rf.timestamp_str }} · {{ rf.evidence_score.toFixed(3) }}</div>
+              <img :src="frameUrl(ef.frame_id)" :alt="ef.frame_id" class="w-full h-20 object-cover" loading="lazy" />
+              <div class="px-2 py-1 text-[10px] font-mono text-slate-400">{{ ef.timestamp_str }} · {{ ef.change_score.toFixed(3) }}</div>
             </button>
           </div>
         </div>

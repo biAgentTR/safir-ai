@@ -1,13 +1,12 @@
-"""04 - VLM Payload Builder: Olay Gruplarinin evidence karelerini vLLM'e gonderilecek JSON'a donusturur.
+"""04 - VLM Payload Builder: evidence karelerini vLLM'e gonderilecek JSON'a donusturur.
 
-Bu modul, `AdaptiveFrameSampler.cluster_events` tarafindan uretilen Olay
-Gruplarinin `FrameSelector` ile secilmis evidence karelerini alip her biri
-icin zaman damgasi ve olay metadatasi iceren bir metin blogu ile birlikte,
-OpenAI/vLLM `chat/completions` API'sinin bekledigi `image_url` (base64)
-icerik bloklarina donusturur. Kareler arasinda hicbir konumsal ('pre'/
-'peak'/'post') ROL bilgisi VLM'e AKTARILMAZ; VLM katmani (`BaseVLM`), bu
-modulun uretttigi icerik bloklarini model adi/sicaklik gibi model-ozel
-alanlarla sarmalayarak nihai istegi olusturur.
+Bu modul, `AdaptiveFrameSampler.process_video` tarafindan uretilen, esik
+gecmis TUM `EvidenceFrame`leri (video geneli, kronolojik, kayipsiz) alip her
+biri icin kimlik/zaman/evidence-skoru bilgisi iceren bir metin blogu ile
+birlikte, OpenAI/vLLM `chat/completions` API'sinin bekledigi `image_url`
+(base64) icerik bloklarina donusturur. Kareler arasinda hicbir onceden
+belirlenmis olay/kumeleme bilgisi VERILMEZ - olay kumelemesi VLM'in kendi
+gorevidir (bkz. `src/prompts/vlm_prompts.py`, `src/vlm/base_vlm.py`).
 """
 
 from __future__ import annotations
@@ -15,28 +14,29 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
-from src.sampler.adaptive_sampler import EventCluster
+from src.sampler.schema import EvidenceFrame
 
 logger = logging.getLogger(__name__)
 
 
 class VLMPayloadBuilder:
-    """Olay Gruplarinin zirve karelerini VLM icin OpenAI-uyumlu icerik bloklarina cevirir."""
+    """Evidence karelerini VLM icin OpenAI-uyumlu, kronolojik icerik bloklarina cevirir."""
 
     @staticmethod
-    def build_content_blocks(clusters: List[EventCluster], prompt: str) -> List[Dict[str, Any]]:
-        """Evidence karelerini, zaman damgasi/metadata metniyle birlikte icerik bloklarina cevirir.
+    def build_content_blocks(evidence_frames: List[EvidenceFrame], prompt: str) -> List[Dict[str, Any]]:
+        """Evidence karelerini, kimlik/zaman/skor metniyle birlikte kronolojik icerik bloklarina cevirir.
 
-        Her Olay Grubu icin once o grubu tanimlayan bir metin blogu (zaman
-        araligi, aday kare sayisi, en yuksek evidence skoru), ardindan
-        `FrameSelector` ile secilmis evidence karelerinin base64 goruntuleri
-        eklenir. Bu, VLM'in her karenin hangi olaya ait oldugunu ayirt
-        edebilmesini saglar; kareler arasinda HICBIR konumsal ('pre'/'peak'/
-        'post') rol/sira bilgisi VERILMEZ - yalnizca zaman damgasi ve
-        evidence skoru.
+        Her evidence karesi icin once o kareyi tanimlayan kisa bir metin
+        blogu (`evidence_id`/`frame_index`/zaman/evidence skoru), ardindan
+        karenin base64 goruntusu eklenir; boylece VLM her karenin kimligini
+        ve zamanini goruntuyle birlikte gorur ve kendi olay kumelemesini
+        yapabilir (`evidence_ids` referanslariyla).
 
         Args:
-            clusters: `cluster_events` tarafindan uretilen Olay Gruplari.
+            evidence_frames: Gonderilecek `EvidenceFrame` listesi (cagiranin
+                sorumlulugunda kronolojik sirada olmalidir; bu bir batch'in
+                TAMAMI veya alt kumesi olabilir - bkz.
+                `BaseVLM.analyze_evidence_batched`).
             prompt: Analiz odagini belirten kullanici/istem metni.
 
         Returns:
@@ -44,73 +44,47 @@ class VLMPayloadBuilder:
             `{"type": "text" | "image_url", ...}` bloklarindan olusan liste.
 
         Raises:
-            ValueError: `clusters` bos verilirse.
+            ValueError: `evidence_frames` bos verilirse.
         """
-        if not clusters:
-            raise ValueError("VLMPayloadBuilder: bos Olay Grubu listesiyle payload uretilemez.")
+        if not evidence_frames:
+            raise ValueError("VLMPayloadBuilder: bos evidence listesiyle payload uretilemez.")
 
         content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
 
-        for cluster in clusters:
-            peak = cluster.peak_frame
-            start_m, start_s = divmod(int(cluster.start_time), 60)
-            start_str = f"{start_m:02d}:{start_s:02d}"
-
-            end_m, end_s = divmod(int(cluster.end_time), 60)
-            end_str = f"{end_m:02d}:{end_s:02d}"
-
+        for ef in evidence_frames:
             metadata_text = (
-                f"[Olay #{cluster.event_id}] "
-                f"OLAY BAŞLANGIÇ ZAMANI (ILK AN): {start_str} ({cluster.start_time:.2f}s) | "
-                f"EN YUKSEK EVIDENCE ANI: {peak.timestamp_str} ({peak.timestamp_sec:.2f}s) | "
-                f"BITIŞ ZAMAN: {end_str} ({cluster.end_time:.2f}s) | "
-                f"aday_kare_sayisi={cluster.total_candidate_frames}, "
-                f"en_yuksek_evidence_skoru={peak.change_score:.4f}"
+                f"[evidence_id={ef.evidence_id} | frame_index={ef.frame_id} | "
+                f"zaman={ef.timestamp_str} ({ef.timestamp_sec:.2f}s) | "
+                f"evidence_skoru={ef.change_score:.4f}]"
             )
             content.append({"type": "text", "text": metadata_text})
-
-            if cluster.representative_frames:
-                for rf in cluster.representative_frames:
-                    content.append(
-                        {
-                            "type": "text",
-                            "text": (
-                                f"[Olay #{rf.event_id} | zaman: {rf.timestamp_str} | "
-                                f"evidence_skoru={rf.evidence_score:.4f}]"
-                            ),
-                        }
-                    )
-                    content.append({"type": "image_url", "image_url": {"url": rf.base64_image}})
-            else:
-                content.append({"type": "image_url", "image_url": {"url": peak.base64_image}})
+            content.append({"type": "image_url", "image_url": {"url": ef.base64_image}})
 
         logger.debug(
-            "VLMPayloadBuilder: %d olay grubu icin %d icerik blogu uretildi.",
-            len(clusters),
+            "VLMPayloadBuilder: %d evidence karesi icin %d icerik blogu uretildi.",
+            len(evidence_frames),
             len(content),
         )
         return content
 
     @staticmethod
-    def build_metadata_summary(clusters: List[EventCluster]) -> List[Dict[str, Any]]:
-        """Her Olay Grubu icin serilestirilebilir bir metadata sozlugu uretir.
+    def build_metadata_summary(evidence_frames: List[EvidenceFrame]) -> List[Dict[str, Any]]:
+        """Her evidence karesi icin serilestirilebilir bir metadata sozlugu uretir.
 
         Rapor/log ciktilarinda kullanilmak uzere; goruntu verisi icermez.
 
         Args:
-            clusters: `cluster_events` tarafindan uretilen Olay Gruplari.
+            evidence_frames: `process_video` tarafindan uretilen evidence kareleri.
 
         Returns:
-            Her biri bir Olay Grubunu tanimlayan sozlukler listesi.
+            Her biri bir evidence karesini tanimlayan sozlukler listesi.
         """
         return [
             {
-                "event_id": cluster.event_id,
-                "start_time": cluster.start_time,
-                "end_time": cluster.end_time,
-                "highest_evidence_timestamp": cluster.peak_frame.timestamp_sec,
-                "highest_evidence_score": cluster.peak_frame.change_score,
-                "total_candidate_frames": cluster.total_candidate_frames,
+                "evidence_id": ef.evidence_id,
+                "frame_index": ef.frame_id,
+                "timestamp_sec": ef.timestamp_sec,
+                "evidence_score": ef.change_score,
             }
-            for cluster in clusters
+            for ef in evidence_frames
         ]

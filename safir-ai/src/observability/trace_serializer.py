@@ -14,7 +14,6 @@ JSON-uyumlu bir `TraceEvent` sozlugune cevirir. Kurallar:
 
 from __future__ import annotations
 
-import base64
 import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -95,12 +94,17 @@ def _bbox_to_list(bbox) -> Optional[List[int]]:
 
 
 def serialize_sampler(
-    sampler_payload: Dict[str, Any], clusters_payload: Dict[str, Any], job_id: str
+    sampler_payload: Dict[str, Any], job_id: str
 ) -> Tuple[str, Dict[str, Any], Dict[str, bytes], str, Optional[str]]:
-    """`sampler` + `clusters` emit'lerini tek 'Frame Sampling' verisine cevirir (base64 haric)."""
+    """`sampler` emit'ini 'Frame Sampling' verisine cevirir (base64 haric).
+
+    ONEMLI (mimari): Sampler artik hicbir olay kumelemesi YAPMAZ; bu yuzden
+    burada "event_groups"/"representative_frames" YOKTUR - esik-gecmis TUM
+    evidence kareleri (kumeleme VLM katmaninda yapilir) tek bir kronolojik
+    listede sunulur.
+    """
     evidence_frames = sampler_payload.get("evidence_frames", []) or []
     stats = sampler_payload.get("stats")
-    clusters = clusters_payload.get("clusters", []) or []
 
     frames: Dict[str, bytes] = {}
 
@@ -115,6 +119,7 @@ def serialize_sampler(
         fid = f"ev{ef.frame_id}"
         evidence_refs.append(
             {
+                "evidence_id": ef.evidence_id,
                 "frame_id": fid,
                 "timestamp_sec": round(ef.timestamp_sec, 2),
                 "timestamp_str": ef.timestamp_str,
@@ -122,40 +127,6 @@ def serialize_sampler(
                 "is_fallback": ef.is_fallback,
                 "motion_bbox": _bbox_to_list(ef.motion_bbox),
                 "thumbnail_url": _add_frame(fid, ef.image_bytes),
-            }
-        )
-
-    group_refs = []
-    for c in clusters:
-        rep = []
-        for rf in c.representative_frames:
-            # `rf.frame_index` (gercek video kare kimligi) kullanilir: bir olay
-            # icin birden fazla evidence karesi ayni `selection_reason`i
-            # tasiyabildigi icin yalnizca gerekce ile anahtarlamak cakismaya
-            # (ayni thumbnail anahtarinin farkli karelerin ustune yazilmasina)
-            # yol acardi. Hicbir kare kalici bir 'pre'/'peak'/'post' rolu
-            # TASIMAZ (bkz. RepresentativeFrame schema docstring'i).
-            fid = f"c{c.event_id}_{rf.frame_index}"
-            try:
-                raw = base64.b64decode(rf.base64_image.split(",", 1)[1])
-            except (ValueError, IndexError):
-                raw = b""
-            rep.append(
-                {
-                    "selection_reason": rf.selection_reason,
-                    "evidence_score": round(rf.evidence_score, 4),
-                    "timestamp_str": rf.timestamp_str,
-                    "frame_id": fid,
-                    "thumbnail_url": _add_frame(fid, raw),
-                }
-            )
-        group_refs.append(
-            {
-                "event_id": c.event_id,
-                "start_time": round(c.start_time, 2),
-                "end_time": round(c.end_time, 2),
-                "total_candidate_frames": c.total_candidate_frames,
-                "representative_frames": rep,
             }
         )
 
@@ -173,10 +144,10 @@ def serialize_sampler(
     )
     summary = (
         f"{stats_dict.get('total_frames_scanned', 0)} kare -> "
-        f"{len(evidence_frames)} kanit karesi, {len(clusters)} olay grubu "
+        f"{len(evidence_frames)} kanit karesi (kumeleme VLM katmaninda yapilacak) "
         f"(%{stats_dict.get('gpu_savings_ratio_pct', 0)} GPU tasarrufu)"
     )
-    data = {"stats": stats_dict, "evidence_frames": evidence_refs, "event_groups": group_refs}
+    data = {"stats": stats_dict, "evidence_frames": evidence_refs}
     return summary, data, frames, "completed", None
 
 
@@ -185,10 +156,10 @@ def serialize_vlm(
 ) -> Tuple[str, Dict[str, Any], Dict[str, bytes], str, Optional[str]]:
     """`vlm` emit'ini guvenli alanlarla serialize eder (raw HTTP/tam sistem promptu UYDURULMAZ)."""
     vr = payload["vlm_response"]
-    clusters = payload.get("clusters", []) or []
-    # `status` (bkz. `VLMResponse`/`_aggregate_vlm_responses`), metin-tabanli
-    # `[HATA]` on-eki kontrolunden DAHA GUVENILIRDIR (olay-bazli dagitimda tum
-    # batch'ler basarisiz olmasa bile aciklama metni degisebilir); yine de eski
+    evidence_frames = payload.get("evidence_frames", []) or []
+    # `status` (bkz. `VLMResponse`/`stage_vlm`), metin-tabanli `[HATA]` on-eki
+    # kontrolunden DAHA GUVENILIRDIR (batch dagitiminda tum batch'ler
+    # basarisiz olmasa bile aciklama metni degisebilir); yine de eski
     # cagiranlarla (status alani olmayan sahte nesneler) geriye-donuk uyumluluk
     # icin metin on-eki de yedek olarak kontrol edilir.
     vlm_status = getattr(vr, "status", None)
@@ -199,9 +170,9 @@ def serialize_vlm(
         "frame_count": vr.frame_count,
         "latency_ms": round(vr.latency_ms, 1),
         "user_prompt": payload.get("user_prompt", ""),
-        "frames_sent": sum(len(c.representative_frames) for c in clusters) or len(clusters),
+        "frames_sent": vr.frame_count or len(evidence_frames),
         "description": vr.description,           # temizlenmis insan-okur gozlem (mevcut, guvenli)
-        "structured_events": vr.structured_events,  # parse edilmis EVENTS_JSON (mevcut, guvenli)
+        "structured_events": vr.structured_events,  # parse edilmis EVENTS_JSON (mevcut, guvenli; evidence_ids dahil)
         "vlm_status": vlm_status or ("failed" if degraded else "completed"),
     }
     if degraded:
@@ -329,12 +300,13 @@ def serialize_report(
 class PipelineTraceCollector:
     """`SafirPipeline.run(trace=...)` icin cagrilabilir toplayici.
 
-    Her stage emit'ini serialize eder, sure hesaplar, `sampler`+`clusters`'i tek
-    'Frame Sampling' olayina birlestirir; goruntu baytlarini `on_frames` ile ayri
-    verir, olayi `on_event` ile disari akitir. Pipeline mantigina dokunmaz.
+    Her stage emit'ini serialize eder, sure hesaplar, goruntu baytlarini
+    `on_frames` ile ayri verir, olayi `on_event` ile disari akitir. Pipeline
+    mantigina dokunmaz.
     """
 
     _SERIALIZERS: Dict[str, Callable] = {
+        "sampler": serialize_sampler,
         "vlm": serialize_vlm,
         "events": serialize_events,
         "agent_context": serialize_agent_context,
@@ -357,19 +329,8 @@ class PipelineTraceCollector:
         self._on_frames = on_frames
         self._clock = clock or time.perf_counter
         self._last = self._clock()
-        self._pending_sampler: Optional[Dict[str, Any]] = None
 
     def __call__(self, stage: str, payload: Dict[str, Any]) -> None:
-        if stage == "sampler":
-            self._pending_sampler = payload  # 'clusters' gelince birlikte serialize edilir
-            return
-        if stage == "clusters":
-            summary, data, frames, status, error = serialize_sampler(
-                self._pending_sampler or {}, payload, self._job_id
-            )
-            self._pending_sampler = None
-            self._flush("sampler", summary, data, frames, status, error)
-            return
         serializer = self._SERIALIZERS.get(stage)
         if serializer is None:
             return

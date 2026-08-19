@@ -6,7 +6,7 @@ import logging
 from typing import List
 
 from src.prompts import VLM_OBSERVER_SYSTEM_PROMPT
-from src.sampler.adaptive_sampler import EventCluster
+from src.sampler.schema import EvidenceFrame
 from src.vlm.base_vlm import BaseVLM, VLMResponse
 
 logger = logging.getLogger(__name__)
@@ -17,30 +17,29 @@ _DEFAULT_SYSTEM_PROMPT = VLM_OBSERVER_SYSTEM_PROMPT
 class QwenVLM(BaseVLM):
     """Qwen2.5-VL modelini yerel vLLM servisi uzerinden kullanan VLM implementasyonu."""
 
-    def describe_events(
-        self, clusters: List[EventCluster], prompt: str
-    ) -> VLMResponse:
-        """Olay Gruplarinin zirve karelerini Qwen2.5-VL'e gonderip aciklama uretir.
+    def analyze_evidence(self, evidence_frames: List[EvidenceFrame], prompt: str) -> VLMResponse:
+        """Evidence karelerini Qwen2.5-VL'e gonderip olay kumeleme + aciklama uretir.
 
         Args:
-            clusters: `AdaptiveFrameSampler.cluster_events` ciktisi Olay Gruplari.
+            evidence_frames: `AdaptiveFrameSampler.process_video` ciktisi,
+                kronolojik evidence kareleri (bir batch).
             prompt: Analiz odagini belirten ek istem (bos olabilir).
 
         Returns:
-            Qwen2.5-VL tarafindan uretilen dogal dil aciklamasini iceren
-            `VLMResponse`.
+            Qwen2.5-VL tarafindan uretilen, kumelenmis olaylari ve dogal dil
+            aciklamasini iceren `VLMResponse`.
 
         Raises:
-            RuntimeError: vLLM servisine erisilemezse veya Olay Grubu bulunamazsa.
+            RuntimeError: vLLM servisine erisilemezse veya evidence bulunamazsa.
         """
-        if not clusters:
-            raise RuntimeError("Qwen2.5-VL'e gonderilecek Olay Grubu bulunamadi.")
+        if not evidence_frames:
+            raise RuntimeError("Qwen2.5-VL'e gonderilecek evidence karesi bulunamadi.")
 
         full_prompt = f"{_DEFAULT_SYSTEM_PROMPT}\n\nEk istem: {prompt}".strip()
-        payload = self._build_chat_payload(clusters, full_prompt)
+        payload = self._build_chat_payload(evidence_frames, full_prompt)
         logger.info(
-            "Qwen2.5-VL cagrisi yapiliyor: %d olay grubu, model=%s",
-            len(clusters),
+            "Qwen2.5-VL cagrisi yapiliyor: %d evidence karesi, model=%s",
+            len(evidence_frames),
             self.model_name,
         )
         return self._post_chat_completion(payload)

@@ -18,8 +18,8 @@ from __future__ import annotations
 import logging
 from typing import List
 
-from src.sampler.adaptive_sampler import EventCluster
 from src.prompts import VLM_OBSERVER_SYSTEM_PROMPT
+from src.sampler.schema import EvidenceFrame
 from src.vlm.base_vlm import BaseVLM, VLMResponse
 
 logger = logging.getLogger(__name__)
@@ -28,27 +28,29 @@ logger = logging.getLogger(__name__)
 class GeminiVLM(BaseVLM):
     """Gemini modelini OpenAI-uyumlu uc nokta uzerinden kullanan (test amacli) VLM implementasyonu."""
 
-    def describe_events(self, clusters: List[EventCluster], prompt: str) -> VLMResponse:
-        """Olay Gruplarinin zirve karelerini Gemini'ye gonderip Turkce gozlem uretir.
+    def analyze_evidence(self, evidence_frames: List[EvidenceFrame], prompt: str) -> VLMResponse:
+        """Evidence karelerini Gemini'ye gonderip olay kumeleme + Turkce gozlem uretir.
 
         Args:
-            clusters: `AdaptiveFrameSampler.cluster_events` ciktisi Olay Gruplari.
+            evidence_frames: `AdaptiveFrameSampler.process_video` ciktisi,
+                kronolojik evidence kareleri (bir batch).
             prompt: Analiz odagini belirten ek istem (bos olabilir).
 
         Returns:
-            Gemini tarafindan uretilen dogal dil gozlemini iceren `VLMResponse`.
+            Gemini tarafindan uretilen, kumelenmis olaylari ve dogal dil
+            gozlemini iceren `VLMResponse`.
 
         Raises:
-            RuntimeError: Gemini uc noktasina erisilemezse veya Olay Grubu bulunamazsa.
+            RuntimeError: Gemini uc noktasina erisilemezse veya evidence bulunamazsa.
         """
-        if not clusters:
-            raise RuntimeError("Gemini'ye gonderilecek Olay Grubu bulunamadi.")
+        if not evidence_frames:
+            raise RuntimeError("Gemini'ye gonderilecek evidence karesi bulunamadi.")
 
         full_prompt = f"{VLM_OBSERVER_SYSTEM_PROMPT}\n\nEk istem: {prompt}".strip()
-        payload = self._build_chat_payload(clusters, full_prompt)
+        payload = self._build_chat_payload(evidence_frames, full_prompt)
         logger.info(
-            "Gemini VLM cagrisi yapiliyor: %d olay grubu, model=%s",
-            len(clusters),
+            "Gemini VLM cagrisi yapiliyor: %d evidence karesi, model=%s",
+            len(evidence_frames),
             self.model_name,
         )
         return self._post_chat_completion(payload)

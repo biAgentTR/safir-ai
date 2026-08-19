@@ -43,9 +43,9 @@ class RagContext(BaseModel):
 
 
 class EvidenceFrameOut(BaseModel):
-    """UI'da gorsel kanit karti olarak gosterilecek bir Olay Grubu zirve karesi."""
+    """UI'da gorsel kanit karti olarak gosterilecek, VLM'in kumeledigi bir olayin temsili karesi."""
 
-    event_id: int = Field(description="Bu karenin ait oldugu Olay Grubu kimligi.")
+    event_id: str = Field(description="Bu karenin ait oldugu VLM olayinin kimligi (bkz. EVENTS_JSON.event_id).")
     timestamp_sec: float = Field(description="Karenin saniye cinsinden zaman damgasi.")
     timestamp_str: str = Field(description="`MM:SS` formatinda okunabilir zaman damgasi.")
     change_score: float = Field(description="Gurultu-tabani-dusulmus degisim skoru.")

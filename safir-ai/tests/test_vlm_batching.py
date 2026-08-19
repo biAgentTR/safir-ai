@@ -1,10 +1,14 @@
-"""Olay-bazli (event-based) VLM dagitimi icin testler.
+"""Evidence-bazli VLM dagitimi + reconciliation icin testler.
 
-`BaseVLM.describe_events_batched` (src/vlm/base_vlm.py) ve `main.py::
-_aggregate_vlm_responses` birlikte, tum Olay Gruplarini TEK bir dev payload'a
-doldurmak yerine kontrollu batch'ler halinde ayri ayri analiz eder; bir
-batch'in basarisiz olmasi digerlerinin sonucunu kaybetmez ve basarisizlik
-asla risk=0 gibi yorumlanmaz (acik `status`/`[ANALYSIS_FAILED]`/`[UYARI]`
+`BaseVLM.analyze_evidence_batched` (src/vlm/base_vlm.py) TUM evidence
+karelerini tek bir dev payload'a doldurmak yerine kronolojik, kayipsiz
+batch'ler halinde ayri ayri analiz eder; batch siniri bir OLAY SINIRI
+DEGILDIR. Birden fazla batch varsa `BaseVLM.reconcile_events` batch-yerel
+olaylari TEK bir global olay listesine birlestirir. `src/main.py` katmani
+(`_naive_concat_batches`, `_reconcile_unassigned_evidence`) bu ciktiyi
+evidence_id gecerliligi/atanmamislik acisindan dogrular; bir batch'in
+basarisiz olmasi digerlerinin sonucunu kaybetmez ve basarisizlik asla
+risk=0 gibi yorumlanmaz (acik `status`/`[ANALYSIS_FAILED]`/`[UYARI]`
 isaretleri kullanilir).
 """
 
@@ -14,154 +18,202 @@ from typing import List
 
 import pytest
 
-from src.main import _aggregate_vlm_responses
-from src.sampler.schema import EventCluster, EvidenceFrame
+from src.main import _naive_concat_batches, _reconcile_unassigned_evidence
+from src.sampler.schema import EvidenceFrame
 from src.vlm.base_vlm import BaseVLM, VLMResponse
 
 
-def _cluster(event_id: int) -> EventCluster:
-    frame = EvidenceFrame(
-        frame_id=event_id,
-        timestamp_sec=float(event_id),
-        timestamp_str=f"00:0{event_id}",
+def _evidence_frame(idx: int) -> EvidenceFrame:
+    return EvidenceFrame(
+        evidence_id=f"ev{idx}",
+        frame_id=idx,
+        timestamp_sec=float(idx),
+        timestamp_str=f"00:0{idx}",
         change_score=0.5,
         image_bytes=b"\xff\xd8\xff",
         base64_image="data:image/jpeg;base64,AA==",
         image_shape=(1, 1, 3),
     )
-    return EventCluster(
-        event_id=event_id, start_time=float(event_id), end_time=float(event_id), peak_frame=frame, total_candidate_frames=1
-    )
 
 
 class _StubVLM(BaseVLM):
-    """`describe_events_batched`in temel siniftan (BaseVLM) miras alinan, gercek
+    """`analyze_evidence_batched`in temel siniftan (BaseVLM) miras alinan, gercek
     batching/izolasyon davranisini test eden sahte VLM."""
 
-    def __init__(self, fail_event_ids: set) -> None:
+    def __init__(self, fail_evidence_ids: set) -> None:
         from src.utils.config_loader import VLLMEndpointConfig
 
         super().__init__(
             VLLMEndpointConfig(model_name="stub-vlm", max_new_tokens=8, temperature=0.0)
         )
-        self.fail_event_ids = fail_event_ids
-        self.calls: List[List[int]] = []
+        self.fail_evidence_ids = fail_evidence_ids
+        self.calls: List[List[str]] = []
 
-    def describe_events(self, clusters: List[EventCluster], prompt: str) -> VLMResponse:
-        ids = [c.event_id for c in clusters]
+    def analyze_evidence(self, evidence_frames: List[EvidenceFrame], prompt: str) -> VLMResponse:
+        ids = [ef.evidence_id for ef in evidence_frames]
         self.calls.append(ids)
-        if any(eid in self.fail_event_ids for eid in ids):
+        if any(eid in self.fail_evidence_ids for eid in ids):
             raise RuntimeError(f"simulated failure for {ids}")
         return VLMResponse(
-            description=f"Olay(lar) {ids} icin gozlem.",
+            description=f"Evidence {ids} icin gozlem.",
             model_name="stub-vlm",
-            frame_count=len(clusters),
+            frame_count=len(evidence_frames),
             latency_ms=1.0,
-            structured_events=[{"type": "genel_gozlem", "timestamp": float(ids[0]), "confidence": 0.9}],
+            structured_events=[
+                {
+                    "event_id": f"e_{ids[0]}",
+                    "type": "genel_gozlem",
+                    "start_time": float(evidence_frames[0].timestamp_sec),
+                    "end_time": float(evidence_frames[-1].timestamp_sec),
+                    "evidence_ids": ids,
+                    "description": "gozlem",
+                    "risk_score": 20,
+                    "confidence": 0.9,
+                }
+            ],
         )
 
     def health_check(self) -> bool:
         return True
 
 
-# --------------------------- describe_events_batched: izolasyon ---------------------------
+# --------------------------- analyze_evidence_batched: izolasyon ---------------------------
 
 
-def test_batched_dispatch_sends_one_request_per_event_by_default() -> None:
-    """`batch_size=1` (varsayilan) ile HER olay kendi ayri VLM istegini almali (tek dev payload YOK)."""
-    vlm = _StubVLM(fail_event_ids=set())
-    clusters = [_cluster(1), _cluster(2), _cluster(3)]
+def test_batched_dispatch_controlled_batch_size_groups_evidence() -> None:
+    vlm = _StubVLM(fail_evidence_ids=set())
+    frames = [_evidence_frame(i) for i in range(5)]
 
-    responses = vlm.describe_events_batched(clusters, prompt="p")
+    responses = vlm.analyze_evidence_batched(frames, prompt="p", batch_size=2)
 
+    assert vlm.calls == [["ev0", "ev1"], ["ev2", "ev3"], ["ev4"]]
     assert len(responses) == 3
-    assert vlm.calls == [[1], [2], [3]]
     assert all(r.status == "completed" for r in responses)
-    assert [r.cluster_event_ids for r in responses] == [[1], [2], [3]]
+    assert [r.evidence_ids for r in responses] == [["ev0", "ev1"], ["ev2", "ev3"], ["ev4"]]
 
 
-def test_batched_dispatch_controlled_batch_size_groups_events() -> None:
-    vlm = _StubVLM(fail_event_ids=set())
-    clusters = [_cluster(1), _cluster(2), _cluster(3), _cluster(4), _cluster(5)]
+def test_one_failed_batch_does_not_lose_other_batches_results() -> None:
+    """Bir batch'in VLM cagrisi basarisiz olsa da diger batch'lerin sonucu KAYBEDILMEMELI."""
+    vlm = _StubVLM(fail_evidence_ids={"ev1"})
+    frames = [_evidence_frame(i) for i in range(3)]
 
-    responses = vlm.describe_events_batched(clusters, prompt="p", batch_size=2)
+    responses = vlm.analyze_evidence_batched(frames, prompt="p", batch_size=1)
 
-    assert vlm.calls == [[1, 2], [3, 4], [5]]
-    assert len(responses) == 3
-
-
-def test_one_failed_event_does_not_lose_other_events_results() -> None:
-    """Bir olayin VLM cagrisi basarisiz olsa da diger olaylarin sonucu KAYBEDILMEMELI."""
-    vlm = _StubVLM(fail_event_ids={2})
-    clusters = [_cluster(1), _cluster(2), _cluster(3)]
-
-    responses = vlm.describe_events_batched(clusters, prompt="p")
-
-    assert len(responses) == 3  # hicbir olay dusurulmedi
-    statuses = {r.cluster_event_ids[0]: r.status for r in responses}
-    assert statuses == {1: "completed", 2: "failed", 3: "completed"}
-    # Basarili olaylarin structured_events'i hala mevcut.
+    assert len(responses) == 3  # hicbir evidence dusurulmedi
+    statuses = {r.evidence_ids[0]: r.status for r in responses}
+    assert statuses == {"ev0": "completed", "ev1": "failed", "ev2": "completed"}
     assert responses[0].structured_events
     assert responses[2].structured_events
-    # Basarisiz olan acik bicimde isaretlenmis, sessizce bos birakilmamis.
     assert responses[1].structured_events == []
     assert "ANALYSIS_FAILED" in responses[1].description
 
 
 def test_failed_batch_never_silently_treated_as_success() -> None:
-    vlm = _StubVLM(fail_event_ids={1})
-    responses = vlm.describe_events_batched([_cluster(1)], prompt="p")
+    vlm = _StubVLM(fail_evidence_ids={"ev0"})
+    responses = vlm.analyze_evidence_batched([_evidence_frame(0)], prompt="p")
 
     assert responses[0].status == "failed"
     assert responses[0].status != "completed"
 
 
-def test_empty_clusters_returns_empty_batched_response() -> None:
-    vlm = _StubVLM(fail_event_ids=set())
-    assert vlm.describe_events_batched([], prompt="p") == []
+def test_empty_evidence_returns_empty_batched_response() -> None:
+    vlm = _StubVLM(fail_evidence_ids=set())
+    assert vlm.analyze_evidence_batched([], prompt="p") == []
 
 
-# --------------------------- _aggregate_vlm_responses ---------------------------
+# --------------------------- reconcile_events ---------------------------
 
 
-def test_aggregate_all_success_merges_structured_events_and_stamps_event_id() -> None:
-    vlm = _StubVLM(fail_event_ids=set())
-    clusters = [_cluster(1), _cluster(2)]
-    responses = vlm.describe_events_batched(clusters, prompt="p")
+def test_reconcile_single_batch_returns_it_directly() -> None:
+    vlm = _StubVLM(fail_evidence_ids=set())
+    frames = [_evidence_frame(0)]
+    responses = vlm.analyze_evidence_batched(frames, prompt="p")
 
-    aggregated = _aggregate_vlm_responses(responses, clusters, fallback_model_name="stub-vlm")
+    reconciled = vlm.reconcile_events(responses, prompt="p")
 
-    assert aggregated.status == "completed"
-    assert len(aggregated.structured_events) == 2
-    assert {ev["cluster_event_id"] for ev in aggregated.structured_events} == {1, 2}
-    assert not aggregated.description.startswith("[HATA]")
+    assert reconciled is responses[0]
 
 
-def test_aggregate_partial_failure_preserves_successful_events() -> None:
-    vlm = _StubVLM(fail_event_ids={2})
-    clusters = [_cluster(1), _cluster(2), _cluster(3)]
-    responses = vlm.describe_events_batched(clusters, prompt="p")
+def test_reconcile_all_failed_returns_failed_status_preserving_evidence_ids() -> None:
+    vlm = _StubVLM(fail_evidence_ids={"ev0", "ev1"})
+    frames = [_evidence_frame(0), _evidence_frame(1)]
+    responses = vlm.analyze_evidence_batched(frames, prompt="p", batch_size=1)
 
-    aggregated = _aggregate_vlm_responses(responses, clusters, fallback_model_name="stub-vlm")
+    reconciled = vlm.reconcile_events(responses, prompt="p")
 
-    assert aggregated.status == "partial_failure"
-    # Basarisiz olan risk=0 gibi degil, acik bir UYARI notuyla isaretlenmeli.
-    assert "[UYARI]" in aggregated.description
-    assert "analysis_failed" in aggregated.description
-    # Basarili olan 2 olayin structured_events'i KAYBOLMAMIS.
-    assert {ev["cluster_event_id"] for ev in aggregated.structured_events} == {1, 3}
-    # Tum-basarisiz degraded formatina (eski [HATA]) DUSMEMIS olmali.
-    assert not aggregated.description.startswith("[HATA]")
+    assert reconciled.status == "failed"
+    assert set(reconciled.evidence_ids) == {"ev0", "ev1"}
 
 
-def test_aggregate_total_failure_falls_back_to_legacy_hata_format() -> None:
-    """Gerye-donuk uyumluluk: TUM batch'ler basarisizsa eski `[HATA]` formatina AYNEN dusulmeli."""
-    vlm = _StubVLM(fail_event_ids={1, 2})
-    clusters = [_cluster(1), _cluster(2)]
-    responses = vlm.describe_events_batched(clusters, prompt="p")
+# --------------------------- _naive_concat_batches (main.py fallback) ---------------------------
 
-    aggregated = _aggregate_vlm_responses(responses, clusters, fallback_model_name="stub-vlm")
 
-    assert aggregated.status == "failed"
-    assert aggregated.description.startswith("[HATA]")
-    assert aggregated.structured_events == []
+def test_naive_concat_batches_prefixes_event_ids_and_loses_no_evidence() -> None:
+    vlm = _StubVLM(fail_evidence_ids=set())
+    frames = [_evidence_frame(0), _evidence_frame(1)]
+    responses = vlm.analyze_evidence_batched(frames, prompt="p", batch_size=1)
+
+    merged = _naive_concat_batches(responses)
+
+    assert len(merged.structured_events) == 2
+    event_ids = {ev["event_id"] for ev in merged.structured_events}
+    assert event_ids == {"b0_e_ev0", "b1_e_ev1"}
+
+
+# --------------------------- _reconcile_unassigned_evidence ---------------------------
+
+
+def test_reconcile_unassigned_evidence_drops_invented_ids() -> None:
+    frames = [_evidence_frame(0), _evidence_frame(1)]
+    structured_events = [
+        {"event_id": "e1", "evidence_ids": ["ev0", "ev_fabricated"]},
+    ]
+
+    cleaned = _reconcile_unassigned_evidence(structured_events, frames, batch_responses=[])
+
+    assert cleaned[0]["evidence_ids"] == ["ev0"]
+
+
+def test_reconcile_unassigned_evidence_preserves_leftover_evidence() -> None:
+    """Hicbir olaya atanmayan evidence, 'unassigned/siniflandirilamadi' kaydinda KORUNUR (silinmez)."""
+    frames = [_evidence_frame(0), _evidence_frame(1), _evidence_frame(2)]
+    structured_events = [
+        {"event_id": "e1", "evidence_ids": ["ev0"]},
+    ]
+
+    cleaned = _reconcile_unassigned_evidence(structured_events, frames, batch_responses=[])
+
+    unassigned = next(e for e in cleaned if e["event_id"] == "unassigned")
+    assert unassigned["type"] == "siniflandirilamadi"
+    assert set(unassigned["evidence_ids"]) == {"ev1", "ev2"}
+
+
+def test_reconcile_unassigned_evidence_prevents_duplicate_assignment() -> None:
+    """Ayni evidence_id iki olaya atanmissa, yalnizca ILK atama korunur."""
+    frames = [_evidence_frame(0)]
+    structured_events = [
+        {"event_id": "e1", "evidence_ids": ["ev0"]},
+        {"event_id": "e2", "evidence_ids": ["ev0"]},
+    ]
+
+    cleaned = _reconcile_unassigned_evidence(structured_events, frames, batch_responses=[])
+
+    assert cleaned[0]["evidence_ids"] == ["ev0"]
+    assert cleaned[1]["evidence_ids"] == []
+
+
+def test_reconcile_unassigned_evidence_merges_into_existing_unassigned_record() -> None:
+    """VLM zaten kendi 'unassigned' kaydini uretmisse, leftover'lar bu kayda EKLENIR (yeni kayit acilmaz)."""
+    frames = [_evidence_frame(0), _evidence_frame(1)]
+    structured_events = [
+        {
+            "event_id": "unassigned",
+            "type": "siniflandirilamadi",
+            "evidence_ids": ["ev0"],
+        },
+    ]
+
+    cleaned = _reconcile_unassigned_evidence(structured_events, frames, batch_responses=[])
+
+    assert len(cleaned) == 1
+    assert set(cleaned[0]["evidence_ids"]) == {"ev0", "ev1"}

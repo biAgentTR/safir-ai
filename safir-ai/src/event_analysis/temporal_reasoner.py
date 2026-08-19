@@ -173,6 +173,8 @@ class TemporalReasoner:
             2,
         )
 
+        risk_hints = [event.risk_hint for event in group if event.risk_hint is not None]
+
         return TemporalEvent(
             event_id=f"evt_{index}",
             event_type=latest.event_type,
@@ -185,6 +187,8 @@ class TemporalReasoner:
             matched_keywords=self._union_keywords(group),
             source_model=latest.source_model,
             related_events=[],
+            evidence_ids=self._union_evidence_ids(group),
+            risk_hint=max(risk_hints) if risk_hints else None,
         )
 
     @staticmethod
@@ -202,6 +206,23 @@ class TemporalReasoner:
             for keyword in event.matched_keywords:
                 if keyword not in seen:
                     seen.append(keyword)
+        return seen
+
+    @staticmethod
+    def _union_evidence_ids(group: List[DetectedEvent]) -> List[str]:
+        """Gruptaki tum tespitlerin `evidence_ids`lerini, ilk gorulme sirasini koruyarak birlestirir.
+
+        Args:
+            group: Evidence kimlikleri birlestirilecek `DetectedEvent` grubu.
+
+        Returns:
+            Tekrarsiz, ilk gorulme sirali evidence_id listesi.
+        """
+        seen: List[str] = []
+        for event in group:
+            for evidence_id in event.evidence_ids:
+                if evidence_id not in seen:
+                    seen.append(evidence_id)
         return seen
 
     def _link_related_events(self, temporal_events: List[TemporalEvent]) -> None:

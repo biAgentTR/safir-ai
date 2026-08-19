@@ -42,8 +42,8 @@ def build(dev_default: bool) -> nbf.NotebookNode:
         "### Gercek pipeline (koddan cikarilmis) ve cagrilan metotlar\n"
         "```\n"
         "VIDEO\n"
-        "  ↓  SafirPipeline.stage_sample()   -> AdaptiveFrameSampler.process_video + cluster_events (FrameSelector dahil)\n"
-        "  ↓  SafirPipeline.stage_vlm()      -> GeminiVLM.describe_events            → GEMINI\n"
+        "  ↓  SafirPipeline.stage_sample()   -> AdaptiveFrameSampler.process_video (kumeleme YOK, tum kanit kareleri)\n"
+        "  ↓  SafirPipeline.stage_vlm()      -> GeminiVLM.analyze_evidence_batched + reconcile_events → GEMINI\n"
         "  ↓  SafirPipeline.stage_events()   -> EventEngine.detect + TemporalReasoner.reason + RuleEngine.evaluate\n"
         "  ↓  SafirPipeline.stage_context()  -> ContextBuilder.build (SQLite + FAISS RAG)\n"
         "  ↓  SafirPipeline.stage_decide()   -> SafirAgent.run (LangGraph)\n"
@@ -181,44 +181,40 @@ def build(dev_default: bool) -> nbf.NotebookNode:
 
     # 4 - stage_sample
     md(
-        "## 4) `pipeline.stage_sample()` → Frame Sampling & Motion Region\n"
-        "**INPUT:** video · **PROCESSING:** gercek `AdaptiveFrameSampler` (CPU) + `FrameSelector` · "
-        "**OUTPUT:** kanit kareleri + `motion_bbox` + Olay Gruplari."
+        "## 4) `pipeline.stage_sample()` → Frame Sampling (kumeleme YOK)\n"
+        "**INPUT:** video · **PROCESSING:** gercek `AdaptiveFrameSampler` (CPU) · "
+        "**OUTPUT:** esigi gecen TUM kanit kareleri + `motion_bbox` (olay kumelemesi burada YAPILMAZ, VLM'in isidir)."
     )
     code(
-        "sampler, evidence, clusters = pipeline.stage_sample(VIDEO_PATH)\n"
+        "sampler, evidence = pipeline.stage_sample(VIDEO_PATH)\n"
         "st = sampler.last_run_stats\n"
         "ratio = (100.0 * st.sampled_frames_evaluated / st.total_frames_scanned) if st.total_frames_scanned else 0\n"
         "print(f'Original frames : {st.total_frames_scanned}')\n"
         "print(f'Sampled frames  : {st.sampled_frames_evaluated}  (%{ratio:.1f})')\n"
         "print(f'Evidence frames : {st.evidence_frame_count}  (elenen %{st.eliminated_ratio_pct})')\n"
-        "print(f'Olay Gruplari   : {len(clusters)}')\n"
-        "print('\\nKanit kareleri (kirmizi kutu = motion_bbox):')\n"
-        "display(widgets.HBox([_img(_draw_bbox(f.image_bytes, f.motion_bbox)) for f in evidence]))\n"
-        "print('\\nHer Olay Grubu icin VLM\\'e gidecek evidence kareleri (hicbiri konumsal olarak etiketlenmez):')\n"
-        "for c in clusters:\n"
-        "    print(f\"  Olay #{c.event_id} ({c.start_time:.1f}-{c.end_time:.1f}s): {[rf.selection_reason for rf in c.representative_frames]}\")\n"
-        "    display(widgets.HBox([_img(_b64(rf.base64_image)) for rf in c.representative_frames]))"
+        "print('\\nKanit kareleri (kirmizi kutu = motion_bbox, hicbiri konumsal olarak etiketlenmez):')\n"
+        "display(widgets.HBox([_img(_draw_bbox(f.image_bytes, f.motion_bbox)) for f in evidence]))"
     )
 
     # 5 - stage_vlm
     md(
         "## 5) `pipeline.stage_vlm()` → VLM (Gemini) Girdi & Ham Yanit\n"
-        "**INPUT (Gemini'ye giden):** evidence kareleri + prompt · **PROCESSING:** gercek `GeminiVLM.describe_events` · "
-        "**OUTPUT:** modelin **ham** yaniti + `EVENTS_JSON`."
+        "**INPUT (Gemini'ye giden):** TUM kanit kareleri + prompt · **PROCESSING:** gercek "
+        "`GeminiVLM.analyze_evidence_batched` (kronolojik batch'ler) + gerekirse `reconcile_events` · "
+        "**OUTPUT:** modelin **ham** yaniti + VLM'in KENDI urettigi olay kumeleri (`EVENTS_JSON`)."
     )
     code(
         "from src.prompts import VLM_OBSERVER_SYSTEM_PROMPT\n"
         "print('=== GEMINI INPUT ===')\n"
         "print('Kullanici istemi:', USER_PROMPT)\n"
         "print('Sistem istemi (ilk 200 krk):', VLM_OBSERVER_SYSTEM_PROMPT[:200], '...')\n"
-        "print('Gonderilen kare sayisi:', sum(len(c.representative_frames) for c in clusters))\n"
+        "print('Gonderilen kare sayisi:', len(evidence))\n"
         "\n"
-        "vlm_response = pipeline.stage_vlm(clusters, USER_PROMPT)   # <-- gercek Gemini cagrisi\n"
+        "vlm_response = pipeline.stage_vlm(evidence, USER_PROMPT)   # <-- gercek Gemini cagrisi (batching + reconciliation)\n"
         "\n"
         "print('\\n=== GEMINI RAW OUTPUT (model:', vlm_response.model_name, ') ===\\n')\n"
         "print(vlm_response.description)\n"
-        "print('\\n=== Parse edilmis EVENTS_JSON ===')\n"
+        "print('\\n=== Parse edilmis EVENTS_JSON (VLM tarafindan kumelenmis olaylar) ===')\n"
         "for e in vlm_response.structured_events: print('  ', e)\n"
         "if vlm_response.description.startswith('[HATA]'):\n"
         "    print('\\n[!] Gemini cagrisi basarisiz -> pipeline dayanikliligi devrede (degraded).')"
@@ -231,7 +227,7 @@ def build(dev_default: bool) -> nbf.NotebookNode:
         "**OUTPUT:** tipli olaylar, zamansal sureklilik, tetiklenen ISG kurallari."
     )
     code(
-        "detected, temporal, rules, latest_ts = pipeline.stage_events(vlm_response, clusters)\n"
+        "detected, temporal, rules, latest_ts = pipeline.stage_events(vlm_response, evidence)\n"
         "print('Tespit edilen olaylar (DetectedEvent):')\n"
         "for d in detected:\n"
         "    print(f'   {{\"event\": \"{d.event_type}\", \"time\": {d.timestamp:.1f}, \"confidence\": {d.confidence:.2f}}}')\n"
@@ -281,7 +277,7 @@ def build(dev_default: bool) -> nbf.NotebookNode:
     code(
         "import json\n"
         "report = pipeline.build_report(\n"
-        "    video_source=VIDEO_PATH, sampler=sampler, clusters=clusters, vlm_response=vlm_response,\n"
+        "    video_source=VIDEO_PATH, sampler=sampler, evidence_frames=evidence, vlm_response=vlm_response,\n"
         "    context=context, decision=decision, escalation=escalation,\n"
         "    temporal_events=temporal, rule_matches=rules, latest_timestamp=latest_ts)\n"
         "\n"
@@ -303,7 +299,7 @@ def build(dev_default: bool) -> nbf.NotebookNode:
         "checks = [\n"
         "    ('Video Input',      Path(VIDEO_PATH).exists()),\n"
         "    ('Frame Sampling',   st.evidence_frame_count > 0),\n"
-        "    ('Clustering/Track', len(clusters) > 0),\n"
+        "    ('VLM Event Cluster',len(vlm_response.structured_events) > 0),\n"
         "    ('Gemini Inference', gemini_ok),\n"
         "    ('Output Parsing',   isinstance(vlm_response.structured_events, list)),\n"
         "    ('Event Analysis',   len(detected) > 0),\n"

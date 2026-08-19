@@ -44,8 +44,8 @@ class EventEngineInput(BaseModel):
         """`VLMResponse` orneginden bir `EventEngineInput` uretir.
 
         Args:
-            vlm_response: `BaseVLM.describe_events(...)` ciktisi.
-            timestamp: Gozlemin zaman damgasi (orn. `EventCluster.end_time`).
+            vlm_response: `BaseVLM.analyze_evidence(...)`/`reconcile_events(...)` ciktisi.
+            timestamp: Gozlemin zaman damgasi (orn. son evidence karesinin zaman damgasi).
 
         Returns:
             Event Engine'e dogrudan verilebilecek girdi nesnesi.
@@ -136,12 +136,30 @@ class DetectedEvent(BaseModel):
 
     event_type: str = Field(description="Olay kategorisi (bkz. `EventType`).")
     description: str = Field(description="Olayin dogal dil aciklamasi (VLM metninden alinir).")
-    timestamp: float = Field(description="Olayin saniye cinsinden zaman damgasi.")
+    timestamp: float = Field(description="Olayin (baslangic) saniye cinsinden zaman damgasi.")
+    end_timestamp: Optional[float] = Field(
+        default=None, description="Olayin bitis zaman damgasi (VLM'in `end_time`i); bilinmiyorsa None."
+    )
     confidence: float = Field(ge=0.0, le=1.0, description="Tespitin guven skoru (0.0-1.0).")
     matched_keywords: List[str] = Field(
         default_factory=list, description="Tespiti tetikleyen anahtar kelimeler (varsa)."
     )
     source_model: Optional[str] = Field(default=None, description="Aciklamayi ureten VLM'in model adi.")
+    vlm_event_id: Optional[str] = Field(
+        default=None, description="VLM'in bu olaya verdigi (batch-yerel veya reconcile-sonrasi global) `event_id`."
+    )
+    evidence_ids: List[str] = Field(
+        default_factory=list,
+        description="VLM'in bu olaya atadigi `EvidenceFrame.evidence_id` listesi (bkz. `EVENTS_JSON.evidence_ids`); "
+        "uydurulmus/gecersiz kimlikler `main.py` katmaninda filtrelenir.",
+    )
+    risk_hint: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="VLM'in verdigi KABA, ipucu niteliginde risk skoru (0-100); "
+        "NIHAI risk skoru degildir (bu, 05 LangGraph Ajaninin gorevidir).",
+    )
 
 
 class TemporalEvent(BaseModel):
@@ -174,6 +192,13 @@ class TemporalEvent(BaseModel):
     related_events: List[str] = Field(
         default_factory=list,
         description="Zaman ekseninde yakin duran diger `TemporalEvent`lerin `event_id` listesi.",
+    )
+    evidence_ids: List[str] = Field(
+        default_factory=list,
+        description="Gruptaki tum `DetectedEvent.evidence_ids` degerlerinin birlesimi (tekrarsiz, ilk gorulme sirali).",
+    )
+    risk_hint: Optional[int] = Field(
+        default=None, ge=0, le=100, description="Gruptaki en yuksek `DetectedEvent.risk_hint` (VLM ipucu, nihai degil)."
     )
 
 
@@ -241,6 +266,9 @@ class StructuredEvent(BaseModel):
         default=1, ge=1, description="`TemporalEvent.occurrence_count` (birlesen tespit sayisi)."
     )
     duration: float = Field(default=0.0, ge=0.0, description="`TemporalEvent.duration` (saniye).")
+    evidence_ids: List[str] = Field(
+        default_factory=list, description="`TemporalEvent.evidence_ids` (bu olaya ait evidence kareleri) passthrough."
+    )
 
     def to_event_store_kwargs(self) -> Dict[str, object]:
         """`EventStore.add_event(...)`e dogrudan `**kwargs` olarak verilebilecek sozluk uretir.

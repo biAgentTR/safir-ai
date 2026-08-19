@@ -1,4 +1,19 @@
-"""03 - Gorsel Dil Modeli Katmani: tum VLM implementasyonlari icin soyut taban sinif."""
+"""03 - Gorsel Dil Modeli Katmani: tum VLM implementasyonlari icin soyut taban sinif.
+
+ONEMLI (mimari): Olay kumelemesi ARTIK bu katmanda yapilir (sampler'da
+DEGIL). `BaseVLM` alt siniflari (`QwenVLM`, `GemmaVLM`, `GeminiVLM`)
+`analyze_evidence(evidence_frames, prompt)` implemente eder; taban sinif
+bunun uzerine iki ORTAK yetenek insa eder:
+
+- `analyze_evidence_batched`: TUM evidence karelerini TEK bir dev payload'a
+  doldurmak yerine kronolojik, kayipsiz batch'lere boler (batch siniri OLAY
+  SINIRI DEGILDIR); her batch icin `analyze_evidence` BAGIMSIZ cagrilir, bir
+  batch'in basarisiz olmasi digerlerini ETKILEMEZ.
+- `reconcile_events`: birden fazla batch varsa, her batch'in kendi ICINDE
+  urettigi (batch-yerel `event_id`li) olaylari, IKINCI (metin-tabanli,
+  goruntusuz) bir VLM cagrisiyla TEK bir global olay listesine birlestirir;
+  hicbir evidence kaybolmaz.
+"""
 
 from __future__ import annotations
 
@@ -12,8 +27,9 @@ from typing import Any, Dict, List, Tuple
 
 import httpx
 
-from src.sampler.adaptive_sampler import EventCluster
+from src.prompts.vlm_prompts import VLM_RECONCILIATION_SYSTEM_PROMPT
 from src.sampler.payload_builder import VLMPayloadBuilder
+from src.sampler.schema import EvidenceFrame
 from src.utils.config_loader import VLLMEndpointConfig
 
 logger = logging.getLogger(__name__)
@@ -25,7 +41,7 @@ _RETRY_BACKOFF_BASE_SEC = 0.5
 
 @dataclass
 class VLMResponse:
-    """Bir VLM cagrisinin (tek bir istek/batch icin) standardize edilmis ciktisi."""
+    """Bir VLM cagrisinin (tek bir istek/batch veya reconciliation icin) standardize edilmis ciktisi."""
 
     description: str
     model_name: str
@@ -33,18 +49,18 @@ class VLMResponse:
     latency_ms: float
     structured_events: List[Dict[str, Any]] = field(default_factory=list)
     """Modelin dogrudan urettigi tipli olaylar (bkz. `EVENTS_JSON` blogu):
-    her biri `{"type", "timestamp", "confidence", "evidence"}`. Bos ise
-    `EventEngine` anahtar-kelime fallback'ine duser (bkz. `event_engine.detect`)."""
+    her biri `{"event_id", "type", "start_time", "end_time", "evidence_ids",
+    "description", "risk_score", "confidence"}`. Bos ise `EventEngine`
+    anahtar-kelime fallback'ine duser (bkz. `event_engine.detect`)."""
     status: str = "completed"
     """Bu VLM cagrisinin durumu: `"completed"` (basarili), `"failed"`
-    (bu batch/olay icin VLM cagrisi basarisiz oldu - description'da
-    `[ANALYSIS_FAILED]` notu bulunur) veya (yalnizca `describe_events_batched`
-    ciktilarini birlestiren `main.py::stage_vlm` tarafindan uretilen AGREGE
-    yanitlarda) `"partial_failure"` (bazi olaylar basarili, bazilari basarisiz).
-    Asla `risk=0`/basarili gibi yorumlanmamalidir - bkz. `describe_events_batched`."""
-    cluster_event_ids: List[int] = field(default_factory=list)
-    """Bu yanitin kapsadigi `EventCluster.event_id` degerleri (bkz.
-    `describe_events_batched`); tek-cagri (eski/agrege) yanitlarda bos olabilir."""
+    (bu batch icin VLM cagrisi basarisiz oldu - description'da
+    `[ANALYSIS_FAILED]` notu bulunur) veya (yalnizca batch'leri birlestiren
+    agrege yanitlarda) `"partial_failure"` (bazi batch'ler basarili, bazilari
+    basarisiz). Asla `risk=0`/basarili gibi yorumlanmamalidir."""
+    evidence_ids: List[str] = field(default_factory=list)
+    """Bu yanitin kapsadigi (gonderilen) `EvidenceFrame.evidence_id` degerleri
+    (bkz. `analyze_evidence_batched`); tek-cagri (eski/agrege) yanitlarda bos olabilir."""
 
 
 # VLM ciktisinin sonundaki makine-okunur olay blogunu yakalar:
@@ -108,7 +124,7 @@ class BaseVLM(ABC):
     """Butun Gorsel Dil Modeli (VLM) entegrasyonlari icin soyut taban sinif.
 
     Somut alt siniflar (`QwenVLM`, `GemmaVLM`), yerel vLLM servisine HTTP
-    uzerinden baglanarak `describe_events` metodunu implemente etmelidir. Bu
+    uzerinden baglanarak `analyze_evidence` metodunu implemente etmelidir. Bu
     soyutlama, ajan/muhakeme katmaninin hangi VLM'in aktif oldugundan bagimsiz
     calismasini saglar.
     """
@@ -133,82 +149,176 @@ class BaseVLM(ABC):
         return self._endpoint.model_name
 
     @abstractmethod
-    def describe_events(
-        self, clusters: List[EventCluster], prompt: str
+    def analyze_evidence(
+        self, evidence_frames: List[EvidenceFrame], prompt: str
     ) -> VLMResponse:
-        """Olay Gruplarinin zirve karelerini analiz edip dogal dil aciklama uretir.
+        """Kronolojik evidence karelerini analiz edip olay kumeleme + dogal dil aciklama uretir.
 
         Args:
-            clusters: `AdaptiveFrameSampler.cluster_events` tarafindan uretilen,
-                zaman sirali Olay Gruplari (her biri bir zirve kare tasir).
+            evidence_frames: `AdaptiveFrameSampler.process_video` tarafindan
+                uretilen, zaman sirali (kronolojik) evidence kareleri (bir
+                batch'in tamami veya alt kumesi olabilir).
             prompt: Modelin odaklanmasi istenen olay/soruyu tanimlayan istem.
 
         Returns:
-            Zamansal olaylarin dogal dile yakin aciklamasini iceren `VLMResponse`.
+            Kumelenmis olaylari (`EVENTS_JSON`) ve dogal dile yakin
+            aciklamayi iceren `VLMResponse`.
 
         Raises:
             RuntimeError: vLLM servisine erisilemezse veya yanit gecersizse.
         """
         raise NotImplementedError
 
-    def describe_events_batched(
-        self, clusters: List[EventCluster], prompt: str, batch_size: int = 1
+    def analyze_evidence_batched(
+        self, evidence_frames: List[EvidenceFrame], prompt: str, batch_size: int = 40
     ) -> List[VLMResponse]:
-        """Olay Gruplarini TEK bir dev payload yerine kontrollu batch'ler halinde analiz eder.
+        """Evidence karelerini TEK bir dev payload yerine kronolojik, kayipsiz batch'ler halinde analiz eder.
 
-        `clusters`, `batch_size` buyuklugunde ardisik gruplara bolunur (varsayilan
-        `1` = HER olay ayri ayri analiz edilir); her batch icin `describe_events`
-        BAGIMSIZ olarak cagrilir. Bir batch'in VLM cagrisi basarisiz olursa
-        (ag hatasi, gecersiz yanit, vb.) o batch icin `status="failed"` ve
-        `[ANALYSIS_FAILED]` ile baslayan bir `VLMResponse` uretilir; ISTISNA
-        DIGER batch'lere YAYILMAZ (bir olayin basarisiz olmasi digerlerinin
-        sonucunu KAYBETMEZ). Basarisiz bir batch asla risk=0/basarili olarak
-        yorumlanmamalidir - cagiran taraf `status`i kontrol etmelidir.
+        `evidence_frames`, `batch_size` buyuklugunde ARDISIK (kronolojik)
+        gruplara bolunur; batch siniri bir OLAY SINIRI DEGILDIR - tek bir
+        gercek olay iki batch'e yayilabilir (bu durum `reconcile_events` ile
+        cozulur). Her batch icin `analyze_evidence` BAGIMSIZ olarak cagrilir.
+        Bir batch'in VLM cagrisi basarisiz olursa (ag hatasi, gecersiz yanit,
+        vb.) o batch icin `status="failed"` ve `[ANALYSIS_FAILED]` ile
+        baslayan bir `VLMResponse` uretilir; ISTISNA DIGER batch'lere
+        YAYILMAZ (bir batch'in basarisiz olmasi digerlerinin sonucunu
+        KAYBETMEZ). Hicbir evidence karesi bu asamada SILINMEZ; basarisiz
+        bir batch'in evidence_id'leri `VLMResponse.evidence_ids`de aynen
+        korunur (cagiran taraf bunlari `unassigned` olarak isaretleyebilir).
 
         Args:
-            clusters: Analiz edilecek TUM Olay Gruplari (video geneli).
+            evidence_frames: Analiz edilecek TUM evidence kareleri (video
+                geneli, kronolojik, kayipsiz).
             prompt: Kullanici/istem metni (her batch'e aynen iletilir).
-            batch_size: Bir VLM istegine dahil edilecek azami Olay Grubu
-                sayisi. `1` (varsayilan) ile her olay kendi VLM istegini
-                alir (kontrollu payload boyutu/timeout); daha buyuk bir
-                deger, ilgili olaylari TEK istekte gruplar (daha az istek,
-                daha buyuk payload).
+            batch_size: Bir VLM istegine dahil edilecek azami evidence karesi
+                sayisi.
 
         Returns:
-            Girdi `clusters` ile AYNI sirada, her biri kendi `cluster_event_ids`
-            alaniyla hangi olaylari kapsadigini belirten `VLMResponse` listesi.
-            Bos `clusters` icin bos liste doner.
+            Kronolojik sirada, her biri kendi `evidence_ids` alaniyla hangi
+            evidence karelerini kapsadigini belirten `VLMResponse` listesi.
+            Bos `evidence_frames` icin bos liste doner.
         """
-        if not clusters:
+        if not evidence_frames:
             return []
 
+        step = max(1, batch_size)
         responses: List[VLMResponse] = []
-        for start in range(0, len(clusters), max(1, batch_size)):
-            batch = clusters[start : start + max(1, batch_size)]
-            batch_event_ids = [c.event_id for c in batch]
+        for start in range(0, len(evidence_frames), step):
+            batch = evidence_frames[start : start + step]
+            batch_evidence_ids = [ef.evidence_id for ef in batch]
             try:
-                response = self.describe_events(batch, prompt)
-                response.cluster_event_ids = batch_event_ids
+                response = self.analyze_evidence(batch, prompt)
+                response.evidence_ids = batch_evidence_ids
                 response.status = "completed"
             except Exception as exc:  # noqa: BLE001 - izole edilip diger batch'lere yayilmaz
                 logger.exception(
-                    "VLM batch analizi basarisiz (olay(lar)=%s, model=%s); diger batch'ler etkilenmeyecek.",
-                    batch_event_ids,
+                    "VLM batch analizi basarisiz (evidence=%s, model=%s); diger batch'ler etkilenmeyecek.",
+                    batch_evidence_ids,
                     self.model_name,
                 )
                 response = VLMResponse(
                     description=(
-                        f"[ANALYSIS_FAILED] Olay(lar) {batch_event_ids} icin VLM analizi basarisiz: {exc}"
+                        f"[ANALYSIS_FAILED] Evidence {batch_evidence_ids} icin VLM analizi basarisiz: {exc}"
                     ),
                     model_name=self.model_name,
-                    frame_count=sum(len(c.representative_frames) or 1 for c in batch),
+                    frame_count=len(batch),
                     latency_ms=0.0,
                     structured_events=[],
                     status="failed",
-                    cluster_event_ids=batch_event_ids,
+                    evidence_ids=batch_evidence_ids,
                 )
             responses.append(response)
         return responses
+
+    def reconcile_events(self, batch_responses: List[VLMResponse], prompt: str) -> VLMResponse:
+        """Batch-yerel olaylari IKINCI, metin-tabanli bir VLM cagrisiyla TEK global olay listesine birlestirir.
+
+        Yalnizca `analyze_evidence_batched` BIRDEN FAZLA batch urettiginde
+        gereklidir (tek batch zaten globaldir). Basarisiz batch'ler
+        reconciliation girdisine DAHIL EDILMEZ (analiz edilememis, dolayisiyla
+        birlestirilecek bir olay bilgisi yok) ama evidence_id'leri
+        `VLMResponse.evidence_ids`de KORUNUR; cagiran taraf (bkz.
+        `src/main.py::_reconcile_unassigned_evidence`) bunlari acikca
+        `unassigned` olarak isaretler - evidence hicbir zaman sessizce
+        kaybolmaz.
+
+        Args:
+            batch_responses: `analyze_evidence_batched` ciktisi (birden fazla
+                batch, karisik basarili/basarisiz olabilir).
+            prompt: Kullanici/istem metni (baglam icin reconciliation
+                promptuna eklenir).
+
+        Returns:
+            Tum basarili batch'lerin evidence_id'lerini kapsayan, GLOBAL
+            `event_id`li tek bir `VLMResponse`. Basarili batch yoksa
+            `status="failed"` doner.
+
+        Raises:
+            RuntimeError: Reconciliation VLM cagrisi basarisiz olursa.
+        """
+        succeeded = [r for r in batch_responses if r.status != "failed"]
+        if not succeeded:
+            all_ids = [eid for r in batch_responses for eid in r.evidence_ids]
+            return VLMResponse(
+                description="[HATA] Hicbir batch basariyla analiz edilemedi; birlestirilecek olay yok.",
+                model_name=self.model_name,
+                frame_count=0,
+                latency_ms=0.0,
+                structured_events=[],
+                status="failed",
+                evidence_ids=all_ids,
+            )
+        if len(succeeded) == 1 and len(batch_responses) == 1:
+            return succeeded[0]
+
+        payload = self._build_reconciliation_payload(batch_responses, prompt)
+        response = self._post_chat_completion(payload)
+        response.evidence_ids = [eid for r in batch_responses for eid in r.evidence_ids]
+        response.frame_count = sum(r.frame_count for r in batch_responses)
+        return response
+
+    def _build_reconciliation_payload(
+        self, batch_responses: List[VLMResponse], prompt: str
+    ) -> Dict[str, Any]:
+        """Reconciliation icin METIN-TABANLI (goruntusuz) bir chat payload'i kurar.
+
+        Her batch'in `structured_events`ini (zaten ayristirilmis EVENTS_JSON)
+        JSON metni olarak reconciliation promptuna gomer; basarisiz
+        batch'lerin evidence_id'lerini de ayri bir listede belirtir (boylece
+        model bunlari da `unassigned` kaydina dahil edebilir).
+
+        Args:
+            batch_responses: `analyze_evidence_batched` ciktisi.
+            prompt: Kullanici/istem metni (baglam icin eklenir).
+
+        Returns:
+            `/v1/chat/completions` icin JSON-serilestirilebilir, YALNIZCA
+            METIN iceren istek govdesi (resim yok).
+        """
+        batch_summaries = [
+            {"batch_index": i, "events": r.structured_events}
+            for i, r in enumerate(batch_responses)
+            if r.status != "failed"
+        ]
+        failed_evidence_ids = [eid for r in batch_responses if r.status == "failed" for eid in r.evidence_ids]
+
+        text = (
+            f"Kullanici istemi (baglam): {prompt}\n\n"
+            f"Batch-yerel olay listeleri (JSON):\n{json.dumps(batch_summaries, ensure_ascii=False, indent=2)}\n\n"
+            f"Analiz EDILEMEYEN (basarisiz batch) evidence_id'leri (bunlari da "
+            f"'unassigned' kaydina ekle, KAYBETME): {json.dumps(failed_evidence_ids)}"
+        )
+        content = [
+            {"type": "text", "text": VLM_RECONCILIATION_SYSTEM_PROMPT},
+            {"type": "text", "text": text},
+        ]
+        return {
+            "model": self._endpoint.model_name,
+            "messages": [{"role": "user", "content": content}],
+            "max_tokens": self._endpoint.max_new_tokens,
+            "temperature": self._endpoint.temperature,
+            "top_p": self._endpoint.top_p,
+        }
 
     @abstractmethod
     def health_check(self) -> bool:
@@ -220,22 +330,22 @@ class BaseVLM(ABC):
         raise NotImplementedError
 
     def _build_chat_payload(
-        self, clusters: List[EventCluster], prompt: str
+        self, evidence_frames: List[EvidenceFrame], prompt: str
     ) -> Dict[str, Any]:
         """vLLM'in OpenAI-uyumlu `/chat/completions` uc noktasi icin istek govdesi kurar.
 
-        Icerik bloklari (zirve karelerin base64 goruntusu + olay metadatasi)
-        `VLMPayloadBuilder` tarafindan uretilir; bu metod yalnizca model-ozel
-        alanlarla (model adi, sicaklik, token siniri) sarmalar.
+        Icerik bloklari (evidence karelerinin base64 goruntusu + kimlik/zaman
+        metadatasi) `VLMPayloadBuilder` tarafindan uretilir; bu metod yalnizca
+        model-ozel alanlarla (model adi, sicaklik, token siniri) sarmalar.
 
         Args:
-            clusters: Modele gonderilecek Olay Gruplari.
+            evidence_frames: Modele gonderilecek evidence kareleri.
             prompt: Kullanici/istem metni.
 
         Returns:
             `/v1/chat/completions` icin JSON-serilestirilebilir istek govdesi.
         """
-        content = VLMPayloadBuilder.build_content_blocks(clusters, prompt)
+        content = VLMPayloadBuilder.build_content_blocks(evidence_frames, prompt)
 
         payload: Dict[str, Any] = {
             "model": self._endpoint.model_name,
@@ -253,7 +363,8 @@ class BaseVLM(ABC):
         """Hazirlanan istegi vLLM servisine gonderir ve yaniti `VLMResponse`'a cevirir.
 
         Args:
-            payload: `_build_chat_payload` ile uretilmis istek govdesi.
+            payload: `_build_chat_payload` (veya `_build_reconciliation_payload`)
+                ile uretilmis istek govdesi.
 
         Returns:
             Model ciktisini iceren `VLMResponse`.

@@ -14,14 +14,15 @@ import time
 
 from langchain_core.messages import HumanMessage
 
-from src.sampler.schema import EventCluster, EvidenceFrame
+from src.sampler.schema import EvidenceFrame
 from src.vlm.factory import get_llm_client, get_vlm_client
 from src.vlm.llm_client import MockLLMClient
 from src.vlm.vlm_client import MockVLMClient
 
 
-def _sample_cluster() -> EventCluster:
-    frame = EvidenceFrame(
+def _sample_evidence_frame() -> EvidenceFrame:
+    return EvidenceFrame(
+        evidence_id="ev0",
         frame_id=0,
         timestamp_sec=1.0,
         timestamp_str="00:01",
@@ -30,14 +31,13 @@ def _sample_cluster() -> EventCluster:
         base64_image="data:image/jpeg;base64,AA==",
         image_shape=(1, 1, 3),
     )
-    return EventCluster(event_id=1, start_time=1.0, end_time=1.0, peak_frame=frame, total_candidate_frames=1)
 
 
 def test_mock_vlm_client_returns_turkish_description_quickly() -> None:
     client = MockVLMClient()
 
     started_at = time.perf_counter()
-    response = client.describe_events([_sample_cluster()], prompt="Sahnede risk var mi?")
+    response = client.analyze_evidence([_sample_evidence_frame()], prompt="Sahnede risk var mi?")
     elapsed = time.perf_counter() - started_at
 
     assert response.model_name == "mock-vlm"
@@ -47,10 +47,10 @@ def test_mock_vlm_client_returns_turkish_description_quickly() -> None:
     assert client.health_check() is True
 
 
-def test_mock_vlm_client_handles_empty_cluster_list_gracefully() -> None:
+def test_mock_vlm_client_handles_empty_evidence_list_gracefully() -> None:
     """Gercek Qwen/Gemma implementasyonlarinin aksine, mock istemci bos listede de patlamaz."""
     client = MockVLMClient()
-    response = client.describe_events([], prompt="bos")
+    response = client.analyze_evidence([], prompt="bos")
 
     assert response.frame_count == 0
     assert response.model_name == "mock-vlm"
@@ -129,7 +129,7 @@ def test_parse_structured_events_repairs_trailing_commas() -> None:
 
 def test_endpoint_extra_body_merges_into_vlm_payload() -> None:
     """VLLMEndpointConfig.extra_body (vLLM guided decoding) istek govdesine eklenmeli, cekirdegi ezmemeli."""
-    from src.sampler.schema import EventCluster, EvidenceFrame
+    from src.sampler.schema import EvidenceFrame
     from src.utils.config_loader import VLLMEndpointConfig
     from src.vlm.qwen_vlm import QwenVLM
 
@@ -138,11 +138,10 @@ def test_endpoint_extra_body_merges_into_vlm_payload() -> None:
         extra_body={"guided_json": {"type": "array"}, "model": "EZILMEMELI"},
     )
     frame = EvidenceFrame(
-        frame_id=0, timestamp_sec=1.0, timestamp_str="00:01", change_score=0.5,
+        evidence_id="ev0", frame_id=0, timestamp_sec=1.0, timestamp_str="00:01", change_score=0.5,
         image_bytes=b"x", base64_image="data:image/jpeg;base64,AA==", image_shape=(1, 1, 3),
     )
-    cluster = EventCluster(event_id=1, start_time=1.0, end_time=1.0, peak_frame=frame, total_candidate_frames=1)
 
-    payload = QwenVLM(endpoint)._build_chat_payload([cluster], "test")
+    payload = QwenVLM(endpoint)._build_chat_payload([frame], "test")
     assert payload["guided_json"] == {"type": "array"}
     assert payload["model"] == "m"  # cekirdek alan ezilmedi

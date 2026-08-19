@@ -58,7 +58,8 @@ export interface TimelineEvent extends TimelineEntry {
 
 /** src/schemas/report.py: EvidenceFrameOut (final report — carries base64). */
 export interface EvidenceFrameOut {
-  event_id: number
+  /** VLM event_id this frame belongs to (bkz. EVENTS_JSON.event_id) — string, not a positional label. */
+  event_id: string
   timestamp_sec: number
   timestamp_str: string
   change_score: number
@@ -151,8 +152,14 @@ export interface TraceEvent<D = Record<string, unknown>> {
 
 // --- per-stage `data` payloads (from the serializers) ---
 
-/** Frame reference inside sampler stage — points to the frame endpoint. */
+/**
+ * Frame reference inside sampler stage — points to the frame endpoint.
+ * The sampler no longer clusters: every threshold-passing frame is sent
+ * here, in chronological order, with no positional role attached. Event
+ * clustering happens downstream, in the VLM stage.
+ */
 export interface EvidenceFrameRef {
+  evidence_id: string
   frame_id: string
   timestamp_sec: number
   timestamp_str: string
@@ -163,32 +170,21 @@ export interface EvidenceFrameRef {
   thumbnail_url: string | null
 }
 
-/**
- * A single selected evidence frame for an event. Carries no positional role
- * ("pre"/"peak"/"post") — every entry is just an evidence frame for its
- * event, distinguished only by timestamp and `selection_reason` (e.g.
- * "highest_evidence_score" or "temporal_coverage").
- */
-export interface RepresentativeFrameRef {
-  selection_reason: string
-  evidence_score: number
-  timestamp_str: string
-  frame_id: string
-  thumbnail_url: string | null
-}
-
-export interface EventGroupRef {
-  event_id: number
-  start_time: number
-  end_time: number
-  total_candidate_frames: number
-  representative_frames: RepresentativeFrameRef[]
-}
-
 export interface SamplerStageData {
   stats: Partial<SamplerStats>
   evidence_frames: EvidenceFrameRef[]
-  event_groups: EventGroupRef[]
+}
+
+/** A single VLM-clustered event from EVENTS_JSON (src/prompts/vlm_prompts.py). */
+export interface VlmEvent {
+  event_id: string
+  type: string
+  start_time: number
+  end_time: number
+  evidence_ids: string[]
+  description: string
+  risk_score: number | null
+  confidence: number
 }
 
 export interface VlmStageData {
@@ -198,7 +194,8 @@ export interface VlmStageData {
   user_prompt: string
   frames_sent: number
   description: string
-  structured_events: unknown[]
+  structured_events: VlmEvent[]
+  vlm_status: string
 }
 
 /** decision stage — NOTE: raw_response is intentionally absent server-side. */

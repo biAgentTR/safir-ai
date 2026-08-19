@@ -6,7 +6,7 @@ import logging
 from typing import List
 
 from src.prompts import VLM_OBSERVER_SYSTEM_PROMPT
-from src.sampler.adaptive_sampler import EventCluster
+from src.sampler.schema import EvidenceFrame
 from src.vlm.base_vlm import BaseVLM, VLMResponse
 
 logger = logging.getLogger(__name__)
@@ -17,30 +17,29 @@ _DEFAULT_SYSTEM_PROMPT = VLM_OBSERVER_SYSTEM_PROMPT
 class GemmaVLM(BaseVLM):
     """Gemma 3 Vision modelini yerel vLLM servisi uzerinden kullanan VLM implementasyonu."""
 
-    def describe_events(
-        self, clusters: List[EventCluster], prompt: str
-    ) -> VLMResponse:
-        """Olay Gruplarinin zirve karelerini Gemma 3 Vision'a gonderip aciklama uretir.
+    def analyze_evidence(self, evidence_frames: List[EvidenceFrame], prompt: str) -> VLMResponse:
+        """Evidence karelerini Gemma 3 Vision'a gonderip olay kumeleme + aciklama uretir.
 
         Args:
-            clusters: `AdaptiveFrameSampler.cluster_events` ciktisi Olay Gruplari.
+            evidence_frames: `AdaptiveFrameSampler.process_video` ciktisi,
+                kronolojik evidence kareleri (bir batch).
             prompt: Analiz odagini belirten ek istem (bos olabilir).
 
         Returns:
-            Gemma 3 Vision tarafindan uretilen dogal dil aciklamasini iceren
-            `VLMResponse`.
+            Gemma 3 Vision tarafindan uretilen, kumelenmis olaylari ve dogal
+            dil aciklamasini iceren `VLMResponse`.
 
         Raises:
-            RuntimeError: vLLM servisine erisilemezse veya Olay Grubu bulunamazsa.
+            RuntimeError: vLLM servisine erisilemezse veya evidence bulunamazsa.
         """
-        if not clusters:
-            raise RuntimeError("Gemma 3 Vision'a gonderilecek Olay Grubu bulunamadi.")
+        if not evidence_frames:
+            raise RuntimeError("Gemma 3 Vision'a gonderilecek evidence karesi bulunamadi.")
 
         full_prompt = f"{_DEFAULT_SYSTEM_PROMPT}\n\nEk istem: {prompt}".strip()
-        payload = self._build_chat_payload(clusters, full_prompt)
+        payload = self._build_chat_payload(evidence_frames, full_prompt)
         logger.info(
-            "Gemma 3 Vision cagrisi yapiliyor: %d olay grubu, model=%s",
-            len(clusters),
+            "Gemma 3 Vision cagrisi yapiliyor: %d evidence karesi, model=%s",
+            len(evidence_frames),
             self.model_name,
         )
         return self._post_chat_completion(payload)

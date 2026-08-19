@@ -40,41 +40,32 @@ class AppConfig(BaseModel):
 
 
 class SamplerConfig(BaseModel):
-    """Adaptive Frame Sampler (CPU) esik, pencere ve kumeleme ayarlari.
+    """Adaptive Frame Sampler (CPU) esik ve pencere ayarlari.
 
-    `min_change_threshold`/`blur_kernel_size`/`history_window`/
-    `min_event_interval_sec`/`sample_fps` `AdaptiveFrameSampler` tarafindan
-    dogrudan kullanilan aktif parametrelerdir (bkz. `sampler_from_config`).
-    Geri kalan alanlar (idle_interval_sec, active_fps, noise_floor,
-    motion_threshold, scene_change_threshold, resize_width, warmup_frames),
-    sahadaki alternatif/eski sampler konfigurasyonlariyla geriye donuk
-    uyumluluk ve ince ayar icin saklanir.
+    `min_change_threshold`/`blur_kernel_size`/`history_window`/`sample_fps`
+    `AdaptiveFrameSampler` tarafindan dogrudan kullanilan aktif
+    parametrelerdir (bkz. `sampler_from_config`). Geri kalan alanlar
+    (idle_interval_sec, active_fps, noise_floor, motion_threshold,
+    scene_change_threshold, resize_width, warmup_frames), sahadaki
+    alternatif/eski sampler konfigurasyonlariyla geriye donuk uyumluluk ve
+    ince ayar icin saklanir.
 
-    ONEMLI: `max_evidence_buffer` (Kanit Karesi sayisinda sabit ust sinir) ve
-    eski seek-tabanli, sabit konumsal zaman-penceresi ofsetleri
-    KALDIRILMISTIR: kare sayisinda video geneli sabit bir limit YOKTUR,
-    VLM/API kapasitesi olay basina `FrameSelector.TARGET_FRAME_COUNT` ile
-    korunur; secilen kareler konumsal bir role de sahip DEGILDIR (bkz.
-    `src/sampler/context/frame_selector.py`).
+    ONEMLI (mimari): Sampler artik hicbir OLAY KUMELEMESI yapmaz; bu yuzden
+    eski kumeleme-ozel alanlar (`min_event_interval_sec`,
+    `cluster_merge_gap_sec`, `bbox_iou_merge_threshold`,
+    `max_cluster_duration_sec`) ve `max_evidence_buffer` (Kanit Karesi
+    sayisinda sabit ust sinir) KALDIRILMISTIR: kare sayisinda video geneli
+    sabit bir limit YOKTUR, esik-gecmis TUM kareler VLM'e gonderilir.
+    Kumeleme + VLM istek boyutu kontrolu artik `vlm.batch_size` (bkz.
+    `VLMConfig`) ve VLM katmaninin kendisi tarafindan yonetilir.
     """
 
     min_change_threshold: float
     blur_kernel_size: List[int]
     history_window: int
-    min_event_interval_sec: float
     sample_fps: int
 
-    # --- Olay kumeleme / zamansal oylama ayarlari ---
-    # `sampler_from_config` bu alanlari `AdaptiveFrameSampler.__init__`e gecirir.
-    # Varsayilanlar constructor imzasiyla birebir ayni tutulur; config.yaml'da
-    # tanimlanmalari zorunlu degildir (verilmezse bu varsayilanlar kullanilir).
-    cluster_merge_gap_sec: float = 20.0
-    bbox_iou_merge_threshold: float = 0.10
-    max_cluster_duration_sec: float = 120.0
-    """Bir nihai Olay Grubunun (EventCluster) izin verilen azami toplam suresi
-    (saniye). Asiri uzun/mega cluster olusumunu (transitive chaining ile
-    birlikte) sinirlar; hicbir Kanit Karesi bu nedenle silinmez, yalnizca
-    ayri Olay Gruplarina bolusturulur (bkz. AdaptiveFrameSampler.cluster_events)."""
+    # --- Zamansal oylama ayarlari (bkz. AdaptiveFrameSampler._confirm_candidate) ---
     temporal_vote_window: int = 1
     temporal_vote_min_count: int = 1
 
@@ -160,11 +151,15 @@ class VLMConfig(BaseModel):
 
     active_model: str
     models: Dict[str, VLLMEndpointConfig]
-    batch_size: int = 1
-    """`SafirPipeline.stage_vlm` icinde bir VLM istegine dahil edilecek azami
-    Olay Grubu sayisi (bkz. `BaseVLM.describe_events_batched`). Varsayilan `1`:
-    tum olaylar TEK dev payload'a doldurulmaz, her olay kendi bagimsiz VLM
-    istegini alir; bir olayin basarisiz olmasi digerlerini etkilemez."""
+    batch_size: int = 40
+    """`SafirPipeline.stage_vlm` icinde TEK bir VLM istegine dahil edilecek
+    azami EVIDENCE KARESI sayisi (bkz. `BaseVLM.analyze_evidence_batched`).
+    Tum evidence kareleri TEK dev payload'a doldurulmaz: kronolojik, kayipsiz
+    batch'lere bolunur (batch siniri OLAY SINIRI DEGILDIR - bir olay iki
+    batch'e bolunebilir). Birden fazla batch olustuysa, batch-local olaylar
+    ikinci bir VLM 'reconciliation' cagrisiyla (bkz. `BaseVLM.reconcile_events`)
+    global olaylara birlestirilir; bir batch'in basarisiz olmasi digerlerini
+    etkilemez ve hicbir evidence silinmez."""
 
     def active_endpoint(self) -> VLLMEndpointConfig:
         """Config icinde secilen aktif VLM'in baglanti bilgisini dondurur."""

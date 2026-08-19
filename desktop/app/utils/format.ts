@@ -83,7 +83,7 @@ export function stageFlow(
     case 'sampler':
       return {
         in: data ? `${d.stats?.total_frames_scanned ?? 0} kare` : 'ham kareler',
-        out: data ? `${n(d.evidence_frames)} kanıt · ${n(d.event_groups)} grup` : 'kanıt kareleri / gruplar',
+        out: data ? `${n(d.evidence_frames)} kanıt karesi` : 'kanıt kareleri',
       }
     case 'vlm':
       return {

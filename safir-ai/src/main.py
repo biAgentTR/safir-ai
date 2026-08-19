@@ -53,7 +53,7 @@ from src.memory.conversation_store import ConversationStore
 from src.memory import document_extraction
 from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
-from src.sampler.adaptive_sampler import EventCluster, EvidenceFrame, sampler_from_config
+from src.sampler.adaptive_sampler import EvidenceFrame, sampler_from_config
 from src.schemas.report import EvidenceFrameOut, SafirReport, SamplerStats, TimelineEntry
 from src.utils.config_loader import SafirConfig, load_config
 from src.vlm.base_vlm import VLMResponse
@@ -459,94 +459,166 @@ class ConversationContextCreateRequest(BaseModel):
     label: Optional[str] = Field(default=None, max_length=_MAX_CONTEXT_LABEL_LEN)
 
 
-def _aggregate_vlm_responses(
-    batch_responses: List[VLMResponse], clusters: List[EventCluster], fallback_model_name: str
-) -> VLMResponse:
-    """Olay-bazli VLM batch yanitlarini, geri kalan pipeline (`stage_events`/rapor) ile
-    geriye-donuk uyumlu TEK bir `VLMResponse`ye birlestirir.
+def _naive_concat_batches(batch_responses: List[VLMResponse]) -> VLMResponse:
+    """Reconciliation VLM cagrisi BASARISIZ olursa kullanilan, kayipsiz-ama-DEGRADE fallback.
 
-    `BaseVLM.describe_events_batched` her Olay Grubu (veya `batch_size`e gore
-    grup) icin BAGIMSIZ bir `VLMResponse` uretir; bu fonksiyon onlari
-    asagidaki kurallara gore birlestirir:
-
-    - TUM batch'ler basarisizsa: eski, testlerle uyumlu `[HATA] VLM analizi
-      yapilamadi (...)` degraded formatina AYNEN duser (`status="failed"`).
-    - BAZI batch'ler basarisizsa: basarili olanlarin `description`/
-      `structured_events`i KORUNUR (kaybedilmez); basarisiz olanlar icin
-      `description`e acik bir `[UYARI] ... analiz edilemedi (analysis_failed)`
-      notu eklenir. Asla risk=0/basarili gibi yorumlanacak sessiz bir bosluk
-      birakilmaz (`status="partial_failure"`).
-    - HICBIR batch basarisiz degilse: aciklamalar sirayla birlestirilir,
-      `structured_events` birlesir; her olaya ait tespitler mumkunse
-      `cluster_event_id` ile damgalanir (`status="completed"`).
+    Batch-yerel olaylari, `event_id` cakismasini onlemek icin `b{batch_index}_`
+    on-ekiyle birlestirir (GERCEK global birlestirme yapmaz - ayni gercek olay
+    iki batch'te ayri kayit olarak kalabilir); yine de HICBIR evidence_id
+    kaybolmaz.
 
     Args:
-        batch_responses: `BaseVLM.describe_events_batched` ciktisi.
-        clusters: Bu calisma icin analiz edilen TUM Olay Gruplari (yalnizca
-            hicbir batch yanitinin olmadigi - teorik olarak imkansiz - uc
-            durumda hata metni icin kullanilir).
-        fallback_model_name: `batch_responses` bossa kullanilacak model adi.
+        batch_responses: `BaseVLM.analyze_evidence_batched` ciktisi (en az bir
+            basarili batch icermelidir).
 
     Returns:
-        `EventEngineInput.from_vlm_response`e dogrudan verilebilecek, tek
-        bir agrege `VLMResponse`.
+        On-ekli `event_id`lerle birlestirilmis, tek bir `VLMResponse`.
     """
-    if not batch_responses:
-        return VLMResponse(
-            description="[HATA] VLM analizi yapilamadi (hic Olay Grubu/batch yaniti uretilemedi). Manuel inceleme gerekli.",
-            model_name=fallback_model_name,
-            frame_count=0,
-            latency_ms=0.0,
-            structured_events=[],
-            status="failed",
-        )
-
-    failed = [r for r in batch_responses if r.status == "failed"]
     succeeded = [r for r in batch_responses if r.status != "failed"]
-    model_name = batch_responses[0].model_name
-    total_latency = sum(r.latency_ms for r in batch_responses)
-    total_frames = sum(r.frame_count for r in batch_responses)
-    all_event_ids = [eid for r in batch_responses for eid in r.cluster_event_ids]
-
-    if not succeeded:
-        failed_ids = [eid for r in failed for eid in r.cluster_event_ids]
-        return VLMResponse(
-            description=(
-                f"[HATA] VLM analizi yapilamadi (olay(lar) {failed_ids}). Manuel inceleme gerekli."
-            ),
-            model_name=model_name,
-            frame_count=total_frames,
-            latency_ms=total_latency,
-            structured_events=[],
-            status="failed",
-            cluster_event_ids=failed_ids,
-        )
-
     structured_events: List[Dict[str, Any]] = []
     description_parts: List[str] = []
-    for r in succeeded:
+    for i, r in enumerate(succeeded):
         for ev in r.structured_events:
             stamped = dict(ev)
-            if "cluster_event_id" not in stamped and len(r.cluster_event_ids) == 1:
-                stamped["cluster_event_id"] = r.cluster_event_ids[0]
+            stamped["event_id"] = f"b{i}_{stamped.get('event_id', 'e')}"
             structured_events.append(stamped)
         description_parts.append(r.description)
-
-    for r in failed:
-        description_parts.append(
-            f"[UYARI] Olay(lar) {r.cluster_event_ids} icin VLM analizi basarisiz oldu (analysis_failed); "
-            "bu olay(lar) icin otomatik degerlendirme YAPILAMADI, manuel inceleme onerilir."
-        )
-
     return VLMResponse(
         description="\n\n".join(description_parts),
-        model_name=model_name,
-        frame_count=total_frames,
-        latency_ms=total_latency,
+        model_name=succeeded[0].model_name if succeeded else batch_responses[0].model_name,
+        frame_count=sum(r.frame_count for r in batch_responses),
+        latency_ms=sum(r.latency_ms for r in batch_responses),
         structured_events=structured_events,
-        status="completed" if not failed else "partial_failure",
-        cluster_event_ids=all_event_ids,
     )
+
+
+def _reconcile_unassigned_evidence(
+    structured_events: List[Dict[str, Any]],
+    evidence_frames: List[EvidenceFrame],
+    batch_responses: List[VLMResponse],
+) -> List[Dict[str, Any]]:
+    """VLM'in evidence_ids atamalarini DOGRULAR ve atanamayan evidence'i acikca korur.
+
+    Iki kurali uygular (bkz. gorev tanimi):
+    1. "Uydurma veya kayip evidence ID kabul etme": her olayin `evidence_ids`si,
+       gercekten gonderilen `EvidenceFrame.evidence_id` kumesiyle KESISTIRILIR;
+       gecersiz/uydurma kimlikler sessizce (yalnizca log ile) ATILIR. Bir
+       evidence_id BIRDEN FAZLA olaya atanmissa yalnizca ILK atama korunur
+       (cakisma onlenir).
+    2. "Atanamayan evidence'lari unassigned/uncertain olarak koru": hicbir
+       olaya atanmamis (VLM tarafindan atlanmis VEYA batch'i tamamen basarisiz
+       olmus) evidence, mevcut bir `unassigned`/`siniflandirilamadi` kaydiyla
+       BIRLESTIRILIR (yoksa yeni bir tane olusturulur). Evidence hicbir zaman
+       SESSIZCE kaybolmaz.
+
+    Args:
+        structured_events: VLM'in (reconciliation sonrasi veya tek-batch)
+            urettigi ham olay listesi.
+        evidence_frames: Bu calisma icin gonderilen TUM evidence kareleri
+            (gecerli evidence_id kumesinin ve zaman damgalarinin kaynagi).
+        batch_responses: `analyze_evidence_batched` ciktisi (hangi
+            evidence_id'lerin hangi batch'e ait oldugunu ve basarisiz
+            batch'leri belirlemek icin).
+
+    Returns:
+        `evidence_ids` alanlari dogrulanmis/temizlenmis, gerekirse bir
+        `unassigned` kaydi eklenmis/genisletilmis olay listesi.
+    """
+    valid_ids_in_order = [ef.evidence_id for ef in evidence_frames]
+    valid_ids = set(valid_ids_in_order)
+    by_id = {ef.evidence_id: ef for ef in evidence_frames}
+
+    assigned: set = set()
+    cleaned_events: List[Dict[str, Any]] = []
+    for ev in structured_events:
+        cleaned = dict(ev)
+        kept_ids: List[str] = []
+        for raw_id in cleaned.get("evidence_ids") or []:
+            eid = str(raw_id)
+            if eid not in valid_ids:
+                logger.warning("VLM gecersiz/uydurma evidence_id uretti, atlaniyor: %r", eid)
+                continue
+            if eid in assigned:
+                logger.warning("VLM evidence_id'yi birden fazla olaya atamis, ilk atama korunuyor: %r", eid)
+                continue
+            kept_ids.append(eid)
+            assigned.add(eid)
+        cleaned["evidence_ids"] = kept_ids
+        cleaned_events.append(cleaned)
+
+    leftover_ids = [eid for eid in valid_ids_in_order if eid not in assigned]
+    if leftover_ids:
+        leftover_frames = [by_id[eid] for eid in leftover_ids]
+        existing_unassigned = next(
+            (
+                e
+                for e in cleaned_events
+                if e.get("event_id") == "unassigned" or e.get("type") == "siniflandirilamadi"
+            ),
+            None,
+        )
+        if existing_unassigned is not None:
+            existing_unassigned["evidence_ids"] = sorted(set(existing_unassigned.get("evidence_ids", [])) | set(leftover_ids))
+        else:
+            cleaned_events.append(
+                {
+                    "event_id": "unassigned",
+                    "type": "siniflandirilamadi",
+                    "start_time": min(f.timestamp_sec for f in leftover_frames),
+                    "end_time": max(f.timestamp_sec for f in leftover_frames),
+                    "evidence_ids": leftover_ids,
+                    "description": "Bu evidence kareleri herhangi bir olaya atanamadi (belirsiz veya analiz edilemedi).",
+                    "risk_score": None,
+                    "confidence": 0.0,
+                }
+            )
+        logger.info(
+            "Atanamayan %d evidence karesi 'unassigned/siniflandirilamadi' olarak korundu: %s",
+            len(leftover_ids),
+            leftover_ids,
+        )
+
+    return cleaned_events
+
+
+def _select_report_evidence_frames(
+    vlm_response: VLMResponse, evidence_frames: List[EvidenceFrame]
+) -> List[EvidenceFrameOut]:
+    """Rapor/UI icin, VLM'in kumeledigi HER olay icin bir temsili evidence karesi secer.
+
+    Her olay icin, o olaya atanmis `evidence_ids` arasindan en yuksek
+    `change_score`e sahip kare secilir (video YENIDEN ACILMAZ, kare yeniden
+    KODLANMAZ - zaten bellekteki `EvidenceFrame.base64_image` kullanilir).
+    `evidence_ids` bos/gecersiz olan (ör. hicbir evidence karesi eslesmeyen)
+    olaylar atlanir.
+
+    Args:
+        vlm_response: `stage_vlm` ciktisi (`structured_events` dogrulanmis/
+            temizlenmis olmalidir - bkz. `_reconcile_unassigned_evidence`).
+        evidence_frames: Bu calisma icin gonderilen TUM evidence kareleri.
+
+    Returns:
+        Her VLM olayi icin bir `EvidenceFrameOut` (olay sirasinda).
+    """
+    evidence_by_id = {ef.evidence_id: ef for ef in evidence_frames}
+    report_frames: List[EvidenceFrameOut] = []
+    for ev in vlm_response.structured_events:
+        candidates = [evidence_by_id[eid] for eid in (ev.get("evidence_ids") or []) if eid in evidence_by_id]
+        if not candidates:
+            continue
+        best = max(candidates, key=lambda f: f.change_score)
+        report_frames.append(
+            EvidenceFrameOut(
+                event_id=str(ev.get("event_id", "")),
+                timestamp_sec=best.timestamp_sec,
+                timestamp_str=best.timestamp_str,
+                change_score=best.change_score,
+                base64_image=best.base64_image,
+                saved_path=best.saved_path,
+                is_fallback=best.is_fallback,
+            )
+        )
+    return report_frames
 
 
 class SafirPipeline:
@@ -653,23 +725,22 @@ class SafirPipeline:
         # Her asama, GERCEK production metoduna delege edilir; boylece hem run()
         # tek cagriyla calisir, hem de Jupyter demo bu metotlari tek tek cagirip
         # her asamanin gercek ciktisini gosterebilir (implementasyon kopyalanmaz).
-        sampler, evidence_frames, clusters = self.stage_sample(
+        sampler, evidence_frames = self.stage_sample(
             video_source, sample_fps_override, min_change_threshold_override
         )
         _emit("sampler", {"evidence_frames": evidence_frames, "stats": sampler.last_run_stats})
-        _emit("clusters", {"clusters": clusters})
 
         if on_stage:
             on_stage(*STAGE_VLM)
 
-        vlm_response = self.stage_vlm(clusters, user_prompt)
-        _emit("vlm", {"vlm_response": vlm_response, "clusters": clusters, "user_prompt": user_prompt})
+        vlm_response = self.stage_vlm(evidence_frames, user_prompt)
+        _emit("vlm", {"vlm_response": vlm_response, "evidence_frames": evidence_frames, "user_prompt": user_prompt})
 
         if on_stage:
             on_stage(*STAGE_AGENT)
 
         detected_events, temporal_events, rule_matches, latest_timestamp = self.stage_events(
-            vlm_response, clusters
+            vlm_response, evidence_frames
         )
         _emit(
             "events",
@@ -694,7 +765,7 @@ class SafirPipeline:
         report = self.build_report(
             video_source=video_source,
             sampler=sampler,
-            clusters=clusters,
+            evidence_frames=evidence_frames,
             vlm_response=vlm_response,
             context=context,
             decision=decision,
@@ -727,13 +798,11 @@ class SafirPipeline:
         sample_fps_override: Optional[int] = None,
         min_change_threshold_override: Optional[float] = None,
     ):
-        """01-02: Adaptive Frame Sampler + Olay Kumeleme (+ ortak FrameSelector secimi).
+        """01: Adaptive Frame Sampler (olay kumelemesi YAPMAZ - bkz. modul docstring'i).
 
         Returns:
-            `(sampler, evidence_frames, clusters)` — clusters, VLM'e gonderilecek/diske
-            arsivlenecek `representative_frames` ile `cluster_events` icinde,
-            video/kaynak turunden BAGIMSIZ (canli/VOD ayrimi olmadan) doldurulmustur;
-            bkz. `AdaptiveFrameSampler.cluster_events`/`FrameSelector`.
+            `(sampler, evidence_frames)` — `evidence_frames`, esik-gecmis TUM
+            evidence karelerinin video geneli, kronolojik, kayipsiz listesidir.
         """
         sampler = sampler_from_config(self._config.sampler, min_change_threshold_override)
         sample_fps = sample_fps_override or self._default_sample_fps
@@ -742,56 +811,114 @@ class SafirPipeline:
         if not evidence_frames:
             raise RuntimeError(f"Video kaynagindan kanit karesi uretilemedi: {video_source}")
 
-        clusters: List[EventCluster] = sampler.cluster_events(evidence_frames)
-        if not clusters:
-            raise RuntimeError(f"Kanit karelerinden Olay Grubu uretilemedi: {video_source}")
-
         logger.info(
-            "VLM oncesi katman ozeti: %d Kanit Karesi -> %d Olay Grubu -> %d temsili kare VLM'e gonderiliyor",
+            "VLM oncesi katman ozeti: %d Kanit Karesi VLM'e gonderiliyor (kumeleme VLM katmaninda yapilacak)",
             len(evidence_frames),
-            len(clusters),
-            sum(len(c.representative_frames) for c in clusters) or len(clusters),
         )
-        return sampler, evidence_frames, clusters
+        return sampler, evidence_frames
 
-    def stage_vlm(self, clusters: List[EventCluster], user_prompt: str) -> VLMResponse:
-        """03: VLM (Gemini) gorsel anlama - OLAY BAZLI (event-based) dagitim.
+    def stage_vlm(self, evidence_frames: List[EvidenceFrame], user_prompt: str) -> VLMResponse:
+        """03: VLM gorsel anlama + OLAY KUMELEME - kronolojik, kayipsiz batch dagitim.
 
-        Butun Olay Gruplarini TEK bir dev payload'a doldurmaz: `BaseVLM.
-        describe_events_batched` ile `self._config.vlm.batch_size` buyuklugunde
-        (varsayilan 1 = HER olay ayri) kontrollu batch'lere bolup ayri ayri
-        analiz eder. Bir batch basarisiz olursa DIGER batch'lerin sonucu
-        KAYBEDILMEZ (bkz. `_aggregate_vlm_responses`); tum batch'ler basarisiz
-        olursa eski (geriye-donuk uyumlu) `[HATA]` degraded formatina duser.
+        Butun evidence kareleri TEK bir dev payload'a doldurulmaz: `BaseVLM.
+        analyze_evidence_batched` ile `self._config.vlm.batch_size` buyuklugunde
+        kronolojik batch'lere bolunup ayri ayri analiz edilir (batch siniri
+        OLAY SINIRI DEGILDIR). Birden fazla batch olustuysa, batch-yerel
+        olaylar `BaseVLM.reconcile_events` ile TEK bir global olay listesine
+        birlestirilir. Evidence_id dogrulamasi/atanamayan evidence yonetimi
+        `_reconcile_unassigned_evidence` ile yapilir - hicbir evidence
+        SESSIZCE kaybolmaz. Bir batch basarisiz olursa DIGER batch'lerin
+        sonucu KAYBEDILMEZ; TUM batch'ler basarisiz olursa eski (geriye-donuk
+        uyumlu) `[HATA]` degraded formatina duser.
         """
         try:
-            batch_responses = self._vlm.describe_events_batched(
-                clusters, prompt=user_prompt, batch_size=self._config.vlm.batch_size
+            batch_responses = self._vlm.analyze_evidence_batched(
+                evidence_frames, prompt=user_prompt, batch_size=self._config.vlm.batch_size
             )
         except Exception as exc:  # noqa: BLE001 - beklenmedik/toplu hata da degraded rapora tasinir
             logger.exception("VLM batch dagitimi basarisiz; degraded raporla devam ediliyor.")
             return VLMResponse(
                 description=f"[HATA] VLM analizi yapilamadi ({exc}). Manuel inceleme gerekli.",
                 model_name=getattr(self._vlm, "model_name", "unknown"),
-                frame_count=len(clusters),
+                frame_count=len(evidence_frames),
                 latency_ms=0.0,
                 structured_events=[],
                 status="failed",
             )
-        return _aggregate_vlm_responses(batch_responses, clusters, fallback_model_name=getattr(self._vlm, "model_name", "unknown"))
 
-    def stage_events(self, vlm_response: VLMResponse, clusters: List[EventCluster]):
+        if not batch_responses:
+            return VLMResponse(
+                description="[HATA] VLM analizi yapilamadi (evidence yok). Manuel inceleme gerekli.",
+                model_name=getattr(self._vlm, "model_name", "unknown"),
+                frame_count=0,
+                latency_ms=0.0,
+                structured_events=[],
+                status="failed",
+            )
+
+        succeeded = [r for r in batch_responses if r.status != "failed"]
+        if not succeeded:
+            failed_ids = [eid for r in batch_responses for eid in r.evidence_ids]
+            return VLMResponse(
+                description=f"[HATA] VLM analizi yapilamadi (evidence {failed_ids}). Manuel inceleme gerekli.",
+                model_name=batch_responses[0].model_name,
+                frame_count=sum(r.frame_count for r in batch_responses),
+                latency_ms=sum(r.latency_ms for r in batch_responses),
+                structured_events=[],
+                status="failed",
+                evidence_ids=failed_ids,
+            )
+
+        if len(batch_responses) == 1:
+            final = succeeded[0]
+        else:
+            try:
+                final = self._vlm.reconcile_events(batch_responses, prompt=user_prompt)
+            except Exception:  # noqa: BLE001 - reconciliation basarisiz olsa da evidence kaybolmaz
+                logger.exception(
+                    "VLM reconciliation basarisiz; batch-yerel olaylar on-ekli sekilde (degrade) birlestiriliyor."
+                )
+                final = _naive_concat_batches(batch_responses)
+
+        failed_ids = [eid for r in batch_responses if r.status == "failed" for eid in r.evidence_ids]
+        final.status = "completed" if not failed_ids else "partial_failure"
+        if failed_ids:
+            final.description = (
+                f"{final.description}\n\n[UYARI] Evidence {failed_ids} icin VLM analizi basarisiz oldu "
+                "(analysis_failed); bu kareler icin otomatik degerlendirme YAPILAMADI, manuel inceleme onerilir."
+            )
+        final.structured_events = _reconcile_unassigned_evidence(final.structured_events, evidence_frames, batch_responses)
+        final.evidence_ids = [ef.evidence_id for ef in evidence_frames]
+        return final
+
+    def stage_events(self, vlm_response: VLMResponse, evidence_frames: List[EvidenceFrame]):
         """07: EventEngine -> buffer/budama -> TemporalReasoner -> RuleEngine.
 
         Returns:
             `(detected_events, temporal_events, rule_matches, latest_timestamp)`.
             `temporal_events`/`rule_matches`, cagrilar arasi kalici buffer uzerinden hesaplanir.
         """
-        onset_timestamp = clusters[0].start_time if clusters else 0.0
-        latest_timestamp = clusters[-1].end_time if clusters else 0.0
+        onset_timestamp = evidence_frames[0].timestamp_sec if evidence_frames else 0.0
         engine_input = EventEngineInput.from_vlm_response(vlm_response, timestamp=onset_timestamp)
         detected_events = self._event_engine.detect(engine_input)
         self._event_history_buffer.extend(detected_events)
+
+        # VLM'in kendi ata gidigi olay zaman damgalari (start_time/end_time)
+        # artik video'nun SON evidence karesiyle AYNI olmak zorunda degildir
+        # (bir olay video ortasinda bitebilir). "Bu cagrinin" en yeni zaman
+        # damgasi, hem evidence karelerinin hem de tespit edilen olaylarin
+        # gercek uctan (end_timestamp/timestamp) MAKSIMUMUdur; boylece
+        # `_select_current_call_events`in tolerans karsilastirmasi dogru
+        # calisir (bkz. asagida) ve budama penceresi hicbir olayi erken kesmez.
+        latest_timestamp = evidence_frames[-1].timestamp_sec if evidence_frames else 0.0
+        if detected_events:
+            latest_timestamp = max(
+                latest_timestamp,
+                max(
+                    (d.end_timestamp if d.end_timestamp is not None else d.timestamp)
+                    for d in detected_events
+                ),
+            )
         _prune_stale_events(self._event_history_buffer, latest_timestamp, self._event_buffer_retention_sec)
 
         temporal_events = self._temporal_reasoner.reason(list(self._event_history_buffer))
@@ -842,7 +969,7 @@ class SafirPipeline:
         *,
         video_source: str,
         sampler,
-        clusters: List[EventCluster],
+        evidence_frames: List[EvidenceFrame],
         vlm_response: VLMResponse,
         context,
         decision,
@@ -865,8 +992,9 @@ class SafirPipeline:
             "Event Gecmisi: %d StructuredEvent kaydedildi (ids=%s)", len(recorded_event_ids), recorded_event_ids
         )
         event_id = recorded_event_ids[0] if recorded_event_ids else None
+        onset_timestamp = evidence_frames[0].timestamp_sec if evidence_frames else 0.0
         timeline = self._event_store.get_timeline(
-            start_ts=clusters[0].start_time, end_ts=latest_timestamp, video_source=video_source
+            start_ts=onset_timestamp, end_ts=latest_timestamp, video_source=video_source
         )
 
         return SafirReport(
@@ -880,7 +1008,8 @@ class SafirPipeline:
             risk_status=decision.risk_status,
             recommended_action=decision.recommended_action,
             actions=decision.actions,
-            onset_timestamp_str=getattr(decision, "onset_timestamp", None) or (f"{int(clusters[0].start_time//60):02d}:{int(clusters[0].start_time%60):02d}" if clusters else None),
+            onset_timestamp_str=getattr(decision, "onset_timestamp", None)
+            or (f"{int(onset_timestamp // 60):02d}:{int(onset_timestamp % 60):02d}" if evidence_frames else None),
             safe_timestamps=getattr(decision, "safe_timestamps", []),
             incident_timestamps=getattr(decision, "incident_timestamps", []),
             escalation_tier=escalation.tier.value,
@@ -890,18 +1019,7 @@ class SafirPipeline:
             timeline=[
                 TimelineEntry(timestamp=e["timestamp"], description=e["description"]) for e in timeline
             ],
-            evidence_frames=[
-                EvidenceFrameOut(
-                    event_id=cluster.event_id,
-                    timestamp_sec=cluster.peak_frame.timestamp_sec,
-                    timestamp_str=cluster.peak_frame.timestamp_str,
-                    change_score=cluster.peak_frame.change_score,
-                    base64_image=cluster.peak_frame.base64_image,
-                    saved_path=cluster.peak_frame.saved_path,
-                    is_fallback=cluster.peak_frame.is_fallback,
-                )
-                for cluster in clusters
-            ],
+            evidence_frames=_select_report_evidence_frames(vlm_response, evidence_frames),
             relevant_regulations=context.relevant_regulations,
             sampler_stats=(
                 SamplerStats(
@@ -1045,15 +1163,16 @@ def get_conversation_store() -> ConversationStore:
     return _conversation_store
 
 
-# History icin kalici representative-frame depolamasi: yalnizca VLM'e fiilen
-# gonderilen kareler (cluster basina FrameSelector ciktisi, `cluster.
-# representative_frames`), TUM evidence frame'ler DEGIL. `data/` altinda, projenin mevcut kalici veri
-# dizin desenine (analyses.db/events.db) uygun bir alt klasor.
+# History icin kalici evidence-frame depolamasi: VLM'e fiilen gonderilen
+# TUM evidence kareleri (artik "representative" alt kumesi YOK - kumeleme
+# VLM katmaninda yapiliyor, sampler evidence esigini gecen HER kareyi
+# gonderiyor). `data/` altinda, projenin mevcut kalici veri dizin desenine
+# (analyses.db/events.db) uygun bir alt klasor.
 _HISTORY_FRAMES_DIR = "history_frames"
 
 
 def _history_frame_path(job_id: str, frame_id: str) -> Path:
-    """Bir HISTORY representative-frame'inin diskteki yolunu dondurur (dosya var olmayabilir)."""
+    """Bir HISTORY evidence-frame'inin diskteki yolunu dondurur (dosya var olmayabilir)."""
     return Path(_DATA_DIR) / _HISTORY_FRAMES_DIR / job_id / f"{frame_id}.jpg"
 
 
@@ -1074,15 +1193,16 @@ def _conversation_file_path(conversation_id: str, document_id: str, file_ext: st
 def _persist_representative_frames_best_effort(
     job_id: str, trace_events: List[Dict[str, Any]], frames: Dict[str, bytes]
 ) -> None:
-    """VLM'e fiilen gonderilen representative frame'leri (yalnizca onlari) History icin diske yazar.
+    """VLM'e fiilen gonderilen evidence karelerinin TAMAMINI History icin diske yazar.
 
     `frames`, `_run_job` sirasinda `_on_frames` ile zaten doldurulmus, JPEG
     baytlarini tasiyan ayni sozluktur; burada yeniden kodlama/yeniden isleme
-    YOKTUR — hangi anahtarlarin representative frame'e ait oldugu, ayni
-    calismada zaten uretilmis `trace_events`in `sampler` asamasindaki
-    `event_groups[].representative_frames[].frame_id` listesinden (bkz.
-    `trace_serializer.serialize_sampler`) okunur; diger tum evidence frame
-    anahtarlari (`ev...`) yoksayilir.
+    YOKTUR — hangi anahtarlarin persist edilecegi, ayni calismada zaten
+    uretilmis `trace_events`in `sampler` asamasindaki `evidence_frames[].
+    frame_id` listesinden (bkz. `trace_serializer.serialize_sampler`) okunur.
+    Kumeleme artik VLM katmaninda yapildigindan, "yalnizca temsili kareler"
+    alt kumesi YOKTUR - esik-gecmis TUM evidence kareleri VLM'e gonderildigi
+    icin hepsi burada da persist edilir.
 
     Best-effort: herhangi bir hata yalnizca loglanir; analiz sonucunu ASLA
     etkilemez (bu fonksiyon hicbir zaman disari exception firlatmaz).
@@ -1097,9 +1217,7 @@ def _persist_representative_frames_best_effort(
         if sampler_event is None:
             return
         rep_frame_ids = {
-            rf["frame_id"]
-            for eg in sampler_event.get("data", {}).get("event_groups", [])
-            for rf in eg.get("representative_frames", [])
+            ef["frame_id"] for ef in sampler_event.get("data", {}).get("evidence_frames", [])
         }
         if not rep_frame_ids:
             return
@@ -2065,12 +2183,12 @@ class SystemOverviewResponse(BaseModel):
 
 
 def _count_persisted_representative_frames(trace_json: Optional[str], job_id: str) -> int:
-    """Bir analizin trace'inde referans verilen representative frame'lerden DISKTE GERCEKTEN var olanlari sayar.
+    """Bir analizin trace'inde referans verilen evidence frame'lerden DISKTE GERCEKTEN var olanlari sayar.
 
     `_persist_representative_frames_best_effort` ile ayni frame_id kaynagini
-    (sampler asamasi `event_groups[].representative_frames[]`) kullanir;
-    diskte bulunmayan (best-effort yazma basarisiz olmus) kareler sayilmaz —
-    boylece bu sayim HER ZAMAN gercekten erisebilecek kare sayisini yansitir.
+    (sampler asamasi `evidence_frames[]`) kullanir; diskte bulunmayan
+    (best-effort yazma basarisiz olmus) kareler sayilmaz — boylece bu sayim
+    HER ZAMAN gercekten erisebilecek kare sayisini yansitir.
     """
     if not trace_json:
         return 0
@@ -2082,11 +2200,10 @@ def _count_persisted_representative_frames(trace_json: Optional[str], job_id: st
     if sampler_event is None:
         return 0
     count = 0
-    for eg in sampler_event.get("data", {}).get("event_groups", []):
-        for rf in eg.get("representative_frames", []):
-            frame_id = rf.get("frame_id")
-            if frame_id and _history_frame_path(job_id, frame_id).is_file():
-                count += 1
+    for ef in sampler_event.get("data", {}).get("evidence_frames", []):
+        frame_id = ef.get("frame_id")
+        if frame_id and _history_frame_path(job_id, frame_id).is_file():
+            count += 1
     return count
 
 
