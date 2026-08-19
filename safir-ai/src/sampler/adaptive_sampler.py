@@ -14,6 +14,17 @@ limiti, temporal voting/clustering/deduplication veya liste kesme nedeniyle
 bir kare burada elenmez. Kumeleme + olay analizi artik VLM katmaninda
 yapilir (bkz. `src/vlm/base_vlm.py::BaseVLM.analyze_evidence_batched` +
 `reconcile_events`).
+
+ONEMLI (zamansal kapsama / temporal coverage): Esik tabanli secim, uzun bir
+sessiz araliktaki (ör. 00:15 -> 01:45) esik-alti kareleri DOGASI GEREGI hic
+evidence yapmaz; bu, gercek bir olayin tamamen kacirilmasina yol acabilir.
+Bunu onlemek icin `process_video()`, son evidence karesinden bu yana gecen
+sure `max_temporal_gap_sec`i asarsa, o pencerede degerlendirilen esik-alti
+adaylar arasindan `net_change_score`'u EN YUKSEK olani (rastgele veya sabit
+periyodik bir kare DEGIL) `selection_reason="temporal_coverage"` ile
+evidence listesine ekler. Bu bir OLAY KUMELEMESI DEGILDIR ve pre/peak/post
+gibi bir konumsal rol getirmez - yalnizca "bu kare neden secildi" bilgisini
+tasiyan bir metadata alanidir (bkz. `EvidenceFrame.selection_reason`).
 """
 
 from __future__ import annotations
@@ -30,6 +41,10 @@ import cv2
 import numpy as np
 
 from src.sampler.schema import EvidenceFrame
+
+_SELECTION_REASON_THRESHOLD = "threshold_exceeded"
+_SELECTION_REASON_COVERAGE = "temporal_coverage"
+_SELECTION_REASON_FALLBACK = "fallback"
 
 if TYPE_CHECKING:
     # Yalnizca tip ipucu icin gereklidir (bkz. `sampler_from_config`); modul
@@ -59,6 +74,19 @@ class SamplerRunStats:
     elapsed_sec: float
 
 
+@dataclass
+class _PendingCoverageCandidate:
+    """Zamansal kapsama penceresi icinde su ana kadar goeruelen EN IYI (en yuksek
+    `net_change_score`'lu) esik-alti aday; pencere kapanana kadar tek bir ornek
+    olarak tutulur (tum pencereyi bellekte biriktirmez)."""
+
+    frame: np.ndarray
+    frame_id: int
+    timestamp_sec: float
+    net_change_score: float
+    motion_bbox: Optional[Tuple[int, int, int, int]]
+
+
 class AdaptiveFrameSampler:
     """OpenCV tabanli, CPU uzerinde ultra hizli calisan Uyarlanabilir Kare Ornekleyici.
 
@@ -75,6 +103,7 @@ class AdaptiveFrameSampler:
         evidence_output_dir: str = _DEFAULT_EVIDENCE_OUTPUT_DIR,
         temporal_vote_window: int = 1,
         temporal_vote_min_count: int = 1,
+        max_temporal_gap_sec: float = 15.0,
     ) -> None:
         """AdaptiveFrameSampler'i esik parametreleriyle baslatir.
 
@@ -108,11 +137,20 @@ class AdaptiveFrameSampler:
                 minimum "supheli" (esigi gecen) karar sayisi. Varsayilan `1`
                 ile tek bir supheli karar yeterlidir; bu da mevcut davranisla
                 BIREBIR AYNIDIR.
+            max_temporal_gap_sec: Son evidence karesinden (esik-gecen VEYA
+                coverage) bu yana izin verilen azami sessizlik suresi
+                (saniye). Bu sure asilirsa, o ana kadar degerlendirilen
+                esik-alti adaylar arasindan `net_change_score`'u en yuksek
+                olan kare `selection_reason="temporal_coverage"` ile
+                evidence listesine eklenir (bkz. modul docstring'i). Bu bir
+                OLAY KUMELEMESI DEGILDIR; yalnizca uzun zamansal kor
+                noktalari onleyen bir guvenlik agidir.
 
         Raises:
             ValueError: `temporal_vote_window` veya `temporal_vote_min_count`
-                1'den kucukse, ya da `temporal_vote_min_count`,
-                `temporal_vote_window`den buyukse.
+                1'den kucukse, `temporal_vote_min_count`,
+                `temporal_vote_window`den buyukse, ya da
+                `max_temporal_gap_sec` 0'dan kucuk/esitse.
         """
         if temporal_vote_window < 1:
             raise ValueError(
@@ -127,6 +165,10 @@ class AdaptiveFrameSampler:
                 f"temporal_vote_min_count ({temporal_vote_min_count}) "
                 f"temporal_vote_window'dan ({temporal_vote_window}) buyuk olamaz."
             )
+        if max_temporal_gap_sec <= 0:
+            raise ValueError(
+                f"max_temporal_gap_sec 0'dan buyuk olmalidir, verilen: {max_temporal_gap_sec}"
+            )
 
         self.min_change_threshold = min_change_threshold
         self.blur_kernel_size = blur_kernel_size
@@ -134,6 +176,7 @@ class AdaptiveFrameSampler:
         self.evidence_output_dir = Path(evidence_output_dir)
         self.temporal_vote_window = temporal_vote_window
         self.temporal_vote_min_count = temporal_vote_min_count
+        self.max_temporal_gap_sec = max_temporal_gap_sec
 
         self.prev_gray: np.ndarray | None = None
         self.noise_floor_history: List[float] = []
@@ -223,6 +266,13 @@ class AdaptiveFrameSampler:
         kodlanir (bkz. `_encode_frame_jpeg`); VLM katmani ayni baytlari
         yeniden kullanir (bkz. `src/sampler/payload_builder.py`).
 
+        Ayrica, son evidence karesinden (esik-gecen VEYA coverage) bu yana
+        `max_temporal_gap_sec` asilirsa, o pencerede degerlendirilen
+        esik-alti adaylar arasindan `net_change_score`'u EN YUKSEK olan kare
+        `selection_reason="temporal_coverage"` ile evidence listesine
+        eklenir (bkz. modul docstring'i, `_PendingCoverageCandidate`); bu
+        kumeleme degildir, yalnizca zamansal kor noktalari onler.
+
         Args:
             video_path: `.mp4` dosya yolu veya RTSP URI'si.
             sample_fps: Videonun kac saniyede bir kare kontrol edilecegini
@@ -253,6 +303,15 @@ class AdaptiveFrameSampler:
         first_frame_raw: Optional[np.ndarray] = None
         first_frame_timestamp: float = 0.0
 
+        # Zamansal kapsama durumu: `last_evidence_timestamp`, gap sayacinin
+        # baslangic referansidir (video basindan itibaren izlenir, boylece
+        # video BASLARKEN gecen sessiz sure de kapsama tetigine dahildir).
+        # `pending_best`, mevcut pencerede su ana kadar goeruelen EN IYI
+        # esik-alti adaydir (TUM pencere bellekte tutulmaz, yalnizca bu tek
+        # ornek - bkz. `_PendingCoverageCandidate`).
+        last_evidence_timestamp: Optional[float] = None
+        pending_best: Optional[_PendingCoverageCandidate] = None
+
         try:
             while cap.isOpened():
                 ret, frame = cap.read()
@@ -270,6 +329,7 @@ class AdaptiveFrameSampler:
                 if first_frame_raw is None:
                     first_frame_raw = frame.copy()
                     first_frame_timestamp = timestamp_sec
+                    last_evidence_timestamp = timestamp_sec
 
                 if self.prev_gray is not None:
                     frame_diff = cv2.absdiff(curr_gray, self.prev_gray)
@@ -296,14 +356,89 @@ class AdaptiveFrameSampler:
                         motion_bbox = self._bbox_from_mask(thresh)
                         evidence_frames.append(
                             self._build_evidence_frame(
-                                frame, frame_id, timestamp_sec, net_change_score, motion_bbox
+                                frame,
+                                frame_id,
+                                timestamp_sec,
+                                net_change_score,
+                                motion_bbox,
+                                selection_reason=_SELECTION_REASON_THRESHOLD,
                             )
                         )
+                        # Esik-gecen bir kare eklendiginde gap sayaci ve pencere
+                        # sifirlanir: bu kare zaten o anki en guncel "gorulme"dir.
+                        last_evidence_timestamp = timestamp_sec
+                        pending_best = None
+                    else:
+                        # Esik-alti aday: zamansal kapsama penceresinin bir
+                        # parcasi olarak degerlendirilir (kumeleme DEGIL -
+                        # yalnizca "bu pencerede en yuksek skorlu kare hangisi"
+                        # sorusuna cevap arar). Esitlikte (ör. tamamen durgun
+                        # bir sahnede tum adaylar net_change_score=0.0) EN
+                        # GUNCEL aday kazanir (`>=`); aksi halde pending_best
+                        # pencerenin basindaki eski bir karede "sikisip kalir"
+                        # ve coverage karesinin zaman damgasi asiri geriye
+                        # sarkar - bu da bir sonraki pencerede gap sayacinin
+                        # hemen tekrar dolup ARKA ARKAYA, gereksiz bir ikinci
+                        # coverage karesi uretmesine yol acar (duplicate-benzeri
+                        # yigilma). Guncel-aday tercihi bunu engeller ve
+                        # coverage karelerini gercekten `max_temporal_gap_sec`
+                        # araliklarla, duzgun dagitir.
+                        motion_bbox = self._bbox_from_mask(thresh)
+                        if pending_best is None or net_change_score >= pending_best.net_change_score:
+                            pending_best = _PendingCoverageCandidate(
+                                frame=frame.copy(),
+                                frame_id=frame_id,
+                                timestamp_sec=timestamp_sec,
+                                net_change_score=net_change_score,
+                                motion_bbox=motion_bbox,
+                            )
+
+                        if (
+                            last_evidence_timestamp is not None
+                            and (timestamp_sec - last_evidence_timestamp) >= self.max_temporal_gap_sec
+                        ):
+                            evidence_frames.append(
+                                self._build_evidence_frame(
+                                    pending_best.frame,
+                                    pending_best.frame_id,
+                                    pending_best.timestamp_sec,
+                                    pending_best.net_change_score,
+                                    pending_best.motion_bbox,
+                                    selection_reason=_SELECTION_REASON_COVERAGE,
+                                )
+                            )
+                            # Gap sayaci, TETIKLEYEN ornegin degil, EKLENEN
+                            # coverage karesinin KENDI zaman damgasindan devam
+                            # eder (o kare artik "en son gorulen" evidence'tir).
+                            last_evidence_timestamp = pending_best.timestamp_sec
+                            pending_best = None
 
                 self.prev_gray = curr_gray
                 frame_id += 1
         finally:
             cap.release()
+
+        # Video sonu: pencere kapanmadan (bir sonraki ornek gelmeden) video
+        # bitmis olabilir. Su ana kadarki en iyi aday varsa VE gap zaten
+        # asilmissa, kayipsizlik icin GUVENLI sekilde son bir coverage
+        # karesi olarak eklenir; asilmadiysa (video coverage'i gerektirecek
+        # kadar uzun surmedi) hicbir seye elenmez/hata verilmez - sessizce
+        # birakilir (bu veri kaybi degildir, esik zaten hic gecilmedi).
+        if (
+            pending_best is not None
+            and last_evidence_timestamp is not None
+            and (pending_best.timestamp_sec - last_evidence_timestamp) >= self.max_temporal_gap_sec
+        ):
+            evidence_frames.append(
+                self._build_evidence_frame(
+                    pending_best.frame,
+                    pending_best.frame_id,
+                    pending_best.timestamp_sec,
+                    pending_best.net_change_score,
+                    pending_best.motion_bbox,
+                    selection_reason=_SELECTION_REASON_COVERAGE,
+                )
+            )
 
         if not evidence_frames:
             if first_frame_raw is None:
@@ -314,7 +449,11 @@ class AdaptiveFrameSampler:
                 "varsayilan Kanit Karesi olarak kabul ediliyor (fallback)."
             )
             fallback = self._build_evidence_frame(
-                first_frame_raw, frame_id=0, timestamp_sec=first_frame_timestamp, change_score=0.0
+                first_frame_raw,
+                frame_id=0,
+                timestamp_sec=first_frame_timestamp,
+                change_score=0.0,
+                selection_reason=_SELECTION_REASON_FALLBACK,
             )
             fallback.is_fallback = True
             evidence_frames.append(fallback)
@@ -350,6 +489,7 @@ class AdaptiveFrameSampler:
         timestamp_sec: float,
         change_score: float,
         motion_bbox: Optional[Tuple[int, int, int, int]] = None,
+        selection_reason: str = _SELECTION_REASON_THRESHOLD,
     ) -> EvidenceFrame:
         """Bir kareden `EvidenceFrame` uretir ve JPEG/base64'e cevirir (tek seferlik encode).
 
@@ -360,6 +500,10 @@ class AdaptiveFrameSampler:
             change_score: Hesaplanan (gurultu-tabani-dusulmus) evidence/degisim skoru.
             motion_bbox: Bu kareyi ureten hareket maskesinin sinirlayici kutusu
                 (`_bbox_from_mask`); yoksa (ör. fallback kare) `None`.
+            selection_reason: Bu karenin evidence listesine GIRME NEDENI
+                (`"threshold_exceeded"` | `"temporal_coverage"` |
+                `"fallback"`) - konumsal bir rol DEGILDIR, bkz.
+                `EvidenceFrame.selection_reason`.
 
         Returns:
             `image_bytes`/`base64_image` doldurulmus, `saved_path=None` olan `EvidenceFrame`.
@@ -380,6 +524,7 @@ class AdaptiveFrameSampler:
             image_shape=frame.shape,
             saved_path=None,
             motion_bbox=motion_bbox,
+            selection_reason=selection_reason,
         )
 
 
@@ -412,6 +557,7 @@ def sampler_from_config(
         history_window=config.history_window,
         temporal_vote_window=config.temporal_vote_window,
         temporal_vote_min_count=config.temporal_vote_min_count,
+        max_temporal_gap_sec=config.max_temporal_gap_sec,
     )
 
 

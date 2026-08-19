@@ -14,9 +14,11 @@ evidence karelerinin ayni gercek olaya ait oldugu) VLM katmaninda yapilir
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field
+
+SelectionReason = Literal["threshold_exceeded", "temporal_coverage", "fallback"]
 
 
 class EvidenceFrame(BaseModel):
@@ -26,6 +28,12 @@ class EvidenceFrame(BaseModel):
     limiti, temporal voting/clustering/deduplication veya liste kesme
     nedeniyle evidence esigini gecen bir kare burada elenmez (bkz.
     `AdaptiveFrameSampler.process_video`).
+
+    ONEMLI: `selection_reason` bir pre/peak/post KONUMSAL ROLU DEGILDIR -
+    sadece bu karenin NEDEN evidence listesine girdigini (esik mi gecti,
+    yoksa uzun bir sessiz araligi mi kapatti) aciklayan, olay
+    kumelemesinden bagimsiz bir MEDATADIR. Olay kumelemesi hala tamamen
+    VLM katmaninin sorumlulugundadir.
     """
 
     evidence_id: str = Field(
@@ -41,6 +49,19 @@ class EvidenceFrame(BaseModel):
     image_shape: Tuple[int, int, int] = Field(description="(yukseklik, genislik, kanal) kare boyutu.")
     saved_path: Optional[str] = Field(default=None, description="Karenin diskte kayitli oldugu yol.")
     is_fallback: bool = Field(default=False, description="Esik gecilemedigi icin frame 0 fallback'i mi.")
+    selection_reason: SelectionReason = Field(
+        default="threshold_exceeded",
+        description=(
+            "Bu karenin evidence listesine GIRME NEDENI (pozisyonel bir rol "
+            "DEGILDIR): 'threshold_exceeded' = kare normal esik testini "
+            "gecti; 'temporal_coverage' = son evidence karesinden bu yana "
+            "`max_temporal_gap_sec` asildigi icin, o pencerede degerlendirilen "
+            "esik-alti adaylar arasindan en yuksek `change_score`'a sahip "
+            "olan bu kare zamansal kor noktayi kapatmak icin secildi; "
+            "'fallback' = videoda hicbir kare esigi gecemedi, sistem cokmesin "
+            "diye ilk kare temsilen kullanildi (bkz. `is_fallback`)."
+        ),
+    )
     motion_bbox: Optional[Tuple[int, int, int, int]] = Field(
         default=None,
         description=(

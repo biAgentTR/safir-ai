@@ -125,6 +125,7 @@ def serialize_sampler(
                 "timestamp_str": ef.timestamp_str,
                 "change_score": round(ef.change_score, 4),
                 "is_fallback": ef.is_fallback,
+                "selection_reason": ef.selection_reason,
                 "motion_bbox": _bbox_to_list(ef.motion_bbox),
                 "thumbnail_url": _add_frame(fid, ef.image_bytes),
             }

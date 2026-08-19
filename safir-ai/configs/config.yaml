@@ -48,6 +48,12 @@ sampler:
   temporal_vote_window: 1            # Zamansal oylama penceresi (kare)
   temporal_vote_min_count: 1         # Bir olayin gecerli sayilmasi icin gereken min oy
 
+  # NOT (zamansal kapsama): Esigi hicbir zaman gecemeyen uzun sessiz
+  # araliklarda (ör. 00:15 -> 01:45) sistemin kor kalmasini onleyen guvenlik
+  # agi. Kumeleme DEGILDIR, pre/peak/post rolu getirmez (bkz.
+  # EvidenceFrame.selection_reason="temporal_coverage").
+  max_temporal_gap_sec: 15.0         # Son evidence karesinden bu yana izin verilen azami sessizlik suresi (saniye)
+
   # --- Geriye donuk uyumluluk / alternatif sampler ince ayarlari ---
   idle_interval_sec: 2.0             # Sakin bolgelerde kare yakalama araligi (saniye/kare)
   active_fps: 5                      # Hareket/degisim anlarinda aktif ornekleme hizi (fps)

@@ -58,6 +58,12 @@ class SamplerConfig(BaseModel):
     sabit bir limit YOKTUR, esik-gecmis TUM kareler VLM'e gonderilir.
     Kumeleme + VLM istek boyutu kontrolu artik `vlm.batch_size` (bkz.
     `VLMConfig`) ve VLM katmaninin kendisi tarafindan yonetilir.
+
+    ONEMLI (zamansal kapsama): `max_temporal_gap_sec`, esigi hicbir zaman
+    gecemeyen uzun sessiz araliklarda (ör. 00:15 -> 01:45 gibi) sistemin
+    kor kalmasini onleyen bir GUVENLIK AGIDIR - kumeleme DEGILDIR ve
+    pre/peak/post gibi bir konumsal rol getirmez (bkz.
+    `AdaptiveFrameSampler.process_video`, `EvidenceFrame.selection_reason`).
     """
 
     min_change_threshold: float
@@ -68,6 +74,15 @@ class SamplerConfig(BaseModel):
     # --- Zamansal oylama ayarlari (bkz. AdaptiveFrameSampler._confirm_candidate) ---
     temporal_vote_window: int = 1
     temporal_vote_min_count: int = 1
+
+    # --- Zamansal kapsama (coverage) ayari ---
+    max_temporal_gap_sec: float = 15.0
+    """Son evidence karesinden (esik-gecen VEYA coverage) bu yana gecen sure
+    bu degeri asarsa, o ana kadar degerlendirilen esik-alti adaylar arasindan
+    `net_change_score`'u en yuksek olan kare `selection_reason=
+    "temporal_coverage"` ile evidence listesine eklenir. Rastgele veya sabit
+    periyodik bir kare DEGILDIR; pencere icindeki en bilgi-degeri yuksek
+    adaydir (bkz. `AdaptiveFrameSampler.process_video`)."""
 
     idle_interval_sec: float
     active_fps: float

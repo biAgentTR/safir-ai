@@ -55,7 +55,8 @@ class VLMPayloadBuilder:
             metadata_text = (
                 f"[evidence_id={ef.evidence_id} | frame_index={ef.frame_id} | "
                 f"zaman={ef.timestamp_str} ({ef.timestamp_sec:.2f}s) | "
-                f"evidence_skoru={ef.change_score:.4f}]"
+                f"evidence_skoru={ef.change_score:.4f} | "
+                f"secim_nedeni={ef.selection_reason}]"
             )
             content.append({"type": "text", "text": metadata_text})
             content.append({"type": "image_url", "image_url": {"url": ef.base64_image}})
@@ -85,6 +86,7 @@ class VLMPayloadBuilder:
                 "frame_index": ef.frame_id,
                 "timestamp_sec": ef.timestamp_sec,
                 "evidence_score": ef.change_score,
+                "selection_reason": ef.selection_reason,
             }
             for ef in evidence_frames
         ]
