@@ -25,7 +25,7 @@ _RETRY_BACKOFF_BASE_SEC = 0.5
 
 @dataclass
 class VLMResponse:
-    """Bir VLM cagrisinin standardize edilmis ciktisi."""
+    """Bir VLM cagrisinin (tek bir istek/batch icin) standardize edilmis ciktisi."""
 
     description: str
     model_name: str
@@ -35,6 +35,16 @@ class VLMResponse:
     """Modelin dogrudan urettigi tipli olaylar (bkz. `EVENTS_JSON` blogu):
     her biri `{"type", "timestamp", "confidence", "evidence"}`. Bos ise
     `EventEngine` anahtar-kelime fallback'ine duser (bkz. `event_engine.detect`)."""
+    status: str = "completed"
+    """Bu VLM cagrisinin durumu: `"completed"` (basarili), `"failed"`
+    (bu batch/olay icin VLM cagrisi basarisiz oldu - description'da
+    `[ANALYSIS_FAILED]` notu bulunur) veya (yalnizca `describe_events_batched`
+    ciktilarini birlestiren `main.py::stage_vlm` tarafindan uretilen AGREGE
+    yanitlarda) `"partial_failure"` (bazi olaylar basarili, bazilari basarisiz).
+    Asla `risk=0`/basarili gibi yorumlanmamalidir - bkz. `describe_events_batched`."""
+    cluster_event_ids: List[int] = field(default_factory=list)
+    """Bu yanitin kapsadigi `EventCluster.event_id` degerleri (bkz.
+    `describe_events_batched`); tek-cagri (eski/agrege) yanitlarda bos olabilir."""
 
 
 # VLM ciktisinin sonundaki makine-okunur olay blogunu yakalar:
@@ -140,6 +150,65 @@ class BaseVLM(ABC):
             RuntimeError: vLLM servisine erisilemezse veya yanit gecersizse.
         """
         raise NotImplementedError
+
+    def describe_events_batched(
+        self, clusters: List[EventCluster], prompt: str, batch_size: int = 1
+    ) -> List[VLMResponse]:
+        """Olay Gruplarini TEK bir dev payload yerine kontrollu batch'ler halinde analiz eder.
+
+        `clusters`, `batch_size` buyuklugunde ardisik gruplara bolunur (varsayilan
+        `1` = HER olay ayri ayri analiz edilir); her batch icin `describe_events`
+        BAGIMSIZ olarak cagrilir. Bir batch'in VLM cagrisi basarisiz olursa
+        (ag hatasi, gecersiz yanit, vb.) o batch icin `status="failed"` ve
+        `[ANALYSIS_FAILED]` ile baslayan bir `VLMResponse` uretilir; ISTISNA
+        DIGER batch'lere YAYILMAZ (bir olayin basarisiz olmasi digerlerinin
+        sonucunu KAYBETMEZ). Basarisiz bir batch asla risk=0/basarili olarak
+        yorumlanmamalidir - cagiran taraf `status`i kontrol etmelidir.
+
+        Args:
+            clusters: Analiz edilecek TUM Olay Gruplari (video geneli).
+            prompt: Kullanici/istem metni (her batch'e aynen iletilir).
+            batch_size: Bir VLM istegine dahil edilecek azami Olay Grubu
+                sayisi. `1` (varsayilan) ile her olay kendi VLM istegini
+                alir (kontrollu payload boyutu/timeout); daha buyuk bir
+                deger, ilgili olaylari TEK istekte gruplar (daha az istek,
+                daha buyuk payload).
+
+        Returns:
+            Girdi `clusters` ile AYNI sirada, her biri kendi `cluster_event_ids`
+            alaniyla hangi olaylari kapsadigini belirten `VLMResponse` listesi.
+            Bos `clusters` icin bos liste doner.
+        """
+        if not clusters:
+            return []
+
+        responses: List[VLMResponse] = []
+        for start in range(0, len(clusters), max(1, batch_size)):
+            batch = clusters[start : start + max(1, batch_size)]
+            batch_event_ids = [c.event_id for c in batch]
+            try:
+                response = self.describe_events(batch, prompt)
+                response.cluster_event_ids = batch_event_ids
+                response.status = "completed"
+            except Exception as exc:  # noqa: BLE001 - izole edilip diger batch'lere yayilmaz
+                logger.exception(
+                    "VLM batch analizi basarisiz (olay(lar)=%s, model=%s); diger batch'ler etkilenmeyecek.",
+                    batch_event_ids,
+                    self.model_name,
+                )
+                response = VLMResponse(
+                    description=(
+                        f"[ANALYSIS_FAILED] Olay(lar) {batch_event_ids} icin VLM analizi basarisiz: {exc}"
+                    ),
+                    model_name=self.model_name,
+                    frame_count=sum(len(c.representative_frames) or 1 for c in batch),
+                    latency_ms=0.0,
+                    structured_events=[],
+                    status="failed",
+                    cluster_event_ids=batch_event_ids,
+                )
+            responses.append(response)
+        return responses
 
     @abstractmethod
     def health_check(self) -> bool:

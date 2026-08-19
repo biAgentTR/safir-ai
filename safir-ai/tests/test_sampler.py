@@ -325,3 +325,141 @@ def test_independent_peak_frame_exporter_module_no_longer_exists() -> None:
     """Eski bagimsiz disk-arsiv kare-secim yolu (PeakFrameExporter) artik mevcut olmamali."""
     with pytest.raises(ModuleNotFoundError):
         __import__("src.sampler.context.peak_frame_exporter")
+
+
+# =============================================================================
+# Guclendirilmis clustering: yalnizca zaman degil, konumsal (bbox IoU) ve
+# transitive-chaining/asiri-uzun-cluster onlemleri de dogrulanir. Testler,
+# gercek video uretmek yerine dogrudan sentetik `EvidenceFrame` listeleri
+# kullanir (yalnizca gercekten var olan sinyaller: timestamp, change_score,
+# motion_bbox); track/nesne kimligi veya risk turu FABRIKE EDILMEZ (mevcut
+# veri modelinde yoktur).
+# =============================================================================
+
+
+def _synthetic_evidence_frame(
+    frame_id: int, timestamp_sec: float, motion_bbox=None, change_score: float = 1.0
+) -> EvidenceFrame:
+    minutes, seconds = divmod(int(timestamp_sec), 60)
+    return EvidenceFrame(
+        frame_id=frame_id,
+        timestamp_sec=timestamp_sec,
+        timestamp_str=f"{minutes:02d}:{seconds:02d}",
+        change_score=change_score,
+        image_bytes=b"\xff\xd8\xff",
+        base64_image=f"data:image/jpeg;base64,F{frame_id}",
+        image_shape=(48, 64, 3),
+        motion_bbox=motion_bbox,
+    )
+
+
+def test_spatially_different_events_not_merged_despite_time_proximity(tmp_path: Path) -> None:
+    """Zaman olarak yakin ama konumsal olarak COK farkli iki olay ayni cluster'a girmemeli."""
+    sampler = AdaptiveFrameSampler(
+        min_event_interval_sec=2.0,
+        cluster_merge_gap_sec=20.0,
+        evidence_output_dir=str(tmp_path / "evidence"),
+    )
+    frames = [
+        _synthetic_evidence_frame(0, 0.0, motion_bbox=(0, 0, 10, 10)),
+        _synthetic_evidence_frame(1, 5.0, motion_bbox=(500, 500, 510, 510)),  # tamamen farkli bolge
+    ]
+    clusters = sampler.cluster_events(frames)
+
+    assert len(clusters) == 2
+
+
+def test_transitive_chaining_does_not_create_mega_cluster(tmp_path: Path) -> None:
+    """A-B ve B-C bbox olarak ortussе bile, A-C ortusmuyorsa A,B,C TEK cluster'a zincirlenmemeli."""
+    sampler = AdaptiveFrameSampler(
+        min_event_interval_sec=2.0,
+        cluster_merge_gap_sec=6.0,
+        bbox_iou_merge_threshold=0.10,
+        max_cluster_duration_sec=120.0,
+        evidence_output_dir=str(tmp_path / "evidence"),
+    )
+    # A: x=[0,10], B: x=[6,16] (A ile ortusur), C: x=[12,22] (B ile ortusur, A ile ORTUSMEZ).
+    frames = [
+        _synthetic_evidence_frame(0, 0.0, motion_bbox=(0, 0, 10, 10)),
+        _synthetic_evidence_frame(1, 5.0, motion_bbox=(6, 0, 16, 10)),
+        _synthetic_evidence_frame(2, 10.0, motion_bbox=(12, 0, 22, 10)),
+    ]
+    clusters = sampler.cluster_events(frames)
+
+    # Eski (yalnizca komsu-kontrollu) mantik A+B+C'yi TEK mega-cluster'da
+    # birlestirirdi; yeni ankor kontrolu C'yi A'nin devami saymamali.
+    assert len(clusters) == 2
+    assert clusters[0].total_candidate_frames == 2  # A + B
+    assert clusters[1].total_candidate_frames == 1  # C ayri
+
+
+def test_max_cluster_duration_splits_overlong_continuous_event(tmp_path: Path) -> None:
+    """Konumsal olarak surekli ayni olay bile, `max_cluster_duration_sec`i asarsa YENI bir cluster'a bolunmeli."""
+    sampler = AdaptiveFrameSampler(
+        min_event_interval_sec=2.0,
+        cluster_merge_gap_sec=10.0,
+        bbox_iou_merge_threshold=0.10,
+        max_cluster_duration_sec=5.0,
+        evidence_output_dir=str(tmp_path / "evidence"),
+    )
+    same_bbox = (0, 0, 10, 10)
+    frames = [
+        _synthetic_evidence_frame(0, 0.0, motion_bbox=same_bbox),
+        _synthetic_evidence_frame(1, 4.0, motion_bbox=same_bbox),
+        _synthetic_evidence_frame(2, 8.0, motion_bbox=same_bbox),
+    ]
+    clusters = sampler.cluster_events(frames)
+
+    # 0.0 -> 4.0 (sure=4.0<=5.0) birlesir; 0.0 -> 8.0 (sure=8.0>5.0) BIRLESMEZ.
+    assert len(clusters) == 2
+    assert clusters[0].total_candidate_frames == 2
+    assert clusters[1].total_candidate_frames == 1
+    # Hicbir kare kaybolmadi: toplam aday kare sayisi girdiyle ayni.
+    assert sum(c.total_candidate_frames for c in clusters) == len(frames)
+
+
+def test_short_evidence_gap_within_same_event_does_not_split_unnecessarily(tmp_path: Path) -> None:
+    """Ayni fiziksel olay icindeki KISA bir evidence kesintisi, olayi gereksiz yere bolmemeli."""
+    sampler = AdaptiveFrameSampler(
+        min_event_interval_sec=1.0,
+        cluster_merge_gap_sec=10.0,
+        bbox_iou_merge_threshold=0.10,
+        evidence_output_dir=str(tmp_path / "evidence"),
+    )
+    same_bbox = (0, 0, 10, 10)
+    frames = [
+        _synthetic_evidence_frame(0, 0.0, motion_bbox=same_bbox),
+        # 3s'lik kisa bir sessiz aralik (min_event_interval_sec'i asar, HAM
+        # grubu boler) ama cluster_merge_gap_sec'in COK altinda kalir ve
+        # bbox AYNI kaliyor -> nihai olay TEK cluster olarak kalmali.
+        _synthetic_evidence_frame(1, 3.0, motion_bbox=same_bbox),
+    ]
+    clusters = sampler.cluster_events(frames)
+
+    assert len(clusters) == 1
+    assert clusters[0].total_candidate_frames == 2
+
+
+# =============================================================================
+# Evidence-esigi disiplini: yalnizca esigi gecmis kareler cluster/secim
+# uyesi olabilir; representative_frames'teki her karenin change_score'u
+# process_video tarafindan uygulanan esigi (min_change_threshold sonrasi
+# net_change_score) yansitmalidir.
+# =============================================================================
+
+
+def test_representative_frames_only_come_from_evidence_threshold_passing_frames(
+    tmp_path: Path, motion_video: str
+) -> None:
+    sampler = AdaptiveFrameSampler(
+        min_change_threshold=0.001, evidence_output_dir=str(tmp_path / "evidence")
+    )
+    frames = sampler.process_video(motion_video, sample_fps=5)
+    evidence_frame_ids = {f.frame_id for f in frames}
+    clusters = sampler.cluster_events(frames)
+
+    for cluster in clusters:
+        for rf in cluster.representative_frames:
+            # Her secilen kare, process_video'nun urettigi (esigi gecmis)
+            # Kanit Kareleri kumesinden gelmis olmali.
+            assert rf.frame_id in evidence_frame_ids

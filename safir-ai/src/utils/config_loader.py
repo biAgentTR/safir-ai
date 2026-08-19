@@ -69,6 +69,11 @@ class SamplerConfig(BaseModel):
     # tanimlanmalari zorunlu degildir (verilmezse bu varsayilanlar kullanilir).
     cluster_merge_gap_sec: float = 20.0
     bbox_iou_merge_threshold: float = 0.10
+    max_cluster_duration_sec: float = 120.0
+    """Bir nihai Olay Grubunun (EventCluster) izin verilen azami toplam suresi
+    (saniye). Asiri uzun/mega cluster olusumunu (transitive chaining ile
+    birlikte) sinirlar; hicbir Kanit Karesi bu nedenle silinmez, yalnizca
+    ayri Olay Gruplarina bolusturulur (bkz. AdaptiveFrameSampler.cluster_events)."""
     temporal_vote_window: int = 1
     temporal_vote_min_count: int = 1
 
@@ -154,6 +159,11 @@ class VLMConfig(BaseModel):
 
     active_model: str
     models: Dict[str, VLLMEndpointConfig]
+    batch_size: int = 1
+    """`SafirPipeline.stage_vlm` icinde bir VLM istegine dahil edilecek azami
+    Olay Grubu sayisi (bkz. `BaseVLM.describe_events_batched`). Varsayilan `1`:
+    tum olaylar TEK dev payload'a doldurulmaz, her olay kendi bagimsiz VLM
+    istegini alir; bir olayin basarisiz olmasi digerlerini etkilemez."""
 
     def active_endpoint(self) -> VLLMEndpointConfig:
         """Config icinde secilen aktif VLM'in baglanti bilgisini dondurur."""

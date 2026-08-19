@@ -45,10 +45,19 @@ class RepresentativeFrame(BaseModel):
     diske yazilan/kullaniciya gosterilen kare HER ZAMAN ayni kaynaktan gelir.
     """
 
-    label: str = Field(description="Karenin olay icindeki rolu: 'peak' (zirve) veya 'context' (baglam).")
+    label: str = Field(
+        description="Karenin olay icindeki rolu: 'peak' (zirve), 'pre_context' (zirve oncesi baglam) "
+        "veya 'post_context' (zirve sonrasi baglam)."
+    )
     frame_id: int = Field(description="Kaynak `EvidenceFrame.frame_id` (kimlik tutarliligi icin).")
+    event_id: int = Field(description="Bu karenin ait oldugu `EventCluster.event_id`.")
     timestamp_sec: float = Field(description="Karenin saniye cinsinden zaman damgasi.")
     timestamp_str: str = Field(description="`MM:SS` formatinda okunabilir zaman damgasi.")
+    change_score: float = Field(description="Kaynak `EvidenceFrame.change_score` (Evidence/risk skoru).")
+    selection_reason: str = Field(
+        description="Bu karenin neden secildigini aciklayan kisa, insan-okur gerekce "
+        "(orn. 'en yuksek evidence skoru (zirve)', 'zirve oncesi baglam (esit dagitilmis)')."
+    )
     base64_image: str = Field(description="`data:image/jpeg;base64,...` formatinda goruntu.")
 
 

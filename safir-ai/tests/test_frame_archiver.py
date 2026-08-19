@@ -34,10 +34,13 @@ def _cluster_with_representative_frames(event_id: int, count: int) -> EventClust
     peak = _evidence_frame(0, 0.0)
     reps = [
         RepresentativeFrame(
-            label="peak" if i == 0 else "context",
+            label="peak" if i == 0 else "pre_context",
             frame_id=i,
+            event_id=event_id,
             timestamp_sec=float(i),
             timestamp_str=f"00:0{i}",
+            change_score=float(count - i),
+            selection_reason="test",
             base64_image="data:image/jpeg;base64," + base64.b64encode(b"fake-jpeg-bytes").decode("utf-8"),
         )
         for i in range(count)
@@ -75,6 +78,11 @@ def test_export_metadata_frame_ids_match_representative_frames(tmp_path: Path) -
     vlm_frame_ids = {rf.frame_id for rf in cluster.representative_frames}
     assert written_frame_ids == vlm_frame_ids
     assert metadata["selected_frame_count"] == len(cluster.representative_frames)
+
+    for f in metadata["frames"]:
+        assert f["event_id"] == 2
+        assert "change_score" in f
+        assert "selection_reason" in f
 
 
 def test_export_does_not_perform_independent_selection(tmp_path: Path) -> None:

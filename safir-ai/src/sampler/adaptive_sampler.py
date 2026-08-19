@@ -81,6 +81,7 @@ class AdaptiveFrameSampler:
         evidence_output_dir: str = _DEFAULT_EVIDENCE_OUTPUT_DIR,
         cluster_merge_gap_sec: float = 20.0,
         bbox_iou_merge_threshold: float = 0.10,
+        max_cluster_duration_sec: float = 120.0,
         temporal_vote_window: int = 1,
         temporal_vote_min_count: int = 1,
     ) -> None:
@@ -130,7 +131,22 @@ class AdaptiveFrameSampler:
                 bagimsizdir (yalnizca hareket bolgesinin piksel-uzayindaki
                 konumuna bakar). `motion_bbox` mevcut degilse (ör. fallback
                 kare, bos hareket maskesi) TEMKINLI davranilir: birlestirme
-                yapilmaz.
+                yapilmaz. Birlestirme kararinda YALNIZCA komsu siniri DEGIL,
+                mevcut nihai grubun ILK karesiyle olan konumsal sureklilik de
+                ayrica kontrol edilir (bkz. `cluster_events` icindeki
+                "transitive chaining" onlemi): bu, A-B-C gibi ardisik
+                birlestirmelerin, her adim komsusuyla benzer gorunse bile
+                zamanla tamamen farkli bir bolgeye "kaymasini" (mega-cluster
+                olusumunu) engeller.
+            max_cluster_duration_sec: Bir nihai Olay Grubunun (`EventCluster`)
+                izin verilen azami toplam suresi (saniye), ilk kareden son
+                karenin zaman damgasina kadar. Bu sinira ulasan bir
+                birlestirme reddedilir (aday grup, birlesmek yerine YENI bir
+                nihai grup baslatir); hicbir Kanit Karesi bu nedenle
+                SILINMEZ, yalnizca farkli/daha kucuk Olay Gruplarina
+                bolusturulur. Amaci: gercekte tek fiziksel olay olmayan ama
+                zaman/konum kriterlerini zincirleme (transitive chaining)
+                gecerek birlesen kareleri makul bir sure ile sinirlamak.
             temporal_vote_window: Bir karenin candidate olarak onaylanip
                 onaylanmayacagina karar verirken dikkate alinan, o anki karar
                 dahil, en son kac esik-testi sonucunun tutulacagi (temporal
@@ -153,8 +169,8 @@ class AdaptiveFrameSampler:
 
         Raises:
             ValueError: `temporal_vote_window` veya `temporal_vote_min_count`
-                1'den kucukse, ya da `temporal_vote_min_count`,
-                `temporal_vote_window`den buyukse.
+                1'den kucukse, `temporal_vote_min_count` `temporal_vote_window`den
+                buyukse, ya da `max_cluster_duration_sec` 0'dan kucuk/esitse.
         """
         if temporal_vote_window < 1:
             raise ValueError(
@@ -169,6 +185,10 @@ class AdaptiveFrameSampler:
                 f"temporal_vote_min_count ({temporal_vote_min_count}) "
                 f"temporal_vote_window'dan ({temporal_vote_window}) buyuk olamaz."
             )
+        if max_cluster_duration_sec <= 0:
+            raise ValueError(
+                f"max_cluster_duration_sec pozitif olmalidir, verilen: {max_cluster_duration_sec}"
+            )
 
         self.min_change_threshold = min_change_threshold
         self.blur_kernel_size = blur_kernel_size
@@ -177,6 +197,7 @@ class AdaptiveFrameSampler:
         self.evidence_output_dir = Path(evidence_output_dir)
         self.cluster_merge_gap_sec = cluster_merge_gap_sec
         self.bbox_iou_merge_threshold = bbox_iou_merge_threshold
+        self.max_cluster_duration_sec = max_cluster_duration_sec
         self.temporal_vote_window = temporal_vote_window
         self.temporal_vote_min_count = temporal_vote_min_count
 
@@ -550,18 +571,37 @@ class AdaptiveFrameSampler:
                 current_group = [ef]
         raw_groups.append(current_group)
 
-        # 2) BIRLESTIRME: komsu ham gruplari, YALNIZCA hem zaman bosluğu
-        # `cluster_merge_gap_sec`i asmiyorsa HEM DE sinir kareleri konumsal
-        # olarak ayni fiziksel olayin devami sayilacak kadar benzerse
-        # (bkz. `_is_same_physical_event`) tek nihai grupta topla.
+        # 2) BIRLESTIRME: komsu ham gruplari, YALNIZCA UCU DE saglanirsa tek
+        # nihai grupta topla:
+        #   (a) aralarindaki zaman bosluğu `cluster_merge_gap_sec`i asmiyor,
+        #   (b) sinir kareleri (onceki grubun SON karesi <-> aday grubun ILK
+        #       karesi) konumsal olarak ayni fiziksel olayin devami sayilacak
+        #       kadar benzer (`_is_same_physical_event`),
+        #   (c) aday grubun ILK karesi, nihai grubun kendi ILK karesiyle de
+        #       (yalnizca en son eklenen komsuyla DEGIL) konumsal sureklilik
+        #       gosteriyor - bu, "transitive chaining" onlemidir: her adim
+        #       yalnizca komsusuyla benzer olsa bile, A->B->C->D zinciri
+        #       zamanla tamamen farkli bir bolgeye kayabilir (mega-cluster).
+        #       Sabit bir ANKOR (nihai grubun ilk karesi) ile karsilastirmak
+        #       bu kaymayi sinirlar,
+        #   (d) birlestirme sonrasi toplam sure `max_cluster_duration_sec`i
+        #       ASMIYOR (asiri uzun/mega cluster onlemi). Hicbir Kanit Karesi
+        #       bu kontroller nedeniyle SILINMEZ; yalnizca birlestirilmeyip
+        #       AYRI bir nihai gruba (event'e) aktarilir.
         merged_groups: List[List[EvidenceFrame]] = [raw_groups[0]]
         merge_count = 0
         for group in raw_groups[1:]:
             previous_group = merged_groups[-1]
+            cluster_anchor = previous_group[0]
             gap = group[0].timestamp_sec - previous_group[-1].timestamp_sec
-            if gap <= self.cluster_merge_gap_sec and self._is_same_physical_event(
-                previous_group[-1], group[0]
-            ):
+            candidate_duration = group[-1].timestamp_sec - cluster_anchor.timestamp_sec
+            can_merge = (
+                gap <= self.cluster_merge_gap_sec
+                and self._is_same_physical_event(previous_group[-1], group[0])
+                and self._is_same_physical_event(cluster_anchor, group[0])
+                and candidate_duration <= self.max_cluster_duration_sec
+            )
+            if can_merge:
                 previous_group.extend(group)
                 merge_count += 1
             else:
@@ -638,7 +678,7 @@ class AdaptiveFrameSampler:
         peak.saved_path = self._persist_frame(peak.frame_id, peak.timestamp_str, peak.image_bytes)
         start_time = group[0].timestamp_sec
         end_time = group[-1].timestamp_sec
-        representative_frames = FrameSelector.select(peak, group)
+        representative_frames = FrameSelector.select(peak, group, event_id=event_id)
         return EventCluster(
             event_id=event_id,
             start_time=start_time,
@@ -700,6 +740,7 @@ def sampler_from_config(
         min_event_interval_sec=config.min_event_interval_sec,
         cluster_merge_gap_sec=config.cluster_merge_gap_sec,
         bbox_iou_merge_threshold=config.bbox_iou_merge_threshold,
+        max_cluster_duration_sec=config.max_cluster_duration_sec,
         temporal_vote_window=config.temporal_vote_window,
         temporal_vote_min_count=config.temporal_vote_min_count,
     )

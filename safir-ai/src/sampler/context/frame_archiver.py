@@ -77,8 +77,11 @@ class FrameArchiver:
                     "filename": filename,
                     "label": rf.label,
                     "frame_id": rf.frame_id,
+                    "event_id": rf.event_id,
                     "timestamp_sec": rf.timestamp_sec,
                     "timestamp_str": rf.timestamp_str,
+                    "change_score": rf.change_score,
+                    "selection_reason": rf.selection_reason,
                 }
             )
 

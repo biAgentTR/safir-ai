@@ -459,6 +459,96 @@ class ConversationContextCreateRequest(BaseModel):
     label: Optional[str] = Field(default=None, max_length=_MAX_CONTEXT_LABEL_LEN)
 
 
+def _aggregate_vlm_responses(
+    batch_responses: List[VLMResponse], clusters: List[EventCluster], fallback_model_name: str
+) -> VLMResponse:
+    """Olay-bazli VLM batch yanitlarini, geri kalan pipeline (`stage_events`/rapor) ile
+    geriye-donuk uyumlu TEK bir `VLMResponse`ye birlestirir.
+
+    `BaseVLM.describe_events_batched` her Olay Grubu (veya `batch_size`e gore
+    grup) icin BAGIMSIZ bir `VLMResponse` uretir; bu fonksiyon onlari
+    asagidaki kurallara gore birlestirir:
+
+    - TUM batch'ler basarisizsa: eski, testlerle uyumlu `[HATA] VLM analizi
+      yapilamadi (...)` degraded formatina AYNEN duser (`status="failed"`).
+    - BAZI batch'ler basarisizsa: basarili olanlarin `description`/
+      `structured_events`i KORUNUR (kaybedilmez); basarisiz olanlar icin
+      `description`e acik bir `[UYARI] ... analiz edilemedi (analysis_failed)`
+      notu eklenir. Asla risk=0/basarili gibi yorumlanacak sessiz bir bosluk
+      birakilmaz (`status="partial_failure"`).
+    - HICBIR batch basarisiz degilse: aciklamalar sirayla birlestirilir,
+      `structured_events` birlesir; her olaya ait tespitler mumkunse
+      `cluster_event_id` ile damgalanir (`status="completed"`).
+
+    Args:
+        batch_responses: `BaseVLM.describe_events_batched` ciktisi.
+        clusters: Bu calisma icin analiz edilen TUM Olay Gruplari (yalnizca
+            hicbir batch yanitinin olmadigi - teorik olarak imkansiz - uc
+            durumda hata metni icin kullanilir).
+        fallback_model_name: `batch_responses` bossa kullanilacak model adi.
+
+    Returns:
+        `EventEngineInput.from_vlm_response`e dogrudan verilebilecek, tek
+        bir agrege `VLMResponse`.
+    """
+    if not batch_responses:
+        return VLMResponse(
+            description="[HATA] VLM analizi yapilamadi (hic Olay Grubu/batch yaniti uretilemedi). Manuel inceleme gerekli.",
+            model_name=fallback_model_name,
+            frame_count=0,
+            latency_ms=0.0,
+            structured_events=[],
+            status="failed",
+        )
+
+    failed = [r for r in batch_responses if r.status == "failed"]
+    succeeded = [r for r in batch_responses if r.status != "failed"]
+    model_name = batch_responses[0].model_name
+    total_latency = sum(r.latency_ms for r in batch_responses)
+    total_frames = sum(r.frame_count for r in batch_responses)
+    all_event_ids = [eid for r in batch_responses for eid in r.cluster_event_ids]
+
+    if not succeeded:
+        failed_ids = [eid for r in failed for eid in r.cluster_event_ids]
+        return VLMResponse(
+            description=(
+                f"[HATA] VLM analizi yapilamadi (olay(lar) {failed_ids}). Manuel inceleme gerekli."
+            ),
+            model_name=model_name,
+            frame_count=total_frames,
+            latency_ms=total_latency,
+            structured_events=[],
+            status="failed",
+            cluster_event_ids=failed_ids,
+        )
+
+    structured_events: List[Dict[str, Any]] = []
+    description_parts: List[str] = []
+    for r in succeeded:
+        for ev in r.structured_events:
+            stamped = dict(ev)
+            if "cluster_event_id" not in stamped and len(r.cluster_event_ids) == 1:
+                stamped["cluster_event_id"] = r.cluster_event_ids[0]
+            structured_events.append(stamped)
+        description_parts.append(r.description)
+
+    for r in failed:
+        description_parts.append(
+            f"[UYARI] Olay(lar) {r.cluster_event_ids} icin VLM analizi basarisiz oldu (analysis_failed); "
+            "bu olay(lar) icin otomatik degerlendirme YAPILAMADI, manuel inceleme onerilir."
+        )
+
+    return VLMResponse(
+        description="\n\n".join(description_parts),
+        model_name=model_name,
+        frame_count=total_frames,
+        latency_ms=total_latency,
+        structured_events=structured_events,
+        status="completed" if not failed else "partial_failure",
+        cluster_event_ids=all_event_ids,
+    )
+
+
 class SafirPipeline:
     """Tum SAFIR katmanlarini tek bir uctan uca akista birlestiren orkestrator."""
 
@@ -665,18 +755,30 @@ class SafirPipeline:
         return sampler, evidence_frames, clusters
 
     def stage_vlm(self, clusters: List[EventCluster], user_prompt: str) -> VLMResponse:
-        """03: VLM (Gemini) gorsel anlama. Hata halinde is'i cokertmez, degraded `VLMResponse` doner."""
+        """03: VLM (Gemini) gorsel anlama - OLAY BAZLI (event-based) dagitim.
+
+        Butun Olay Gruplarini TEK bir dev payload'a doldurmaz: `BaseVLM.
+        describe_events_batched` ile `self._config.vlm.batch_size` buyuklugunde
+        (varsayilan 1 = HER olay ayri) kontrollu batch'lere bolup ayri ayri
+        analiz eder. Bir batch basarisiz olursa DIGER batch'lerin sonucu
+        KAYBEDILMEZ (bkz. `_aggregate_vlm_responses`); tum batch'ler basarisiz
+        olursa eski (geriye-donuk uyumlu) `[HATA]` degraded formatina duser.
+        """
         try:
-            return self._vlm.describe_events(clusters, prompt=user_prompt)
-        except Exception as exc:  # noqa: BLE001 - degraded rapora tasinir
-            logger.exception("VLM analizi basarisiz; degraded raporla devam ediliyor.")
+            batch_responses = self._vlm.describe_events_batched(
+                clusters, prompt=user_prompt, batch_size=self._config.vlm.batch_size
+            )
+        except Exception as exc:  # noqa: BLE001 - beklenmedik/toplu hata da degraded rapora tasinir
+            logger.exception("VLM batch dagitimi basarisiz; degraded raporla devam ediliyor.")
             return VLMResponse(
                 description=f"[HATA] VLM analizi yapilamadi ({exc}). Manuel inceleme gerekli.",
                 model_name=getattr(self._vlm, "model_name", "unknown"),
                 frame_count=len(clusters),
                 latency_ms=0.0,
                 structured_events=[],
+                status="failed",
             )
+        return _aggregate_vlm_responses(batch_responses, clusters, fallback_model_name=getattr(self._vlm, "model_name", "unknown"))
 
     def stage_events(self, vlm_response: VLMResponse, clusters: List[EventCluster]):
         """07: EventEngine -> buffer/budama -> TemporalReasoner -> RuleEngine.

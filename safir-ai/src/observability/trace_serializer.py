@@ -183,7 +183,14 @@ def serialize_vlm(
     """`vlm` emit'ini guvenli alanlarla serialize eder (raw HTTP/tam sistem promptu UYDURULMAZ)."""
     vr = payload["vlm_response"]
     clusters = payload.get("clusters", []) or []
-    degraded = vr.description.startswith("[HATA]")
+    # `status` (bkz. `VLMResponse`/`_aggregate_vlm_responses`), metin-tabanli
+    # `[HATA]` on-eki kontrolunden DAHA GUVENILIRDIR (olay-bazli dagitimda tum
+    # batch'ler basarisiz olmasa bile aciklama metni degisebilir); yine de eski
+    # cagiranlarla (status alani olmayan sahte nesneler) geriye-donuk uyumluluk
+    # icin metin on-eki de yedek olarak kontrol edilir.
+    vlm_status = getattr(vr, "status", None)
+    degraded = vlm_status == "failed" or (vlm_status is None and vr.description.startswith("[HATA]"))
+    partial_failure = vlm_status == "partial_failure"
     data = {
         "model_name": vr.model_name,
         "frame_count": vr.frame_count,
@@ -192,10 +199,14 @@ def serialize_vlm(
         "frames_sent": sum(len(c.representative_frames) for c in clusters) or len(clusters),
         "description": vr.description,           # temizlenmis insan-okur gozlem (mevcut, guvenli)
         "structured_events": vr.structured_events,  # parse edilmis EVENTS_JSON (mevcut, guvenli)
+        "vlm_status": vlm_status or ("failed" if degraded else "completed"),
     }
     if degraded:
         summary = f"{vr.model_name}: VLM basarisiz (degraded)"
         return summary, data, {}, "failed", "VLM analizi basarisiz — pipeline degraded modda devam etti."
+    if partial_failure:
+        summary = f"{vr.model_name}: bazi olaylar analiz edilemedi (partial_failure)"
+        return summary, data, {}, "completed", None
     summary = f"{vr.model_name}: {len(vr.structured_events)} olay, {vr.latency_ms:.0f} ms"
     return summary, data, {}, "completed", None
 
