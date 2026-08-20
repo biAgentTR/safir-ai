@@ -169,8 +169,20 @@ class TemporalReasoner:
             Grubu temsil eden tek bir `TemporalEvent`.
         """
         start_timestamp = group[0].timestamp
-        end_timestamp = group[-1].timestamp
         latest = group[-1]
+        # BUG FIX (kritik): eskiden burada `group[-1].timestamp` kullanilirdi -
+        # ama `DetectedEvent.timestamp` olayin BASLANGIC zaman damgasidir
+        # (bkz. schemas.py docstring), GERCEK bitisi DEGIL. Gercek bir VLM
+        # olayi (orn. "00:06-00:22") icin bu, `TemporalEvent.end_timestamp`in
+        # YANLISLIKLA olayin BASLANGICINA esit olmasina yol aciyordu; bu da
+        # `main.py::_select_current_call_events`in (`end_timestamp` ==
+        # `latest_timestamp` == evidence karelerinin GERCEK bitis zamani,
+        # 1e-6 tolerans) karsilastirmasini HER ZAMAN basarisiz kiliyor, VE
+        # `SafirReport.events`/`detected_event_names` SESSIZCE BOS
+        # donuyordu - VLM gercek olaylar uretse bile. `DetectedEvent.
+        # end_timestamp` (varsa) kullanilir; yoksa (VLM tek an bildirdiyse)
+        # `.timestamp`e duser.
+        end_timestamp = latest.end_timestamp if latest.end_timestamp is not None else latest.timestamp
 
         max_confidence = max(event.confidence for event in group)
         occurrence_count = len(group)

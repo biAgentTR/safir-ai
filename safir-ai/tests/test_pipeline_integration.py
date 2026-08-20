@@ -335,9 +335,12 @@ def test_run_produces_schema_complete_report_with_escalation(
 ) -> None:
     """`run()` sartname-uyumlu, sema-eksiksiz bir rapor uretmeli (summary/actions/eskalasyon).
 
-    Mock LLM orta risk (35) doner; bu yuzden otomatik eskalasyon kademesi
-    'notify' olmali ve alarm OTOMATIK tetiklenMEmeli (auto_dispatched=False).
-    Ayrica sartname-uyumlu ozet JSON'un beklenen anahtarlari tasidigi dogrulanir.
+    T016'dan beri nihai risk, mock LLM'in "orta" (35) kararindan DEGIL,
+    deterministik RuleEngine'den gelir (bkz. `stage_finalize_risk`):
+    MockVLMClient'in aciklamasi "forklift" icerir -> `arac_yaya_yakinligi`
+    tespit edilir -> OK-07 kurali "yuksek" siddet uretir (score=63) -> bu,
+    LLM'in kararini gezer ve otomatik alarmi tetikler. Ayrica sartname-uyumlu
+    ozet JSON'un beklenen anahtarlari tasidigi dogrulanir.
     """
     report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
 
@@ -346,10 +349,10 @@ def test_run_produces_schema_complete_report_with_escalation(
     assert isinstance(report.actions, list) and report.actions
     assert report.recommended_action == report.actions[0]
 
-    # Otomatik eskalasyon (Human-on-the-Loop): orta risk -> notify, alarm yok.
-    assert report.escalation_tier == "notify"
-    assert report.auto_dispatched is False
-    assert report.alert_id is None
+    # Otomatik eskalasyon (Human-on-the-Loop): RuleEngine-turevli yuksek risk -> alarm.
+    assert report.escalation_tier == "alarm"
+    assert report.auto_dispatched is True
+    assert report.alert_id is not None
 
     # Sartname-uyumlu ozet JSON beklenen sekilde olmali.
     sartname = report.to_sartname_json()
@@ -799,3 +802,91 @@ def test_vlm_event_with_null_canonical_type_remains_first_class_alongside_others
     entry = next(ev for ev in report.events if ev.event_name == "dengesiz_malzeme_istifi")
     assert entry.event_type is None
     assert entry.keywords == ["dengesiz istif", "devrilme riski"]
+
+
+# ------------------------------------------------------------------
+# T021: KRITIK regresyon - gercek VLM olaylari (farkli start/end zamanlari
+# olan, cok-olayli cikti) SafirReport.events'te SESSIZCE KAYBOLMAMALI.
+#
+# Kok neden: `TemporalReasoner._build_temporal_event`, `TemporalEvent.
+# end_timestamp`i yanlislikla `DetectedEvent.timestamp` (BASLANGIC zamani)
+# ile dolduruyordu; gercek bir olay icin (start_time != end_time) bu,
+# `main.py::_select_current_call_events`in 1e-6 toleransli karsilastirmasini
+# HER ZAMAN basarisiz kiliyor, `structured_events` bos donuyor, dolayisiyla
+# `SafirReport.events`/`detected_event_names`/`detected_event_types`
+# SESSIZCE BOS kaliyordu - VLM gercekte 2 olay uretmis olsa bile.
+# ------------------------------------------------------------------
+
+
+def test_multiple_real_vlm_events_with_distinct_start_end_times_all_survive_to_report(
+    pipeline: SafirPipeline, motion_video: str
+) -> None:
+    """Gercek Gemini VLM ciktisina benzer (start_time != end_time olan, iki
+    farkli serbest-bicimli olay iceren) bir yanit simule edilir. Her iki
+    olay da SafirReport.events'e ULASMALI - hicbiri sessizce kaybolmamali."""
+    from src.vlm.base_vlm import VLMResponse
+
+    def _fake_analyze(evidence_frames, prompt):
+        return VLMResponse(
+            description="Sahada iki ayri olay gozlemlendi.",
+            model_name="fake-gemini",
+            frame_count=len(evidence_frames),
+            latency_ms=1.0,
+            structured_events=[
+                {
+                    "event_id": "e1",
+                    "event_name": "personelin_alanı_terk_etmesi",
+                    "start_time": 6.0,
+                    "end_time": 22.0,
+                    "evidence_ids": [ef.evidence_id for ef in evidence_frames[:3]],
+                    "description": "Personel alani hizla terk etti.",
+                    "keywords": ["personel yok", "alanin bosaltilmasi", "aceleci hareket"],
+                    "confidence": 0.8,
+                },
+                {
+                    "event_id": "e2",
+                    "event_name": "kovada_alev_baslangici",
+                    "canonical_event_type": "yangin_duman",
+                    "start_time": 38.0,
+                    "end_time": 75.0,
+                    "evidence_ids": [ef.evidence_id for ef in evidence_frames[3:]] or [],
+                    "description": "Kovada kucuk bir alev basladi.",
+                    "keywords": ["kovada alev", "kucuk yangin baslangici", "duman izi"],
+                    "risk_score": 65,
+                    "confidence": 0.75,
+                },
+            ],
+        )
+
+    pipeline._vlm.analyze_evidence = _fake_analyze  # type: ignore[assignment]
+
+    report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+
+    # Hicbir olay sessizce kaybolmadi.
+    assert len(report.events) == 2, f"Beklenen 2 olay, gelen: {report.events}"
+
+    by_name = {ev.event_name: ev for ev in report.events}
+    assert "personelin_alanı_terk_etmesi" in by_name
+    assert "kovada_alev_baslangici" in by_name
+
+    # detected_event_names HER IKISINI de icerir.
+    assert "personelin_alanı_terk_etmesi" in report.detected_event_names
+    assert "kovada_alev_baslangici" in report.detected_event_names
+
+    # Olay 1: canonical_event_type verilmedi -> event_type None kalmali (ZORLANMADI).
+    ev1 = by_name["personelin_alanı_terk_etmesi"]
+    assert ev1.event_type is None
+    assert ev1.keywords == ["personel yok", "alanin bosaltilmasi", "aceleci hareket"]
+
+    # Olay 2: canonical_event_type GERCEKTEN verildi (yangin_duman) -> korunur.
+    ev2 = by_name["kovada_alev_baslangici"]
+    assert ev2.event_type == "yangin_duman"
+    assert ev2.keywords == ["kovada alev", "kucuk yangin baslangici", "duman izi"]
+    # event_name ASLA "yangin_duman"a donusturulmedi (RuleEngine eslesmesi
+    # olsa bile birincil kimlik event_name'dir).
+    assert ev2.event_name == "kovada_alev_baslangici"
+
+    # API payload'inda (model_dump) da ayni sekilde goruluyor.
+    payload = report.model_dump(mode="json")
+    assert len(payload["events"]) == 2
+    assert set(payload["detected_event_names"]) == {"personelin_alanı_terk_etmesi", "kovada_alev_baslangici"}

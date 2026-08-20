@@ -111,34 +111,50 @@ def _prune_stale_events(
 
 
 def _select_current_call_events(
-    temporal_events: List[TemporalEvent], latest_timestamp: float
+    temporal_events: List[TemporalEvent],
+    latest_timestamp: float,
+    detected_events: Optional[List[DetectedEvent]] = None,
 ) -> List[TemporalEvent]:
     """Bu pipeline cagrisinda uretilen/guncellenen TUM `TemporalEvent`leri secer.
 
-    Bir VLM ciktisi ayni anda birden fazla kategori (orn. `kkd_ihlali` +
-    `arac_yaya_yakinligi`) tetikleyebilir; bu durumda `TemporalReasoner`
-    birden fazla grup uretir ve bunlarin HEPSİ bu cagriya aittir (hepsinin
-    `end_timestamp`i `latest_timestamp`a esittir, cunku bu cagrinin
-    `DetectedEvent`leri her zaman en yeni zaman damgasini tasir). Guven
-    skoruna gore azalan sirali dondurulur; boylece cagiran taraf, ilk
-    elemani "birincil" olay olarak kullanabilir (orn. `SafirReport.event_id`).
+    BUG FIX (T021): eskiden BUTUN `TemporalEvent`lerin bu cagriya ait
+    olup olmadigi TEK BIR ORTAK `end_timestamp == latest_timestamp` esitligiyle
+    belirleniyordu - bu, VLM'in TEK bir cagride, FARKLI bitis zamanlarina
+    sahip BIRDEN FAZLA olay urettigi (gercek Gemini ciktisinda son derece
+    yaygin - orn. "00:06-00:22" ve "00:38-01:15") durumlarda YANLIS calisiyordu:
+    yalnizca EN GEC biten olay `latest_timestamp`a esit oluyor, digerleri
+    SESSIZCE ELENIYORDU (bkz. `SafirReport.events`in bos donmesi hatasi).
+
+    Duzeltme: bir `TemporalEvent`, ONCELIKLE bu cagrinin `detected_events`
+    (`stage_events` ciktisi) ile PAYLASTIGI en az bir `evidence_id` varsa
+    "bu cagriya ait" sayilir (kesin, evidence-tabanli baglanti - zaman
+    damgasi esitligine bagli DEGILDIR). `evidence_ids` olmayan
+    (structured VLM ciktisi degil, eski anahtar-kelime fallback yolundan
+    gelen) olaylar icin ESKI zaman damgasi-tolerans karsilastirmasina
+    GERI DUSULUR (bu yolun evidence_id'si zaten hep bostur).
 
     Args:
         temporal_events: `TemporalReasoner.reason(...)` ciktisi (tum buffer
             uzerinden hesaplanmis, bu cagriya ozel olmayan tam liste).
         latest_timestamp: Bu pipeline cagrisinin gozlem zaman damgasi.
+        detected_events: Bu cagrinin `EventEngine.detect(...)` ciktisi
+            (`stage_events`); evidence-tabanli eslesme icin kullanilir.
+            `None`/bos ise dogrudan zaman damgasi-tolerans karsilastirmasina
+            duser (geriye uyumluluk).
 
     Returns:
-        `end_timestamp`i `latest_timestamp`a (tolerans dahilinde) esit olan
-        `TemporalEvent`lerin, guvene gore azalan sirali listesi. Bos olabilir
-        (teorik olarak; `EventEngine` her zaman en az bir `DetectedEvent`
-        urettigi icin pratikte bos donmez).
+        Bu cagriya ait `TemporalEvent`lerin, guvene gore azalan sirali
+        listesi. Bos olabilir (teorik olarak; `EventEngine` her zaman en az
+        bir `DetectedEvent` urettigi icin pratikte bos donmez).
     """
-    current_call_events = [
-        te
-        for te in temporal_events
-        if abs(te.end_timestamp - latest_timestamp) <= _CURRENT_CALL_TIMESTAMP_TOLERANCE
-    ]
+    current_call_evidence_ids = {eid for d in (detected_events or []) for eid in d.evidence_ids}
+
+    def _belongs_to_current_call(te: TemporalEvent) -> bool:
+        if current_call_evidence_ids and te.evidence_ids:
+            return bool(set(te.evidence_ids) & current_call_evidence_ids)
+        return abs(te.end_timestamp - latest_timestamp) <= _CURRENT_CALL_TIMESTAMP_TOLERANCE
+
+    current_call_events = [te for te in temporal_events if _belongs_to_current_call(te)]
     current_call_events.sort(key=lambda te: te.confidence, reverse=True)
     return current_call_events
 
@@ -778,6 +794,7 @@ class SafirPipeline:
             temporal_events=temporal_events,
             rule_matches=rule_matches,
             latest_timestamp=latest_timestamp,
+            detected_events=detected_events,
         )
         logger.info(
             "SAFIR pipeline tamamlandi: video=%s risk=%s(%s) status=%s sure=%.3fs",
@@ -1036,9 +1053,10 @@ class SafirPipeline:
         temporal_events,
         rule_matches,
         latest_timestamp: float,
+        detected_events: Optional[List[DetectedEvent]] = None,
     ) -> SafirReport:
         """06-07: Olay kaydi (EventBuilder/History/Store) + nihai `SafirReport` insasi."""
-        current_call_events = _select_current_call_events(temporal_events, latest_timestamp)
+        current_call_events = _select_current_call_events(temporal_events, latest_timestamp, detected_events)
         detected_event_names = sorted({te.event_name for te in current_call_events})
         detected_event_types = sorted({te.event_type for te in current_call_events if te.event_type})
         structured_events = self._event_builder.build_batch(current_call_events, rule_matches)
