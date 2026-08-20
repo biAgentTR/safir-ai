@@ -149,6 +149,43 @@ class SamplerConfig(BaseModel):
     farkli iki durumu SILMEZ - yalnizca ardisik, gorsel olarak ayirt
     edilemeyen tekrarlari engeller)."""
 
+    # --- Tek-kareli guclu/lokal degisim (single_frame_change): cok-kareli
+    # `early_change` onayindan (early_change_min_count) TAMAMEN BAGIMSIZ,
+    # ayri bir yol - hafif-ama-surdurulen sinyaller HALA yalnizca cok-kareli
+    # mekanizma ile yakalanir (bkz. AdaptiveFrameSampler.process_video). ---
+    single_frame_change_enabled: bool = True
+    """`True` ise, ana esigin ALTINDA kalan ama TEK bir karede GUCLU, LOKAL
+    ve gurultu tabanindan acikca ayrisan bir degisim, cok-kareli onay
+    BEKLENMEDEN aninda `selection_reason="single_frame_change"` ile secilir.
+    `False` ile bu yol tamamen devre disi kalir."""
+    single_frame_change_noise_floor_ratio: float = 2.0
+    """Bir karenin 'tek-kare guclu degisim' sayilmasi icin `net_change_score`,
+    bir tabanin (normalde `adaptive_noise_floor`, o cok dusukken erken-degisim
+    esigine duser - bkz. `AdaptiveFrameSampler.process_video`) en az bu kadar
+    kati olmalidir - sabit bir skor DEGIL, videonun o anki olcegine GORELI
+    kalir."""
+    single_frame_change_max_area_ratio: float = 0.35
+    """Hareket maskesinin sinirlayici kutu alaninin kare alanina orani bu
+    degeri ASARSA aday LOKAL sayilmaz (`(0, 1]`) - kareyi butunuyle etkileyen
+    ani parlaklik degisimi/kamera titremesi buyuk olcude bastirilir."""
+
+    # --- Tanilama (diagnostic) modu: varsayilan KAPALI, sampler secim
+    # davranisini/performansini HICBIR sekilde degistirmez. Acildiginda HER
+    # ORNEKLENEN kare icin tam karar izini (skorlar, esikler, durum, secim/
+    # red nedeni) diske yazar - goruntu/base64 veri ASLA loglanmaz (bkz.
+    # AdaptiveFrameSampler._DiagnosticRecorder). Kok neden tespiti/hata
+    # ayiklama amaclidir; secim ALGORITMASINI DEGISTIRMEZ. ---
+    diagnostic_enabled: bool = False
+    """`True` ise `process_video`, her ornek kare icin bir tanilama satiri
+    (`diagnostic_output_format`e gore CSV veya JSONL) yazar. Varsayilan
+    `False` ile bu mekanizma tamamen devre disidir; hicbir ek hesaplama
+    yapilmaz, mevcut davranis/performans BIREBIR korunur."""
+    diagnostic_output_dir: str = "outputs/diagnostics"
+    """Tanilama dosyalarinin yazilacagi klasor (mevcut `outputs/` duzenine
+    uygun - bkz. `configs/config.yaml` `output:` blogu)."""
+    diagnostic_output_format: str = "jsonl"
+    """`"jsonl"` veya `"csv"`."""
+
     idle_interval_sec: float
     active_fps: float
     noise_floor: float
