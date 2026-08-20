@@ -19,6 +19,7 @@ def _event(
     description: str = "test aciklamasi",
 ) -> DetectedEvent:
     return DetectedEvent(
+        event_name=event_type,
         event_type=event_type,
         description=description,
         timestamp=timestamp,

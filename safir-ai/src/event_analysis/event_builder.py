@@ -50,6 +50,7 @@ class EventBuilder:
             risk_score=risk_score,
             risk_level=risk_level,
             source_model=temporal_event.source_model,
+            event_name=temporal_event.event_name,
             event_type=temporal_event.event_type,
             confidence=temporal_event.confidence,
             temporal_event_id=temporal_event.event_id,
@@ -145,6 +146,7 @@ if __name__ == "__main__":
 
     demo_temporal_event = TemporalEvent(
         event_id="evt_0",
+        event_name="kkd_ihlali",
         event_type="kkd_ihlali",
         description="Personel baretsiz calisiyor.",
         start_timestamp=0.0,

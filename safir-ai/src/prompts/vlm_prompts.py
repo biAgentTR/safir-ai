@@ -21,50 +21,74 @@ from __future__ import annotations
 
 from src.event_analysis.schemas import EventType
 
-# Modelin `EVENTS_JSON` blogunda kullanabilecegi gecerli tip degerleri
-# (EventType enum'undan turetilir; enum degisirse otomatik senkron kalir).
-_ALLOWED_EVENT_TYPES = ", ".join(event_type.value for event_type in EventType)
+# Modelin `canonical_event_type` alaninda kullanabilecegi ORNEK/bilinen
+# kategoriler (EventType enum'undan turetilir; enum degisirse otomatik
+# senkron kalir). ONEMLI: bu liste bir "gecerli deger listesi" DEGILDIR -
+# yalnizca daha once bilinen kurallara sahip ORNEKLERDIR (bkz. asagidaki
+# istem metni). `event_name` bu listeyle SINIRLANDIRILMAZ.
+_KNOWN_EVENT_TYPE_EXAMPLES = ", ".join(event_type.value for event_type in EventType)
 
 _EVENTS_JSON_INSTRUCTION = (
     "\n\n## Makine-Okunur Olay Listesi (ZORUNLU)\n"
     "Yukaridaki insan-okur bloklardan SONRA, en son satirda su bicimde bir "
     "'EVENTS_JSON' satiri ekle (bu satirdan sonra baska metin yazma):\n"
     "EVENTS_JSON: [\n"
-    '  {"event_id": "<benzersiz-kisa-id>", "type": "<tip>", '
+    '  {"event_id": "<benzersiz-kisa-id>", '
+    '"event_name": "<SERBEST BICIMLI, kisa, snake_case olay adi>", '
+    '"canonical_event_type": "<opsiyonel - ASAGIDAKI orneklerden biri VEYA null>", '
     '"start_time": <saniye>, "end_time": <saniye>, '
     '"evidence_ids": ["<sana verilen evidence_id degerlerinden SADECE bu olaya ait olanlar>"], '
     '"description": "<Turkce, nesnel, kisa aciklama>", '
     '"keywords": ["<somut gorsel kanit ifadesi 1>", "<somut gorsel kanit ifadesi 2>", "..."], '
     '"risk_score": <0-100 kaba tahmin>, "confidence": <0.0-1.0>}\n'
-    "]\n"
-    f"Gecerli 'type' degerleri YALNIZCA sunlardir: {_ALLOWED_EVENT_TYPES}.\n"
+    "]\n\n"
+    "## `event_name` VE `canonical_event_type` ARASINDAKI FARK (COK ONEMLI)\n"
+    f"Asagidaki kategoriler DAHA ONCE BILINEN guvenlik oruntulerinin "
+    f"ORNEKLERIDIR: {_KNOWN_EVENT_TYPE_EXAMPLES}. Bunlar KAPALI bir "
+    "taksonomi DEGILDIR. Gozlemlerini bu kategorilere ZORLAMA.\n"
+    "Her ANLAMLI guvenlik olayi icin, GERCEKTEN gozlemledigini tanimlayan "
+    "kisa, ozgun bir `event_name` OLUSTUR (orn. 'yerde_hareketsiz_kisi', "
+    "'dengesiz_malzeme_istifi', 'forklift_geri_manevra'). Bilinen "
+    "orneklerden hicbiri olayi dogru tanimlamiyorsa YENI bir `event_name` "
+    "olusturabilirsin - bu TAMAMEN NORMALDIR ve TESVIK EDILIR.\n"
+    "SADECE ELINDE OLDUGU ICIN en yakin gorunen mevcut kategoriyi SECME.\n"
+    "`event_name` HER ZAMAN ZORUNLUDUR. `canonical_event_type` ise "
+    "OPSIYONELDIR: yalnizca gozlemin YUKARIDAKI orneklerden birine "
+    "GERCEKTEN, TAM olarak karsilik geldigini DUSUNUYORSAN doldur; emin "
+    "degilsen VEYA hicbiri tam uymuyorsa `null` birak - bu GECERLI ve "
+    "TERCIH EDILEN bir sonuctur (bir kategoriye ZORLAMAKTAN COK DAHA "
+    "IYIDIR).\n\n"
     "KRITIK KURALLAR:\n"
     "1. `evidence_ids` degerleri YALNIZCA sana metin bloklarinda verilen "
     "gercek `evidence_id` degerlerinden olusmalidir; ASLA yeni bir kimlik "
     "UYDURMA ve hicbir gecerli kimligi degistirme/kisaltma.\n"
     "2. Her evidence_id EN FAZLA bir olaya atanmalidir (ayni kimligi birden "
     "fazla olayda TEKRARLAMA).\n"
-    "3. Gordugun ama net bir olaya/tipe oturtamadigin (belirsiz/kararsiz) "
+    "3. Gordugun ama net bir olaya oturtamadigin (belirsiz/kararsiz) "
     "evidence kareleri icin, onlari SESSIZCE atlama: bunlari "
-    '`"event_id": "unassigned"`, `"type": "siniflandirilamadi"` olan TEK '
-    "bir kayitta topla (bu kaydin `evidence_ids`si tum belirsiz kareleri icermeli).\n"
+    '`"event_id": "unassigned"`, `"event_name": "siniflandirilamadi"`, '
+    '`"canonical_event_type": "siniflandirilamadi"` olan TEK bir kayitta '
+    "topla (bu kaydin `evidence_ids`si tum belirsiz kareleri icermeli).\n"
     "4. `start_time`/`end_time` HER ZAMAN o olaya atanan evidence karelerinin "
     "gercek zaman damgalarindan (en erken/en gec) turetilmelidir; uydurma "
     "veya olay disi bir zaman verme.\n"
-    "5. `risk_score` yalnizca kaba bir ipucudur; nihai risk kararini SONRAKI "
-    "Ajan katmani verir - burada asiri kesin/otoriter bir skor sunma.\n"
+    "5. `risk_score` yalnizca kaba bir ipucudur; nihai risk kararini "
+    "deterministik Kural Motoru (RuleEngine) verir - burada asiri kesin/"
+    "otoriter bir skor sunma. `canonical_event_type=null` oldugunda bu "
+    "olay icin deterministik bir risk sonucu URETILMEYEBILIR - bu GECERLI "
+    "bir sonuctur, sen bir risk UYDURMA.\n"
     "6. `keywords`: bu olayin kanitini aciklayan KISA, SOMUT gorsel ifadeler/"
     "terimler listesi ver (orn. \"duman\", \"yogun siyah duman\", \"alev\", "
-    "\"forklift\", \"cok yakin mesafe\"). Bu liste ONCEDEN TANIMLANMIS bir "
-    "kategori/taksonomiyle SINIRLI DEGILDIR - `type` zaten sabit kategoriyi "
-    "belirtir, `keywords` ise O OLAYA OZGU, SERBEST BICIMLI kanit "
-    "ifadeleridir. YALNIZCA evidence karelerinde GERCEKTEN GORDUGUN "
-    "seyleri yaz; hicbir terim UYDURMA. Sabit bir sayi siniri YOKTUR "
-    "(bir veya birden fazla terim verebilirsin); ayni `type`e sahip farkli "
-    "olaylarin farkli `keywords` listeleri olmasi NORMALDIR (birebir ayni "
-    "terimleri tekrar etmek ZORUNDA DEGILSIN). `keywords` bir RISK KARARI "
-    "DEGILDIR - yalnizca ne GORDUGUNU tarif eder; risk seviyesini SEN "
-    "belirlemezsin."
+    "\"forklift\", \"cok yakin mesafe\", \"yerde yatan kisi\"). Bu liste "
+    "ONCEDEN TANIMLANMIS bir kategori/taksonomiyle SINIRLI DEGILDIR - "
+    "`keywords`, O OLAYA OZGU, SERBEST BICIMLI kanit ifadeleridir. YALNIZCA "
+    "evidence karelerinde GERCEKTEN GORDUGUN seyleri yaz; hicbir terim "
+    "UYDURMA. Sabit bir sayi siniri YOKTUR (uc-on arasi kisa, somut ifade "
+    "onerilir, ama daha fazlasi da mumkundur); ayni `event_name`e sahip "
+    "farkli gozlemlerin farkli `keywords` listeleri olmasi NORMALDIR "
+    "(birebir ayni terimleri tekrar etmek ZORUNDA DEGILSIN). `keywords` bir "
+    "RISK KARARI DEGILDIR - yalnizca ne GORDUGUNU tarif eder; risk "
+    "seviyesini SEN belirlemezsin."
 )
 
 VLM_OBSERVER_SYSTEM_PROMPT = (
@@ -115,7 +139,7 @@ VLM_RECONCILIATION_SYSTEM_PROMPT = (
     "(batch-local) `event_id`lere sahip olay listeleri JSON metni olarak "
     "verilecek (goruntu YOK - yalnizca metin/JSON).\n\n"
     "## Gorevin\n"
-    "1. Farkli batch'lerden gelen olaylari incele: aciklama, tur (type), "
+    "1. Farkli batch'lerden gelen olaylari incele: aciklama, `event_name`, "
     "zaman (start_time/end_time) ve evidence_ids'e bakarak AYNI GERCEK "
     "OLAYIN devami olanlari (ör. bir batch'in sonunda baslayip digerinin "
     "basinda devam eden bir olay) TEK bir GLOBAL olayda birlestir.\n"
@@ -132,11 +156,17 @@ VLM_RECONCILIATION_SYSTEM_PROMPT = (
     "6. `keywords`: birlesen olaylarin GIRDIDEKI `keywords` listelerinin "
     "BIRLESIMINI (tekrarsiz) tasi - hicbir terimi KAYBETME, YENI bir terim "
     "de UYDURMA. Girdide `keywords` olmayan bir olay birlesiyorsa, o "
-    "olaydan gelen katki icin bos birakabilirsin.\n\n"
+    "olaydan gelen katki icin bos birakabilirsin.\n"
+    "7. `event_name`, girdideki batch'lerin KENDI urettigi serbest-bicimli "
+    "ismini KORUR - YENIDEN ADLANDIRMA/DEGISTIRME, bilinen bir kategoriye "
+    "ZORLAMA yapma. `canonical_event_type`, girdi kayitlarinda ZATEN "
+    "doluysa aynen tasinir; girdide `null`/yoksa SEN de doldurmaya "
+    "CALISMA - `null` olarak birak.\n\n"
     "Cikti YALNIZCA asagidaki bicimde olmali (insan-okur metin YAZMA, "
     "dogrudan bu satirla basla):\n"
     "EVENTS_JSON: [\n"
-    '  {"event_id": "<yeni-global-id>", "type": "<tip>", '
+    '  {"event_id": "<yeni-global-id>", "event_name": "<girdiden aynen korunan isim>", '
+    '"canonical_event_type": "<girdiden aynen korunan deger veya null>", '
     '"start_time": <saniye>, "end_time": <saniye>, '
     '"evidence_ids": ["..."], "description": "<Turkce, birlesik aciklama>", '
     '"keywords": ["<girdiden birlesen terimler, tekrarsiz>"], '

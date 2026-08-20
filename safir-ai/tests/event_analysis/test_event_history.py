@@ -57,6 +57,7 @@ def _structured_event(
         timestamp=timestamp,
         description=description,
         source_model="test-vlm",
+        event_name=event_type,
         event_type=event_type,
         confidence=0.6,
         temporal_event_id=temporal_event_id,

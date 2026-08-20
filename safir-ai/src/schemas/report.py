@@ -29,23 +29,41 @@ class TimelineEvent(BaseModel):
     )
 
 
-class EventKeywords(BaseModel):
-    """T019: Bir `StructuredEvent`e ait EventType + VLM-uretimi SERBEST BICIMLI kanit ifadeleri.
+class EventSummary(BaseModel):
+    """T020: Bir `StructuredEvent`in rapora/API'ye tasinan ozeti - UC AYRI kavrami acikca ayirir.
 
-    ONEMLI (kavramsal ayrim): `event_type` sabit/kontrollu bir kategoridir
-    (bkz. `EventType`); `keywords` ise BUNUNLA KARISTIRILMAMALIDIR - VLM'in
-    o olaya ait evidence karelerinde GERCEKTEN gozlemledigi, ONCEDEN
-    TANIMLANMIS bir taksonomiyle SINIRLI OLMAYAN serbest ifadelerdir (bkz.
-    `StructuredEvent.keywords`, `EventEngine._normalize_free_form_keywords`).
-    Bu model, o listeyi HICBIR FILTRELEME/NORMALIZASYONA UGRATMADAN,
-    `StructuredEvent`den oldugu gibi rapora/API'ye tasir.
+    1. `event_name`: olayin BIRINCIL kimligi - VLM'in KENDI urettigi, ONCEDEN
+       TANIMLI bir taksonomiyle SINIRLI OLMAYAN serbest bicimli isim (orn.
+       "yerde_hareketsiz_kisi"). HER ZAMAN doludur.
+    2. `event_type`: OPSIYONEL canonical baglanti (bkz. `EventType`); yalnizca
+       VLM'in gozlemi ZATEN BILINEN bir kategoriye GERCEKTEN karsilik
+       geliyorsa doludur. `None` = "eslestirilemedi" (GECERLI, ZORLANMAZ).
+    3. `keywords`: VLM'in evidence karelerinde GERCEKTEN gozlemledigi, HICBIR
+       taksonomiyle FILTRELENMEYEN serbest kanit ifadeleri (bkz.
+       `StructuredEvent.keywords`, `EventEngine._normalize_free_form_keywords`).
+
+    `risk_level`/`risk_score`, bu olaya ait `RuleEngine` eslesmelerinden
+    (varsa) deterministik olarak gelir (bkz. `risk_resolver.py`, degistirilmedi);
+    eslesme yoksa (orn. `event_type=None` oldugunda COGUNLUKLA boyledir) HER
+    IKISI DE `None` kalir - "Degerlendirilmedi" GECERLI bir sonuctur, risk
+    UYDURULMAZ.
     """
 
-    event_type: str = Field(description="Olay kategorisi (bkz. `EventType`); sabit taksonomi.")
+    event_name: str = Field(
+        description="Olayin BIRINCIL, serbest-bicimli kimligi (VLM-uretimi; taksonomiyle SINIRLI DEGIL)."
+    )
+    event_type: Optional[str] = Field(
+        default=None,
+        description="OPSIYONEL canonical baglanti (bkz. `EventType`); `None` = 'eslestirilemedi'.",
+    )
     keywords: List[str] = Field(
         default_factory=list,
         description="VLM'in urettigi serbest-bicimli kanit ifadeleri (taksonomiyle SINIRLI DEGIL, risk KARARI DEGIL).",
     )
+    risk_level: Optional[str] = Field(
+        default=None, description="Bu olaya ait deterministik RuleEngine eslesmesi (varsa); yoksa 'Degerlendirilmedi'."
+    )
+    risk_score: Optional[int] = Field(default=None, ge=0, le=100, description="Bkz. `risk_level`.")
 
 
 class RagContext(BaseModel):
@@ -128,14 +146,21 @@ class SafirReport(BaseModel):
     incident_timestamps: List[str] = Field(
         default_factory=list, description="Tehlikenin/kazanin aktif oldugu zaman damgalari (orn. 00:18, 00:22, 00:25)."
     )
+    detected_event_names: List[str] = Field(
+        default_factory=list,
+        description="Bu analizde tespit edilen olaylarin BIRINCIL, serbest-bicimli kimlikleri (event_name); "
+        "ONCEDEN TANIMLI bir taksonomiyle SINIRLI DEGILDIR (bkz. `EventSummary.event_name`).",
+    )
     detected_event_types: List[str] = Field(
         default_factory=list,
-        description="Bu analizde tespit edilen olay kategorileri (bkz. EventType); aciklanabilirlik/olcumleme icin.",
+        description="Bu analizde tespit edilen olaylardan, YALNIZCA ZATEN BILINEN bir kategoriye (bkz. EventType) "
+        "GERCEKTEN karsilik gelenlerin canonical listesi; eslesmeyenler burada GORUNMEZ (bkz. `detected_event_names`).",
     )
-    event_keywords: List[EventKeywords] = Field(
+    events: List[EventSummary] = Field(
         default_factory=list,
-        description="Her tespit edilen olayin (StructuredEvent) VLM-uretimi serbest-bicimli kanit ifadeleri "
-        "(bkz. `EventKeywords`). Onceden tanimli bir taksonomiyle FILTRELENMEZ/DEGISTIRILMEZ; risk KARARI DEGILDIR.",
+        description="Her tespit edilen olayin (StructuredEvent) ozeti: event_name (birincil, serbest-bicimli), "
+        "opsiyonel canonical event_type, VLM-uretimi keywords, ve (varsa) deterministik risk (bkz. `EventSummary`). "
+        "Hicbiri taksonomiyle zorla FILTRELENMEZ/DEGISTIRILMEZ.",
     )
     timeline: List[TimelineEntry] = Field(default_factory=list, description="Kronolojik olay cizelgesi.")
     evidence_frames: List[EvidenceFrameOut] = Field(

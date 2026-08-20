@@ -65,12 +65,13 @@ class ReportExporter:
             f"<li>{regulation}</li>" for regulation in report.get("relevant_regulations", [])
         ) or "<li>Mevzuat eslestirilemedi (guvenilir/dogrulanmis bir eslesme bulunamadi).</li>"
 
-        event_keywords_html = "".join(
-            f"<li><b>{entry.get('event_type', '?')}</b>: "
+        events_html = "".join(
+            f"<li><b>{entry.get('event_name', '?')}</b> "
+            f"(Kategori: {entry.get('event_type') or 'Eşleştirilemedi'}, "
+            f"Risk: {entry.get('risk_level') or 'Değerlendirilmedi'}): "
             + ", ".join(entry.get("keywords") or []) + "</li>"
-            for entry in report.get("event_keywords", [])
-            if entry.get("keywords")
-        ) or "<li>VLM kanit ifadesi (keyword) uretilmedi.</li>"
+            for entry in report.get("events", [])
+        ) or "<li>VLM olay uretmedi.</li>"
 
         timeline_html = "".join(
             f"<li>[{entry['timestamp']:.1f}s] {entry['description']}</li>"
@@ -126,8 +127,8 @@ class ReportExporter:
 </div>
 
 <div class="section">
-<h2>Olay Kanit Ifadeleri (VLM-uretimi, serbest bicimli)</h2>
-<ul>{event_keywords_html}</ul>
+<h2>Tespit Edilen Olaylar (VLM-uretimi, serbest bicimli)</h2>
+<ul>{events_html}</ul>
 </div>
 
 <div class="section">
@@ -220,25 +221,28 @@ class ReportExporter:
             except (KeyError, ValueError, base64.binascii.Error):
                 continue
 
-        story.append(Paragraph("Olay Kanit Ifadeleri (VLM-uretimi, serbest bicimli)", styles["Heading2"]))
-        event_keywords = [e for e in report.get("event_keywords", []) if e.get("keywords")]
-        if event_keywords:
+        story.append(Paragraph("Tespit Edilen Olaylar (VLM-uretimi, serbest bicimli)", styles["Heading2"]))
+        events = report.get("events", [])
+        if events:
             story.append(
                 ListFlowable(
                     [
                         ListItem(
                             Paragraph(
-                                f"<b>{entry.get('event_type', '?')}</b>: {', '.join(entry.get('keywords') or [])}",
+                                f"<b>{entry.get('event_name', '?')}</b> "
+                                f"(Kategori: {entry.get('event_type') or 'Eşleştirilemedi'}, "
+                                f"Risk: {entry.get('risk_level') or 'Değerlendirilmedi'}): "
+                                f"{', '.join(entry.get('keywords') or [])}",
                                 styles["BodyText"],
                             )
                         )
-                        for entry in event_keywords
+                        for entry in events
                     ],
                     bulletType="bullet",
                 )
             )
         else:
-            story.append(Paragraph("VLM kanit ifadesi (keyword) uretilmedi.", styles["BodyText"]))
+            story.append(Paragraph("VLM olay uretmedi.", styles["BodyText"]))
         story.append(Spacer(1, 0.4 * cm))
 
         story.append(Paragraph("Ilgili ISG Mevzuati (FAISS RAG)", styles["Heading2"]))

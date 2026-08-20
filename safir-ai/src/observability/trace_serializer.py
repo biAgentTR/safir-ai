@@ -196,6 +196,7 @@ def serialize_events(
     data = {
         "detected_events": [
             {
+                "event_name": d.event_name,
                 "event_type": d.event_type,
                 "timestamp": round(d.timestamp, 2),
                 "confidence": round(d.confidence, 2),
@@ -205,6 +206,7 @@ def serialize_events(
         ],
         "temporal_events": [
             {
+                "event_name": t.event_name,
                 "event_type": t.event_type,
                 "occurrence_count": t.occurrence_count,
                 "duration": round(t.duration, 2),
@@ -285,8 +287,18 @@ def serialize_report(
         "escalation_tier": r.escalation_tier,
         "auto_dispatched": r.auto_dispatched,
         "alert_id": r.alert_id,
+        "detected_event_names": r.detected_event_names,
         "detected_event_types": r.detected_event_types,
-        "event_keywords": [{"event_type": ek.event_type, "keywords": ek.keywords} for ek in r.event_keywords],
+        "events": [
+            {
+                "event_name": ev.event_name,
+                "event_type": ev.event_type,
+                "keywords": ev.keywords,
+                "risk_level": ev.risk_level,
+                "risk_score": ev.risk_score,
+            }
+            for ev in r.events
+        ],
         "vlm_model": r.vlm_model,
         "llm_model": r.llm_model,
         "timeline": [{"timestamp": round(e.timestamp, 2), "description": e.description} for e in r.timeline],

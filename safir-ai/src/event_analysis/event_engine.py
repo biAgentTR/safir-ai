@@ -282,7 +282,7 @@ class EventEngine:
                 "EventEngine: t=%.2f -> %d olay (model-tabanli/structured: %s)",
                 engine_input.timestamp,
                 len(structured),
-                ", ".join(d.event_type for d in structured),
+                ", ".join(d.event_name for d in structured),
             )
             return structured
 
@@ -301,6 +301,7 @@ class EventEngine:
 
             detections.append(
                 DetectedEvent(
+                    event_name=event_type.value,
                     event_type=event_type.value,
                     description=engine_input.vlm_description,
                     timestamp=engine_input.timestamp,
@@ -313,6 +314,7 @@ class EventEngine:
         if not detections:
             detections.append(
                 DetectedEvent(
+                    event_name=EventType.GENEL_GOZLEM.value,
                     event_type=EventType.GENEL_GOZLEM.value,
                     description=engine_input.vlm_description,
                     timestamp=engine_input.timestamp,
@@ -327,17 +329,31 @@ class EventEngine:
             "EventEngine: t=%.2f -> %d olay tespit edildi (%s)",
             engine_input.timestamp,
             len(detections),
-            ", ".join(d.event_type for d in detections),
+            ", ".join(d.event_name for d in detections),
         )
         return detections
 
     def _detect_from_structured(self, engine_input: EventEngineInput) -> List[DetectedEvent]:
-        """VLM'in dogrudan urettigi tipli olaylari (`structured_events`) dogrulayip `DetectedEvent`e cevirir.
+        """VLM'in dogrudan urettigi olaylari (`structured_events`) `DetectedEvent`e cevirir.
 
-        Yalnizca `EventType` enum'unda tanimli tipler kabul edilir (gecersiz
-        tipler atlanir); guven skoru 0-1 araligina kirpilir ve zaman damgasi
-        item'da yoksa cagrinin zaman damgasina duser. `event_id`/`evidence_ids`/
-        `end_time`/`risk_score` (VLM'in olay kumeleme ciktisi - bkz.
+        T020 (kimlik ayrimi): olayin BIRINCIL kimligi artik VLM'in KENDI
+        urettigi `event_name` alanidir (serbest bicimli, ONCEDEN TANIMLI bir
+        taksonomiyle SINIRLI DEGIL) - `EventType` enum'unda olup olmamasi bir
+        KABUL/RED kriteri DEGILDIR; hicbir olay bu yuzden ATILMAZ. `type`/
+        `canonical_event_type` alani varsa VE `EventType`de GERCEKTEN
+        taniniyorsa opsiyonel `event_type` (canonical baglanti) olarak
+        aktarilir; taninmiyorsa veya yoksa `event_type=None` kalir (bu, KASITLI
+        ve GECERLI bir "eslestirilemedi" durumudur - `siniflandirilamadi` ya da
+        baska bir kategoriye ZORLANMAZ).
+
+        Geriye uyumluluk: eski/degrade bir VLM ciktisi yalnizca `type` alanini
+        (yeni `event_name`/`canonical_event_type` cifti DEGIL) uretebilir; bu
+        durumda `type` degeri hem `event_name` HEM DE (gecerliyse) `event_type`
+        icin kullanilir - hicbir olay bu geciste KAYBOLMAZ.
+
+        Guven skoru 0-1 araligina kirpilir; zaman damgasi item'da yoksa
+        cagrinin zaman damgasina duser. `event_id`/`evidence_ids`/`end_time`/
+        `risk_score` (VLM'in olay kumeleme ciktisi - bkz.
         `src/prompts/vlm_prompts.py`) varsa aynen tasinir; hicbiri VLM
         katmaninda UYDURULMAZ, yalnizca burada oldugu gibi aktarilir (kimlik
         dogrulamasi/`unassigned` yonetimi `src/main.py` katmaninda yapilir).
@@ -355,10 +371,18 @@ class EventEngine:
             if not isinstance(item, dict):
                 continue
 
-            raw_type = str(item.get("type", "")).strip().lower()
-            if raw_type not in _VALID_EVENT_TYPES:
-                logger.debug("Structured olay atlandi (gecersiz tip): %r", raw_type)
+            legacy_type_raw = str(item.get("type", "")).strip().lower()
+            event_name = str(item.get("event_name") or item.get("event") or item.get("event_label") or "").strip()
+            if not event_name:
+                # Eski/degrade cikti: yalnizca `type` var - onu HEM event_name
+                # HEM (gecerliyse) canonical event_type icin kullan (kayip yok).
+                event_name = legacy_type_raw
+            if not event_name:
+                logger.debug("Structured olay atlandi (event_name/type ikisi de bos): %r", item)
                 continue
+
+            canonical_raw = str(item.get("canonical_event_type") or legacy_type_raw or "").strip().lower()
+            event_type: Optional[str] = canonical_raw if canonical_raw in _VALID_EVENT_TYPES else None
 
             confidence = self._coerce_confidence(item.get("confidence"))
             if confidence < self._min_confidence:
@@ -371,14 +395,18 @@ class EventEngine:
             end_time_raw = item.get("end_time")
             evidence_ids = [str(eid) for eid in (item.get("evidence_ids") or []) if isinstance(eid, (str, int))]
             keywords = self._normalize_free_form_keywords(item.get("keywords"))
-            if not keywords:
+            if not keywords and event_type is not None:
                 # VLM bu olay icin `keywords` uretmediyse (eski prompt/model
-                # veya bos liste), guvenli bir fallback olarak sabit
-                # taksonomi-tabanli cikarima duser (bkz. `_extract_keywords_for_type`).
-                keywords = self._extract_keywords_for_type(raw_type, evidence)
+                # veya bos liste) VE bir canonical `event_type` biliniyorsa,
+                # guvenli bir fallback olarak sabit taksonomi-tabanli
+                # cikarima duser (bkz. `_extract_keywords_for_type`). Canonical
+                # tip yoksa (serbest/yeni olay) taksonomi-fallback UYGULANAMAZ
+                # - bos liste kalir, hicbir terim UYDURULMAZ.
+                keywords = self._extract_keywords_for_type(event_type, evidence)
             detections.append(
                 DetectedEvent(
-                    event_type=raw_type,
+                    event_name=event_name,
+                    event_type=event_type,
                     description=evidence,
                     timestamp=start_time,
                     end_timestamp=self._coerce_timestamp(end_time_raw, start_time) if end_time_raw is not None else None,
@@ -543,6 +571,6 @@ if __name__ == "__main__":
     demo_events = EventEngine().detect(demo_input)
     for demo_event in demo_events:
         print(
-            f"[{demo_event.event_type}] conf={demo_event.confidence} "
+            f"[{demo_event.event_name} / canonical={demo_event.event_type}] conf={demo_event.confidence} "
             f"keywords={demo_event.matched_keywords}"
         )

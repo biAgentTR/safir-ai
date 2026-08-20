@@ -39,6 +39,7 @@ def _temporal_event(
 ) -> TemporalEvent:
     return TemporalEvent(
         event_id=event_id,
+        event_name=event_type,
         event_type=event_type,
         description="test aciklamasi",
         start_timestamp=timestamp,

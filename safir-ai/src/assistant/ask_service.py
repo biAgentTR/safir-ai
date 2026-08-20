@@ -139,9 +139,17 @@ class AskService:
             "risk_level": report.risk_level,
             "recommended_action": report.recommended_action,
             "actions": report.actions,
+            "detected_event_names": report.detected_event_names,
             "detected_event_types": report.detected_event_types,
-            "event_keywords": [
-                {"event_type": ek.event_type, "keywords": ek.keywords} for ek in report.event_keywords
+            "events": [
+                {
+                    "event_name": ev.event_name,
+                    "event_type": ev.event_type,
+                    "keywords": ev.keywords,
+                    "risk_level": ev.risk_level,
+                    "risk_score": ev.risk_score,
+                }
+                for ev in report.events
             ],
             "escalation_tier": report.escalation_tier,
             "auto_dispatched": report.auto_dispatched,

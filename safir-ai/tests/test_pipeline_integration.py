@@ -616,7 +616,8 @@ def test_report_event_keywords_preserve_exact_non_taxonomy_vlm_strings(
             structured_events=[
                 {
                     "event_id": "e1",
-                    "type": "yangin_duman",
+                    "event_name": "yangin_duman",
+                    "canonical_event_type": "yangin_duman",
                     "start_time": evidence_frames[-1].timestamp_sec if evidence_frames else 0.0,
                     "end_time": evidence_frames[-1].timestamp_sec if evidence_frames else 0.0,
                     "evidence_ids": [ef.evidence_id for ef in evidence_frames],
@@ -632,8 +633,8 @@ def test_report_event_keywords_preserve_exact_non_taxonomy_vlm_strings(
 
     report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
 
-    assert report.event_keywords, "En az bir EventKeywords girisi olmali"
-    yangin_entry = next(ek for ek in report.event_keywords if ek.event_type == "yangin_duman")
+    assert report.events, "En az bir EventSummary girisi olmali"
+    yangin_entry = next(ev for ev in report.events if ev.event_name == "yangin_duman")
 
     # 1) Tam olarak VLM'in urettigi ifadeler - EKSIKSIZ ve DEGISTIRILMEDEN.
     assert yangin_entry.keywords == deliberately_non_taxonomy_keywords
@@ -646,7 +647,7 @@ def test_report_event_keywords_preserve_exact_non_taxonomy_vlm_strings(
 
     # 3) API payload'i simule eden model_dump() ciktisinda da AYNEN korunmali.
     payload = report.model_dump(mode="json")
-    payload_entry = next(ek for ek in payload["event_keywords"] if ek["event_type"] == "yangin_duman")
+    payload_entry = next(ev for ev in payload["events"] if ev["event_name"] == "yangin_duman")
     assert payload_entry["keywords"] == deliberately_non_taxonomy_keywords
 
 
@@ -666,7 +667,8 @@ def test_report_event_keywords_empty_when_vlm_provides_none(
             structured_events=[
                 {
                     "event_id": "e1",
-                    "type": "genel_gozlem",
+                    "event_name": "genel_gozlem",
+                    "canonical_event_type": "genel_gozlem",
                     "start_time": evidence_frames[-1].timestamp_sec if evidence_frames else 0.0,
                     "end_time": evidence_frames[-1].timestamp_sec if evidence_frames else 0.0,
                     "evidence_ids": [ef.evidence_id for ef in evidence_frames],
@@ -682,4 +684,118 @@ def test_report_event_keywords_empty_when_vlm_provides_none(
     report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
 
     assert report is not None
-    assert report.event_keywords == [] or all(isinstance(ek.keywords, list) for ek in report.event_keywords)
+    assert report.events == [] or all(isinstance(ev.keywords, list) for ev in report.events)
+
+
+# ------------------------------------------------------------------
+# T020: VLM olay kimligini KENDI belirler - taksonomiye ZORLAMA yok (EN ONEMLI TEST)
+# ------------------------------------------------------------------
+
+
+def test_vlm_event_impossible_to_match_existing_taxonomy_survives_as_first_class_event(
+    pipeline: SafirPipeline, motion_video: str
+) -> None:
+    """EN ONEMLI test (T020): VLM, ZATEN BILINEN 11 kategoriden HICBIRINE
+    oturmayan bir olay uretir ("yerde_hareketsiz_kisi", `canonical_event_type`
+    vermez). Bu olay:
+    - event_name DEGISMEDEN hayatta kalmali,
+    - hicbir EventType'a (orn. 'dusme_riski', 'genel_gozlem') ZORLA
+      OTURTULMAMALI (`event_type` None kalmali),
+    - RuleEngine bu olay icin HICBIR RuleMatch URETMEMELI,
+    - risk UYDURULMAMALI (bu olayin risk_level/risk_score'u None kalmali),
+    - UI/API payload'inda ("yerde_hareketsiz_kisi" STRING'i) aynen gorunmeli,
+    - keywords DEGISTIRILMEDEN korunmali."""
+    from src.vlm.base_vlm import VLMResponse
+
+    keywords = ["yerde yatan kişi", "hareketsiz kişi", "olası yaralanma"]
+
+    def _fake_analyze(evidence_frames, prompt):
+        return VLMResponse(
+            description="Sahada bir kisi yerde hareketsiz yatiyor.",
+            model_name="fake-vlm",
+            frame_count=len(evidence_frames),
+            latency_ms=1.0,
+            structured_events=[
+                {
+                    "event_id": "e1",
+                    "event_name": "yerde_hareketsiz_kisi",
+                    # canonical_event_type BILEREK VERILMEDI (VLM emin degil).
+                    "start_time": evidence_frames[-1].timestamp_sec if evidence_frames else 0.0,
+                    "end_time": evidence_frames[-1].timestamp_sec if evidence_frames else 0.0,
+                    "evidence_ids": [ef.evidence_id for ef in evidence_frames],
+                    "description": "Bir kisi yerde hareketsiz yatiyor.",
+                    "keywords": keywords,
+                    "confidence": 0.8,
+                    # risk_score de KASITLI olarak verilmedi.
+                }
+            ],
+        )
+
+    pipeline._vlm.analyze_evidence = _fake_analyze  # type: ignore[assignment]
+
+    report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+
+    assert report is not None  # sistem COKMEDI
+
+    entry = next(ev for ev in report.events if ev.event_name == "yerde_hareketsiz_kisi")
+
+    # event_name DEGISMEDEN hayatta kaldi.
+    assert entry.event_name == "yerde_hareketsiz_kisi"
+    # Hicbir EventType'a ZORLA OTURTULMADI.
+    assert entry.event_type is None
+    # Risk UYDURULMADI (bu olay icin RuleEngine eslesmesi yok).
+    assert entry.risk_level is None
+    assert entry.risk_score is None
+    # keywords DEGISTIRILMEDEN korundu.
+    assert entry.keywords == keywords
+
+    # detected_event_names, canonical'i olmasa bile bu olayi ICERIR.
+    assert "yerde_hareketsiz_kisi" in report.detected_event_names
+    # detected_event_types (yalnizca GERCEKTEN eslesenler) bu olayi ICERMEZ.
+    assert "yerde_hareketsiz_kisi" not in report.detected_event_types
+
+    # API payload'inda (model_dump) STRING aynen gorunuyor.
+    payload = report.model_dump(mode="json")
+    assert "yerde_hareketsiz_kisi" in payload["detected_event_names"]
+    payload_entry = next(ev for ev in payload["events"] if ev["event_name"] == "yerde_hareketsiz_kisi")
+    assert payload_entry["event_type"] is None
+    assert payload_entry["risk_level"] is None
+    assert payload_entry["keywords"] == keywords
+
+
+def test_vlm_event_with_null_canonical_type_remains_first_class_alongside_others(
+    pipeline: SafirPipeline, motion_video: str
+) -> None:
+    """Ikinci ornek (T020): "dengesiz_malzeme_istifi", `canonical_event_type=null`.
+    Bu olay da (baska taksonomi-uyumlu bir olayla birlikte gelse bile) birinci
+    sinif bir olay olarak kalmali - gizlenmemeli/atlanmamali."""
+    from src.vlm.base_vlm import VLMResponse
+
+    def _fake_analyze(evidence_frames, prompt):
+        return VLMResponse(
+            description="Sahada dengesiz istiflenmis malzeme var.",
+            model_name="fake-vlm",
+            frame_count=len(evidence_frames),
+            latency_ms=1.0,
+            structured_events=[
+                {
+                    "event_id": "e1",
+                    "event_name": "dengesiz_malzeme_istifi",
+                    "canonical_event_type": None,
+                    "start_time": evidence_frames[-1].timestamp_sec if evidence_frames else 0.0,
+                    "end_time": evidence_frames[-1].timestamp_sec if evidence_frames else 0.0,
+                    "evidence_ids": [ef.evidence_id for ef in evidence_frames],
+                    "description": "Dengesiz istiflenmis malzeme gozlemlendi.",
+                    "keywords": ["dengesiz istif", "devrilme riski"],
+                    "confidence": 0.7,
+                }
+            ],
+        )
+
+    pipeline._vlm.analyze_evidence = _fake_analyze  # type: ignore[assignment]
+
+    report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+
+    entry = next(ev for ev in report.events if ev.event_name == "dengesiz_malzeme_istifi")
+    assert entry.event_type is None
+    assert entry.keywords == ["dengesiz istif", "devrilme riski"]

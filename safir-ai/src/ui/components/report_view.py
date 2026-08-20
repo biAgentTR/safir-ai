@@ -163,23 +163,30 @@ class AgentRagPanel:
         st.subheader("🧠 VLM Gorsel Anlama Ciktisi (Turkce)")
         st.write(report["natural_language_summary"])
 
-        st.subheader("🏷️ Olay Kanit Ifadeleri (VLM-uretimi, serbest bicimli)")
+        st.subheader("🏷️ Tespit Edilen Olaylar (VLM-uretimi, serbest bicimli)")
         with st.container(border=True):
-            event_keywords = report.get("event_keywords") or []
-            if not event_keywords:
-                st.caption("Bu analiz icin VLM kanit ifadesi (keyword) uretilmedi.")
+            events = report.get("events") or []
+            if not events:
+                st.caption("Bu analiz icin VLM olay uretmedi.")
             else:
                 st.caption(
-                    "Bu ifadeler VLM'in evidence karelerinde GERCEKTEN gozlemledigi, "
-                    "onceden tanimli bir taksonomiyle SINIRLI OLMAYAN serbest kanitlardir "
-                    "- risk KARARI DEGILDIR (risk RuleEngine'den gelir)."
+                    "`event_name`, VLM'in KENDI urettigi serbest-bicimli olay ismidir - "
+                    "ONCEDEN TANIMLI bir taksonomiyle SINIRLI DEGILDIR. Kategori ve risk, "
+                    "yalnizca deterministik Kural Motoru (RuleEngine) bu olay icin GERCEKTEN "
+                    "bir eslesme urettiyse doludur; aksi halde 'Eslestirilemedi'/'Degerlendirilmedi' "
+                    "GECERLI bir sonuctur."
                 )
-                for entry in event_keywords:
+                for entry in events:
+                    st.markdown(f"#### {entry.get('event_name', '?')}")
                     keywords = entry.get("keywords") or []
-                    if not keywords:
-                        continue
-                    badges = " ".join(f"`{kw}`" for kw in keywords)
-                    st.markdown(f"**{entry.get('event_type', '?')}**: {badges}")
+                    if keywords:
+                        st.markdown(" ".join(f"`{kw}`" for kw in keywords))
+                    event_type = entry.get("event_type")
+                    risk_level = entry.get("risk_level")
+                    st.caption(
+                        f"Kategori: {event_type or 'Eşleştirilemedi'}  |  "
+                        f"Risk: {risk_level or 'Değerlendirilmedi'}"
+                    )
 
         st.subheader("📚 RAG & Mevzuat Karti (FAISS)")
         with st.container(border=True):

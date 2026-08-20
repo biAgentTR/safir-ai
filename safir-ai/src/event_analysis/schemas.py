@@ -132,9 +132,28 @@ olmadigi anlamina gelir (bkz. `YETKISIZ_ERISIM`/`GENEL_GOZLEM` docstring'leri).
 
 
 class DetectedEvent(BaseModel):
-    """Event Engine'in VLM metninden cikardigi tek bir yapilandirilmis olay."""
+    """Event Engine'in VLM metninden cikardigi tek bir yapilandirilmis olay.
 
-    event_type: str = Field(description="Olay kategorisi (bkz. `EventType`).")
+    T020 (kimlik ayrimi): olayin BIRINCIL kimligi artik `event_name`dir - VLM'in
+    KENDI urettigi, ONCEDEN TANIMLI bir taksonomiyle SINIRLI OLMAYAN serbest
+    bicimli isim (orn. "yerde_hareketsiz_kisi"). `event_type`, ARTIK OPSIYONEL
+    bir "canonical" baglantidir: yalnizca VLM'in gozlemi ZATEN BILINEN 11
+    kategoriden (bkz. `EventType`) birine GERCEKTEN karsilik geliyorsa
+    doldurulur; VLM bunu doldurmak ZORUNDA DEGILDIR. `None` ise bu, deterministik
+    `RuleEngine`in bu olay icin (kasitli olarak) HICBIR RuleMatch URETMEYECEGI
+    anlamina gelir - "eslesmedi" GECERLI ve BEKLENEN bir durumdur.
+    """
+
+    event_name: str = Field(
+        description="Olayin BIRINCIL, serbest-bicimli kimligi (VLM-uretimi; ONCEDEN TANIMLI bir "
+        "taksonomiyle SINIRLI DEGIL, orn. 'yerde_hareketsiz_kisi', 'dengesiz_malzeme_istifi')."
+    )
+    event_type: Optional[str] = Field(
+        default=None,
+        description="OPSIYONEL canonical baglanti (bkz. `EventType`); yalnizca VLM'in gozlemi ZATEN "
+        "BILINEN bir kategoriye GERCEKTEN karsilik geliyorsa doldurulur. `None` = 'eslestirilemedi' "
+        "(GECERLI sonuc, otomatik bir kategoriye ZORLANMAZ).",
+    )
     description: str = Field(description="Olayin dogal dil aciklamasi (VLM metninden alinir).")
     timestamp: float = Field(description="Olayin (baslangic) saniye cinsinden zaman damgasi.")
     end_timestamp: Optional[float] = Field(
@@ -174,7 +193,15 @@ class TemporalEvent(BaseModel):
     """
 
     event_id: str = Field(description="Bu `TemporalEvent`e ozgu kimlik (orn. 'evt_0').")
-    event_type: str = Field(description="Olay kategorisi (bkz. `EventType`).")
+    event_name: str = Field(
+        description="Olayin BIRINCIL, serbest-bicimli kimligi (bkz. `DetectedEvent.event_name`); "
+        "gruplama ARTIK BUNA gore yapilir (`event_type`e gore DEGIL)."
+    )
+    event_type: Optional[str] = Field(
+        default=None,
+        description="OPSIYONEL canonical baglanti (bkz. `DetectedEvent.event_type`); `None` = "
+        "'eslestirilemedi' (GECERLI, RuleEngine bu durumda hicbir RuleMatch URETMEZ).",
+    )
     description: str = Field(description="Temsili aciklama (gruptaki en son `DetectedEvent`den alinir).")
     start_timestamp: float = Field(description="Gruptaki en erken olayin zaman damgasi (saniye).")
     end_timestamp: float = Field(description="Gruptaki en son olayin zaman damgasi (saniye).")
@@ -256,7 +283,13 @@ class StructuredEvent(BaseModel):
     source_model: Optional[str] = Field(default=None, description="Aciklamayi ureten VLM'in model adi.")
 
     # --- 05 LangGraph Agentic Loop'a giden ek baglam alanlari ---
-    event_type: str = Field(description="Olay kategorisi (bkz. `EventType`).")
+    event_name: str = Field(
+        description="Olayin BIRINCIL, serbest-bicimli kimligi (bkz. `DetectedEvent.event_name`)."
+    )
+    event_type: Optional[str] = Field(
+        default=None,
+        description="OPSIYONEL canonical baglanti (bkz. `DetectedEvent.event_type`); `None` = 'eslestirilemedi'.",
+    )
     confidence: float = Field(ge=0.0, le=1.0, description="`TemporalEvent.confidence` (tekrar-duzeltilmis guven skoru).")
     temporal_event_id: str = Field(description="Bu olayin turedigi `TemporalEvent.event_id`.")
     related_rule_matches: List[RuleMatch] = Field(

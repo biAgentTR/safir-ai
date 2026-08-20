@@ -56,7 +56,7 @@ from src.memory import document_extraction
 from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
 from src.sampler.adaptive_sampler import EvidenceFrame, sampler_from_config
-from src.schemas.report import EventKeywords, EvidenceFrameOut, SafirReport, SamplerStats, TimelineEntry
+from src.schemas.report import EventSummary, EvidenceFrameOut, SafirReport, SamplerStats, TimelineEntry
 from src.utils.config_loader import SafirConfig, load_config
 from src.vlm.base_vlm import VLMResponse
 from src.vlm.factory import get_llm_client, get_vlm_client
@@ -1039,7 +1039,8 @@ class SafirPipeline:
     ) -> SafirReport:
         """06-07: Olay kaydi (EventBuilder/History/Store) + nihai `SafirReport` insasi."""
         current_call_events = _select_current_call_events(temporal_events, latest_timestamp)
-        detected_event_types = sorted({te.event_type for te in current_call_events})
+        detected_event_names = sorted({te.event_name for te in current_call_events})
+        detected_event_types = sorted({te.event_type for te in current_call_events if te.event_type})
         structured_events = self._event_builder.build_batch(current_call_events, rule_matches)
         # Her StructuredEvent, EventBuilder tarafindan KENDI rule_matches'inden
         # deterministik olarak risk tasir (bkz. risk_resolver.py); bir olay
@@ -1078,9 +1079,17 @@ class SafirPipeline:
             escalation_tier=escalation.tier.value,
             auto_dispatched=escalation.auto_dispatched,
             alert_id=escalation.alert_id,
+            detected_event_names=detected_event_names,
             detected_event_types=detected_event_types,
-            event_keywords=[
-                EventKeywords(event_type=se.event_type, keywords=se.keywords) for se in structured_events
+            events=[
+                EventSummary(
+                    event_name=se.event_name,
+                    event_type=se.event_type,
+                    keywords=se.keywords,
+                    risk_level=se.risk_level,
+                    risk_score=se.risk_score,
+                )
+                for se in structured_events
             ],
             timeline=[
                 TimelineEntry(timestamp=e["timestamp"], description=e["description"]) for e in timeline

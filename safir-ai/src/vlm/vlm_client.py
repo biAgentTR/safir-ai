@@ -109,7 +109,8 @@ class MockVLMClient(BaseVLM):
             structured_events = [
                 {
                     "event_id": "mock_e1",
-                    "type": "arac_yaya_yakinligi",
+                    "event_name": "arac_yaya_yakinligi",
+                    "canonical_event_type": "arac_yaya_yakinligi",
                     "start_time": evidence_frames[0].timestamp_sec,
                     "end_time": evidence_frames[-1].timestamp_sec,
                     "evidence_ids": [ef.evidence_id for ef in evidence_frames],

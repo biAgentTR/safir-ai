@@ -261,8 +261,10 @@ def test_structured_events_keyword_extraction_is_scoped_to_own_event_type() -> N
     assert events[0].matched_keywords == []
 
 
-def test_structured_invalid_type_falls_back_to_keywords() -> None:
-    """Structured olaylarin tipi enum'da yoksa, anahtar-kelime fallback devreye girer."""
+def test_structured_type_not_in_taxonomy_is_kept_as_free_form_event_name_not_rejected() -> None:
+    """T020: `EventType` enum'unda OLMAYAN bir `type`, ARTIK "gecersiz" sayilip
+    atilmaz/fallback'e dusurulmez - GECERLI bir serbest-bicimli `event_name`
+    olarak KABUL EDILIR; `event_type` (canonical) ise `None` kalir."""
     engine = EventEngine()
     events = engine.detect(
         _input_structured(
@@ -270,10 +272,9 @@ def test_structured_invalid_type_falls_back_to_keywords() -> None:
             description="forklift yaya gecidine yaklasti",
         )
     )
-    types = {e.event_type for e in events}
-    assert EventType.ARAC_YAYA_YAKINLIGI.value in types
-    # Fallback yolu anahtar kelimeyle esler.
-    assert any(e.matched_keywords for e in events)
+    assert len(events) == 1
+    assert events[0].event_name == "gecersiz_tip"
+    assert events[0].event_type is None
 
 
 def test_structured_confidence_clamped_and_timestamp_defaults() -> None:

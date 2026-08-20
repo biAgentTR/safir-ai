@@ -89,14 +89,21 @@ class RegulationRetriever(Protocol):
         ...
 
 
-def _safe_event_type(value: str) -> Optional[EventType]:
-    """Bir string'i `EventType`e cevirir; bilinmeyen/gecersiz degerlerde `None` dondurur.
+def _safe_event_type(value: Optional[str]) -> Optional[EventType]:
+    """Bir string'i `EventType`e cevirir; bilinmeyen/gecersiz/`None` degerlerde `None` dondurur.
+
+    T020: `TemporalEvent.event_type` artik OPSIYONEL (canonical baglanti) -
+    `value=None` (VLM'in gozlemi bilinen hicbir kategoriye karsilik gelmiyor,
+    yani serbest/yeni bir `event_name`) GECERLI bir girdidir; bu durumda bu
+    fonksiyon (kasitli olarak) `None` dondurur ve cagiran taraf HICBIR
+    RuleMatch URETMEZ - bir kategoriye ZORLAMA YAPILMAZ.
 
     Args:
-        value: `TemporalEvent.event_type` gibi serbest bir string.
+        value: `TemporalEvent.event_type` (opsiyonel canonical baglanti) gibi
+            serbest bir string veya `None`.
 
     Returns:
-        Eslesen `EventType` uyesi, yoksa `None`.
+        Eslesen `EventType` uyesi, yoksa (bilinmeyen deger VEYA `None`) `None`.
     """
     try:
         return EventType(value)
@@ -338,6 +345,7 @@ if __name__ == "__main__":
     demo_events = [
         TemporalEvent(
             event_id="evt_0",
+            event_name="kkd_ihlali",
             event_type="kkd_ihlali",
             description="Personel baretsiz calisiyor.",
             start_timestamp=0.0,
@@ -351,6 +359,7 @@ if __name__ == "__main__":
         ),
         TemporalEvent(
             event_id="evt_1",
+            event_name="arac_yaya_yakinligi",
             event_type="arac_yaya_yakinligi",
             description="Forklift yaya gecidine yaklasiyor.",
             start_timestamp=8.0,
