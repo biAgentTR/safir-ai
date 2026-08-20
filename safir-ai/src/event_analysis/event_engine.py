@@ -377,7 +377,7 @@ class EventEngine:
                     timestamp=start_time,
                     end_timestamp=self._coerce_timestamp(end_time_raw, start_time) if end_time_raw is not None else None,
                     confidence=confidence,
-                    matched_keywords=[],
+                    matched_keywords=self._extract_keywords_for_type(raw_type, evidence),
                     source_model=engine_input.source_model,
                     vlm_event_id=str(item.get("event_id")) if item.get("event_id") is not None else None,
                     evidence_ids=evidence_ids,
@@ -411,6 +411,36 @@ class EventEngine:
             return float(value)
         except (TypeError, ValueError):
             return fallback
+
+    @staticmethod
+    def _extract_keywords_for_type(event_type: str, description: str) -> List[str]:
+        """VLM'in yapilandirilmis (`EVENTS_JSON`) olayindaki serbest metin aciklamadan canonical anahtar kelime cikarir.
+
+        Model-tabanli (structured) path daha once `matched_keywords=[]`
+        birakiyordu (yalnizca `type` alani vardi); bu, `TemporalReasoner`in
+        kelime birlestirmesini ve `RuleEngine`in kombinasyon kurallarini
+        zayiflatiyordu. Bu metod, ayni `_KEYWORD_RULES` canonical listesini
+        (anahtar-kelime fallback'inde zaten kullanilan, gercek VLM
+        ciktilarindan derlenmis kelime dagarcigi) olayin kendi `event_type`ina
+        karsi calistirarak VLM'in farkli ifadelerini ayni canonical kelimeye
+        indirger (normalizasyon); olumsuzlanmis gecisler `_is_negated` ile
+        elenir (bkz. T014).
+
+        Args:
+            event_type: `DetectedEvent.event_type` (VLM'in verdigi tip).
+            description: Bu olaya ait serbest metin aciklama.
+
+        Returns:
+            Eslesen canonical anahtar kelime listesi (bulunamazsa bos liste;
+            `EventType`e karsilik gelen bir `_KEYWORD_RULES` girdisi yoksa da bos).
+        """
+        keywords = _KEYWORD_RULES.get(EventType(event_type)) if event_type in _VALID_EVENT_TYPES else None
+        if not keywords:
+            return []
+
+        text_lower = description.lower()
+        clauses = _split_into_clauses(text_lower)
+        return EventEngine._match_keywords_excluding_negated(keywords, text_lower, clauses)
 
     @staticmethod
     def _match_keywords_excluding_negated(

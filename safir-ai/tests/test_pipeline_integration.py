@@ -361,23 +361,35 @@ def test_run_produces_schema_complete_report_with_escalation(
 def test_high_risk_auto_dispatches_alarm_in_pipeline(
     pipeline: SafirPipeline, motion_video: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Yuksek risk skorunda pipeline, operator onayi beklemeden alarmi OTOMATIK tetiklemeli."""
+    """Yuksek risk skorunda pipeline, operator onayi beklemeden alarmi OTOMATIK tetiklemeli.
+
+    T016 (risk_resolver): nihai risk_score/risk_level artik LLM Agent'in
+    kararindan DEGIL, `RuleEngine`in bu cagriya ait deterministik
+    `RuleMatch`lerinden (`stage_finalize_risk`) turetiliyor. Bu videonun
+    MockVLMClient aciklamasi "forklift" iceriyor -> `arac_yaya_yakinligi`
+    tespit edilir -> OK-07 kurali "yuksek" siddet uretir (score=63); bu,
+    LLM Agent'in (burada kasitli olarak dusuk/celisen bir deger doner)
+    kararini GEZER ve yine de otomatik alarmi tetikler.
+    """
     from src.agent.langgraph_agent import AgentDecision
 
-    high_decision = AgentDecision(
-        risk_score=90,
-        risk_level="kritik",
-        recommended_action="Saglik ekibini cagir",
+    low_decision = AgentDecision(
+        risk_score=5,
+        risk_level="dusuk",
+        recommended_action="Rutin izleme",
         raw_response="{}",
-        summary="Kritik durum",
-        actions=["Saglik ekibini cagir", "Alani guvenlik altina al"],
+        summary="Rutin durum",
+        actions=["Rutin izleme"],
         events=[],
     )
-    monkeypatch.setattr(pipeline._agent, "run", lambda _prompt: high_decision)
+    monkeypatch.setattr(pipeline._agent, "run", lambda _prompt: low_decision)
 
     report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
 
-    assert report.risk_score == 90
+    # Deterministik rule engine sonucu (OK-07 -> yuksek/63), LLM'in dusuk
+    # kararini gezip nihai raporu belirler.
+    assert report.risk_score == 63
+    assert report.risk_level == "yuksek"
     assert report.escalation_tier == "alarm"
     assert report.auto_dispatched is True
     assert report.alert_id is not None
@@ -385,6 +397,34 @@ def test_high_risk_auto_dispatches_alarm_in_pipeline(
     # Operator, otomatik tetiklenen alarmi sonradan onaylayabilmeli (Human-on-the-Loop).
     record = pipeline.acknowledge_alert(report.alert_id, "operator denetledi")
     assert record.acknowledged is True
+
+
+def test_rule_engine_has_no_matches_falls_back_to_llm_agent_decision(
+    pipeline: SafirPipeline, motion_video: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hicbir kural eslesmediginde (RuleEngine sinyal uretmediginde), sistem CRASH OLMAZ
+
+    ve nihai risk, LLM Agent'in kararina (varsa) duser - deterministik risk
+    UYDURULMAZ."""
+    from src.agent.langgraph_agent import AgentDecision
+
+    monkeypatch.setattr(pipeline, "_rule_engine", type("_Empty", (), {"evaluate": staticmethod(lambda _events: [])})())
+
+    llm_decision = AgentDecision(
+        risk_score=42,
+        risk_level="orta",
+        recommended_action="Sahayi izleyin",
+        raw_response="{}",
+        summary="Belirsiz durum",
+        actions=["Sahayi izleyin"],
+        events=[],
+    )
+    monkeypatch.setattr(pipeline._agent, "run", lambda _prompt: llm_decision)
+
+    report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+
+    assert report.risk_score == 42
+    assert report.risk_level == "orta"
 
 
 def test_pipeline_sends_all_evidence_frames_to_vlm_with_no_positional_role(

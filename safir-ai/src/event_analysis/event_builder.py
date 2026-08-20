@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Dict, List
 
+from src.event_analysis.risk_resolver import resolve_deterministic_risk
 from src.event_analysis.schemas import RuleMatch, StructuredEvent, TemporalEvent
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,13 @@ class EventBuilder:
     def build(self, temporal_event: TemporalEvent, rule_matches: List[RuleMatch]) -> StructuredEvent:
         """Tek bir `TemporalEvent`i, ona ait `RuleMatch`lerle birlikte `StructuredEvent`e cevirir.
 
+        `risk_score`/`risk_level`, VLM/LLM'den DEGIL, bu olaya ait
+        `rule_matches`den `resolve_deterministic_risk` ile deterministik
+        olarak turetilir (bkz. `src/event_analysis/risk_resolver.py`). Hicbir
+        kural eslesmediyse (`rule_matches` bos veya tumu bilinmeyen siddette)
+        `None` kalir - risk UYDURULMAZ; asagi akıştaki `05 LangGraph Ajani`
+        (varsa) bu bosluğu doldurabilir.
+
         Args:
             temporal_event: `TemporalReasoner.reason(...)` ciktisindan tek bir olay.
             rule_matches: `RuleEngine.evaluate(...)` ciktisindan bu olaya ait
@@ -34,12 +42,13 @@ class EventBuilder:
             ve `05 LangGraph Ajani`na dogrudan verilebilecek `StructuredEvent`.
         """
         description = self._compose_description(temporal_event, rule_matches)
+        risk_level, risk_score = resolve_deterministic_risk(rule_matches)
 
         return StructuredEvent(
             timestamp=temporal_event.end_timestamp,
             description=description,
-            risk_score=None,
-            risk_level=None,
+            risk_score=risk_score,
+            risk_level=risk_level,
             source_model=temporal_event.source_model,
             event_type=temporal_event.event_type,
             confidence=temporal_event.confidence,

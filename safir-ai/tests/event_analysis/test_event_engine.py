@@ -231,8 +231,10 @@ def _input_structured(structured, description="belirgin tehlike yok", timestamp=
 
 
 def test_structured_events_take_precedence_over_keywords() -> None:
-    """VLM tipli olay urettiyse, anahtar-kelime taramasi yerine ONLAR kullanilir."""
-    # Aciklamada 'forklift' GECMIYOR ama structured olay var -> yine de tespit edilir.
+    """VLM tipli olay urettiyse, olay TIPI icin anahtar-kelime taramasi yerine ONLAR kullanilir."""
+    # Structured olay VAR (tip anahtar-kelime taramasiyla belirlenmiyor); ama
+    # bu olayin KENDI aciklamasindan (evidence) canonical keyword'ler yine de
+    # cikarilir (bkz. T016 - matched_keywords artik structured path'te de doluyor).
     engine = EventEngine()
     events = engine.detect(
         _input_structured(
@@ -243,7 +245,20 @@ def test_structured_events_take_precedence_over_keywords() -> None:
     assert events[0].event_type == EventType.ARAC_YAYA_YAKINLIGI.value
     assert events[0].confidence == 0.9
     assert events[0].timestamp == 15.0
-    assert events[0].matched_keywords == []  # anahtar-kelime yolu calismadi
+    assert events[0].matched_keywords == ["forklift"]
+
+
+def test_structured_events_keyword_extraction_is_scoped_to_own_event_type() -> None:
+    """Keyword cikarimi, olayin KENDI `event_type`inin canonical listesiyle sinirlidir (baska tiplerinkiyle degil)."""
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured(
+            [{"type": "kkd_ihlali", "timestamp": 15, "confidence": 0.9, "evidence": "forklift yaklasti"}]
+        )
+    )
+    assert len(events) == 1
+    # "forklift" arac_yaya_yakinligi kategorisinin kelimesidir, kkd_ihlali'nin degil.
+    assert events[0].matched_keywords == []
 
 
 def test_structured_invalid_type_falls_back_to_keywords() -> None:

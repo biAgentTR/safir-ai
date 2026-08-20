@@ -186,3 +186,39 @@ def test_build_batch_with_no_matching_rule_matches_still_builds_events() -> None
 
     assert len(structured_events) == 1
     assert structured_events[0].related_rule_matches == []
+
+
+# --- T016: deterministic risk (rule engine -> StructuredEvent.risk_score/risk_level) -----
+
+
+def test_build_with_rule_match_sets_deterministic_risk_from_severity() -> None:
+    """VLM/LLM degil, RuleEngine'in siddeti nihai risk_score/risk_level'i belirler."""
+    event = _temporal_event("evt_0")
+    match = _rule_match("ISG-M24", source_event_id="evt_0", severity="orta")
+
+    structured = EventBuilder().build(event, [match])
+
+    assert structured.risk_level == "orta"
+    assert structured.risk_score == 38
+
+
+def test_build_with_combination_rule_uses_the_highest_severity() -> None:
+    event = _temporal_event("evt_0")
+    matches = [
+        _rule_match("ISG-M24", source_event_id="evt_0", severity="orta"),
+        _rule_match("COMBO-01", source_event_id="evt_0", severity="kritik", rule_description="Bilesik ihlal."),
+    ]
+
+    structured = EventBuilder().build(event, matches)
+
+    assert structured.risk_level == "kritik"
+    assert structured.risk_score == 88
+
+
+def test_build_without_any_rule_match_leaves_risk_none_not_fabricated() -> None:
+    event = _temporal_event("evt_0", event_type="genel_gozlem")
+
+    structured = EventBuilder().build(event, [])
+
+    assert structured.risk_level is None
+    assert structured.risk_score is None

@@ -44,6 +44,7 @@ from src.decision.escalation import EscalationPolicy
 from src.event_analysis.event_builder import EventBuilder
 from src.event_analysis.event_engine import EventEngine
 from src.event_analysis.event_history import EventHistory
+from src.event_analysis.risk_resolver import resolve_deterministic_risk
 from src.event_analysis.rule_engine import RuleEngine
 from src.event_analysis.schemas import DetectedEvent, EventEngineInput, RuleMatch, TemporalEvent
 from src.event_analysis.temporal_reasoner import DEFAULT_RELATION_WINDOW_SEC, TemporalReasoner
@@ -759,6 +760,9 @@ class SafirPipeline:
         decision = self.stage_decide(prompt_block)
         _emit("decision", {"decision": decision})
 
+        decision = self.stage_finalize_risk(decision, rule_matches)
+        _emit("decision_final", {"decision": decision})
+
         escalation = self.stage_escalate(decision, vlm_response)
         _emit("escalation", {"escalation": escalation})
 
@@ -946,6 +950,49 @@ class SafirPipeline:
         """05: LangGraph ajani muhakeme -> `AgentDecision` (risk skoru, ozet, aksiyonlar)."""
         return self._agent.run(prompt_block)
 
+    def stage_finalize_risk(self, decision, rule_matches):
+        """07c: `RuleEngine`in deterministik kararini nihai risk kaynagi olarak uygular.
+
+        Mimari karar: VLM ve `05 LangGraph Agent`taki LLM risk KARARI vermez,
+        yalnizca gozlem/ozet uretir; nihai `risk_score`/`risk_level`,
+        `RuleEngine.evaluate(...)` ciktisindan (`rule_matches`) deterministik
+        olarak turetilir (bkz. `src/event_analysis/risk_resolver.py`). Bu
+        cagriya ait HICBIR kural eslesmediyse (`rule_matches` bos veya
+        taninmayan siddette), LLM Agent'in karari (`decision.risk_score`/
+        `risk_level`/`risk_status`) DEGISTIRILMEDEN korunur - boylece
+        deterministik sinyal yokken sistem sessizce "dusuk risk" UYDURMAZ,
+        LLM'in (varsa) degerlendirmesine ya da "unknown" durumuna duser.
+
+        Onemli guvenlik istisnasi: `decision.risk_status == "unknown"` ise
+        (05 LangGraph Agent muhakemesi TAMAMEN basarisiz oldu, bkz.
+        `SafirAgent._degraded_decision`) override YAPILMAZ. Bu, mevcut
+        "ajan cokerse hicbir zaman otomatik alarm tetiklenmez, operator
+        manuel incelemeye yonlendirilir" guvenlik davranisini korur - ajanin
+        kendisi calismiyorken (potansiyel sistem-genelinde bir sorunun
+        isareti olabilir) rule engine sinyaline dayanarak fiziksel bir
+        alarmi OTOMATIK tetiklemek istenmez; bu durumda operator "unknown"
+        durumunu gorup MANUEL karar vermelidir.
+
+        Args:
+            decision: `stage_decide(...)` ciktisi (`AgentDecision`).
+            rule_matches: `stage_events(...)` ciktisindan bu cagriya ait
+                tum `RuleMatch` listesi (tekli + kombinasyon).
+
+        Returns:
+            `risk_score`/`risk_level`/`risk_status` alanlari (varsa, ajan
+            basarili muhakeme urettiyse) rule engine sonucuyla guncellenmis
+            ayni `decision` nesnesi.
+        """
+        if decision.risk_status == "unknown":
+            return decision
+
+        risk_level, risk_score = resolve_deterministic_risk(rule_matches)
+        if risk_level is not None:
+            decision.risk_score = risk_score
+            decision.risk_level = risk_level
+            decision.risk_status = "assessed"
+        return decision
+
     def stage_escalate(self, decision, vlm_response: VLMResponse):
         """06: Otomatik eskalasyon -> `EscalationDecision` (yuksek/kritikte alarm otomatik tetiklenir)."""
         escalation = self._escalation.evaluate(
@@ -982,10 +1029,14 @@ class SafirPipeline:
         current_call_events = _select_current_call_events(temporal_events, latest_timestamp)
         detected_event_types = sorted({te.event_type for te in current_call_events})
         structured_events = self._event_builder.build_batch(current_call_events, rule_matches)
+        # Her StructuredEvent, EventBuilder tarafindan KENDI rule_matches'inden
+        # deterministik olarak risk tasir (bkz. risk_resolver.py); bir olay
+        # icin hicbir kural eslesmediyse (risk_score/level None), cagri-geneli
+        # (artik rule-engine-oncelikli, bkz. stage_finalize_risk) decision'a duser.
         recorded_event_ids = self._event_history.record_batch(
             structured_events,
-            risk_scores=[decision.risk_score] * len(structured_events),
-            risk_levels=[decision.risk_level] * len(structured_events),
+            risk_scores=[e.risk_score if e.risk_score is not None else decision.risk_score for e in structured_events],
+            risk_levels=[e.risk_level if e.risk_level is not None else decision.risk_level for e in structured_events],
             video_source=video_source,
         )
         logger.info(
