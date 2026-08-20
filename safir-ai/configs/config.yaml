@@ -77,6 +77,21 @@ sampler:
   # bu kontrolle elenmez.
   dedup_similarity_ratio: 0.5        # Son secilen kareye gore fark orani bu_oran*min_change_threshold'dan dusukse "duplicate"
 
+  # NOT (tek-kareli guclu/lokal degisim): early_change_min_count'un cok-kareli
+  # onayindan BAGIMSIZ, ayri bir yol - ana esigin ALTINDA ama TEK bir karede
+  # zaten guclu+lokal olan sinyalleri onay beklemeden yakalar.
+  single_frame_change_enabled: true
+  single_frame_change_noise_floor_ratio: 2.0   # skor >= bu_oran * max(adaptive_noise_floor, early_esik) ise "guclu"
+  single_frame_change_max_area_ratio: 0.35     # hareket kutusu/kare alani bu orani asarsa "lokal degil" (elenir)
+
+  # NOT (tanilama/diagnostic): Varsayilan KAPALI - secim davranisini/
+  # performansini DEGISTIRMEZ. Acildiginda her ornek kare icin tam karar
+  # izini (skorlar, esikler, durum, secim/red nedeni) diske yazar; goruntu/
+  # base64 veri ASLA loglanmaz. Kok neden analizi icindir.
+  diagnostic_enabled: false          # true yapilirsa diagnostic CSV/JSONL uretilir
+  diagnostic_output_dir: "outputs/diagnostics"  # Tanilama dosyalarinin yazilacagi klasor
+  diagnostic_output_format: "jsonl"  # "jsonl" veya "csv"
+
   # --- Geriye donuk uyumluluk / alternatif sampler ince ayarlari ---
   idle_interval_sec: 2.0             # Sakin bolgelerde kare yakalama araligi (saniye/kare)
   active_fps: 5                      # Hareket/degisim anlarinda aktif ornekleme hizi (fps)
