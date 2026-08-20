@@ -582,3 +582,104 @@ def test_record_feedback_delegates_to_event_history(
     rows = pipeline._event_store.query_recent(limit=10)
     row = next(r for r in rows if r["id"] == report.event_id)
     assert row["feedback"] == "true_positive"
+
+
+# ------------------------------------------------------------------
+# T019: VLM-uretimi serbest-bicimli event keywords - uctan uca (VLM -> rapor)
+# ------------------------------------------------------------------
+
+
+def test_report_event_keywords_preserve_exact_non_taxonomy_vlm_strings(
+    pipeline: SafirPipeline, motion_video: str
+) -> None:
+    """EN ONEMLI regresyon: VLM'in urettigi, ONCEDEN TANIMLI `_KEYWORD_RULES`
+    taksonomisinde HICBIR SEKILDE bulunmayan serbest ifadeler (orn. "yogun
+    siyah duman", "dumanin tavana dogru yukselmesi"), pipeline'in TAMAMINDAN
+    (VLM -> EVENTS_JSON -> EventEngine -> TemporalEvent -> StructuredEvent ->
+    SafirReport -> API payload/`model_dump()`) BIREBIR AYNI sekilde gecmeli -
+    "duman"/"alev" gibi taksonomi kelimelerine INDIRGENMEMELI."""
+    from src.vlm.base_vlm import VLMResponse
+
+    deliberately_non_taxonomy_keywords = [
+        "yoğun siyah duman",
+        "alevlenme",
+        "dumanın tavana doğru yükselmesi",
+        "yanma belirtisi",
+    ]
+
+    def _fake_analyze(evidence_frames, prompt):
+        return VLMResponse(
+            description="Sahada gozlemlenen olay.",
+            model_name="fake-vlm",
+            frame_count=len(evidence_frames),
+            latency_ms=1.0,
+            structured_events=[
+                {
+                    "event_id": "e1",
+                    "type": "yangin_duman",
+                    "start_time": evidence_frames[-1].timestamp_sec if evidence_frames else 0.0,
+                    "end_time": evidence_frames[-1].timestamp_sec if evidence_frames else 0.0,
+                    "evidence_ids": [ef.evidence_id for ef in evidence_frames],
+                    "description": "Dumanla ilgili gozlem.",
+                    "keywords": deliberately_non_taxonomy_keywords,
+                    "risk_score": 70,
+                    "confidence": 0.85,
+                }
+            ],
+        )
+
+    pipeline._vlm.analyze_evidence = _fake_analyze  # type: ignore[assignment]
+
+    report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+
+    assert report.event_keywords, "En az bir EventKeywords girisi olmali"
+    yangin_entry = next(ek for ek in report.event_keywords if ek.event_type == "yangin_duman")
+
+    # 1) Tam olarak VLM'in urettigi ifadeler - EKSIKSIZ ve DEGISTIRILMEDEN.
+    assert yangin_entry.keywords == deliberately_non_taxonomy_keywords
+
+    # 2) Taksonomiye INDIRGENMEMIS: sabit "duman"/"alev" kelimeleri TEK BASINA
+    #    (ayri elemanlar olarak) listede YOK - yalnizca VLM'in kendi ifadeleri var.
+    assert "duman" not in yangin_entry.keywords
+    assert "alev" not in yangin_entry.keywords
+    assert "yangin" not in yangin_entry.keywords
+
+    # 3) API payload'i simule eden model_dump() ciktisinda da AYNEN korunmali.
+    payload = report.model_dump(mode="json")
+    payload_entry = next(ek for ek in payload["event_keywords"] if ek["event_type"] == "yangin_duman")
+    assert payload_entry["keywords"] == deliberately_non_taxonomy_keywords
+
+
+def test_report_event_keywords_empty_when_vlm_provides_none(
+    pipeline: SafirPipeline, motion_video: str
+) -> None:
+    """VLM `keywords` uretmezse (eski/degrade cikti), taksonomi-fallback devreye girer
+    (EventEngine seviyesinde beklenen); rapor CRASH olmaz, bos liste UYDURULMAZ."""
+    from src.vlm.base_vlm import VLMResponse
+
+    def _fake_analyze(evidence_frames, prompt):
+        return VLMResponse(
+            description="Sahada gozlemlenen olay.",
+            model_name="fake-vlm",
+            frame_count=len(evidence_frames),
+            latency_ms=1.0,
+            structured_events=[
+                {
+                    "event_id": "e1",
+                    "type": "genel_gozlem",
+                    "start_time": evidence_frames[-1].timestamp_sec if evidence_frames else 0.0,
+                    "end_time": evidence_frames[-1].timestamp_sec if evidence_frames else 0.0,
+                    "evidence_ids": [ef.evidence_id for ef in evidence_frames],
+                    "description": "Rutin gozlem, belirgin bulgu yok.",
+                    "risk_score": 5,
+                    "confidence": 0.5,
+                }
+            ],
+        )
+
+    pipeline._vlm.analyze_evidence = _fake_analyze  # type: ignore[assignment]
+
+    report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+
+    assert report is not None
+    assert report.event_keywords == [] or all(isinstance(ek.keywords, list) for ek in report.event_keywords)

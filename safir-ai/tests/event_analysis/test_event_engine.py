@@ -416,3 +416,26 @@ def test_structured_event_keywords_do_not_affect_confidence_or_type() -> None:
 
     assert few[0].confidence == many[0].confidence == 0.5
     assert few[0].event_type == many[0].event_type == "yangin_duman"
+
+
+def test_deliberately_non_taxonomy_keywords_survive_exactly_unchanged() -> None:
+    """T019 regresyonu: kullanicinin verdigi TAM ornek liste - hicbiri
+    `_KEYWORD_RULES` taksonomisinde YOKTUR (yalnizca 'duman' tek basina
+    taksonomide var, ama burada HEP baska ifadelerin PARCASI). Sonuc,
+    taksonomiye ("duman", "alev" gibi tek kelimelere) INDIRGENMEMELI."""
+    deliberately_non_taxonomy_keywords = [
+        "yoğun siyah duman",
+        "alevlenme",
+        "dumanın tavana doğru yükselmesi",
+        "yanma belirtisi",
+    ]
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured(
+            [{"type": "yangin_duman", "keywords": deliberately_non_taxonomy_keywords, "confidence": 0.91}]
+        )
+    )
+
+    assert len(events) == 1
+    assert events[0].matched_keywords == deliberately_non_taxonomy_keywords
+    assert events[0].matched_keywords != ["duman", "alev", "yangin", "yanma"]

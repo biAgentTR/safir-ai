@@ -163,6 +163,24 @@ class AgentRagPanel:
         st.subheader("🧠 VLM Gorsel Anlama Ciktisi (Turkce)")
         st.write(report["natural_language_summary"])
 
+        st.subheader("🏷️ Olay Kanit Ifadeleri (VLM-uretimi, serbest bicimli)")
+        with st.container(border=True):
+            event_keywords = report.get("event_keywords") or []
+            if not event_keywords:
+                st.caption("Bu analiz icin VLM kanit ifadesi (keyword) uretilmedi.")
+            else:
+                st.caption(
+                    "Bu ifadeler VLM'in evidence karelerinde GERCEKTEN gozlemledigi, "
+                    "onceden tanimli bir taksonomiyle SINIRLI OLMAYAN serbest kanitlardir "
+                    "- risk KARARI DEGILDIR (risk RuleEngine'den gelir)."
+                )
+                for entry in event_keywords:
+                    keywords = entry.get("keywords") or []
+                    if not keywords:
+                        continue
+                    badges = " ".join(f"`{kw}`" for kw in keywords)
+                    st.markdown(f"**{entry.get('event_type', '?')}**: {badges}")
+
         st.subheader("📚 RAG & Mevzuat Karti (FAISS)")
         with st.container(border=True):
             regulations = report.get("relevant_regulations", [])

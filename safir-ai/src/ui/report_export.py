@@ -65,6 +65,13 @@ class ReportExporter:
             f"<li>{regulation}</li>" for regulation in report.get("relevant_regulations", [])
         ) or "<li>Mevzuat eslestirilemedi (guvenilir/dogrulanmis bir eslesme bulunamadi).</li>"
 
+        event_keywords_html = "".join(
+            f"<li><b>{entry.get('event_type', '?')}</b>: "
+            + ", ".join(entry.get("keywords") or []) + "</li>"
+            for entry in report.get("event_keywords", [])
+            if entry.get("keywords")
+        ) or "<li>VLM kanit ifadesi (keyword) uretilmedi.</li>"
+
         timeline_html = "".join(
             f"<li>[{entry['timestamp']:.1f}s] {entry['description']}</li>"
             for entry in report.get("timeline", [])
@@ -116,6 +123,11 @@ class ReportExporter:
 <div class="section">
 <h2>Kanit Kareleri</h2>
 {evidence_html}
+</div>
+
+<div class="section">
+<h2>Olay Kanit Ifadeleri (VLM-uretimi, serbest bicimli)</h2>
+<ul>{event_keywords_html}</ul>
 </div>
 
 <div class="section">
@@ -207,6 +219,27 @@ class ReportExporter:
                 story.append(Spacer(1, 0.3 * cm))
             except (KeyError, ValueError, base64.binascii.Error):
                 continue
+
+        story.append(Paragraph("Olay Kanit Ifadeleri (VLM-uretimi, serbest bicimli)", styles["Heading2"]))
+        event_keywords = [e for e in report.get("event_keywords", []) if e.get("keywords")]
+        if event_keywords:
+            story.append(
+                ListFlowable(
+                    [
+                        ListItem(
+                            Paragraph(
+                                f"<b>{entry.get('event_type', '?')}</b>: {', '.join(entry.get('keywords') or [])}",
+                                styles["BodyText"],
+                            )
+                        )
+                        for entry in event_keywords
+                    ],
+                    bulletType="bullet",
+                )
+            )
+        else:
+            story.append(Paragraph("VLM kanit ifadesi (keyword) uretilmedi.", styles["BodyText"]))
+        story.append(Spacer(1, 0.4 * cm))
 
         story.append(Paragraph("Ilgili ISG Mevzuati (FAISS RAG)", styles["Heading2"]))
         regulations = report.get("relevant_regulations", [])

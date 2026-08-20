@@ -140,6 +140,9 @@ class AskService:
             "recommended_action": report.recommended_action,
             "actions": report.actions,
             "detected_event_types": report.detected_event_types,
+            "event_keywords": [
+                {"event_type": ek.event_type, "keywords": ek.keywords} for ek in report.event_keywords
+            ],
             "escalation_tier": report.escalation_tier,
             "auto_dispatched": report.auto_dispatched,
             "timeline": [

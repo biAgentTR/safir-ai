@@ -286,6 +286,7 @@ def serialize_report(
         "auto_dispatched": r.auto_dispatched,
         "alert_id": r.alert_id,
         "detected_event_types": r.detected_event_types,
+        "event_keywords": [{"event_type": ek.event_type, "keywords": ek.keywords} for ek in r.event_keywords],
         "vlm_model": r.vlm_model,
         "llm_model": r.llm_model,
         "timeline": [{"timestamp": round(e.timestamp, 2), "description": e.description} for e in r.timeline],

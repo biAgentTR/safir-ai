@@ -29,6 +29,25 @@ class TimelineEvent(BaseModel):
     )
 
 
+class EventKeywords(BaseModel):
+    """T019: Bir `StructuredEvent`e ait EventType + VLM-uretimi SERBEST BICIMLI kanit ifadeleri.
+
+    ONEMLI (kavramsal ayrim): `event_type` sabit/kontrollu bir kategoridir
+    (bkz. `EventType`); `keywords` ise BUNUNLA KARISTIRILMAMALIDIR - VLM'in
+    o olaya ait evidence karelerinde GERCEKTEN gozlemledigi, ONCEDEN
+    TANIMLANMIS bir taksonomiyle SINIRLI OLMAYAN serbest ifadelerdir (bkz.
+    `StructuredEvent.keywords`, `EventEngine._normalize_free_form_keywords`).
+    Bu model, o listeyi HICBIR FILTRELEME/NORMALIZASYONA UGRATMADAN,
+    `StructuredEvent`den oldugu gibi rapora/API'ye tasir.
+    """
+
+    event_type: str = Field(description="Olay kategorisi (bkz. `EventType`); sabit taksonomi.")
+    keywords: List[str] = Field(
+        default_factory=list,
+        description="VLM'in urettigi serbest-bicimli kanit ifadeleri (taksonomiyle SINIRLI DEGIL, risk KARARI DEGIL).",
+    )
+
+
 class RagContext(BaseModel):
     """Modul 4 spesifikasyonundaki ortak sema: FAISS RAG'dan gelen tek bir mevzuat sonucu.
 
@@ -112,6 +131,11 @@ class SafirReport(BaseModel):
     detected_event_types: List[str] = Field(
         default_factory=list,
         description="Bu analizde tespit edilen olay kategorileri (bkz. EventType); aciklanabilirlik/olcumleme icin.",
+    )
+    event_keywords: List[EventKeywords] = Field(
+        default_factory=list,
+        description="Her tespit edilen olayin (StructuredEvent) VLM-uretimi serbest-bicimli kanit ifadeleri "
+        "(bkz. `EventKeywords`). Onceden tanimli bir taksonomiyle FILTRELENMEZ/DEGISTIRILMEZ; risk KARARI DEGILDIR.",
     )
     timeline: List[TimelineEntry] = Field(default_factory=list, description="Kronolojik olay cizelgesi.")
     evidence_frames: List[EvidenceFrameOut] = Field(

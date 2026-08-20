@@ -350,3 +350,25 @@ def test_temporal_clustering_union_preserves_more_than_eight_keywords() -> None:
 
     assert len(result) == 1
     assert len(result[0].matched_keywords) == 10
+
+
+def test_temporal_union_matches_users_exact_example_scenario() -> None:
+    """Kullanicinin verdigi tam ornek: 3 gozlem, ayni event_type, kismen
+    ortusen serbest-bicimli keyword'ler -> TEKRARSIZ birlesim, taksonomiye
+    INDIRGENMEDEN."""
+    events = [
+        _event("yangin_duman", timestamp=0.0, keywords=["duman", "siyah duman"]),
+        _event("yangin_duman", timestamp=2.0, keywords=["yogun duman", "alev"]),
+        _event("yangin_duman", timestamp=4.0, keywords=["alevlenme", "yanma belirtisi"]),
+    ]
+    result = TemporalReasoner().reason(events)
+
+    assert len(result) == 1
+    assert result[0].matched_keywords == [
+        "duman",
+        "siyah duman",
+        "yogun duman",
+        "alev",
+        "alevlenme",
+        "yanma belirtisi",
+    ]
