@@ -212,13 +212,28 @@ class RuleEngine:
     def _describe_regulation(self, regulation_label: str) -> str:
         """Mevzuat etiketini, varsa retriever uzerinden tam metinle zenginlestirir.
 
+        T017 dogrulamasi: bu, event_type -> mevzuat uygulanabilirligi (HANGI
+        mevzuat) kararini VERMEZ - o zaten `EVENT_TYPE_REGULATION_MAP`
+        uzerinden deterministik olarak alinmistir. Burada retriever yalnizca
+        ZATEN BILINEN bu etiketin TAM METNINI getirir (bir dokuman-lookup
+        adimidir). Ancak bir RAG/index bozuklugu (yanlis indeks, stale veri,
+        alakasiz belge donen bir retriever) sessizce YANLIS bir metni bu
+        DOGRU etikete yapistirabilir - bu da raporda etiketle celisen bir
+        mevzuat metni gosterip kullaniciyi yanlis yonlendirir. Bu yuzden
+        donen metin, sorgulanan ETIKETI GERCEKTEN ICERMIYORSA (yani
+        retriever, sorulan mevzuatla ILGISIZ bir sey donduysse) enrichment
+        REDDEDILIR ve guvenli kisa etikete geri donulur; boylece uydurma/
+        yanlis-eslesen bir mevzuat metni ASLA rapora sizmaz.
+
         Args:
             regulation_label: `EVENT_TYPE_REGULATION_MAP`'ten gelen kisa etiket
                 (orn. "ISG Yonetmeligi Madde 12").
 
         Returns:
-            Retriever mevcutsa donen zenginlestirilmis metin; retriever yoksa
-            veya cagri basarisiz olursa orijinal etiket.
+            Retriever mevcutsa VE donen metin sorgulanan etiketi gercekten
+            iceriyorsa zenginlestirilmis metin; retriever yoksa, cagri
+            basarisiz olursa VEYA donen metin etiketle ILGISIZSE orijinal
+            (guvenli) etiket.
         """
         if self._retriever is None:
             return regulation_label
@@ -231,7 +246,16 @@ class RuleEngine:
             )
             return regulation_label
 
-        return enriched or regulation_label
+        if not enriched or regulation_label not in enriched:
+            if enriched:
+                logger.warning(
+                    "RuleEngine: retriever '%s' etiketiyle ILGISIZ bir metin dondurdu, "
+                    "enrichment REDDEDILDI (kisa etikete donuluyor).",
+                    regulation_label,
+                )
+            return regulation_label
+
+        return enriched
 
     def _match_combination_rules(self, sorted_events: List[TemporalEvent]) -> List[RuleMatch]:
         """`related_events` iliski kumelerini YAML'daki kombinasyon kurallarina karsi degerlendirir.

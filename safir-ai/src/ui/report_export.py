@@ -63,7 +63,7 @@ class ReportExporter:
 
         regulations_html = "".join(
             f"<li>{regulation}</li>" for regulation in report.get("relevant_regulations", [])
-        ) or "<li>Ilgili mevzuat bulunamadi.</li>"
+        ) or "<li>Mevzuat eslestirilemedi (guvenilir/dogrulanmis bir eslesme bulunamadi).</li>"
 
         timeline_html = "".join(
             f"<li>[{entry['timestamp']:.1f}s] {entry['description']}</li>"
@@ -217,7 +217,12 @@ class ReportExporter:
                 )
             )
         else:
-            story.append(Paragraph("Ilgili mevzuat bulunamadi.", styles["BodyText"]))
+            story.append(
+                Paragraph(
+                    "Mevzuat eslestirilemedi (guvenilir/dogrulanmis bir eslesme bulunamadi).",
+                    styles["BodyText"],
+                )
+            )
 
         story.append(Spacer(1, 0.4 * cm))
         story.append(Paragraph("Zaman Cizelgesi", styles["Heading2"]))

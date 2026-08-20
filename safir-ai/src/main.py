@@ -44,6 +44,7 @@ from src.decision.escalation import EscalationPolicy
 from src.event_analysis.event_builder import EventBuilder
 from src.event_analysis.event_engine import EventEngine
 from src.event_analysis.event_history import EventHistory
+from src.event_analysis.regulation_matcher import resolve_regulation_matches
 from src.event_analysis.risk_resolver import resolve_deterministic_risk
 from src.event_analysis.rule_engine import RuleEngine
 from src.event_analysis.schemas import DetectedEvent, EventEngineInput, RuleMatch, TemporalEvent
@@ -637,7 +638,7 @@ class SafirPipeline:
         self._event_store = EventStore(config.memory.sqlite)
         self._rag_service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss)
         self._rag_service.seed_default_regulations()
-        self._context_builder = ContextBuilder(self._event_store, self._rag_service)
+        self._context_builder = ContextBuilder(self._event_store)
         self._agent = SafirAgent(
             llm_config=config.llm,
             agent_config=config.agent,
@@ -930,13 +931,24 @@ class SafirPipeline:
         return detected_events, temporal_events, rule_matches, latest_timestamp
 
     def stage_context(self, vlm_response: VLMResponse, user_prompt: str, latest_timestamp: float, rule_matches):
-        """04: ContextBuilder (SQLite + FAISS RAG) + kural ozeti -> ajan istem blogu.
+        """04: ContextBuilder (SQLite + RuleEngine-dogrulanmis mevzuat) + kural ozeti -> ajan istem blogu.
+
+        T017: mevzuat listesi artik `ContextBuilder`in kendi (serbest-metin,
+        dogrulanmamis) FAISS aramasindan DEGIL, `RuleEngine.evaluate(...)`
+        ciktisindan (`rule_matches`) `resolve_regulation_matches(...)` ile
+        deterministik olarak turetilir (bkz. `src/event_analysis/regulation_matcher.py`).
+        `rule_matches` bossa mevzuat listesi de bos kalir - "Mevzuat
+        eslestirilemedi" GECERLI bir sonuctur, bir mevzuat UYDURULMAZ.
 
         Returns:
             `(prompt_block, context)`.
         """
+        regulation_matches = resolve_regulation_matches(rule_matches)
         context = self._context_builder.build(
-            vlm_description=vlm_response.description, user_prompt=user_prompt, timestamp=latest_timestamp
+            vlm_description=vlm_response.description,
+            user_prompt=user_prompt,
+            timestamp=latest_timestamp,
+            relevant_regulations=[m.regulation_title for m in regulation_matches],
         )
         prompt_block = context.to_prompt_block()
         event_analysis_summary = _summarize_rule_matches(rule_matches)

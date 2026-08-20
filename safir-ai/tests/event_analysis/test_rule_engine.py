@@ -113,18 +113,50 @@ def test_without_retriever_rule_description_is_short_regulation_label() -> None:
 
 
 def test_with_retriever_rule_description_uses_enriched_text() -> None:
-    retriever = _MockRetriever(response="[MOCK] KKD zorunlulugu detayli metin.")
+    """Retriever donen metin sorgulanan ETIKETI ICERIYORSA (gercekci/dogru bir RAG sonucu
+    gibi - bkz. `DEFAULT_ISG_REGULATIONS`in her maddesinin kendi etiketiyle basladigi format),
+    enrichment kabul edilir ve KULLANILIR."""
+    retriever = _MockRetriever(response="ISG Yonetmeligi Madde 24: KKD zorunlulugu detayli metin.")
     events = [_temporal_event("evt_0", "kkd_ihlali")]
 
     matches = RuleEngine(retriever=retriever).evaluate(events)
 
-    assert matches[0].rule_description == "[MOCK] KKD zorunlulugu detayli metin."
+    assert matches[0].rule_description == "ISG Yonetmeligi Madde 24: KKD zorunlulugu detayli metin."
     assert retriever.calls == [("ISG Yonetmeligi Madde 24", 1)]
 
 
 def test_retriever_failure_falls_back_to_short_label_without_raising() -> None:
     events = [_temporal_event("evt_0", "kkd_ihlali")]
     matches = RuleEngine(retriever=_FailingRetriever()).evaluate(events)
+
+    assert matches[0].rule_description == "ISG Yonetmeligi Madde 24"
+
+
+# --- T017: mevzuat "getirme" (RAG lookup) != "uygulanabilirlik" karari -----
+
+
+def test_retriever_returning_unrelated_regulation_text_is_rejected_not_forced() -> None:
+    """En onemli regresyon: sorgulanan mevzuat ETIKETIYLE (orn. 'ISG Yonetmeligi
+    Madde 24' - kkd_ihlali icin) HICBIR ILGISI OLMAYAN bir metin donen (bozuk
+    index/yanlis eslesen) bir retriever, bu metni RuleEngine'e ZORLA
+    KABUL ETTIREMEMELI. RuleEngine, kisa (guvenli) etikete geri donmeli -
+    ilgisiz mevzuat metni rapora ASLA SIZMAMALI."""
+    unrelated_retriever = _MockRetriever(
+        response="Operasyonel Kural OK-07: Forklift ve is makinesi trafiginde yaya gecitleri her zaman acik tutulmali."
+    )
+    events = [_temporal_event("evt_0", "kkd_ihlali")]  # KKD ihlali sorgulaniyor, forklift kurali DEGIL.
+
+    matches = RuleEngine(retriever=unrelated_retriever).evaluate(events)
+
+    # Ilgisiz (forklift) metni DEGIL, guvenli kisa etiketi kullanmali.
+    assert matches[0].rule_description == "ISG Yonetmeligi Madde 24"
+    assert "Forklift" not in matches[0].rule_description
+    assert "OK-07" not in matches[0].rule_description
+
+
+def test_retriever_returning_empty_string_falls_back_to_short_label() -> None:
+    events = [_temporal_event("evt_0", "kkd_ihlali")]
+    matches = RuleEngine(retriever=_MockRetriever(response="")).evaluate(events)
 
     assert matches[0].rule_description == "ISG Yonetmeligi Madde 24"
 

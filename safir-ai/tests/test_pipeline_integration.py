@@ -427,6 +427,96 @@ def test_rule_engine_has_no_matches_falls_back_to_llm_agent_decision(
     assert report.risk_level == "orta"
 
 
+# ------------------------------------------------------------------
+# T017: RAG/LangGraph mevzuat eslestirme - forced-match duzeltmesi
+# ------------------------------------------------------------------
+
+
+def test_report_regulations_reflect_rule_engine_match_not_raw_text_similarity(
+    pipeline: SafirPipeline, motion_video: str
+) -> None:
+    """En onemli regresyon: `_FakeRagService`, HANGI soru sorulursa sorulsun HER ZAMAN
+    `"[FAKE-RAG] {question}"` seklinde bir "belge" doner (yani her sorguya ilgisiz/
+    kosulsuz bir eslesme verir - tam olarak "ilgisiz bir ISG dokumaninin getirilip
+    zorla eslestirilmesi" senaryosu). Eger `ContextBuilder` hala eskisi gibi
+    `vlm_description` uzerinde bagimsiz bir RAG sorgusu yapsaydi, rapor bu HAM
+    metni ("[FAKE-RAG] <tum VLM aciklamasi>") "ilgili mevzuat" olarak gosterirdi.
+
+    T017 sonrasi, mevzuat listesi YALNIZCA RuleEngine'in deterministik
+    event_type -> mevzuat eslemesinden (bu videoda: forklift -> arac_yaya_yakinligi
+    -> OK-07) gelmeli; ham VLM aciklama metninin RAG'e sorulup donen sonucu
+    DEGIL.
+    """
+    report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+
+    assert report.relevant_regulations, "OK-07 deterministik olarak eslesmis olmali"
+    for regulation in report.relevant_regulations:
+        # RuleEngine._describe_regulation, retriever'i mevzuat ETIKETIYLE (orn.
+        # "Operasyonel Kural OK-07") sorgular - ham VLM aciklama metniyle DEGIL;
+        # `_FakeRagService`, sorulan soruyu aynen "[FAKE-RAG] <soru>" olarak
+        # yansitir, bu yuzden etiketin kendisi metinde gorunmeli.
+        assert "[FAKE-RAG] Operasyonel Kural OK-07" in regulation or "[FAKE-RAG] ISG" in regulation, (
+            f"Beklenmedik mevzuat metni (ham VLM aciklamasindan mi geldi?): {regulation!r}"
+        )
+        assert report.natural_language_summary not in regulation
+
+
+def test_no_rule_match_produces_empty_regulation_list_not_a_random_fake_regulation(
+    pipeline: SafirPipeline, motion_video: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RuleEngine hicbir eslesme uretmediginde (`evaluate` bos donerse), rapor
+    BOS bir `relevant_regulations` uretmeli - `_FakeRagService`nin (ilgisiz de
+    olsa) DAIMA bir "belge" dondurmesine ragmen. Kullanici, RAG retriever'in
+    kosulsuz dondurdugu rastgele bir mevzuati asla GORMEMELI."""
+    monkeypatch.setattr(
+        pipeline, "_rule_engine", type("_Empty", (), {"evaluate": staticmethod(lambda _events: [])})()
+    )
+
+    report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+
+    assert report.relevant_regulations == []
+
+
+def test_rag_service_failure_does_not_crash_the_pipeline(
+    pipeline: SafirPipeline, motion_video: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RAG servisi (retriever) patlarsa (agdan erisilemedi/hata), pipeline COKMEMELI.
+
+    `ContextBuilder` artik RAG'e hic dokunmuyor (bkz. T017); tek kalan RAG
+    cagrisi `RuleEngine._describe_regulation` icinde ZATEN try/except ile
+    korunuyor - bu test o dayanikliligi uctan uca dogrular."""
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("RAG servisi erisilemez durumda (simulasyon)")
+
+    monkeypatch.setattr(pipeline._rag_service, "query", _boom)
+
+    report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+
+    assert report is not None
+    assert report.risk_score is not None
+
+
+def test_regulation_match_presence_does_not_alter_deterministic_risk(
+    pipeline: SafirPipeline, motion_video: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Bir mevzuat eslesmesinin var/yok olmasi, RuleEngine-turevli deterministik
+    risk_score/risk_level'i DEGISTIRMEMELI (RAG/mevzuat, gizli bir ikinci risk
+    motoru DEGILDIR - bkz. risk_resolver.py, bu PR'da degistirilmedi)."""
+    report_with_match = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+    assert report_with_match.relevant_regulations  # OK-07 eslesmis olmali
+
+    # Ayni riski (OK-07 -> yuksek/63) uretecek RuleMatch'i KORU, ama mevzuat
+    # metnini bos dondurecek sekilde retriever'i degistir: risk ayni kalmali.
+    monkeypatch.setattr(pipeline._rag_service, "query", lambda *a, **k: [])
+    report_without_enriched_text = pipeline.run(
+        motion_video, "Sahnede riskli bir durum var mi degerlendir."
+    )
+
+    assert report_without_enriched_text.risk_score == report_with_match.risk_score
+    assert report_without_enriched_text.risk_level == report_with_match.risk_level
+
+
 def test_pipeline_sends_all_evidence_frames_to_vlm_with_no_positional_role(
     pipeline: SafirPipeline, motion_video: str
 ) -> None:

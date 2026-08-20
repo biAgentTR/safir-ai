@@ -167,9 +167,12 @@ class AgentRagPanel:
         with st.container(border=True):
             regulations = report.get("relevant_regulations", [])
             if not regulations:
-                st.caption("Bu analiz icin ilgili mevzuat maddesi bulunamadi.")
+                st.caption(
+                    "Mevzuat eşleştirilemedi. Gerekçe: bu analiz için RuleEngine tarafından "
+                    "doğrulanmış, güvenilir bir İSG mevzuat eşleşmesi bulunamadı."
+                )
             else:
-                st.caption("LangGraph Ajaninin `retriever_tool` uzerinden FAISS'ten getirdigi maddeler:")
+                st.caption("RuleEngine tarafindan deterministik olarak dogrulanmis mevzuat maddeleri:")
                 for regulation in regulations:
                     st.markdown(f"- {regulation}")
 
