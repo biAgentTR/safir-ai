@@ -401,7 +401,7 @@ class AdaptiveFrameSampler:
                 yazilacagi klasor (UI ve denetim/log amacli kalicilik icin).
                 ONEMLI: Kanit Karesi sayisinda sabit bir ust sinir YOKTUR
                 (eski `max_evidence_buffer` kaldirildi); uzun/surekli bir
-                olay ne kadar sürerse sürsun hicbir Kanit Karesi burada
+                olay ne kadar sürerse sürsün hicbir Kanit Karesi burada
                 sessizce atlanmaz.
             temporal_vote_window: Bir karenin candidate olarak onaylanip
                 onaylanmayacagina karar verirken dikkate alinan, o anki karar
