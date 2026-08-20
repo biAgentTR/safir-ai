@@ -19,7 +19,12 @@ from typing import Literal, Optional, Tuple
 from pydantic import BaseModel, Field
 
 SelectionReason = Literal[
-    "threshold_exceeded", "temporal_coverage", "early_change", "significant_change", "fallback"
+    "threshold_exceeded",
+    "temporal_coverage",
+    "early_change",
+    "significant_change",
+    "single_frame_change",
+    "fallback",
 ]
 
 
@@ -65,7 +70,11 @@ class EvidenceFrame(BaseModel):
             "buffer gerektirmeden korur; 'significant_change' = ana esik "
             "gecildikten sonraki kisa bir hysteresis/cooldown penceresinde, "
             "skor tekrar esigin altina dustugunde bile hala yuksek yogunlukta "
-            "secilen bir kare; 'fallback' = videoda hicbir kare esigi "
+            "secilen bir kare; 'single_frame_change' = ana esigin ALTINDA "
+            "ama TEK bir karede zaten GUCLU, LOKAL ve gurultu tabanindan "
+            "acikca ayrisan bir sinyal - 'early_change'in cok-kareli "
+            "(early_change_min_count) onayi BEKLENMEDEN, ayri ve bagimsiz "
+            "bir yoldan secilir; 'fallback' = videoda hicbir kare esigi "
             "gecemedi, sistem cokmesin diye ilk kare temsilen kullanildi "
             "(bkz. `is_fallback`)."
         ),
