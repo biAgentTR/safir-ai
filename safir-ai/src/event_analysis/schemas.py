@@ -269,6 +269,12 @@ class StructuredEvent(BaseModel):
     evidence_ids: List[str] = Field(
         default_factory=list, description="`TemporalEvent.evidence_ids` (bu olaya ait evidence kareleri) passthrough."
     )
+    keywords: List[str] = Field(
+        default_factory=list,
+        description="`TemporalEvent.matched_keywords` (VLM'in serbest-bicimli, event_type taksonomisiyle "
+        "SINIRLI OLMAYAN gorsel kanit ifadeleri; bkz. `EventEngine._detect_from_structured`) passthrough. "
+        "Sabit bir sayi siniri yoktur; risk KARARI DEGILDIR.",
+    )
 
     def to_event_store_kwargs(self) -> Dict[str, object]:
         """`EventStore.add_event(...)`e dogrudan `**kwargs` olarak verilebilecek sozluk uretir.

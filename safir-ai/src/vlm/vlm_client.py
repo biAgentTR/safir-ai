@@ -114,6 +114,7 @@ class MockVLMClient(BaseVLM):
                     "end_time": evidence_frames[-1].timestamp_sec,
                     "evidence_ids": [ef.evidence_id for ef in evidence_frames],
                     "description": _MOCK_DESCRIPTION,
+                    "keywords": ["forklift", "yaya gecidi", "arac yaklasti"],
                     "risk_score": 35,
                     "confidence": 0.6,
                 }

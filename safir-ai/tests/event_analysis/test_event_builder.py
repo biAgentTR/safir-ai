@@ -21,6 +21,7 @@ def _temporal_event(
     confidence: float = 0.6,
     occurrence_count: int = 1,
     source_model: str = "test-vlm",
+    keywords: list | None = None,
 ) -> TemporalEvent:
     return TemporalEvent(
         event_id=event_id,
@@ -31,7 +32,7 @@ def _temporal_event(
         duration=duration,
         confidence=confidence,
         occurrence_count=occurrence_count,
-        matched_keywords=[],
+        matched_keywords=keywords or [],
         source_model=source_model,
         related_events=[],
     )
@@ -222,3 +223,32 @@ def test_build_without_any_rule_match_leaves_risk_none_not_fabricated() -> None:
 
     assert structured.risk_level is None
     assert structured.risk_score is None
+
+
+# --- T018: StructuredEvent artik VLM'in serbest-bicimli keywords'lerini tasiyabiliyor ---
+
+
+def test_build_passes_through_free_form_keywords_to_structured_event() -> None:
+    event = _temporal_event("evt_0", event_type="yangin_duman", keywords=["duman", "yogun siyah duman", "alev"])
+
+    structured = EventBuilder().build(event, [])
+
+    assert structured.keywords == ["duman", "yogun siyah duman", "alev"]
+
+
+def test_build_with_more_than_eight_keywords_preserves_all_of_them() -> None:
+    many_keywords = [f"terim-{i}" for i in range(11)]
+    event = _temporal_event("evt_0", keywords=many_keywords)
+
+    structured = EventBuilder().build(event, [])
+
+    assert structured.keywords == many_keywords
+    assert len(structured.keywords) == 11
+
+
+def test_build_with_no_keywords_defaults_to_empty_list() -> None:
+    event = _temporal_event("evt_0")
+
+    structured = EventBuilder().build(event, [])
+
+    assert structured.keywords == []

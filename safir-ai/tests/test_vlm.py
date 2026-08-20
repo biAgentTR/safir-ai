@@ -127,6 +127,34 @@ def test_parse_structured_events_repairs_trailing_commas() -> None:
     assert events == [{"type": "kkd_ihlali", "confidence": 0.7}]
 
 
+def test_parse_structured_events_preserves_arbitrary_free_form_keywords() -> None:
+    """VLM'in `keywords` alaninda urettigi SERBEST BICIMLI (taksonomiyle sinirli
+    OLMAYAN) terimler, EVENTS_JSON ayristirmasi sirasinda AYNEN korunmali -
+    hicbiri atilmamali, hicbiri sabit bir listeye indirgenmemeli."""
+    from src.vlm.base_vlm import parse_structured_events
+
+    content = (
+        "Olay #1 (00:06):\n- Duman gorunuyor.\n"
+        'EVENTS_JSON: [{"event_id": "00:06yangin_duman", "type": "yangin_duman", '
+        '"keywords": ["duman", "yogun duman", "alev", "alevlenme"], "confidence": 0.91}]'
+    )
+    _, events = parse_structured_events(content)
+
+    assert len(events) == 1
+    assert events[0]["keywords"] == ["duman", "yogun duman", "alev", "alevlenme"]
+
+
+def test_parse_structured_events_keywords_field_is_optional() -> None:
+    """`keywords` alani olmayan (eski/degrade) bir EVENTS_JSON girisi hala gecerli ayristirilmali."""
+    from src.vlm.base_vlm import parse_structured_events
+
+    _, events = parse_structured_events(
+        'Gozlem.\nEVENTS_JSON: [{"type": "kkd_ihlali", "confidence": 0.7}]'
+    )
+    assert events == [{"type": "kkd_ihlali", "confidence": 0.7}]
+    assert "keywords" not in events[0]
+
+
 def test_endpoint_extra_body_merges_into_vlm_payload() -> None:
     """VLLMEndpointConfig.extra_body (vLLM guided decoding) istek govdesine eklenmeli, cekirdegi ezmemeli."""
     from src.sampler.schema import EvidenceFrame

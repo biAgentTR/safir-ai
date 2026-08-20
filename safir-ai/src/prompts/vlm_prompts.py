@@ -34,6 +34,7 @@ _EVENTS_JSON_INSTRUCTION = (
     '"start_time": <saniye>, "end_time": <saniye>, '
     '"evidence_ids": ["<sana verilen evidence_id degerlerinden SADECE bu olaya ait olanlar>"], '
     '"description": "<Turkce, nesnel, kisa aciklama>", '
+    '"keywords": ["<somut gorsel kanit ifadesi 1>", "<somut gorsel kanit ifadesi 2>", "..."], '
     '"risk_score": <0-100 kaba tahmin>, "confidence": <0.0-1.0>}\n'
     "]\n"
     f"Gecerli 'type' degerleri YALNIZCA sunlardir: {_ALLOWED_EVENT_TYPES}.\n"
@@ -51,7 +52,19 @@ _EVENTS_JSON_INSTRUCTION = (
     "gercek zaman damgalarindan (en erken/en gec) turetilmelidir; uydurma "
     "veya olay disi bir zaman verme.\n"
     "5. `risk_score` yalnizca kaba bir ipucudur; nihai risk kararini SONRAKI "
-    "Ajan katmani verir - burada asiri kesin/otoriter bir skor sunma."
+    "Ajan katmani verir - burada asiri kesin/otoriter bir skor sunma.\n"
+    "6. `keywords`: bu olayin kanitini aciklayan KISA, SOMUT gorsel ifadeler/"
+    "terimler listesi ver (orn. \"duman\", \"yogun siyah duman\", \"alev\", "
+    "\"forklift\", \"cok yakin mesafe\"). Bu liste ONCEDEN TANIMLANMIS bir "
+    "kategori/taksonomiyle SINIRLI DEGILDIR - `type` zaten sabit kategoriyi "
+    "belirtir, `keywords` ise O OLAYA OZGU, SERBEST BICIMLI kanit "
+    "ifadeleridir. YALNIZCA evidence karelerinde GERCEKTEN GORDUGUN "
+    "seyleri yaz; hicbir terim UYDURMA. Sabit bir sayi siniri YOKTUR "
+    "(bir veya birden fazla terim verebilirsin); ayni `type`e sahip farkli "
+    "olaylarin farkli `keywords` listeleri olmasi NORMALDIR (birebir ayni "
+    "terimleri tekrar etmek ZORUNDA DEGILSIN). `keywords` bir RISK KARARI "
+    "DEGILDIR - yalnizca ne GORDUGUNU tarif eder; risk seviyesini SEN "
+    "belirlemezsin."
 )
 
 VLM_OBSERVER_SYSTEM_PROMPT = (
@@ -115,13 +128,18 @@ VLM_RECONCILIATION_SYSTEM_PROMPT = (
     "bir `\"unassigned\"`/`\"siniflandirilamadi\"` kaydinda tut (silme).\n"
     "5. Risk skorlama/karar uretme; yalnizca girdideki `risk_score`/"
     "`confidence` degerlerini (birlesen olaylar icin ORTALAMA veya EN "
-    "YUKSEK, tutarli bir sekilde) tasi.\n\n"
+    "YUKSEK, tutarli bir sekilde) tasi.\n"
+    "6. `keywords`: birlesen olaylarin GIRDIDEKI `keywords` listelerinin "
+    "BIRLESIMINI (tekrarsiz) tasi - hicbir terimi KAYBETME, YENI bir terim "
+    "de UYDURMA. Girdide `keywords` olmayan bir olay birlesiyorsa, o "
+    "olaydan gelen katki icin bos birakabilirsin.\n\n"
     "Cikti YALNIZCA asagidaki bicimde olmali (insan-okur metin YAZMA, "
     "dogrudan bu satirla basla):\n"
     "EVENTS_JSON: [\n"
     '  {"event_id": "<yeni-global-id>", "type": "<tip>", '
     '"start_time": <saniye>, "end_time": <saniye>, '
     '"evidence_ids": ["..."], "description": "<Turkce, birlesik aciklama>", '
+    '"keywords": ["<girdiden birlesen terimler, tekrarsiz>"], '
     '"risk_score": <0-100>, "confidence": <0.0-1.0>}\n'
     "]"
 )

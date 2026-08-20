@@ -288,3 +288,131 @@ def test_structured_confidence_clamped_and_timestamp_defaults() -> None:
     assert len(events) == 1
     assert events[0].confidence == 1.0
     assert events[0].timestamp == 42.0
+
+
+# --- T018: VLM-uretimi serbest bicimli keywords (EventType = kategori, keywords = serbest kanit) ---
+
+
+def test_vlm_arbitrary_keywords_are_used_verbatim_not_restricted_to_fixed_taxonomy() -> None:
+    """VLM'in `EVENTS_JSON.keywords`inde urettigi terimler, `_KEYWORD_RULES`
+    sabit taksonomisiyle SINIRLANMADAN aynen kullanilmali - taksonomide
+    OLMAYAN terimler bile (orn. 'yogun siyah duman', 'alevlenme') korunmali."""
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured(
+            [
+                {
+                    "event_id": "00:06yangin_duman",
+                    "type": "yangin_duman",
+                    "keywords": ["duman", "yogun siyah duman", "alev", "alevlenme"],
+                    "confidence": 0.91,
+                }
+            ]
+        )
+    )
+
+    assert len(events) == 1
+    assert events[0].matched_keywords == ["duman", "yogun siyah duman", "alev", "alevlenme"]
+    # 'yogun siyah duman' ve 'alevlenme' _KEYWORD_RULES'ta YOKTUR - yine de korunmali.
+    assert "yogun siyah duman" in events[0].matched_keywords
+    assert "alevlenme" in events[0].matched_keywords
+
+
+def test_more_than_eight_keywords_are_preserved_no_artificial_cap() -> None:
+    many_keywords = [f"kanit-terimi-{i}" for i in range(12)]
+    assert len(many_keywords) > 8
+
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured([{"type": "yangin_duman", "keywords": many_keywords, "confidence": 0.8}])
+    )
+
+    assert len(events) == 1
+    assert events[0].matched_keywords == many_keywords
+    assert len(events[0].matched_keywords) == 12
+
+
+def test_same_event_type_can_have_different_keyword_sets() -> None:
+    """Ayni `type`e sahip iki farkli structured olay, farkli `keywords` listeleri tasiyabilmeli."""
+    engine = EventEngine()
+
+    first = engine.detect(
+        _input_structured(
+            [{"type": "yangin_duman", "keywords": ["duman", "yogun duman"], "confidence": 0.9}], timestamp=6.0
+        )
+    )
+    second = engine.detect(
+        _input_structured(
+            [{"type": "yangin_duman", "keywords": ["siyah duman", "yanma belirtisi"], "confidence": 0.9}],
+            timestamp=40.0,
+        )
+    )
+
+    assert first[0].matched_keywords == ["duman", "yogun duman"]
+    assert second[0].matched_keywords == ["siyah duman", "yanma belirtisi"]
+    assert first[0].matched_keywords != second[0].matched_keywords
+
+
+def test_keywords_field_strips_whitespace_drops_empty_and_non_string_and_dedupes() -> None:
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured(
+            [
+                {
+                    "type": "kkd_ihlali",
+                    "keywords": ["  baret yok  ", "", "  ", "baret yok", 42, None, "yelek yok"],
+                    "confidence": 0.7,
+                }
+            ]
+        )
+    )
+
+    assert events[0].matched_keywords == ["baret yok", "yelek yok"]
+
+
+def test_missing_keywords_field_falls_back_to_fixed_taxonomy_extraction() -> None:
+    """VLM `keywords` uretmediyse (eski/degrade cikti), guvenli taksonomi-fallback devreye girmeli - CRASH olmamali."""
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured(
+            [{"type": "arac_yaya_yakinligi", "description": "forklift yaya gecidine yaklasti", "confidence": 0.8}]
+        )
+    )
+
+    assert len(events) == 1
+    assert events[0].matched_keywords == ["forklift", "yaya gecidi"]
+
+
+def test_non_list_keywords_value_does_not_crash_falls_back() -> None:
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured(
+            [
+                {
+                    "type": "arac_yaya_yakinligi",
+                    "keywords": "forklift, yaya",  # liste degil, hatali bicim
+                    "description": "forklift yaya gecidine yaklasti",
+                    "confidence": 0.8,
+                }
+            ]
+        )
+    )
+
+    assert len(events) == 1
+    assert events[0].matched_keywords == ["forklift", "yaya gecidi"]
+
+
+def test_structured_event_keywords_do_not_affect_confidence_or_type() -> None:
+    """Keywords bir risk/karar sinyali DEGILDIR: farkli keyword sayisi/icerigi,
+    tespitin confidence/event_type degerlerini ETKILEMEMELI (bunlar VLM'in
+    kendi verdigi `confidence`/`type` alanlarindan gelir)."""
+    engine = EventEngine()
+    few = engine.detect(_input_structured([{"type": "yangin_duman", "keywords": ["duman"], "confidence": 0.5}]))
+    many = engine.detect(
+        _input_structured(
+            [{"type": "yangin_duman", "keywords": [f"terim-{i}" for i in range(15)], "confidence": 0.5}]
+        )
+    )
+
+    assert few[0].confidence == many[0].confidence == 0.5
+    assert few[0].event_type == many[0].event_type == "yangin_duman"

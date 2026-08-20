@@ -370,6 +370,12 @@ class EventEngine:
             )
             end_time_raw = item.get("end_time")
             evidence_ids = [str(eid) for eid in (item.get("evidence_ids") or []) if isinstance(eid, (str, int))]
+            keywords = self._normalize_free_form_keywords(item.get("keywords"))
+            if not keywords:
+                # VLM bu olay icin `keywords` uretmediyse (eski prompt/model
+                # veya bos liste), guvenli bir fallback olarak sabit
+                # taksonomi-tabanli cikarima duser (bkz. `_extract_keywords_for_type`).
+                keywords = self._extract_keywords_for_type(raw_type, evidence)
             detections.append(
                 DetectedEvent(
                     event_type=raw_type,
@@ -377,7 +383,7 @@ class EventEngine:
                     timestamp=start_time,
                     end_timestamp=self._coerce_timestamp(end_time_raw, start_time) if end_time_raw is not None else None,
                     confidence=confidence,
-                    matched_keywords=self._extract_keywords_for_type(raw_type, evidence),
+                    matched_keywords=keywords,
                     source_model=engine_input.source_model,
                     vlm_event_id=str(item.get("event_id")) if item.get("event_id") is not None else None,
                     evidence_ids=evidence_ids,
@@ -411,6 +417,39 @@ class EventEngine:
             return float(value)
         except (TypeError, ValueError):
             return fallback
+
+    @staticmethod
+    def _normalize_free_form_keywords(raw: Any) -> List[str]:
+        """VLM'in `EVENTS_JSON.keywords` alaninda urettigi SERBEST BICIMLI (taksonomiyle SINIRLI OLMAYAN) terimleri temizler.
+
+        Bu, `_extract_keywords_for_type`in TERSIDIR: orada sabit bir kelime
+        dagarcigi metne karsi ARANIR; burada VLM'in KENDI urettigi terimler
+        yalnizca bicimsel olarak (tur/bosluk/tekrar) temizlenir - hicbir
+        terim baska bir listeyle KARSILASTIRILMAZ, ELENMEZ veya UYDURULMAZ.
+        Sabit bir sayi siniri YOKTUR (bkz. mimari karar: EventType = kategori,
+        keywords = o olaya ozgu serbest kanit).
+
+        Args:
+            raw: `item.get("keywords")` (beklenen: string listesi; VLM
+                bozuk/eksik bir deger dondurebilir - bu durumda bos liste).
+
+        Returns:
+            Bos olmayan, bas/son bosluklari temizlenmis, ilk-gorulme sirali
+            tekrarsiz (tam-esitlik) terim listesi. `raw` liste degilse veya
+            bos ise bos liste.
+        """
+        if not isinstance(raw, list):
+            return []
+
+        seen: List[str] = []
+        for item in raw:
+            if not isinstance(item, str):
+                continue
+            cleaned = item.strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.append(cleaned)
+        return seen
 
     @staticmethod
     def _extract_keywords_for_type(event_type: str, description: str) -> List[str]:

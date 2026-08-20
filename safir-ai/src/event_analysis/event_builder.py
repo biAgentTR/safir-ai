@@ -57,6 +57,7 @@ class EventBuilder:
             occurrence_count=temporal_event.occurrence_count,
             duration=temporal_event.duration,
             evidence_ids=list(temporal_event.evidence_ids),
+            keywords=list(temporal_event.matched_keywords),
         )
 
     def build_batch(

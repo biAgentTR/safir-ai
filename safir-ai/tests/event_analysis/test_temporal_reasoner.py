@@ -326,3 +326,27 @@ def test_many_close_observations_of_the_same_event_still_merge_into_one_cluster(
 
     assert len(result) == 1
     assert result[0].occurrence_count == 12
+
+
+def test_temporal_clustering_unions_free_form_keywords_across_observations() -> None:
+    """Ayni olaya ait, zaman icinde biriken serbest-bicimli (taksonomiyle
+    SINIRLI OLMAYAN) VLM keyword'leri, tek `TemporalEvent`e birlesirken
+    TEKRARSIZ olarak birlestirilmeli (union), hicbiri kaybolmamali."""
+    events = [
+        _event("yangin_duman", timestamp=6.0, keywords=["duman", "yogun duman"]),
+        _event("yangin_duman", timestamp=8.0, keywords=["yogun duman", "alev"]),
+        _event("yangin_duman", timestamp=9.5, keywords=["alevlenme"]),
+    ]
+    result = TemporalReasoner().reason(events)
+
+    assert len(result) == 1
+    assert result[0].matched_keywords == ["duman", "yogun duman", "alev", "alevlenme"]
+
+
+def test_temporal_clustering_union_preserves_more_than_eight_keywords() -> None:
+    group_a = _event("yangin_duman", timestamp=0.0, keywords=[f"terim-{i}" for i in range(5)])
+    group_b = _event("yangin_duman", timestamp=2.0, keywords=[f"terim-{i}" for i in range(5, 10)])
+    result = TemporalReasoner().reason([group_a, group_b])
+
+    assert len(result) == 1
+    assert len(result[0].matched_keywords) == 10

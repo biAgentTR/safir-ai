@@ -255,3 +255,25 @@ def test_missing_rules_path_raises_file_not_found() -> None:
 
     with pytest.raises(FileNotFoundError):
         RuleEngine(rules_path="/nonexistent/path/isg_rules.yaml")
+
+
+# --- T018: keywords, risk/mevzuat eslesmesini ETKILEMEZ (RuleEngine yalnizca event_type okur) ---
+
+
+def test_rule_engine_output_is_identical_regardless_of_matched_keywords() -> None:
+    """RuleEngine, `TemporalEvent.matched_keywords`i HICBIR ZAMAN okumaz - yalnizca
+    `event_type`e bakar. Farkli (hatta cok sayida) keyword, ayni event_type icin
+    AYNI RuleMatch sonucunu uretmeli - keywords bir risk KARARI DEGILDIR."""
+    few_keywords_event = _temporal_event("evt_0", "yangin_duman")
+    few_keywords_event.matched_keywords = ["duman"]
+
+    many_keywords_event = _temporal_event("evt_0", "yangin_duman")
+    many_keywords_event.matched_keywords = [f"terim-{i}" for i in range(20)]
+
+    matches_few = RuleEngine().evaluate([few_keywords_event])
+    matches_many = RuleEngine().evaluate([many_keywords_event])
+
+    assert len(matches_few) == len(matches_many) == 1
+    assert matches_few[0].rule_id == matches_many[0].rule_id
+    assert matches_few[0].severity == matches_many[0].severity
+    assert matches_few[0].rule_description == matches_many[0].rule_description
