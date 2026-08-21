@@ -46,6 +46,12 @@ const statusTone: Record<string, string> = {
   running: 'text-accent border-accent/30 bg-accent/10',
   queued: 'text-slate-400 border-edge bg-surface-2',
 }
+const statusLabel: Record<string, string> = {
+  completed: 'Tamamlandı',
+  failed: 'Başarısız',
+  running: 'Devam ediyor',
+  queued: 'Kuyrukta',
+}
 
 onMounted(() => load(true))
 </script>
@@ -90,7 +96,7 @@ onMounted(() => load(true))
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
             <span class="text-sm text-slate-100 truncate">{{ basename(item.video_source) }}</span>
-            <span class="text-[11px] px-2 py-0.5 rounded border" :class="statusTone[item.status] ?? statusTone.queued">{{ item.status }}</span>
+            <span class="text-[11px] px-2 py-0.5 rounded border" :class="statusTone[item.status] ?? statusTone.queued">{{ statusLabel[item.status] ?? item.status }}</span>
           </div>
           <div class="text-xs text-slate-500 mt-0.5 truncate">{{ item.summary || 'Özet yok' }}</div>
           <div class="text-[11px] text-slate-600 mt-0.5 font-mono">{{ fmtDate(item.created_at) }} · {{ item.job_id.slice(0, 8) }}</div>

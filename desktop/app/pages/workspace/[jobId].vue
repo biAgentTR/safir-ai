@@ -63,7 +63,7 @@ onBeforeUnmount(() => stream.stop())
     <div class="flex items-center gap-4">
       <NuxtLink :to="isHistory ? '/history' : '/new-analysis'" class="btn-ghost">← {{ isHistory ? 'Geçmiş' : 'Yeni' }}</NuxtLink>
       <div class="min-w-0">
-        <div class="text-[11px] uppercase tracking-wide text-slate-500">Job</div>
+        <div class="text-[11px] uppercase tracking-wide text-slate-500">İş Kimliği</div>
         <div class="font-mono text-sm text-slate-300 truncate">{{ jobId }}</div>
       </div>
       <div class="ml-auto flex items-center gap-4 text-sm">
@@ -75,7 +75,7 @@ onBeforeUnmount(() => stream.stop())
         <div class="flex items-center gap-2">
           <span class="w-2 h-2 rounded-full" :class="running ? 'bg-accent animate-pulse' : overall === 'done' ? 'bg-risk-low' : overall === 'error' ? 'bg-risk-crit' : 'bg-slate-600'" />
           <span class="uppercase tracking-wide text-xs" :class="running ? 'text-accent' : 'text-slate-300'">
-            {{ running ? 'Analysis running' : overall === 'done' ? 'Completed' : overall === 'error' ? 'Error' : overall }}
+            {{ running ? 'Analiz çalışıyor' : overall === 'done' ? 'Tamamlandı' : overall === 'error' ? 'Hata' : 'Kuyrukta' }}
           </span>
         </div>
         <span v-if="!isHistory" class="text-xs text-slate-500">{{ connLabel }} · {{ store.completedCount }}/7</span>

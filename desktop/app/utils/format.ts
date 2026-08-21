@@ -55,13 +55,13 @@ export const RISK_BG: Record<string, string> = {
 
 /** Canonical stage order + display labels (mirror trace_serializer). */
 export const STAGE_META: { stage: TraceStage; label: string; blurb: string }[] = [
-  { stage: 'sampler', label: 'Frame Sampling', blurb: 'CPU adaptive sampler' },
-  { stage: 'vlm', label: 'Multimodal Analysis', blurb: 'Vision-language model' },
-  { stage: 'events', label: 'Event Analysis', blurb: 'Detected / temporal / rules' },
-  { stage: 'agent_context', label: 'Context & RAG', blurb: 'Agent context assembly' },
-  { stage: 'decision', label: 'Agent Decision', blurb: 'Risk & recommended action' },
-  { stage: 'escalation', label: 'Risk Escalation', blurb: 'Auto dispatch policy' },
-  { stage: 'report', label: 'Final Report', blurb: 'Structured output' },
+  { stage: 'sampler', label: 'Kare Örnekleme', blurb: 'CPU uyarlanabilir örnekleyici' },
+  { stage: 'vlm', label: 'Çok Modlu Analiz', blurb: 'Görsel-dil modeli' },
+  { stage: 'events', label: 'Olay Analizi', blurb: 'Tespit / zamansal / kural' },
+  { stage: 'agent_context', label: 'Bağlam ve RAG', blurb: 'Ajan bağlamı oluşturma' },
+  { stage: 'decision', label: 'Ajan Kararı', blurb: 'Risk ve önerilen aksiyon' },
+  { stage: 'escalation', label: 'Risk Yükseltme', blurb: 'Otomatik tetikleme politikası' },
+  { stage: 'report', label: 'Nihai Rapor', blurb: 'Yapılandırılmış çıktı' },
 ]
 
 export function stageLabel(stage: TraceStage): string {
@@ -88,7 +88,7 @@ export function stageFlow(
     case 'vlm':
       return {
         in: data ? `${d.frames_sent || d.frame_count || 0} kare + prompt` : 'temsili kareler + prompt',
-        out: data ? `gözlem + ${n(d.structured_events)} olay` : 'gözlem + structured events',
+        out: data ? `gözlem + ${n(d.structured_events)} olay` : 'gözlem + yapılandırılmış olaylar',
       }
     case 'events':
       return {

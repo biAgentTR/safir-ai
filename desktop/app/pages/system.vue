@@ -13,7 +13,7 @@ const tab = ref<Tab>('analizler')
 const TABS: { key: Tab; label: string }[] = [
   { key: 'analizler', label: 'Analizler' },
   { key: 'konusmalar', label: 'Konuşmalar' },
-  { key: 'pipeline', label: 'Pipeline / Trace' },
+  { key: 'pipeline', label: 'Analiz Hattı / İz Kaydı' },
   { key: 'kanitlar', label: 'Depolanan Kanıtlar' },
 ]
 
@@ -54,6 +54,13 @@ async function loadAnalyses() {
 
 function toggleExpand(jobId: string) {
   expandedJobId.value = expandedJobId.value === jobId ? null : jobId
+}
+
+const statusLabel: Record<string, string> = {
+  completed: 'Tamamlandı',
+  failed: 'Başarısız',
+  running: 'Devam ediyor',
+  queued: 'Kuyrukta',
 }
 
 function durationLabel(createdAt: string, updatedAt: string): string {
@@ -231,7 +238,7 @@ onMounted(() => {
                     <td class="py-2 pr-3 font-mono text-xs text-slate-300">{{ a.job_id.slice(0, 8) }}</td>
                     <td class="py-2 pr-3 text-slate-400">{{ fmtDate(a.created_at) }}</td>
                     <td class="py-2 pr-3 text-slate-300 max-w-[220px] truncate">{{ basename(a.video_source) }}</td>
-                    <td class="py-2 pr-3 text-slate-400">{{ a.status }}</td>
+                    <td class="py-2 pr-3 text-slate-400">{{ statusLabel[a.status] ?? a.status }}</td>
                     <td class="py-2 pr-3">
                       <span v-if="a.risk_score != null" :class="RISK_TEXT[riskTone(a.risk_level)]">{{ a.risk_score }} · {{ a.risk_level }}</span>
                       <span v-else class="text-slate-600">—</span>
@@ -335,7 +342,7 @@ onMounted(() => {
               <table class="w-full text-sm">
                 <thead>
                   <tr class="text-left text-[11px] uppercase tracking-wide text-slate-500 border-b border-edge">
-                    <th class="py-2 pr-3">Stage</th>
+                    <th class="py-2 pr-3">Aşama</th>
                     <th class="py-2 pr-3">Durum</th>
                     <th class="py-2 pr-3">Zaman</th>
                     <th class="py-2 pr-3">Süre</th>
@@ -345,7 +352,7 @@ onMounted(() => {
                 <tbody>
                   <tr v-for="(e, i) in traceEvents" :key="i" class="border-b border-edge/60">
                     <td class="py-2 pr-3 text-slate-200">{{ stageLabel(e.stage) }}</td>
-                    <td class="py-2 pr-3" :class="e.status === 'failed' ? 'text-risk-crit' : e.status === 'completed' ? 'text-risk-low' : 'text-slate-400'">{{ e.status }}</td>
+                    <td class="py-2 pr-3" :class="e.status === 'failed' ? 'text-risk-crit' : e.status === 'completed' ? 'text-risk-low' : 'text-slate-400'">{{ statusLabel[e.status] ?? e.status }}</td>
                     <td class="py-2 pr-3 text-slate-400 font-mono text-xs">{{ fmtDate(e.timestamp) }}</td>
                     <td class="py-2 pr-3 text-slate-400">{{ e.duration_ms != null ? `${e.duration_ms.toFixed(0)} ms` : '—' }}</td>
                     <td class="py-2 pr-3 text-slate-300">{{ e.summary }}</td>
