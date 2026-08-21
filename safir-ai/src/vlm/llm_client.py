@@ -158,17 +158,76 @@ class MockLLMClient:
         return self
 
     def invoke(self, messages: Sequence[BaseMessage]) -> AIMessage:
-        """Sahte gecikme sonrasi arac cagrisi icermeyen sabit bir karar dondurur.
+        """Sahte gecikme sonrasi mesaj icerigine uygun sahte bir karar dondurur.
 
         Args:
-            messages: LangGraph durum makinesinin biriktirdigi mesaj gecmisi (yalnizca loglanir).
+            messages: LangGraph durum makinesinin biriktirdigi mesaj gecmisi.
 
         Returns:
             `RISK_SKORU`/`AKSIYON_ONERISI` iceren, `tool_calls=[]` bir `AIMessage`.
         """
-        time.sleep(0.1)
+        time.sleep(0.05)
         logger.info("MockLLMClient: %d mesajlik gecmis icin sahte karar uretildi", len(messages))
-        return AIMessage(content=_MOCK_DECISION_TEXT, tool_calls=[])
+
+        # Few-shot ornegindeki "hareketsiz kisi" metninden etkilenmemek icin
+        # sadece "## Degerlendirilecek Gercek Baglam" sonrasindaki gercek gozleme bak
+        user_msgs = [str(getattr(m, "content", "")) for m in messages if getattr(m, "type", "") == "human"]
+        full_user_text = " ".join(user_msgs if user_msgs else [str(getattr(messages[-1], "content", ""))])
+
+        if "## Degerlendirilecek Gercek Baglam" in full_user_text:
+            prompt_text = full_user_text.split("## Degerlendirilecek Gercek Baglam")[-1].lower()
+        elif "## guncel gozlem" in full_user_text.lower():
+            prompt_text = full_user_text.lower().split("## guncel gozlem")[-1]
+        # Dinamik VLM ve Baglam Cikarimi:
+        # Prompt icerisindeki gercek VLM metnini ve gozlemini dogrudan yakala
+        extracted_summary = ""
+        for line in full_user_text.splitlines():
+            clean_l = line.strip()
+            if any(clean_l.lower().startswith(p) for p in ["vlm", "gözlem", "gozlem", "açıklama", "aciklama", "summary"]):
+                extracted_summary = clean_l.split(":", 1)[-1].strip()
+                if len(extracted_summary) > 10:
+                    break
+
+        if not extracted_summary:
+            extracted_summary = prompt_text[:200].strip() if len(prompt_text) > 10 else "Sahada durum izlemesi yapildi."
+
+        # Dinamik Risk ve Kategori Tespiti
+        p_lower = (full_user_text + " " + extracted_summary).lower()
+        if any(k in p_lower for k in ["gorulmedi", "görülmedi", "tespit edilmedi", "yoktur", "rutin", "normal"]):
+            r_score = 0
+            r_level = "dusuk"
+            category = "safety"
+            dyn_actions = ["Rutin saha izlemesine devam ediniz."]
+        elif any(k in p_lower for k in ["devrilme", "yangin", "alev", "patlama", "dusme", "düşme", "agir", "ağır", "kaza", "hareketsiz", "yaralanma"]):
+            r_score = 85
+            r_level = "kritik"
+            category = "safety" if not any(k in p_lower for k in ["yetkisiz", "sizma", "tel orgu"]) else "ambiguous"
+            dyn_actions = ["Alanı derhal tahliye ediniz ve acil durum ekiplerine haber veriniz.", "Teknik güvenlik önlemlerini devreye alınız."]
+        elif any(k in p_lower for k in ["duman", "kayma", "hasar", "supheli", "şüpheli", "sizma", "sızma", "yetkisiz"]):
+            r_score = 65
+            r_level = "yuksek"
+            category = "security" if any(k in p_lower for k in ["yetkisiz", "sizma", "tel orgu", "supheli"]) else "safety"
+            dyn_actions = ["Saha operatörünü ve ilgili birimleri derhal bilgilendiriniz.", "Olay bölgesinde güvenlik şeridi oluşturunuz."]
+        else:
+            r_score = 35
+            r_level = "orta"
+            category = "safety"
+            dyn_actions = ["Saha kontrollerini artırınız.", "Operatör denetimi sağlayınız."]
+
+        content_json = json.dumps(
+            {
+                "summary": extracted_summary,
+                "events": [{"time": "00:00", "event": extracted_summary}],
+                "risk_score": r_score,
+                "risk_level": r_level,
+                "event_category": category,
+                "actions": dyn_actions,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
+        return AIMessage(content=content_json, tool_calls=[])
 
     def invoke_json(self, messages: Sequence[BaseMessage]) -> AIMessage:
         """Mock modda JSON-modu ile normal `invoke` ayni sabit JSON karari dondurur."""

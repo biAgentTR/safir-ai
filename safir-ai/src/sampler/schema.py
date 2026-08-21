@@ -25,6 +25,9 @@ class EvidenceFrame(BaseModel):
     image_shape: Tuple[int, int, int] = Field(description="(yukseklik, genislik, kanal) kare boyutu.")
     saved_path: Optional[str] = Field(default=None, description="Karenin diskte kayitli oldugu yol.")
     is_fallback: bool = Field(default=False, description="Esik gecilemedigi icin frame 0 fallback'i mi.")
+    has_gradual_trend: bool = Field(
+        default=False, description="Kademeli pus/kontrast azalişi trendi tespit edildi mi."
+    )
     motion_bbox: Optional[Tuple[int, int, int, int]] = Field(
         default=None,
         description=(
@@ -53,6 +56,9 @@ class EventCluster(BaseModel):
     end_time: float = Field(description="Grubun bitis zaman damgasi (sn).")
     peak_frame: EvidenceFrame = Field(description="Grubun en yuksek degisim skoruna sahip zirve karesi.")
     total_candidate_frames: int = Field(description="Bu gruba dahil edilen Kanit Karesi sayisi.")
+    has_gradual_trend: bool = Field(
+        default=False, description="Kumede kademeli pus/kontrast azalişi trendi var mi."
+    )
     duration_sec: float = Field(
         default=0.0, description="`end_time - start_time` (saniye); birlestirilmis olayin toplam suresi."
     )
@@ -64,3 +70,9 @@ class EventCluster(BaseModel):
             "peak_frame ile eski (tek-kare) davranisa duser."
         ),
     )
+
+    @property
+    def start_time_str(self) -> str:
+        """`MM:SS` formatinda baslangic (onset) zaman damgasi."""
+        minutes, seconds = divmod(int(self.start_time), 60)
+        return f"{minutes:02d}:{seconds:02d}"

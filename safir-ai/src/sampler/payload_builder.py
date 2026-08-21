@@ -44,25 +44,53 @@ class VLMPayloadBuilder:
         if not clusters:
             raise ValueError("VLMPayloadBuilder: bos Olay Grubu listesiyle payload uretilemez.")
 
+        all_timestamps = []
+        for c in clusters:
+            if c.representative_frames:
+                for rf in c.representative_frames:
+                    all_timestamps.append(rf.timestamp_str)
+            elif c.peak_frame:
+                all_timestamps.append(c.peak_frame.timestamp_str)
+
+        # 1. Payload Debug Log (Kesin Zaman Damgasi Teyidi)
+        print(f"[DEBUG VLM PAYLOAD] Modele giden karelerin zaman damgaları (toplam {len(all_timestamps)} kare): {all_timestamps}")
+        logger.info(
+            "[DEBUG VLM PAYLOAD] Modele giden karelerin zaman damgalari (toplam %d kare): %s",
+            len(all_timestamps),
+            all_timestamps,
+        )
+
         content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
 
-        for cluster in clusters:
+        for idx, cluster in enumerate(clusters, start=1):
             peak = cluster.peak_frame
-            metadata_text = (
-                f"[Olay #{cluster.event_id}] zaman araligi={peak.timestamp_str} "
-                f"({cluster.start_time:.2f}s - {cluster.end_time:.2f}s), "
-                f"aday_kare_sayisi={cluster.total_candidate_frames}, "
-                f"degisim_skoru={peak.change_score:.4f}"
+            start_mins, start_secs = divmod(int(cluster.start_time), 60)
+            start_str = f"{start_mins:02d}:{start_secs:02d}"
+            end_mins, end_secs = divmod(int(cluster.end_time), 60)
+            end_str = f"{end_mins:02d}:{end_secs:02d}"
+
+            block_header = (
+                f"\n--- [BLOK #{idx} | Zaman Aralığı: {start_str} - {end_str}] ---\n"
+                f"Aşağıdaki görseller bu 20 saniyelik zaman penceresine aittir. "
+                f"Olayın İLK KEZ başladığı görselin zaman damgasını bulunuz:"
             )
-            content.append({"type": "text", "text": metadata_text})
+            content.append({"type": "text", "text": block_header})
 
             if cluster.representative_frames:
-                for rf in cluster.representative_frames:
-                    content.append(
-                        {"type": "text", "text": f"[Kare rolu: {rf.label} | zaman: {rf.timestamp_str}]"}
-                    )
+                for rf_idx, rf in enumerate(cluster.representative_frames):
+                    if "REFERANS" in rf.label:
+                        content.append(
+                            {"type": "text", "text": f"[Görsel #0: REFERANS TEMİZ KARE | Zaman: {rf.timestamp_str}] (Sahnenin temiz referans zeminidir)"}
+                        )
+                    else:
+                        content.append(
+                            {"type": "text", "text": f"[Görsel #{rf_idx}: Zaman: {rf.timestamp_str} | PTS: {rf.timestamp_sec:.2f}s]"}
+                        )
                     content.append({"type": "image_url", "image_url": {"url": rf.base64_image}})
             else:
+                content.append(
+                    {"type": "text", "text": f"[Görsel: Zaman: {peak.timestamp_str} | PTS: {peak.timestamp_sec:.2f}s]"}
+                )
                 content.append({"type": "image_url", "image_url": {"url": peak.base64_image}})
 
         logger.debug(

@@ -25,8 +25,8 @@ class _RecordingSink:
     def __init__(self) -> None:
         self.dispatched: List[dict] = []
 
-    def dispatch(self, *, risk_score, risk_level, recommended_action, summary, auto) -> str:
-        self.dispatched.append({"risk_score": risk_score, "auto": auto})
+    def dispatch(self, *, risk_score, risk_level, recommended_action, summary, auto, event_category: str = "safety") -> str:
+        self.dispatched.append({"risk_score": risk_score, "auto": auto, "event_category": event_category})
         return f"alert-{len(self.dispatched)}"
 
     def acknowledge(self, alert_id: str, operator_note: str = ""):  # pragma: no cover - bu testte kullanilmaz

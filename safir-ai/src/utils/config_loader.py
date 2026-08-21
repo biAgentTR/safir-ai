@@ -77,6 +77,14 @@ class SamplerConfig(BaseModel):
     pre_peak_offset_sec: float = 2.0
     post_peak_offset_sec: float = 2.0
 
+    # --- Kademeli / Yavas-baslangicli olay tespiti (Duman / Sızıntı / Drift) ---
+    max_sampling_gap_sec: float = 4.0
+    ref_reset_interval_sec: float = 10.0
+    ref_change_threshold: float = 0.0015
+    enable_contrast_check: bool = True
+    contrast_change_threshold: float = 0.05
+    contrast_check_interval_sec: float = 1.0
+
     idle_interval_sec: float
     active_fps: float
     noise_floor: float
@@ -198,6 +206,8 @@ class FaissMemoryConfig(BaseModel):
     index_path: str
     embedding_model: str                # bkz. memory.embedding.model_name (ayni deger, senkron tutulmali)
     top_k: int
+    faiss_weight: float = 0.5            # FAISS vektör arama ağırlığı
+    bm25_weight: float = 0.5             # BM25 kelime/madde kodu arama ağırlığı
 
 
 class MemoryConfig(BaseModel):
@@ -247,6 +257,7 @@ class EscalationConfig(BaseModel):
 
     notify_score: int = 26
     auto_alarm_score: int = 51
+    alert_endpoint: str = "http://localhost:8000/alerts/trigger"
 
 
 class ApiConfig(BaseModel):

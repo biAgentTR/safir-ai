@@ -13,6 +13,7 @@ katmanina yalnizca gercekten anlamli ve tekrarsiz kareler gonderilir.
 from __future__ import annotations
 
 import base64
+import gc
 import logging
 import time
 from collections import deque
@@ -24,7 +25,7 @@ import cv2
 import numpy as np
 
 from src.sampler.context.peak_frame_exporter import PeakFrameExporter
-from src.sampler.schema import EventCluster, EvidenceFrame
+from src.sampler.schema import EventCluster, EvidenceFrame, RepresentativeFrame
 
 if TYPE_CHECKING:
     # Yalnizca tip ipucu icin gereklidir (bkz. `sampler_from_config`); modul
@@ -85,93 +86,14 @@ class AdaptiveFrameSampler:
         temporal_vote_min_count: int = 1,
         pre_peak_offset_sec: float = 2.0,
         post_peak_offset_sec: float = 2.0,
+        max_sampling_gap_sec: Optional[float] = 4.0,
+        ref_reset_interval_sec: float = 10.0,
+        ref_change_threshold: float = 0.0015,
+        enable_contrast_check: bool = True,
+        contrast_change_threshold: float = 0.05,
+        contrast_check_interval_sec: float = 1.0,
     ) -> None:
-        """AdaptiveFrameSampler'i esik ve pencere parametreleriyle baslatir.
-
-        Args:
-            min_change_threshold: Bir karenin Kanit Karesi sayilmasi icin
-                gereken, gurultu tabani dusulmus minimum piksel degisim orani.
-            blur_kernel_size: Gurultu gidermek icin uygulanan Gauss bulaniklastirma
-                cekirdek boyutu (tek sayilardan olusan (genislik, yukseklik) ikilisi).
-            history_window: Dinamik gurultu tabanini (medyan) hesaplamak icin
-                tutulan son degisim orani sayisi.
-            min_event_interval_sec: Ardisik Kanit Karelerini ayni HAM (raw) Olay
-                Grubuna dahil etmek icin izin verilen maksimum zaman farki (saniye).
-                Bu, tek bir surekli olayin kisa sureli titremeleri/patlamalarini
-                bir arada tutan INCE taneli esiktir; birbirinden ayri ham gruplarin
-                yine de ayni fiziksel olaya ait olup olmadigina KARAR VERMEZ
-                (bkz. `cluster_merge_gap_sec`).
-            evidence_output_dir: Her Kanit Karesinin `.jpg` olarak diske
-                yazilacagi klasor (UI ve denetim/log amacli kalicilik icin).
-            max_evidence_buffer: Bir `process_video` cagrisi basina bellekte/diskte
-                tutulacak azami Kanit Karesi sayisi. `None` ise sinirsizdir (varsayilan,
-                mevcut davranisi korur); asilirsa fazla kareler islenmez/atlanir.
-                ONEMLI: Bu sinir `process_video` icinde, `cluster_events`
-                cagrilmadan (dolayisiyla `cluster_merge_gap_sec` ile HAM
-                gruplarin surekli tek bir olayda birlestirilmesinden) ONCE
-                uygulanir. Yani uzun/surekli TEK bir olay (ör. uzun sureli bir
-                yangin) bu sinirdan fazla Kanit Karesi uretirse, olayin geri
-                kalani `process_video` seviyesinde sessizce atlanir; bu durumda
-                `cluster_events`in urettigi nihai `EventCluster.end_time`/
-                `duration_sec` degerleri olayin GERCEK bitisini degil, buffer'in
-                doldugu ani yansitir ve gercek zirve (peak) kare buffer
-                dolduktan SONRA olustuysa hic yakalanamaz. Bu etkilesim
-                `max_evidence_buffer` ile `cluster_merge_gap_sec` arasinda
-                herhangi bir koordinasyon YAPMAZ; uzun olaylar bekleniyorsa
-                `max_evidence_buffer`i yeterince buyuk tutun (bkz.
-                `test_max_evidence_buffer_truncates_long_event_before_merge`).
-            cluster_merge_gap_sec: `cluster_events` icinde, `min_event_interval_sec`
-                ile olusturulan ardisik HAM Olay Gruplarini, aralarindaki bosluk bu
-                degeri asmadigi surece TEK bir nihai Olay Grubunda (EventCluster)
-                birlestirmek icin kullanilan, `min_event_interval_sec`den BAGIMSIZ
-                ve KASITLI OLARAK DAHA GENIS bir esik. Amaci: surekli tek bir olayin
-                (ör. yanan bir ates), gurultu tabaninin zamanla adapte olmasi
-                nedeniyle arada sirali kisa sessiz araliklar birakarak birden fazla
-                sahte/kopya olaya bolunmesini onlemek. `min_event_interval_sec`den
-                KUCUK verilirse bu adim etkisiz kalir (pass 1 zaten her seyi
-                birlestirmis olur).
-            bbox_iou_merge_threshold: `cluster_merge_gap_sec` zaman kosulunu
-                gecen iki ham grubun GERCEKTEN ayni fiziksel olayin devami
-                olup olmadigini ayirt eden konumsal (mekansal) esik. Bir
-                grubun SON karesinin hareket kutusu (`motion_bbox`) ile bir
-                sonraki grubun ILK karesinin hareket kutusu arasindaki IoU
-                (kesisim/birlesim orani) bu degerin altindaysa, iki grup
-                zaman olarak yakin olsa bile FARKLI bir olay sayilir ve
-                birlestirilmez. Bu, "zaman olarak yakin ama konumsal olarak
-                farkli -> farkli olay" kuralini uygular; nesne/olay turunden
-                bagimsizdir (yalnizca hareket bolgesinin piksel-uzayindaki
-                konumuna bakar). `motion_bbox` mevcut degilse (ör. fallback
-                kare, bos hareket maskesi) TEMKINLI davranilir: birlestirme
-                yapilmaz.
-            temporal_vote_window: Bir karenin candidate olarak onaylanip
-                onaylanmayacagina karar verirken dikkate alinan, o anki karar
-                dahil, en son kac esik-testi sonucunun tutulacagi (temporal
-                voting penceresi). Varsayilan `1` ile pencere yalnizca o anki
-                karari icerir; bu, mevcut (voting oncesi) davranisla BIREBIR
-                AYNIDIR. `min_change_threshold` formulunu, gurultu tabanini
-                veya cluster/merge mantigini DEGISTIRMEZ; yalnizca esigi
-                gecen bir karenin GERCEK candidate sayilip sayilmayacagina
-                ek bir "sureklilik" filtresi uygular (bkz.
-                `temporal_vote_min_count`).
-            temporal_vote_min_count: `temporal_vote_window` penceresi
-                icinde, bir karenin candidate olarak onaylanmasi icin gereken
-                minimum "supheli" (esigi gecen) karar sayisi. Varsayilan `1`
-                ile tek bir supheli karar yeterlidir; bu da mevcut davranisla
-                BIREBIR AYNIDIR. Daha yuksek bir deger (ör. `3`), tek karelik
-                kamera titremesi/isik degisimi/sikistirma artefakti gibi
-                izole supheli kareleri elemek icin `temporal_vote_window`i
-                artirmakla birlikte kullanilir (ör. window=5, min_count=3).
-                `temporal_vote_window`den buyuk olamaz.
-            pre_peak_offset_sec: `export_event_frames` ile diske yazilan
-                `pre_peak.jpg`in, zirve kareden kac saniye once alinacagi.
-            post_peak_offset_sec: `export_event_frames` ile diske yazilan
-                `post_peak.jpg`in, zirve kareden kac saniye sonra alinacagi.
-
-        Raises:
-            ValueError: `temporal_vote_window` veya `temporal_vote_min_count`
-                1'den kucukse, ya da `temporal_vote_min_count`,
-                `temporal_vote_window`den buyukse.
-        """
+        """AdaptiveFrameSampler'i esik ve pencere parametreleriyle baslatir."""
         if temporal_vote_window < 1:
             raise ValueError(
                 f"temporal_vote_window en az 1 olmalidir, verilen: {temporal_vote_window}"
@@ -199,7 +121,24 @@ class AdaptiveFrameSampler:
         self.pre_peak_offset_sec = pre_peak_offset_sec
         self.post_peak_offset_sec = post_peak_offset_sec
 
+        # Kademeli / Yavas-baslangicli olay tespiti parametreleri (Duman / Sızıntı / Drift)
+        self.max_sampling_gap_sec = max_sampling_gap_sec
+        self.ref_reset_interval_sec = ref_reset_interval_sec
+        self.ref_change_threshold = ref_change_threshold
+        self.enable_contrast_check = enable_contrast_check
+        self.contrast_change_threshold = contrast_change_threshold
+        self.contrast_check_interval_sec = contrast_check_interval_sec
+
         self.prev_gray: np.ndarray | None = None
+        self.ref_gray: np.ndarray | None = None
+        self.ref_timestamp: float = 0.0
+        self.ref_mean: float = 0.0
+        self.ref_std: float = 0.0
+        self.last_sampled_timestamp: float = -1.0
+        self.last_contrast_check_timestamp: float = -1.0
+
+        self.contrast_history: List[float] = []
+        self.brightness_history: List[float] = []
         self.noise_floor_history: List[float] = []
         self.last_run_stats: Optional[SamplerRunStats] = None
         self.last_cluster_merge_stats: Optional[ClusterMergeStats] = None
@@ -342,18 +281,18 @@ class AdaptiveFrameSampler:
         return str(path)
 
     def process_video(self, video_path: str, sample_fps: int = 5) -> List[EvidenceFrame]:
-        """Videoyu okur, kare farklarini hesaplar ve suzulmus Kanit Karelerini dondurur.
+        """Videoyu okur ve her tam saniye [T.00 - T.99] icin istisnasiz tam 1 adet en net kare uretir (Uniform PTS).
+
+        Hareket/delta veya optik akis filtreleri tamamen kaldirilmistir; boylece
+        hareketli anlarda gereksiz kare yigilmasi (burst), oda bosaldiginda ise
+        kare atlamasi yasanmaz.
 
         Args:
             video_path: `.mp4` dosya yolu veya RTSP URI'si.
-            sample_fps: Videonun kac saniyede bir kare kontrol edilecegini
-                belirleyen ornekleme hizi (native FPS'ten dusuk olmalidir).
+            sample_fps: Geriye donuk arayuz uyumlulugu icin tutulur (Uniform akista saniyede 1 en net kare uretilir).
 
         Returns:
-            Zaman sirali `EvidenceFrame` listesi.
-
-        Raises:
-            ValueError: Video dosyasi acilamazsa.
+            Zaman sirali, saniye saniye duzenli `EvidenceFrame` listesi (00:00, 00:01, 00:02...).
         """
         is_live = video_path.strip().lower().startswith(("rtsp://", "http://", "https://"))
         if not is_live and not Path(video_path).exists():
@@ -370,116 +309,82 @@ class AdaptiveFrameSampler:
 
         started_at = time.perf_counter()
         native_fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
-        frame_step = max(1, int(native_fps / sample_fps))
 
-        # Temporal voting durumu (bkz. `_confirm_candidate`) her yeni video
-        # icin sifirlanir; onceki bir `process_video` cagrisinin (varsa) son
-        # kararlari bu videoya tasinmaz.
-        self._recent_threshold_decisions.clear()
-
-        evidence_frames: List[EvidenceFrame] = []
+        # Her tam saniye kovasi icin yalnizca EN NET kareyi bellekte tut (Streaming Memory Optimization):
+        # sec_idx -> (best_pts, best_frame, best_sharpness, best_frame_id)
+        best_by_second: Dict[int, Tuple[float, np.ndarray, float, int]] = {}
         frame_id = 0
-        sampled_frame_count = 0
-        first_frame_raw: Optional[np.ndarray] = None
-        first_frame_timestamp: float = 0.0
+        total_scanned = 0
+        self.baseline_clean_frame = None
 
         try:
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
                     break
+                total_scanned += 1
 
-                if frame_id % frame_step != 0:
-                    frame_id += 1
-                    continue
+                # SENKRON PTS OKUMA: read() sonrasinda CAP_PROP_POS_MSEC
+                pts_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+                pts_sec = (pts_msec / 1000.0) if pts_msec > 0 else (frame_id / native_fps)
 
-                sampled_frame_count += 1
-                timestamp_sec = frame_id / native_fps
-                curr_gray = self._preprocess_frame(frame)
+                # YUKSEK COZUNURLUK KORUMASI: Pus/duman piksellerini korumak icin 1280px limit
+                if frame.shape[1] > 1280:
+                    h = int(frame.shape[0] * (1280.0 / float(frame.shape[1])))
+                    frame = cv2.resize(frame, (1280, h), interpolation=cv2.INTER_AREA)
 
-                if first_frame_raw is None:
-                    first_frame_raw = frame.copy()
-                    first_frame_timestamp = timestamp_sec
+                sec_idx = int(pts_sec)
 
-                if self.prev_gray is not None:
-                    frame_diff = cv2.absdiff(curr_gray, self.prev_gray)
-                    _, thresh = cv2.threshold(frame_diff, 25, 255, cv2.THRESH_BINARY)
-                    change_ratio = np.sum(thresh > 0) / float(thresh.size)
+                # Laplacian varyansi ile netlik/kalite hesabi
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
-                    self.noise_floor_history.append(change_ratio)
-                    if len(self.noise_floor_history) > self.history_window:
-                        self.noise_floor_history.pop(0)
+                # Akış esnasında yalnızca o saniyenin en net karesini sakla (Bellek tasarrufu)
+                if sec_idx not in best_by_second or sharpness > best_by_second[sec_idx][2]:
+                    best_by_second[sec_idx] = (pts_sec, frame, sharpness, frame_id)
 
-                    adaptive_noise_floor = np.median(self.noise_floor_history)
-                    net_change_score = max(0.0, change_ratio - adaptive_noise_floor)
-
-                    # Temporal voting: mevcut esik sonucunu (degismedi) girdi olarak
-                    # kullanip, izole/tek karelik supheli kareleri (kamera titremesi,
-                    # isik degisimi, sikistirma artefakti) eleyen ek sureklilik kontrolu.
-                    # Varsayilan ayarlarda (window=1, min_count=1) bu, ESKI davranisla
-                    # BIREBIR AYNIDIR (bkz. `_confirm_candidate` docstring'i).
-                    is_suspicious = net_change_score >= self.min_change_threshold
-                    if self._confirm_candidate(is_suspicious):
-                        # DIKKAT: Bu sinir, cluster_events/cluster_merge_gap_sec (surekli tek
-                        # olayin ham gruplarini birlestirme) calismadan ONCE uygulanir. Uzun
-                        # surekli bir olay bu sinirdan fazla Kanit Karesi uretirse, olayin geri
-                        # kalani burada sessizce atlanir; bkz. __init__ docstring'i
-                        # (max_evidence_buffer) ve test_max_evidence_buffer_truncates_long_event_before_merge.
-                        if self.max_evidence_buffer is None or len(evidence_frames) < self.max_evidence_buffer:
-                            motion_bbox = self._bbox_from_mask(thresh)
-                            evidence_frames.append(
-                                self._build_evidence_frame(
-                                    frame, frame_id, timestamp_sec, net_change_score, motion_bbox
-                                )
-                            )
-                        elif len(evidence_frames) == self.max_evidence_buffer:
-                            logger.warning(
-                                "max_evidence_buffer (%d) asildi; bu videodan sonraki Kanit "
-                                "Kareleri islenmeyecek.",
-                                self.max_evidence_buffer,
-                            )
-
-                self.prev_gray = curr_gray
                 frame_id += 1
         finally:
             cap.release()
 
-        if not evidence_frames:
-            if first_frame_raw is None:
-                raise ValueError(f"Video kaynagindan hic kare okunamadi: {video_path}")
+        evidence_frames: List[EvidenceFrame] = []
+        for sec in sorted(best_by_second.keys()):
+            best_pts, best_frame, best_sharpness, best_frame_id = best_by_second[sec]
 
-            logger.warning(
-                "Esigi gecen Kanit Karesi bulunamadi; sistemin cokmemesi icin frame 0 "
-                "varsayilan Kanit Karesi olarak kabul ediliyor (fallback)."
+            ef = self._build_evidence_frame(
+                frame=best_frame,
+                frame_id=best_frame_id,
+                timestamp_sec=best_pts,
+                change_score=0.0100,  # Uniform timeline temel skoru
+                has_gradual_trend=False,
             )
-            fallback = self._build_evidence_frame(
-                first_frame_raw, frame_id=0, timestamp_sec=first_frame_timestamp, change_score=0.0
-            )
-            fallback.is_fallback = True
-            evidence_frames.append(fallback)
+            evidence_frames.append(ef)
+            if self.baseline_clean_frame is None:
+                self.baseline_clean_frame = ef
 
         elapsed_sec = time.perf_counter() - started_at
-        eliminated = sampled_frame_count - len(evidence_frames)
-        eliminated_ratio = (100.0 * eliminated / sampled_frame_count) if sampled_frame_count else 0.0
+        eliminated = max(0, total_scanned - len(evidence_frames))
+        eliminated_ratio = (100.0 * eliminated / total_scanned) if total_scanned else 0.0
+
         self.last_run_stats = SamplerRunStats(
-            total_frames_scanned=frame_id,
-            sampled_frames_evaluated=sampled_frame_count,
+            total_frames_scanned=total_scanned,
+            sampled_frames_evaluated=total_scanned,
             evidence_frame_count=len(evidence_frames),
             eliminated_frame_count=eliminated,
             eliminated_ratio_pct=round(eliminated_ratio, 2),
             elapsed_sec=round(elapsed_sec, 3),
         )
         logger.info(
-            "AdaptiveFrameSampler tamamlandi: %d ham kare tarandi, %d kare ornekleme icin "
-            "degerlendirildi, %d Kanit Karesi uretildi (%d kare elendi, %%%.1f eleme orani), "
-            "sure=%.3fs",
-            frame_id,
-            sampled_frame_count,
+            "Uniform 1-Sec Time-Bucket Sampler tamamlandi: %d ham kare tarandi, "
+            "%d Kanit Karesi uretildi (Saniyede tam 1 en net kare, 0 mukerrer, 0 atlama), sure=%.3fs",
+            total_scanned,
             len(evidence_frames),
-            eliminated,
-            eliminated_ratio,
             elapsed_sec,
         )
+        curr_gray = None
+        self.ref_gray = None
+        self.prev_gray = None
+        gc.collect()
         return evidence_frames
 
     def _build_evidence_frame(
@@ -489,25 +394,8 @@ class AdaptiveFrameSampler:
         timestamp_sec: float,
         change_score: float,
         motion_bbox: Optional[Tuple[int, int, int, int]] = None,
+        has_gradual_trend: bool = False,
     ) -> EvidenceFrame:
-        """Bir kareden `EvidenceFrame` uretir ve JPEG/base64'e cevirir.
-
-        Diske yazma burada YAPILMAZ: bu kare `cluster_events` tarafindan bir
-        Olay Grubunun zirve karesi olarak secilmedigi surece hic kullanilmayabilir.
-        Kalici diske kayit, yalnizca zirve olarak secilen kareler icin
-        `_close_group` tarafindan yapilir (bkz. o metodun docstring'i).
-
-        Args:
-            frame: BGR formatinda ham video karesi.
-            frame_id: Karenin video icindeki sirasi.
-            timestamp_sec: Karenin saniye cinsinden zaman damgasi.
-            change_score: Hesaplanan (gurultu-tabani-dusulmus) degisim skoru.
-            motion_bbox: Bu kareyi ureten hareket maskesinin sinirlayici kutusu
-                (`_bbox_from_mask`); yoksa (ör. fallback kare) `None`.
-
-        Returns:
-            `image_bytes`/`base64_image` doldurulmus, `saved_path=None` olan `EvidenceFrame`.
-        """
         image_bytes = self._encode_frame_jpeg(frame)
         base64_str = base64.b64encode(image_bytes).decode("utf-8")
         minutes, seconds = divmod(int(timestamp_sec), 60)
@@ -522,6 +410,7 @@ class AdaptiveFrameSampler:
             base64_image=f"data:image/jpeg;base64,{base64_str}",
             image_shape=frame.shape,
             saved_path=None,
+            has_gradual_trend=has_gradual_trend,
             motion_bbox=motion_bbox,
         )
 
@@ -571,51 +460,35 @@ class AdaptiveFrameSampler:
         if not evidence_frames:
             return []
 
-        # 1) HAM gruplama (mevcut ince taneli mantik, DEGISMEDI).
+        # 1) 20 saniyelik sabit periyodik zamansal pencereler (Fixed 20-Sec Uniform Windowing)
+        chunk_sec = 20.0
         raw_groups: List[List[EvidenceFrame]] = []
         current_group: List[EvidenceFrame] = [evidence_frames[0]]
+        chunk_start_t = evidence_frames[0].timestamp_sec
+
         for ef in evidence_frames[1:]:
-            if ef.timestamp_sec - current_group[-1].timestamp_sec <= self.min_event_interval_sec:
+            if (ef.timestamp_sec - chunk_start_t) < chunk_sec:
                 current_group.append(ef)
             else:
                 raw_groups.append(current_group)
                 current_group = [ef]
+                chunk_start_t = ef.timestamp_sec
         raw_groups.append(current_group)
 
-        # 2) BIRLESTIRME: komsu ham gruplari, YALNIZCA hem zaman bosluğu
-        # `cluster_merge_gap_sec`i asmiyorsa HEM DE sinir kareleri konumsal
-        # olarak ayni fiziksel olayin devami sayilacak kadar benzerse
-        # (bkz. `_is_same_physical_event`) tek nihai grupta topla.
-        merged_groups: List[List[EvidenceFrame]] = [raw_groups[0]]
-        merge_count = 0
-        for group in raw_groups[1:]:
-            previous_group = merged_groups[-1]
-            gap = group[0].timestamp_sec - previous_group[-1].timestamp_sec
-            if gap <= self.cluster_merge_gap_sec and self._is_same_physical_event(
-                previous_group[-1], group[0]
-            ):
-                previous_group.extend(group)
-                merge_count += 1
-            else:
-                merged_groups.append(group)
-
         clusters: List[EventCluster] = [
-            self._close_group(group, event_id=i + 1) for i, group in enumerate(merged_groups)
+            self._close_group(group, event_id=i + 1) for i, group in enumerate(raw_groups)
         ]
 
         self.last_cluster_merge_stats = ClusterMergeStats(
             raw_group_count=len(raw_groups),
             final_cluster_count=len(clusters),
-            merged_raw_group_count=merge_count,
+            merged_raw_group_count=0,
         )
 
         logger.info(
-            "EventCluster tamamlandi: %d Kanit Karesi -> %d ham grup -> %d nihai Olay Grubu "
-            "(%d ham grup surekli olay olarak birlestirildi)",
+            "EventCluster tamamlandi: %d Kanit Karesi -> %d nihai Olay Grubu (20s sabit pencereler)",
             len(evidence_frames),
-            len(raw_groups),
             len(clusters),
-            merge_count,
         )
 
         if video_path is not None:
@@ -679,13 +552,38 @@ class AdaptiveFrameSampler:
         peak.saved_path = self._persist_frame(peak.frame_id, peak.timestamp_str, peak.image_bytes)
         start_time = group[0].timestamp_sec
         end_time = group[-1].timestamp_sec
+        has_gradual_trend = any(getattr(ef, "has_gradual_trend", False) for ef in group)
+
+        rep_frames = []
+        if self.baseline_clean_frame is not None and group[0].timestamp_sec >= 10.0:
+            rep_frames.append(
+                RepresentativeFrame(
+                    label="REFERANS_TEMIZ_KARE_00:00",
+                    timestamp_sec=self.baseline_clean_frame.timestamp_sec,
+                    timestamp_str=self.baseline_clean_frame.timestamp_str,
+                    base64_image=self.baseline_clean_frame.base64_image,
+                )
+            )
+
+        for ef in group:
+            rep_frames.append(
+                RepresentativeFrame(
+                    label=f"kare_{ef.timestamp_str}",
+                    timestamp_sec=ef.timestamp_sec,
+                    timestamp_str=ef.timestamp_str,
+                    base64_image=ef.base64_image,
+                )
+            )
+
         return EventCluster(
             event_id=event_id,
             start_time=start_time,
             end_time=end_time,
             peak_frame=peak,
             total_candidate_frames=len(group),
+            has_gradual_trend=has_gradual_trend,
             duration_sec=round(end_time - start_time, 2),
+            representative_frames=rep_frames,
         )
 
     def export_event_frames(
@@ -754,6 +652,12 @@ def sampler_from_config(
         temporal_vote_min_count=config.temporal_vote_min_count,
         pre_peak_offset_sec=config.pre_peak_offset_sec,
         post_peak_offset_sec=config.post_peak_offset_sec,
+        max_sampling_gap_sec=config.max_sampling_gap_sec,
+        ref_reset_interval_sec=config.ref_reset_interval_sec,
+        ref_change_threshold=config.ref_change_threshold,
+        enable_contrast_check=config.enable_contrast_check,
+        contrast_change_threshold=config.contrast_change_threshold,
+        contrast_check_interval_sec=config.contrast_check_interval_sec,
     )
 
 

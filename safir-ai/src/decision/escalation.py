@@ -59,13 +59,14 @@ class AlertRecord:
     created_at: str
     acknowledged: bool = False
     operator_note: str = ""
+    event_category: str = "safety"
 
 
 class AlarmSink(Protocol):
     """Saha alarmini fiili bir kanala (SMS/anons/SCADA) ileten arka uc sozlesmesi."""
 
     def dispatch(
-        self, *, risk_score: int, risk_level: str, recommended_action: str, summary: str, auto: bool
+        self, *, risk_score: int, risk_level: str, recommended_action: str, summary: str, auto: bool, event_category: str = "safety"
     ) -> str:
         """Alarmi iletir ve takip icin bir `alert_id` dondurur."""
         ...
@@ -88,7 +89,7 @@ class FieldAlarmDispatcher:
         self._lock = threading.Lock()
 
     def dispatch(
-        self, *, risk_score: int, risk_level: str, recommended_action: str, summary: str, auto: bool
+        self, *, risk_score: int, risk_level: str, recommended_action: str, summary: str, auto: bool, event_category: str = "safety"
     ) -> str:
         """Alarmi tetikler, kayit defterine ekler ve `alert_id` dondurur."""
         alert_id = str(uuid.uuid4())
@@ -100,12 +101,14 @@ class FieldAlarmDispatcher:
             summary=summary,
             auto=auto,
             created_at=datetime.now(timezone.utc).isoformat(),
+            event_category=event_category,
         )
         with self._lock:
             self._alerts[alert_id] = record
         logger.warning(
-            "SAHA ALARMI %s TETIKLENDI: alert_id=%s risk=%d(%s) aksiyon=%s",
+            "SAHA ALARMI %s TETIKLENDI [%s]: alert_id=%s risk=%d(%s) aksiyon=%s",
             "OTOMATIK" if auto else "MANUEL",
+            event_category.upper(),
             alert_id,
             risk_score,
             risk_level,
@@ -174,25 +177,9 @@ class EscalationPolicy:
         recommended_action: str,
         summary: str,
         risk_status: str = "assessed",
+        event_category: str = "safety",
     ) -> EscalationDecision:
-        """Kademeyi belirler ve ALARM kademesinde saha alarmini OTOMATIK tetikler.
-
-        `risk_status != "assessed"` (guvenilir bir karar uretilemedi) durumunda,
-        sayisal esik karsilastirmasi HIC yapilmaz: dogrudan `NOTIFY` kademesine
-        dusulur (operator incelemesi icin yumusak sinyal) ve alarm OTOMATIK
-        tetiklenmez. `unknown -> MONITOR` (sessizce dusuk risk kabul etme) veya
-        `unknown -> ALARM` (sayisal olmayan veriyle otomatik alarm) ASLA yapilmaz.
-
-        Args:
-            risk_score: 0-100 arasi risk skoru; risk_status="unknown" ise None olabilir.
-            risk_level: `dusuk|orta|yuksek|kritik|unknown`.
-            recommended_action: Alarma iliştirilecek birincil aksiyon onerisi.
-            summary: Alarma iliştirilecek kisa durum ozeti.
-            risk_status: `assessed` | `unknown` (bkz. `AgentDecision.risk_status`).
-
-        Returns:
-            Secilen kademe, otomatik tetiklenip tetiklenmedigi ve (varsa) `alert_id`.
-        """
+        """Kademeyi belirler ve ALARM kademesinde saha alarmini OTOMATIK tetikler."""
         if risk_status != "assessed" or risk_score is None:
             return EscalationDecision(
                 tier=EscalationTier.NOTIFY,
@@ -210,6 +197,7 @@ class EscalationPolicy:
                 recommended_action=recommended_action,
                 summary=summary,
                 auto=True,
+                event_category=event_category,
             )
             return EscalationDecision(
                 tier=tier,

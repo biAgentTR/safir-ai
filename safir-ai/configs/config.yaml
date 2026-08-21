@@ -48,6 +48,14 @@ sampler:
   pre_peak_offset_sec: 2.0           # Zirve karesi oncesi temsili kare ofseti (sn)
   post_peak_offset_sec: 2.0          # Zirve karesi sonrasi temsili kare ofseti (sn)
 
+  # --- Kademeli / Yavas gelisen olaylar icin coklu sinyal ve ust sinir (Drift, Haze & Hard Cap) ---
+  max_sampling_gap_sec: 4.0          # Iki kanit karesi arasindaki maksimum zaman boslugu ust siniri (Hard Cap)
+  ref_reset_interval_sec: 10.0       # Kumulatif referans karesinin periyodik yenilenme suresi (sn)
+  ref_change_threshold: 0.0015       # Baseline karesine gore kumulatif piksel suruklenme (drift) esigi
+  enable_contrast_check: true        # Duman/sis/pus icin kontrast ve varyans denetimini aktif et
+  contrast_change_threshold: 0.05    # Kontrast/varyans degisim hassasiyet esigi
+  contrast_check_interval_sec: 1.0   # CPU yukunu dusurmek icin kontrast kontrolu frekansi (sn)
+
   # --- Geriye donuk uyumluluk / alternatif sampler ince ayarlari ---
   idle_interval_sec: 2.0             # Sakin bolgelerde kare yakalama araligi (saniye/kare)
   active_fps: 5                      # Hareket/degisim anlarinda aktif ornekleme hizi (fps)
@@ -55,7 +63,7 @@ sampler:
   motion_threshold: 0.02             # Hareket olarak kabul edilecek fark orani esigi
   scene_change_threshold: 0.15       # Sahne degisimi esigi
   resize_width: 640                  # Analiz oncesi kare kucultme genisligi (performans icin)
-  max_evidence_buffer: 100           # Bellekte tutulacak maksimum "Evidence Frame" sayisi
+  max_evidence_buffer: 300           # Bellekte tutulacak maksimum "Evidence Frame" sayisi (önem agirlikli pinned seyreltme ile)
   warmup_frames: 30                  # Baslangicta arka plan modelini olusturmak icin kare sayisi
 
 # -----------------------------------------------------------------------------
@@ -96,14 +104,14 @@ vlm:
       vllm_host: "127.0.0.1"                        # tek makine: API + vLLM ayni host
       vllm_port: 8001
       max_new_tokens: 512
-      temperature: 0.2
+      temperature: 0.0
       top_p: 0.9
     gemma:
       model_name: "google/gemma-3-vision-instruct"
       vllm_host: "0.0.0.0"
       vllm_port: 8002
       max_new_tokens: 512
-      temperature: 0.2
+      temperature: 0.0
       top_p: 0.9
     gemini:                          # gecici TEST backend'i (harici API — offline degildir)
       provider: "gemini"
@@ -111,7 +119,7 @@ vlm:
       base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
       api_key_env: "GEMINI_API_KEY"
       max_new_tokens: 1024
-      temperature: 0.2
+      temperature: 0.0
       top_p: 0.9
 
 # -----------------------------------------------------------------------------
@@ -129,6 +137,8 @@ memory:
     index_path: "data/faiss_index"
     embedding_model: "sentence-transformers/all-MiniLM-L6-v2"     # memory.embedding.model_name ile senkron
     top_k: 5
+    faiss_weight: 0.5
+    bm25_weight: 0.5
 
 # -----------------------------------------------------------------------------
 # 05 - Ajan ve Muhakeme Katmani (LangGraph) - GPU / vLLM
@@ -141,20 +151,20 @@ llm:
       vllm_host: "127.0.0.1"                     # tek makine: API + vLLM ayni host
       vllm_port: 8003
       max_new_tokens: 1024
-      temperature: 0.1
+      temperature: 0.0
     gemma3:
       model_name: "google/gemma-3-8b-it"
       vllm_host: "0.0.0.0"
       vllm_port: 8004
       max_new_tokens: 1024
-      temperature: 0.1
+      temperature: 0.0
     gemini:                          # gecici TEST backend'i (harici API — offline degildir)
       provider: "gemini"
       model_name: "gemini-3.5-flash-lite"
       base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
       api_key_env: "GEMINI_API_KEY"
       max_new_tokens: 1024
-      temperature: 0.1
+      temperature: 0.0
 
 agent:
   max_iterations: 6                  # LangGraph durum makinesinin maksimum dongu sayisi

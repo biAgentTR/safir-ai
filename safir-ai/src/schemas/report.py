@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -75,11 +75,20 @@ class SafirReport(BaseModel):
     event_id: Optional[int] = Field(
         default=None, description="Bu analizin SQLite'a yazildigi olay kaydinin kimligi (Human-in-the-Loop geri bildirimi icin)."
     )
+    session_id: Optional[str] = Field(
+        default=None, description="Bu analiz oturumuna ait benzersiz kimlik (Stateless Session ID)."
+    )
     video_source: str = Field(description="Analiz edilen video/kamera akisinin kaynagi.")
     generated_at: str = Field(description="Raporun ISO-8601 formatinda uretim zamani.")
     natural_language_summary: str = Field(description="VLM'in urettigi ham Turkce sahne gozlemi.")
     summary: str = Field(
         default="", description="Ajanin urettigi, operatore yonelik sade Turkce durum ozeti (sartname 'summary')."
+    )
+    executive_summary: Optional[str] = Field(
+        default=None, description="Dinamik RAG sentezleyicisi tarafindan mevzuatla harmanlanmis yonetici ozeti."
+    )
+    report_data: Optional[Dict[str, Any]] = Field(
+        default=None, description="DynamicReportSynthesizer tarafindan uretilen dinamik RAG rapor verisi."
     )
     risk_score: Optional[int] = Field(
         default=None, ge=0, le=100, description="0-100 arasi hesaplanmis risk skoru; guvenilir karar uretilemediyse None."
@@ -96,6 +105,14 @@ class SafirReport(BaseModel):
     confidence: Optional[str] = Field(
         default="yuksek", description="Karar zincirinin guven derecesi (yuksek | orta | dusuk)."
     )
+    guardrail_triggered: bool = Field(
+        default=False,
+        description="İkincil güvenlik katmanının (Guardrail) LLM kararı üzerine denetim amacıyla devreye girip girmediği.",
+    )
+    event_category: str = Field(
+        default="safety",
+        description="Operasyonel risk kategorisi: safety (iş güvenliği) | security (tesis/perimeter güvenliği) | ambiguous",
+    )
     recommended_action: str = Field(
         description="Saha operatorune yonelik birincil aksiyon onerisi (geriye-uyum: actions[0])."
     )
@@ -104,6 +121,12 @@ class SafirReport(BaseModel):
     )
     onset_timestamp_str: Optional[str] = Field(
         default=None, description="Olayin/kazanin ILK BAŞLADIGI kareden alinan zaman damgasi (MM:SS)."
+    )
+    candidate_onset_str: Optional[str] = Field(
+        default=None, description="Erken sinyal başlangıcı zaman damgası (düşük gürültü tabanı eşiği, örn. 00:25)."
+    )
+    confirmed_onset_str: Optional[str] = Field(
+        default=None, description="Teyit edilmiş olay başlangıcı zaman damgasi (kümülatif trend eşiği, örn. 00:32)."
     )
     safe_timestamps: List[str] = Field(
         default_factory=list, description="Hicbir kazanin/riskin olmadigi rutin karesel zaman damgalari (orn. 00:07, 00:10, 00:12, 00:15)."
@@ -175,3 +198,11 @@ class SafirReport(BaseModel):
         """
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(self.model_dump_json(indent=2))
+
+
+TimelineEntry.model_rebuild()
+TimelineEvent.model_rebuild()
+RagContext.model_rebuild()
+EvidenceFrameOut.model_rebuild()
+SamplerStats.model_rebuild()
+SafirReport.model_rebuild()

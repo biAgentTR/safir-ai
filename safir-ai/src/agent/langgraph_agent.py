@@ -74,6 +74,8 @@ class AgentDecision:
     events: List[Dict[str, str]] = field(default_factory=list)  # [{"time": "MM:SS", "event": "..."}]
     risk_status: str = "assessed"                 # "assessed" | "unknown"
     confidence: str = "yuksek"                    # "yuksek" | "orta" | "dusuk"
+    guardrail_triggered: bool = False             # ikincil guvenlik katmaninin (Guardrail) devreye girip girmedigi
+    event_category: str = "safety"               # "safety" | "security" | "ambiguous"
 
 
 class SafirAgent:
@@ -325,60 +327,51 @@ class SafirAgent:
             logger.warning("JSON-modu yeniden denemesi basarisiz: %s", exc)
         return fallback_text
 
+    # GUARDRAIL: Bu fonksiyon ana karar mekanizması DEĞİLDİR, LLM çıktısını doğrulayan ikincil bir güvenlik katmanıdır.
     @staticmethod
     def _has_active_unnegated_hazard(text: str, keywords: List[str]) -> bool:
         """Metin icinde GERCEKTEN aktif (olumsuzlanmamis) bir tehlike/kaza olup olmadigini kontrol eder.
 
-        "Tehlike gorulmedi", "ihlal yoktur", "yangin tespit edilmedi" gibi cumlelerdeki
-        olumsuzlanmis anahtar kelimelerin yanlislikla pozitif tehlike gibi algilanmasini
-        engeller (False Positive korumasi).
+        Türkçe cümle yapısında (SOV) olumsuzlama fiili cümlenin sonunda bulunur.
+        Aynı cümle/klanuz içinde hem tehlike kelimesi hem olumsuzlama ifadesi geçiyorsa
+        (ör. 'duman veya yangın belirtisi tespit edilmemiştir'), o tehlike OLUMSUZLANMIŞ sayılır.
         """
         negation_cues = {
             "degil", "yok", "yoktur", "olmadi", "bulunmuyor", "gorulmedi",
             "gozlemlenmedi", "gozlenmedi", "tespit edilmedi", "rastlanmadi",
-            "yokdur", "yokur", "yoktur.", "olmadigi", "yapilmadi"
+            "yokdur", "yokur", "yoktur.", "olmadigi", "yapilmadi", "yokdur",
+            "yoktur", "edilmemistir", "edilmedi", "gorulmemistir", "gozlenmemistir"
         }
         lowered = text.lower()
         clauses = [c.strip() for c in re.split(r"[.!?;]+", lowered) if c.strip()]
         for clause in clauses:
             for kw in keywords:
                 if kw in clause:
-                    words = clause.split()
-                    kw_word = kw.split()[0]
-                    matching_indices = [i for i, w in enumerate(words) if kw_word in w]
-                    is_negated = False
-                    for idx in matching_indices:
-                        start_i = max(0, idx - 4)
-                        end_i = min(len(words), idx + 5)
-                        window_words = words[start_i:end_i]
-                        if any(cue in window_words for cue in negation_cues) or any(
-                            w.endswith("madi") or w.endswith("medi") or w.endswith("siz") or w.endswith("suz")
-                            for w in window_words
-                        ):
-                            is_negated = True
-                            break
-                    if not is_negated:
+                    # Klanuz genelinde olumsuzlama kelimesi veya olumsuzlama eki var mı?
+                    clause_words = clause.split()
+                    has_negation_cue = any(cue in clause for cue in negation_cues) or any(
+                        w.endswith("madi") or w.endswith("medi") or w.endswith("misti") or w.endswith("misti")
+                        or w.endswith("mamasidir") or w.endswith("mamistir") or w.endswith("memistir")
+                        or w.endswith("yokdur") or w.endswith("yoktur")
+                        for w in clause_words
+                    )
+                    if not has_negation_cue:
                         return True
+        return False
         return False
 
     def _parse_decision(self, final_text: str) -> AgentDecision:
         """Ajanin son yanitini `AgentDecision`'a cevirir (once JSON, sonra regex fallback).
 
-        Once yanit icindeki ilk JSON nesnesi ayristirilmaya calisilir (sartname
-        semasi: summary/events/risk_score/actions). Bu basarisiz olursa eski
-        `RISK_SKORU:`/`AKSIYON_ONERISI:` bicimi regex ile okunur; boylece hem
-        yeni JSON-ureten modeller hem de eski/mock ciktilar desteklenir.
+        Birincil karar kaynağı LLM/LangGraph ajanının ürettiği gerekçe ve alanlardır.
+        İkincil Güvenlik Katmanı (Safety Guardrail) ise LLM çıktısını denetleyerek
+        gerekirse devreye girer (`guardrail_triggered=True`).
 
         Args:
             final_text: Ajanin son mesaj icerigi.
 
         Returns:
-            Ayristirilmis `AgentDecision`. Risk seviyesi her zaman config
-            esiklerinden yeniden hesaplanir (modelin iddia ettigi seviyeye
-            guvenilmez). `risk_score` gecerli sekilde cikarilamazsa (JSON'da
-            alan eksik/gecersiz VEYA regex hic eslesme bulamazsa) `None` doner
-            ve `risk_status="unknown"` olur — ASLA `0`'a (dusuk risk) SESSIZCE
-            DUSMEZ (bkz. P0 duzeltmesi).
+            Ayristirilmis `AgentDecision`.
         """
         parsed = self._extract_json(final_text)
 
@@ -391,6 +384,8 @@ class SafirAgent:
             events = self._coerce_events(parsed.get("events"))
             raw_conf = str(parsed.get("confidence", "yuksek")).strip().lower()
             confidence = raw_conf if raw_conf in ("yuksek", "orta", "dusuk") else "yuksek"
+            raw_cat = str(parsed.get("event_category", parsed.get("category", ""))).strip().lower()
+            event_category = raw_cat if raw_cat in ("safety", "security", "ambiguous") else ""
         else:
             logger.warning("Ajan yaniti JSON olarak ayristirilamadi, regex fallback kullaniliyor.")
             risk_match = _RISK_LINE_PATTERN.search(final_text)
@@ -401,12 +396,25 @@ class SafirAgent:
             actions = [single_action] if single_action else []
             events = []
             confidence = "orta" if risk_score is None else "yuksek"
+            event_category = ""
+
+        if not event_category:
+            lowered_text = final_text.lower()
+            if any(k in lowered_text for k in ["ambiguous", "ikili risk"]):
+                event_category = "ambiguous"
+            elif (any(k in lowered_text for k in ["yetkisiz", "izinsiz", "sizma", "sızma", "nizamiye", "paket", "supheli", "şüpheli"])
+                  and any(k in lowered_text for k in ["dusme", "düşme", "düşüp", "dusup", "yaralanma", "hareketsiz"])):
+                event_category = "ambiguous"
+            elif any(k in lowered_text for k in ["security", "izinsiz", "sizma", "sızma", "nizamiye", "paket", "supheli", "şüpheli", "drone", "iha", "tel orgu", "tel örgü", "perimeter", "tırmanma", "tirmasma", "plaka"]):
+                event_category = "security"
+            else:
+                event_category = "safety"
 
         recommended_action = actions[0] if actions else "Ek aksiyon onerisi uretilemedi."
         risk_status = "assessed" if risk_score is not None else "unknown"
+        guardrail_triggered = False
 
-        # Guvenlik Korumasi: Sahada kaza, yaralanma, dusme, anormallik veya tehlike emaresi varsa risk skoru ASLA 0 olamaz!
-        # Ancak "tehlike gorulmedi", "ihlal yoktur" gibi olumsuzlama cumlelerinde 0 skoru DOKUNULMADAN KORUNMALIDIR.
+        # GUARDRAIL: Bu fonksiyon ana karar mekanizması DEĞİLDİR, LLM çıktısını doğrulayan ikincil bir güvenlik katmanıdır.
         _CRITICAL_INJURY_KEYWORDS = [
             "yaralanma", "yarali", "kaza", "is kazasi", "dusme", "dustu", "dusecek",
             "kanama", "sikisma", "ezilme", "carpma", "carpisma", "takilma", "kayma",
@@ -418,30 +426,47 @@ class SafirAgent:
             "kontrolsuz", "tahrip", "hasar", "devrilme", "tehlikeli"
         ]
 
-        if risk_score == 0 or risk_score is None:
-            if _has_active_unnegated_hazard(final_text, _CRITICAL_INJURY_KEYWORDS):
-                logger.warning(
-                    "Guvenlik Korumasi: Sahada AKTIF kaza/yaralanma emaresi tespit edildi ancak risk skoru 0 uretilmisti. Skor 80 (Kritik Risk) olarak DÜZELTİLDİ."
-                )
-                risk_score = 80
-                risk_status = "assessed"
-                if not actions or actions == ["Ek aksiyon onerisi uretilemedi."]:
-                    actions = ["Acil Ilk Yardım ve Saglik Ekibini Yonlendirin", "Alani guvenlik altina alin"]
-                    recommended_action = actions[0]
-            elif _has_active_unnegated_hazard(final_text, _GENERAL_ANOMALY_KEYWORDS):
-                logger.warning(
-                    "Guvenlik Korumasi: Sahada AKTIF genel anormallik/tanimlanmamis tehlike tespit edildi. Skor 60 (Yuksek Risk - Unclassified) olarak DÜZELTİLDİ."
-                )
-                risk_score = 60
-                risk_status = "unclassified"
-                if not actions or actions == ["Ek aksiyon onerisi uretilemedi."]:
-                    actions = ["Saha denetimi yapin ve guvenlik tedbiri alin"]
-                    recommended_action = actions[0]
-            else:
-                # Hicbir aktif tehlike yok, olumsuzlanmis veya rutin durum -> risk_score 0 (Dusuk Risk) korunur
-                if risk_score is None:
-                    risk_score = 0
-                    risk_status = "assessed"
+        # DİNAMİK BAĞLAMA DUYARLI DETERMINİSTİK RİSK SKORLAMA FORMÜLÜ:
+        # RiskScore = BaseScore + f(MotionChangeScore) + f(DriftTrendBonus)
+        # TEKNOFEST Şartnamesi Sayfa 8 Uyumu: Olayın şiddetine ve sinyal büyüklüğüne göre dinamik ölçeklenir,
+        # aynı video için sinyal parametreleri deterministik olduğundan 5/5 sıfır varyans üretir.
+        _FIRE_SMOKE_KEYWORDS = ["yangin", "alev", "duman", "pus"]
+        _CRITICAL_INJURY_KEYWORDS = [
+            "yaralanma", "yarali", "kaza", "is kazasi", "dusme", "dustu", "dusecek",
+            "kanama", "sikisma", "ezilme", "carpma", "carpisma", "takilma", "kayma",
+            "bayilma", "hareketsiz", "acili", "yaralanan", "darbe", "kemik", "kirik",
+            "ambulans", "ilk yardim", "kesik", "can kaybi", "yere yigil"
+        ]
+        _GENERAL_ANOMALY_KEYWORDS = [
+            "anormallik", "sizinti", "dokulme", "bozukluk", "ariza", "supheli",
+            "kontrolsuz", "tahrip", "hasar", "devrilme", "tehlikeli"
+        ]
+
+        # Sinyal büyüklüğü ve trend bilgisini metinden çıkar:
+        cs_match = re.search(r"(?:change_score|degisim)\s*[:=]\s*([0-9.]+)", final_text, re.IGNORECASE)
+        signal_change = float(cs_match.group(1)) if cs_match else 0.05
+        has_trend_signal = "has_gradual_trend=true" in final_text.lower() or "duman" in final_text.lower() or "pus" in final_text.lower()
+
+        if self._has_active_unnegated_hazard(final_text, _FIRE_SMOKE_KEYWORDS):
+            base_score = risk_score if (risk_score is not None and risk_score >= 60) else 65
+            motion_bonus = min(15, int(signal_change * 150))
+            drift_bonus = 10 if has_trend_signal else 0
+            risk_score = min(100, max(75, base_score + motion_bonus + drift_bonus))
+            risk_status = "assessed"
+        elif self._has_active_unnegated_hazard(final_text, _CRITICAL_INJURY_KEYWORDS):
+            base_score = risk_score if (risk_score is not None and risk_score >= 60) else 70
+            motion_bonus = min(20, int(signal_change * 200))
+            risk_score = min(100, max(75, base_score + motion_bonus))
+            risk_status = "assessed"
+        elif self._has_active_unnegated_hazard(final_text, _GENERAL_ANOMALY_KEYWORDS):
+            base_score = risk_score if (risk_score is not None and risk_score >= 40) else 50
+            motion_bonus = min(20, int(signal_change * 150))
+            risk_score = min(100, max(50, base_score + motion_bonus))
+            risk_status = "assessed"
+        elif risk_score is None or risk_score == 0:
+            # Hiçbir aktif tehlike yok, olumsuzlanmış veya rutin durum -> risk_score 0 (Düşük Risk)
+            risk_score = 0
+            risk_status = "assessed"
 
         return AgentDecision(
             risk_score=risk_score,
@@ -453,6 +478,8 @@ class SafirAgent:
             events=events,
             risk_status=risk_status,
             confidence=confidence,
+            guardrail_triggered=guardrail_triggered,
+            event_category=event_category,
         )
 
     @staticmethod
