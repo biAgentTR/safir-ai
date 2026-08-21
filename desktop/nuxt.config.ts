@@ -14,6 +14,10 @@ export default defineNuxtConfig({
 
   modules: ['@nuxtjs/tailwindcss', '@pinia/nuxt'],
 
+  experimental: {
+    appManifest: false,
+  },
+
   // Flat component names regardless of subfolder (StageCard, not WorkspaceStageCard).
   components: [{ path: '~/components', pathPrefix: false }],
 

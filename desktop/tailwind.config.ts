@@ -1,8 +1,8 @@
 import type { Config } from 'tailwindcss'
 
-// SAFIR desktop theme: sober, technical, information-dense. Not a colorful
-// admin dashboard — a slate/steel base with a single restrained accent.
+// SAFIR Desktop Theme Configuration with class-based Dark Mode & CSS Variables
 export default <Partial<Config>>{
+  darkMode: 'class',
   content: [
     './app/components/**/*.{vue,ts}',
     './app/layouts/**/*.vue',
@@ -14,21 +14,21 @@ export default <Partial<Config>>{
     extend: {
       colors: {
         surface: {
-          0: '#0b0f14',
-          1: '#0f141b',
-          2: '#151c26',
-          3: '#1c2531',
+          0: 'var(--bg-surface-0)',
+          1: 'var(--bg-surface-1)',
+          2: 'var(--bg-surface-2)',
+          3: 'var(--bg-surface-3)',
         },
-        edge: '#26303d',
+        edge: 'var(--border-edge)',
         accent: {
-          DEFAULT: '#3b82f6',
-          soft: '#1e3a5f',
+          DEFAULT: 'var(--accent-primary)',
+          soft: 'var(--accent-hover)',
         },
         risk: {
-          low: '#22c55e',
-          mid: '#eab308',
-          high: '#f97316',
-          crit: '#ef4444',
+          low: 'var(--risk-low)',
+          mid: 'var(--risk-mid)',
+          high: 'var(--risk-high)',
+          crit: 'var(--risk-crit)',
         },
       },
       fontFamily: {

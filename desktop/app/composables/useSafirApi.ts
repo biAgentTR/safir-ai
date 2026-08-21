@@ -38,6 +38,18 @@ export function useSafirApi() {
     return await $fetch(url('/health'))
   }
 
+  /** POST /upload/video -> { video_source, filename, size_bytes } */
+  async function uploadVideo(
+    file: File,
+  ): Promise<{ video_source: string; filename: string; size_bytes: number }> {
+    const formData = new FormData()
+    formData.append('file', file)
+    return await $fetch(url('/upload/video'), {
+      method: 'POST',
+      body: formData,
+    })
+  }
+
   /** POST /analyze/jobs -> { job_id } */
   async function createAnalysis(
     payload: AnalyzeRequest,
@@ -224,6 +236,7 @@ export function useSafirApi() {
   return {
     base,
     health,
+    uploadVideo,
     createAnalysis,
     getJob,
     streamJobUrl,

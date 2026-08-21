@@ -79,12 +79,16 @@ const regulations = computed(() => store.report?.relevant_regulations ?? [])
     <!-- failed (e.g. VLM degraded) -->
     <div v-else-if="ev.status === 'failed'" class="space-y-3">
       <div class="rounded-md border border-risk-crit/30 bg-risk-crit/10 p-4 text-sm text-slate-200">
-        {{ label }} tamamlanamadı. Analiz düşürülmüş (degraded) modda sürdürüldü.
+        <div class="font-semibold text-risk-crit mb-1">
+          {{ label }} Tamamlanamadı
+        </div>
+        <p v-if="ev.error" class="text-slate-200 font-mono text-xs mt-2 bg-surface-1/60 p-2.5 rounded border border-risk-crit/30 whitespace-pre-wrap">
+          {{ ev.error }}
+        </p>
+        <p v-else class="text-slate-400 text-xs mt-1">
+          Analiz düşürülmüş (degraded) modda sürdürüldü.
+        </p>
       </div>
-      <details v-if="ev.error" class="text-xs">
-        <summary class="cursor-pointer text-slate-400">Teknik detay</summary>
-        <p class="mt-2 text-slate-500">{{ ev.error }}</p>
-      </details>
     </div>
 
     <template v-else>

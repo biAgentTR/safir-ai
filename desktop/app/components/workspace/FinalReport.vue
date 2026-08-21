@@ -122,30 +122,32 @@ function doExportPdf() {
       </details>
     </section>
 
-    <!-- export -->
-    <section class="pt-2 border-t border-edge">
-      <div class="flex items-center gap-3">
-        <span class="text-xs text-slate-500">Dışa aktar:</span>
-        <button class="btn-ghost" :disabled="exportPhase.json === 'loading'" @click="doExportJson">
-          <span v-if="exportPhase.json === 'loading'">…</span>
-          <span v-else-if="exportPhase.json === 'ok'">✓ JSON</span>
-          <span v-else>JSON</span>
+    <!-- export section -->
+    <section class="pt-4 border-t border-edge space-y-2">
+      <div class="flex flex-wrap items-center gap-3">
+        <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Resmi Rapor Dışa Aktarma:</span>
+        <button class="btn-primary" :disabled="exportPhase.pdf === 'loading'" @click="doExportPdf">
+          <span v-if="exportPhase.pdf === 'loading'">📄 PDF Hazırlanıyor…</span>
+          <span v-else-if="exportPhase.pdf === 'ok'">✓ PDF İndirildi</span>
+          <span v-else>📄 Tek Tıkla PDF Rapor İndir</span>
         </button>
-        <button class="btn-ghost" :disabled="exportPhase.html === 'loading'" @click="doExportHtml">
-          <span v-if="exportPhase.html === 'loading'">…</span>
-          <span v-else-if="exportPhase.html === 'ok'">✓ HTML</span>
-          <span v-else>HTML</span>
+        <button class="btn-ghost border border-edge" :disabled="exportPhase.html === 'loading'" @click="doExportHtml">
+          <span v-if="exportPhase.html === 'loading'">🌐 HTML Hazırlanıyor…</span>
+          <span v-else-if="exportPhase.html === 'ok'">✓ HTML İndirildi</span>
+          <span v-else>🌐 HTML Rapor</span>
         </button>
-        <button class="btn-ghost" :disabled="exportPhase.pdf === 'loading'" @click="doExportPdf">
-          <span v-if="exportPhase.pdf === 'loading'">PDF oluşturuluyor…</span>
-          <span v-else-if="exportPhase.pdf === 'ok'">✓ PDF</span>
-          <span v-else>PDF</span>
+        <button class="btn-ghost border border-edge" :disabled="exportPhase.json === 'loading'" @click="doExportJson">
+          <span v-if="exportPhase.json === 'loading'">💾 JSON…</span>
+          <span v-else-if="exportPhase.json === 'ok'">✓ JSON İndirildi</span>
+          <span v-else>💾 Veri (JSON)</span>
         </button>
-        <span class="text-[11px] text-slate-600 ml-2">(JSON/HTML gerçek rapor verisinden; PDF backend'de reportlab ile üretilir)</span>
       </div>
-      <p v-if="exportPhase.json === 'error'" class="mt-2 text-xs text-risk-crit">JSON: {{ exportError.json }}</p>
-      <p v-if="exportPhase.html === 'error'" class="mt-2 text-xs text-risk-crit">HTML: {{ exportError.html }}</p>
-      <p v-if="exportPhase.pdf === 'error'" class="mt-2 text-xs text-risk-crit">PDF: {{ exportError.pdf }}</p>
+      <p class="text-xs text-slate-500">
+        PDF çıktısı resmi İSG denetim raporu standartlarındadır; HTML ve JSON anında yerel veriden üretilir.
+      </p>
+      <p v-if="exportPhase.json === 'error'" class="mt-1 text-xs text-risk-crit">JSON Hata: {{ exportError.json }}</p>
+      <p v-if="exportPhase.html === 'error'" class="mt-1 text-xs text-risk-crit">HTML Hata: {{ exportError.html }}</p>
+      <p v-if="exportPhase.pdf === 'error'" class="mt-1 text-xs text-risk-crit">PDF Hata: {{ exportError.pdf }}</p>
     </section>
   </div>
 

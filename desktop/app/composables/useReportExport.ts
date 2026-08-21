@@ -49,29 +49,52 @@ export function buildReportHtml(r: SafirReport): string {
   const actions = (r.actions ?? []).map((a) => `<li>${esc(a)}</li>`).join('')
   const regs = (r.relevant_regulations ?? []).map((a) => `<li>${esc(a)}</li>`).join('')
   const st = r.sampler_stats
-  const isUnknownRisk = r.risk_status === 'unknown' || r.risk_score === null || r.risk_score === undefined
-  const riskText = isUnknownRisk
-    ? 'Belirsiz — analiz güvenilir şekilde tamamlanamadı, manuel inceleme gerekli'
-    : `${esc(r.risk_score)} / 100 — ${esc(r.risk_level)}`
+
+  const isUnclassified = r.risk_status === 'unclassified' || (r.detected_event_types ?? []).includes('siniflandirilamadi')
+  const isUnknownRisk = !isUnclassified && (r.risk_status === 'unknown' || r.risk_score === null || r.risk_score === undefined)
+
+  let riskText = `${esc(r.risk_score)} / 100 — ${esc(r.risk_level)}`
+  if (isUnclassified) {
+    riskText = 'Sınıflandırılamayan Risk (null) — 8 Ana İSG kuralı dışında şüpheli anormallik'
+  } else if (isUnknownRisk) {
+    riskText = 'Belirsiz — analiz güvenilir şekilde tamamlanamadı, manuel inceleme gerekli'
+  }
+
+  const onsetHtml = r.onset_timestamp_str ? `<p><b>📍 Olay Başlangıç Anı (Onset):</b> <span style="color:#d97706;font-weight:bold">${esc(r.onset_timestamp_str)}</span></p>` : ''
+  const safeHtml = (r.safe_timestamps ?? []).length ? `<p><b>🟢 Rutin Kareler (Safe):</b> ${r.safe_timestamps.map(t => `<code style="background:#e6f4ea;color:#137333;padding:2px 6px;border-radius:4px">${esc(t)}</code>`).join(' ')}</p>` : ''
+  const incidentHtml = (r.incident_timestamps ?? []).length ? `<p><b>🔴 Olay Kareleri (Incident):</b> ${r.incident_timestamps.map(t => `<code style="background:#fce8e6;color:#c5221f;padding:2px 6px;border-radius:4px">${esc(t)}</code>`).join(' ')}</p>` : ''
+
+  const unclassifiedBox = isUnclassified
+    ? `<div style="background:#fffbeb;border:1px solid #fef3c7;padding:12px;border-radius:6px;margin:1rem 0;color:#92400e">
+        <b>🏷️ 8 Ana İSG Kuralı Dışında Şüpheli Risk / İnceleme Bekliyor</b>
+        <p style="margin:4px 0 0 0;font-size:13px">Sahada anormallik/şüpheli olay tespit edilmiştir ancak tanımlı 8 temel İSG mevzuat kategorisinden birine eşleştirilememiştir. Risk skoru null olarak işaretlenmiştir.</p>
+       </div>`
+    : ''
+
   return `<!doctype html><html lang="tr"><head><meta charset="utf-8">
-<title>SAFİR Raporu</title>
+<title>SAFİR — Saha Analiz Raporu</title>
 <style>
   body{font-family:system-ui,Arial,sans-serif;color:#111;margin:2rem;line-height:1.5}
-  h1{font-size:20px;letter-spacing:.15em} h2{font-size:14px;margin-top:1.5rem;text-transform:uppercase;color:#555;border-bottom:1px solid #ddd;padding-bottom:4px}
-  .risk{font-size:28px;font-weight:700} table{border-collapse:collapse;width:100%} td,th{border:1px solid #ddd;padding:6px 8px;text-align:left;font-size:13px}
-  .muted{color:#666;font-size:12px} ul{margin:.3rem 0}
+  h1{font-size:22px;letter-spacing:.1em;color:#0f172a;border-bottom:2px solid #0f172a;padding-bottom:6px}
+  h2{font-size:14px;margin-top:1.5rem;text-transform:uppercase;color:#475569;border-bottom:1px solid #cbd5e1;padding-bottom:4px}
+  .risk{font-size:24px;font-weight:700;color:#0f172a} table{border-collapse:collapse;width:100%} td,th{border:1px solid #cbd5e1;padding:6px 8px;text-align:left;font-size:13px}
+  .muted{color:#64748b;font-size:12px} ul{margin:.3rem 0}
 </style></head><body>
-<h1>SAFİR — Saha Analiz Raporu</h1>
-<p class="muted">${esc(r.video_source)} · ${esc(r.generated_at)}</p>
+<h1>SAFİR — Saha Analiz ve İSG Denetim Raporu</h1>
+<p class="muted">Video Kaynağı: ${esc(r.video_source)} · Tarih: ${esc(r.generated_at)}</p>
 <h2>Executive Summary</h2><p>${esc(r.summary || r.natural_language_summary)}</p>
-<h2>Risk</h2><p class="risk">${riskText}</p>
-<p><b>Önerilen aksiyon:</b> ${esc(r.recommended_action)}</p>
-<h2>Aksiyonlar</h2><ul>${actions || '<li class="muted">—</li>'}</ul>
-<h2>Zaman Çizelgesi</h2><table><tr><th>Zaman</th><th>Olay</th></tr>${rows || '<tr><td colspan=2 class="muted">—</td></tr>'}</table>
-<h2>İlgili Mevzuat (RAG)</h2><ul>${regs || '<li class="muted">—</li>'}</ul>
-<h2>Eskalasyon</h2><p>Kademe: <b>${esc(r.escalation_tier ?? '-')}</b> · otomatik: ${r.auto_dispatched ? 'evet' : 'hayır'}${r.alert_id ? ` · alert_id: ${esc(r.alert_id)}` : ''}</p>
-<h2>Teknik Metrikler</h2>
-<p class="muted">VLM: ${esc(r.vlm_model ?? '-')} · LLM: ${esc(r.llm_model ?? '-')}${st ? ` · taranan kare: ${esc(st.total_frames_scanned)} · GPU tasarrufu: %${esc(st.gpu_savings_ratio_pct)} · süre: ${esc(st.elapsed_sec)}s` : ''}</p>
+${unclassifiedBox}
+<h2>Risk Değerlendirmesi</h2><p class="risk">${riskText}</p>
+${onsetHtml}
+${safeHtml}
+${incidentHtml}
+<p style="margin-top:1rem"><b>Önerilen Aksiyon:</b> ${esc(r.recommended_action)}</p>
+<h2>Önerilen Somut Aksiyonlar</h2><ul>${actions || '<li class="muted">—</li>'}</ul>
+<h2>Zaman Çizelgesi</h2><table><tr><th>Zaman</th><th>Olay Açıklaması</th></tr>${rows || '<tr><td colspan=2 class="muted">—</td></tr>'}</table>
+<h2>İlgili Mevzuat (RAG / FAISS)</h2><ul>${regs || '<li class="muted">—</li>'}</ul>
+<h2>Eskalasyon & Bildirim</h2><p>Kademe: <b>${esc(r.escalation_tier ?? '-')}</b> · Otomatik Alarm: ${r.auto_dispatched ? 'Evet' : 'Hayır'}${r.alert_id ? ` · Alert ID: ${esc(r.alert_id)}` : ''}</p>
+<h2>Teknik Metrikler & Performans</h2>
+<p class="muted">VLM Modeli: ${esc(r.vlm_model ?? '-')} · LLM Modeli: ${esc(r.llm_model ?? '-')}${st ? ` · Taranan Kare: ${esc(st.total_frames_scanned)} · GPU Tasarrufu: %${esc(st.gpu_savings_ratio_pct)} · Analiz Süresi: ${esc(st.elapsed_sec)}s` : ''}</p>
 </body></html>`
 }
 

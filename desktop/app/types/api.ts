@@ -96,6 +96,7 @@ export interface SafirReport {
   risk_score: number | null
   risk_level: RiskLevel | string
   risk_status: RiskStatus | string
+  confidence?: 'yuksek' | 'orta' | 'dusuk' | string | null
   recommended_action: string
   actions: string[]
   detected_event_types: string[]
