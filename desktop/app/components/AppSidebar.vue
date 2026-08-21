@@ -17,6 +17,16 @@ const items: NavItem[] = [
   { label: 'SAFİR Asistan', to: '/assistant', icon: '◆' },
   { label: 'Sistem Verileri', to: '/system', icon: '⛁' },
 ]
+
+// Brief welcome overlay on panel switch (PanelTransition.vue, mounted in the
+// layout). Only fires for an actual panel change — clicking the panel
+// you're already on shouldn't retrigger it. Navigation itself is untouched;
+// NuxtLink below still does the real route change.
+const route = useRoute()
+const { trigger } = usePanelTransition()
+function onNavClick(to: string) {
+  if (route.path !== to) trigger(to)
+}
 </script>
 
 <template>
@@ -33,6 +43,7 @@ const items: NavItem[] = [
         :to="item.to"
         class="group flex items-center gap-3 rounded-md px-3 py-2 text-sm text-slate-300 hover:bg-surface-2 transition-colors"
         active-class="bg-accent-soft text-white"
+        @click="onNavClick(item.to)"
       >
         <span class="w-4 text-center text-slate-400 group-hover:text-slate-200">{{ item.icon }}</span>
         <span>{{ item.label }}</span>

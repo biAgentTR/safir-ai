@@ -3,11 +3,19 @@
 // health probe resolves, so the app doesn't cold-open on a bare, empty frame.
 // A short minimum display time avoids a one-frame flash when the backend is
 // already warm and the probe resolves almost instantly.
+//
+// hasShownOnce is shared app-wide (useState) so this only ever blocks on the
+// TRUE cold boot — this component remounts every time the operator navigates
+// back to Genel Bakış (it lives on that page), and without this guard it
+// would re-run its own 700ms minimum display each time, stacking with
+// PanelTransition's sidebar-switch overlay (usePanelTransition.ts).
 const { state } = useBackendHealth()
+const hasShownOnce = useState<boolean>('app-splash-shown-once', () => false)
 
 const minTimeElapsed = ref(false)
 let timer: ReturnType<typeof setTimeout> | null = null
 onMounted(() => {
+  if (hasShownOnce.value) return
   timer = setTimeout(() => {
     minTimeElapsed.value = true
   }, 700)
@@ -16,7 +24,12 @@ onBeforeUnmount(() => {
   if (timer) clearTimeout(timer)
 })
 
-const visible = computed(() => state.value === 'checking' || !minTimeElapsed.value)
+const visible = computed(() => {
+  if (hasShownOnce.value) return false
+  const resolved = state.value !== 'checking' && minTimeElapsed.value
+  if (resolved) hasShownOnce.value = true
+  return !resolved
+})
 </script>
 
 <template>
