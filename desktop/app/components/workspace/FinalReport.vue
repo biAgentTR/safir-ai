@@ -56,9 +56,9 @@ function doExportPdf() {
         <div>
           <div class="field-label">Risk</div>
           <div v-if="isUnknownRisk" class="text-2xl font-bold" :class="RISK_TEXT[tone]">
-            Risk Belirsiz <span class="uppercase text-base font-normal text-slate-400">— manuel inceleme gerekli</span>
+            Risk Belirsiz <span class="uppercase text-base font-normal text-slate-400">— MANUEL İNCELEME GEREKLİ</span>
           </div>
-          <div v-else class="text-2xl font-bold" :class="RISK_TEXT[tone]">{{ r.risk_score }} / 100 · <span class="uppercase text-base">{{ r.risk_level }}</span></div>
+          <div v-else class="text-2xl font-bold" :class="RISK_TEXT[tone]">{{ r.risk_score }} / 100 · <span class="uppercase text-base">{{ trUpper(r.risk_level) }}</span></div>
         </div>
         <div>
           <div class="field-label">Önerilen aksiyonlar</div>
@@ -109,8 +109,8 @@ function doExportPdf() {
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <MetricCell label="VLM" :value="r.vlm_model ?? '—'" mono />
         <MetricCell label="LLM" :value="r.llm_model ?? '—'" mono />
-        <MetricCell label="Event id" :value="r.event_id ?? '—'" mono />
-        <MetricCell label="Auto dispatched" :value="r.auto_dispatched ? 'evet' : 'hayır'" />
+        <MetricCell label="Olay Kimliği" :value="r.event_id ?? '—'" mono />
+        <MetricCell label="Otomatik Yönlendirildi" :value="r.auto_dispatched ? 'evet' : 'hayır'" />
       </div>
     </section>
 

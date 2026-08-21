@@ -39,7 +39,7 @@ function tone(s: string): string {
 
 <template>
   <div class="card p-3">
-    <div class="px-2 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Analiz Hattı</div>
+    <div class="px-2 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">ANALİZ HATTI</div>
     <ol class="relative">
       <li
         v-for="(m, i) in STAGE_META"

@@ -120,7 +120,7 @@ function useSuggestion(s: string) {
             <span
               class="shrink-0 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide"
               :class="s.type === 'analysis' ? 'bg-accent-soft text-accent' : 'bg-surface-3 text-slate-400'"
-            >{{ s.type === 'analysis' ? 'Analiz' : 'Mevzuat' }}</span>
+            >{{ s.type === 'analysis' ? 'ANALİZ' : 'MEVZUAT' }}</span>
             <span class="text-slate-300 min-w-0">
               {{ s.label ?? s.text }}
               <span v-if="s.score != null" class="text-slate-600"> · skor {{ s.score }}</span>

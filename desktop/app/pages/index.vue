@@ -207,7 +207,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
     <!-- critical / high-risk attention section — top priority, decision-relevant -->
     <section v-if="criticalRecent.length" class="mb-6" aria-label="Dikkat gerektiren son analizler">
-      <h3 class="text-xs font-semibold uppercase tracking-wide text-risk-crit mb-2">Dikkat Gerektiren Son Analizler</h3>
+      <h3 class="text-xs font-semibold uppercase tracking-wide text-risk-crit mb-2">DİKKAT GEREKTİREN SON ANALİZLER</h3>
       <div class="space-y-2">
         <button
           v-for="h in criticalRecent"
@@ -226,7 +226,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           </div>
           <div class="text-right shrink-0">
             <div class="text-lg font-bold" :class="RISK_TEXT[riskTone(h.risk_level)]">{{ h.risk_score }}</div>
-            <div class="text-[10px] uppercase tracking-wide" :class="RISK_TEXT[riskTone(h.risk_level)]">{{ h.risk_level }}</div>
+            <div class="text-[10px] uppercase tracking-wide" :class="RISK_TEXT[riskTone(h.risk_level)]">{{ trUpper(h.risk_level) }}</div>
           </div>
           <span class="text-xs text-slate-500 shrink-0 w-16 text-right">{{ fmtRelative(h.created_at) }}</span>
         </button>
@@ -242,7 +242,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
       </div>
       <div v-else-if="overview" class="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div class="card px-4 py-3">
-          <div class="text-[11px] uppercase tracking-wide text-slate-500">Toplam Analiz</div>
+          <div class="text-[11px] uppercase tracking-wide text-slate-500">TOPLAM ANALİZ</div>
           <div class="mt-1 text-xl font-semibold text-slate-100">{{ overview.totals.total_analyses }}</div>
         </div>
         <div class="card px-4 py-3">

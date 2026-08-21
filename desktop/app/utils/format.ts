@@ -1,6 +1,17 @@
 /** Small presentation helpers shared across workspace components. */
 import type { TraceStage } from '~/types/api'
 
+/**
+ * Turkish-locale-correct uppercasing. CSS `text-transform: uppercase` is NOT
+ * locale-aware: browsers always map lowercase 'i' -> 'I' (dotless), which is
+ * wrong in Turkish (should be 'İ', dotted). Use this instead of the CSS
+ * utility for any label/value that may contain Turkish text, so e.g.
+ * "kritik" renders "KRİTİK" and not "KRITIK".
+ */
+export function trUpper(s: string | null | undefined): string {
+  return (s ?? '').toLocaleUpperCase('tr-TR')
+}
+
 /** Seconds -> MM:SS (matches the backend's timestamp_str convention). */
 export function mmss(seconds: number): string {
   const total = Math.max(0, Math.round(seconds))

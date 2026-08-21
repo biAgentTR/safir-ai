@@ -103,11 +103,11 @@ onMounted(() => load(true))
         </div>
         <div v-if="item.risk_status === 'unknown' || item.risk_score == null" class="text-right shrink-0">
           <div class="text-lg font-bold text-slate-400">—</div>
-          <div class="text-[10px] uppercase tracking-wide text-slate-400">Belirsiz</div>
+          <div class="text-[10px] uppercase tracking-wide text-slate-400">BELİRSİZ</div>
         </div>
         <div v-else class="text-right shrink-0">
           <div class="text-lg font-bold" :class="RISK_TEXT[riskTone(item.risk_level)]">{{ item.risk_score }}</div>
-          <div class="text-[10px] uppercase tracking-wide" :class="RISK_TEXT[riskTone(item.risk_level)]">{{ item.risk_level }}</div>
+          <div class="text-[10px] uppercase tracking-wide" :class="RISK_TEXT[riskTone(item.risk_level)]">{{ trUpper(item.risk_level) }}</div>
         </div>
         <span class="text-slate-600 shrink-0">›</span>
       </button>
