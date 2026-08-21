@@ -92,16 +92,16 @@ const regulations = computed(() => store.report?.relevant_regulations ?? [])
       <!-- ============ SAMPLER ============ -->
       <div v-if="sampler" class="space-y-5">
         <div class="grid grid-cols-3 sm:grid-cols-6 gap-3">
-          <MetricCell label="Scanned" :value="sampler.stats.total_frames_scanned ?? 0" />
-          <MetricCell label="Evaluated" :value="sampler.stats.sampled_frames_evaluated ?? 0" />
-          <MetricCell label="Evidence" :value="sampler.stats.evidence_frame_count ?? 0" />
-          <MetricCell label="Eliminated" :value="sampler.stats.eliminated_frame_count ?? 0" />
-          <MetricCell label="GPU savings" :value="`%${sampler.stats.gpu_savings_ratio_pct ?? 0}`" />
-          <MetricCell label="Elapsed" :value="`${sampler.stats.elapsed_sec ?? 0}s`" />
+          <MetricCell label="Taranan" :value="sampler.stats.total_frames_scanned ?? 0" />
+          <MetricCell label="Değerlendirilen" :value="sampler.stats.sampled_frames_evaluated ?? 0" />
+          <MetricCell label="Kanıt" :value="sampler.stats.evidence_frame_count ?? 0" />
+          <MetricCell label="Elenen" :value="sampler.stats.eliminated_frame_count ?? 0" />
+          <MetricCell label="GPU Tasarrufu" :value="`%${sampler.stats.gpu_savings_ratio_pct ?? 0}`" />
+          <MetricCell label="Geçen Süre" :value="`${sampler.stats.elapsed_sec ?? 0}s`" />
         </div>
 
         <div v-if="sampler.evidence_frames.length">
-          <div class="field-label">Evidence frames</div>
+          <div class="field-label">Kanıt kareleri</div>
           <div class="flex flex-wrap gap-3">
             <button
               v-for="f in sampler.evidence_frames"
@@ -113,7 +113,7 @@ const regulations = computed(() => store.report?.relevant_regulations ?? [])
               <img :src="frameUrl(f.frame_id)" :alt="f.frame_id" class="w-full h-24 object-cover" loading="lazy" />
               <div class="px-2 py-1 text-[11px] font-mono text-slate-400">
                 {{ f.timestamp_str }} · Δ{{ f.change_score }}
-                <span v-if="f.is_fallback" class="text-risk-mid"> · fallback</span>
+                <span v-if="f.is_fallback" class="text-risk-mid"> · yedek</span>
               </div>
             </button>
           </div>
@@ -125,11 +125,11 @@ const regulations = computed(() => store.report?.relevant_regulations ?? [])
       <div v-else-if="vlm" class="space-y-5">
         <div class="grid grid-cols-3 gap-3">
           <MetricCell label="Model" :value="vlm.model_name" />
-          <MetricCell label="Frames" :value="vlm.frames_sent || vlm.frame_count" />
-          <MetricCell label="Latency" :value="`${vlm.latency_ms} ms`" />
+          <MetricCell label="Kareler" :value="vlm.frames_sent || vlm.frame_count" />
+          <MetricCell label="Gecikme" :value="`${vlm.latency_ms} ms`" />
         </div>
         <div>
-          <div class="field-label">Input · user prompt</div>
+          <div class="field-label">Girdi · kullanıcı istemi</div>
           <p class="text-sm text-slate-300 bg-surface-2 rounded-md p-3 border border-edge">{{ vlm.user_prompt || '—' }}</p>
         </div>
         <div v-if="vlmInputFrames.length">
@@ -148,11 +148,11 @@ const regulations = computed(() => store.report?.relevant_regulations ?? [])
           </div>
         </div>
         <div>
-          <div class="field-label">Model output · description</div>
+          <div class="field-label">Model çıktısı · açıklama</div>
           <p class="text-sm text-slate-200 leading-relaxed whitespace-pre-line">{{ vlm.description || '—' }}</p>
         </div>
         <div v-if="vlm.structured_events?.length">
-          <div class="field-label">Structured events ({{ vlm.structured_events.length }})</div>
+          <div class="field-label">Yapılandırılmış olaylar ({{ vlm.structured_events.length }})</div>
           <pre class="text-[11px] font-mono text-slate-400 bg-surface-2 border border-edge rounded-md p-3 max-h-56 overflow-auto">{{ JSON.stringify(vlm.structured_events, null, 2) }}</pre>
         </div>
       </div>
@@ -160,7 +160,7 @@ const regulations = computed(() => store.report?.relevant_regulations ?? [])
       <!-- ============ EVENTS ============ -->
       <div v-else-if="events" class="space-y-5">
         <div v-if="events.detected_events.length">
-          <div class="field-label">Detected events</div>
+          <div class="field-label">Tespit edilen olaylar</div>
           <ul class="space-y-2">
             <li
               v-for="(d, i) in events.detected_events"
@@ -169,7 +169,7 @@ const regulations = computed(() => store.report?.relevant_regulations ?? [])
             >
               <span class="font-mono text-xs text-slate-400 w-12">{{ mmss(d.timestamp) }}</span>
               <span class="text-sm text-slate-100">{{ d.event_type }}</span>
-              <span class="ml-auto text-xs text-slate-400">confidence {{ d.confidence }}</span>
+              <span class="ml-auto text-xs text-slate-400">güven {{ d.confidence }}</span>
             </li>
           </ul>
         </div>
@@ -251,9 +251,9 @@ const regulations = computed(() => store.report?.relevant_regulations ?? [])
       <!-- ============ ESCALATION ============ -->
       <div v-else-if="escalation" class="space-y-4">
         <div class="grid grid-cols-3 gap-3">
-          <MetricCell label="Tier" :value="escalation.tier" />
-          <MetricCell label="Auto-dispatched" :value="escalation.auto_dispatched ? 'evet' : 'hayır'" />
-          <MetricCell label="Alert id" :value="escalation.alert_id ?? '—'" mono />
+          <MetricCell label="Kademe" :value="escalation.tier" />
+          <MetricCell label="Otomatik Yönlendirildi" :value="escalation.auto_dispatched ? 'evet' : 'hayır'" />
+          <MetricCell label="Uyarı Kimliği" :value="escalation.alert_id ?? '—'" mono />
         </div>
         <div>
           <div class="field-label">Gerekçe</div>
@@ -268,7 +268,7 @@ const regulations = computed(() => store.report?.relevant_regulations ?? [])
             label="Risk"
             :value="report.risk_status === 'unknown' || report.risk_score == null ? 'Belirsiz' : `${report.risk_score} (${report.risk_level})`"
           />
-          <MetricCell label="Tier" :value="report.escalation_tier ?? '—'" />
+          <MetricCell label="Kademe" :value="report.escalation_tier ?? '—'" />
           <MetricCell label="VLM" :value="report.vlm_model ?? '—'" mono />
           <MetricCell label="LLM" :value="report.llm_model ?? '—'" mono />
         </div>

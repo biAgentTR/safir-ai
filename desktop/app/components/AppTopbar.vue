@@ -5,20 +5,20 @@ const route = useRoute()
 
 const title = computed(() => {
   const p = route.path
-  if (p === '/') return 'Overview'
-  if (p.startsWith('/new-analysis')) return 'New Analysis'
-  if (p.startsWith('/workspace')) return 'Analysis Workspace'
-  if (p.startsWith('/history')) return 'History'
-  if (p.startsWith('/reports')) return 'Reports'
+  if (p === '/') return 'Genel Bakış'
+  if (p.startsWith('/new-analysis')) return 'Yeni Analiz'
+  if (p.startsWith('/workspace')) return 'Analiz Çalışma Alanı'
+  if (p.startsWith('/history')) return 'Geçmiş'
+  if (p.startsWith('/reports')) return 'Raporlar'
   if (p.startsWith('/assistant')) return 'SAFİR Asistan'
   if (p.startsWith('/system')) return 'Sistem Verileri'
   return 'SAFİR'
 })
 
 const label = computed(() => {
-  if (state.value === 'online') return `System Ready${system.value ? ` · ${system.value}` : ''}`
-  if (state.value === 'offline') return 'Backend Unreachable'
-  return 'Checking…'
+  if (state.value === 'online') return `Sistem Hazır${system.value ? ` · ${system.value}` : ''}`
+  if (state.value === 'offline') return 'Arka Uca Ulaşılamıyor'
+  return 'Kontrol ediliyor…'
 })
 const dot = computed(() => ({
   online: 'bg-risk-low',

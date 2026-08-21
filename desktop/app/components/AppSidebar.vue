@@ -10,10 +10,10 @@ interface NavItem {
 }
 
 const items: NavItem[] = [
-  { label: 'Overview', to: '/', icon: '▤' },
-  { label: 'New Analysis', to: '/new-analysis', icon: '＋' },
-  { label: 'History', to: '/history', icon: '≡' },
-  { label: 'Reports', to: '/reports', icon: '▦' },
+  { label: 'Genel Bakış', to: '/', icon: '▤' },
+  { label: 'Yeni Analiz', to: '/new-analysis', icon: '＋' },
+  { label: 'Geçmiş', to: '/history', icon: '≡' },
+  { label: 'Raporlar', to: '/reports', icon: '▦' },
   { label: 'SAFİR Asistan', to: '/assistant', icon: '◆' },
   { label: 'Sistem Verileri', to: '/system', icon: '⛁' },
 ]
@@ -22,6 +22,7 @@ const items: NavItem[] = [
 <template>
   <aside class="w-56 shrink-0 bg-surface-1 border-r border-edge flex flex-col">
     <div class="h-14 flex items-center gap-2 px-4 border-b border-edge">
+      <img src="~/assets/images/logo.png" alt="SAFİR" class="w-7 h-7 object-contain shrink-0" />
       <span class="text-lg font-semibold tracking-[0.2em] text-slate-100">SAFİR</span>
     </div>
 

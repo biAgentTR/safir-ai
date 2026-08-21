@@ -63,7 +63,7 @@ const tone = computed(() => (isUnknownRisk.value ? 'unknown' : riskTone(store.re
         />
         <div class="mt-2 text-[11px] text-slate-500 font-mono">
           {{ nearestFrame.frame.timestamp_str }} · değişim skoru {{ nearestFrame.frame.change_score }}
-          <span v-if="nearestFrame.frame.is_fallback" class="text-risk-mid"> · fallback</span>
+          <span v-if="nearestFrame.frame.is_fallback" class="text-risk-mid"> · yedek</span>
         </div>
       </div>
       <div v-else class="text-sm text-slate-500 py-4 text-center">

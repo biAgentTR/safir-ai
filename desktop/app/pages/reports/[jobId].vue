@@ -44,7 +44,7 @@ function basename(src: string | null | undefined): string {
       {{ store.historyError }}
     </div>
     <div v-else-if="store.status === 'error'" class="rounded-md border border-risk-crit/40 bg-risk-crit/10 px-4 py-3 text-sm text-slate-200">
-      Bu analiz başarısız tamamlandı (failed) — kalıcı rapor bulunmuyor.
+      Bu analiz başarısız durumda tamamlandı — kalıcı rapor bulunmuyor.
     </div>
     <div v-else-if="!store.report" class="card p-10 text-center text-slate-500 text-sm">
       Bu analiz için henüz bir rapor yok.

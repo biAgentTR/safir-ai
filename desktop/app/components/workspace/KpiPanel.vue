@@ -26,11 +26,11 @@ const evidenceCount = computed(
 
 <template>
   <div v-if="stats" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-    <MetricCell label="Frames scanned" :value="stats.total_frames_scanned ?? 0" />
-    <MetricCell label="Frames evaluated" :value="stats.sampled_frames_evaluated ?? 0" />
-    <MetricCell label="Evidence frames" :value="evidenceCount" />
-    <MetricCell label="GPU savings" :value="`%${(stats.gpu_savings_ratio_pct ?? 0).toFixed?.(1) ?? stats.gpu_savings_ratio_pct}`" />
-    <MetricCell label="Duration" :value="`${(stats.elapsed_sec ?? 0)}s`" />
-    <MetricCell label="ms / frame" :value="msPerFrame.toFixed(1)" />
+    <MetricCell label="Taranan Kare" :value="stats.total_frames_scanned ?? 0" />
+    <MetricCell label="Değerlendirilen Kare" :value="stats.sampled_frames_evaluated ?? 0" />
+    <MetricCell label="Kanıt Karesi" :value="evidenceCount" />
+    <MetricCell label="GPU Tasarrufu" :value="`%${(stats.gpu_savings_ratio_pct ?? 0).toFixed?.(1) ?? stats.gpu_savings_ratio_pct}`" />
+    <MetricCell label="Süre" :value="`${(stats.elapsed_sec ?? 0)}s`" />
+    <MetricCell label="ms / kare" :value="msPerFrame.toFixed(1)" />
   </div>
 </template>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 // Desktop application shell: fixed navigation rail + top bar + scrollable main.
+// AppSplash overlays the shell until the first backend health probe resolves.
 </script>
 
 <template>
@@ -11,5 +12,6 @@
         <slot />
       </main>
     </div>
+    <AppSplash />
   </div>
 </template>

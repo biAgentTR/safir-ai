@@ -84,7 +84,7 @@ onBeforeUnmount(() => stream.stop())
 
     <!-- degraded: backend offline -->
     <div v-if="backendHealth === 'offline'" class="rounded-md border border-risk-crit/40 bg-risk-crit/10 px-4 py-2.5 text-sm text-risk-crit">
-      Backend'e ulaşılamıyor. Analiz servisi çevrimdışı olabilir.
+      Arka uca ulaşılamıyor. Analiz servisi çevrimdışı olabilir.
     </div>
 
     <!-- history: loading / error / failed-analysis -->
@@ -93,7 +93,7 @@ onBeforeUnmount(() => stream.stop())
       {{ store.historyError }}
     </div>
     <div v-else-if="isHistory && store.status === 'error'" class="rounded-md border border-risk-crit/40 bg-risk-crit/10 px-4 py-3 text-sm text-slate-200">
-      Bu analiz başarısız tamamlandı (failed) — kalıcı rapor bulunmuyor.
+      Bu analiz başarısız durumda tamamlandı — kalıcı rapor bulunmuyor.
     </div>
 
     <!-- degraded: analysis error (LIVE) -->

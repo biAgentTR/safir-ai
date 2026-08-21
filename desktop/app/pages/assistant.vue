@@ -411,7 +411,7 @@ onBeforeUnmount(() => askStream.stop())
     </div>
 
     <div v-if="backendHealth === 'offline'" class="mb-4 rounded-md border border-risk-crit/40 bg-risk-crit/10 px-4 py-2.5 text-sm text-risk-crit">
-      Backend'e ulaşılamıyor. SAFİR Asistan şu anda kullanılamayabilir.
+      Arka uca ulaşılamıyor. SAFİR Asistan şu anda kullanılamayabilir.
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)] gap-5 items-start">

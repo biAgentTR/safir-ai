@@ -46,7 +46,7 @@ function doExportPdf() {
   <div v-if="r" class="space-y-6">
     <!-- executive summary -->
     <section>
-      <div class="field-label">Executive summary</div>
+      <div class="field-label">Yönetici Özeti</div>
       <p class="text-sm text-slate-200 leading-relaxed">{{ r.summary || r.natural_language_summary || '—' }}</p>
     </section>
 

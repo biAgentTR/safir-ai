@@ -261,9 +261,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
       </div>
     </section>
 
-    <!-- main content: recent analyses (search/filter) + compact timeline -->
-    <div class="grid grid-cols-1 lg:grid-cols-3 gap-5">
-      <section class="lg:col-span-2 card p-5" aria-label="Son analizler">
+    <!-- main content: recent analyses (search/filter) -->
+    <div class="grid grid-cols-1 gap-5">
+      <section class="card p-5" aria-label="Son analizler">
         <div class="flex flex-wrap items-center gap-2 mb-4">
           <h3 class="text-sm font-semibold text-slate-100 mr-auto">Son Analizler</h3>
           <label class="sr-only" for="dashboard-search">Analizlerde ara</label>
@@ -347,10 +347,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
         <p class="mt-4 text-[11px] text-slate-600">Kısayollar: <kbd class="font-mono">/</kbd> ara · <kbd class="font-mono">n</kbd> yeni analiz · <kbd class="font-mono">f</kbd> tam ekran · <kbd class="font-mono">r</kbd> yenile</p>
       </section>
-
-      <div class="space-y-5">
-        <DashboardTimeline :recent="history" />
-      </div>
     </div>
   </div>
 </template>

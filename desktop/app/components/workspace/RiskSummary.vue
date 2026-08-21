@@ -10,10 +10,10 @@ const tone = computed(() => (isUnknownRisk.value ? 'unknown' : riskTone(store.re
 const headline = computed(() => {
   const t = tone.value
   if (t === 'unknown') return 'RİSK BELİRSİZ'
-  if (t === 'crit') return 'CRITICAL RISK'
-  if (t === 'high') return 'HIGH RISK'
-  if (t === 'mid') return 'ELEVATED RISK'
-  return 'LOW RISK'
+  if (t === 'crit') return 'KRİTİK RİSK'
+  if (t === 'high') return 'YÜKSEK RİSK'
+  if (t === 'mid') return 'ORTA RİSK'
+  return 'DÜŞÜK RİSK'
 })
 </script>
 
