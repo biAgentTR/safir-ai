@@ -173,6 +173,9 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
 <template>
   <div class="max-w-6xl mx-auto px-6 py-6">
+    <!-- welcome overlay: only on Genel Bakış, shown until the first backend health probe resolves -->
+    <AppSplash />
+
     <!-- backend offline: blocks everything below with a clear, actionable banner -->
     <div
       v-if="backendState === 'offline'"
