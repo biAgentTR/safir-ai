@@ -191,7 +191,17 @@ memory:
 # 05 - Ajan ve Muhakeme Katmani (LangGraph) - GPU / vLLM
 # -----------------------------------------------------------------------------
 llm:
-  active_model: "groq"                # qwen3 | gemma3 | gemini | groq — AKTIF: groq (GROQ_API_KEY gerektirir)
+  active_model: "gemini"              # qwen3 | gemma3 | gemini | groq — AKTIF: gemini
+  # NOT (groq denemesi): qwen/qwen3.6-27b (ve digger standart Groq ucret-
+  # siz-katman modelleri, orn. gpt-oss-20b/120b) istek basina 8000 TPM
+  # ("prompt + max_new_tokens") sinirina sahip. Bu ajanin RAG-zenginlestirilmis
+  # istemi TEK BASINA ~5500+ token - max_new_tokens'i "dusunme" adimlarina
+  # yetecek kadar artirmak (1024 -> 4096) siniri astirdi (413 "Request too
+  # large"); dusurmek ise bos/gecersiz JSON'a donuyordu (400
+  # json_validate_failed). Groq'un 70K TPM'li compound/compound-mini
+  # modelleri KENDI ic arac-cagirma mekanizmalarina sahip - LangGraph'in
+  # bind_tools'uyla CATISABILIR, denenmedi. Reranker/guard Groq'ta KALDI
+  # (kucuk, JSON-only istemler - bu sinira YAKLASMIYORLAR).
   models:
     qwen3:                           # aktif model Qwen3-4B-Instruct-2507'dir (VLM'den (Qwen3.5) FARKLI aile — bilerek: olgun/kararli, metin-only, gorsele ihtiyaci yok)
       model_name: "Qwen/Qwen3-4B-Instruct-2507"   # non-thinking mod (<think> bloklari yok), Nisan 2025'ten beri olgun vLLM destegi
