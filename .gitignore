@@ -4,7 +4,8 @@ __pycache__/
 *$py.class
 
 # SAFIR - runtime data / model artifacts
-safir-ai/data/
+safir-ai/data/*
+!safir-ai/data/knowledge_base/
 safir-ai/outputs/
 *.db
 
