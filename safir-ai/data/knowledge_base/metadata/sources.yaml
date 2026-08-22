@@ -1,17 +1,18 @@
 # SAFIR Knowledge Base - kaynak plani (T017-sonrasi RAG genisletmesi).
 #
-# ONEMLI: Bu dosyadaki hicbir kayit henuz bir gercek dosyaya (official/*.pdf)
-# karsilik GELMIYOR. Bu oturumun ag erisim politikasi mevzuat.gov.tr,
-# resmigazete.gov.tr, csgb.gov.tr ve csb.gov.tr alan adlarina dogrudan
-# baglantiyi ENGELLIYOR (bkz. retrieval_status: blocked_egress her kayitta).
-# source_url alanlari, onceki arastirma turunde (WebSearch) DOGRULANMIS
-# gercek resmi adreslerdir - ancak bu ortamdan bizzat indirilip
-# bytes-dogrulamasi YAPILAMADI. `madde`/`article` bilgisi KASITLI olarak
-# YOK - hicbir madde numarasi uydurulmadi/dogrulanmadi.
+# DURUM (2026-08-22): 11 dokumandan 10'u PDF, 1'i .doc (elektrik ic tesisleri)
+# olarak kullanicidan yuklendi ve TEK TEK ACILIP dogrulandi: her dosyanin
+# ilk sayfasindaki/metadata'sindaki gercek baslik, asagidaki `title` alanina
+# karsilik geldigi teyit edildi (bkz. her kaydin `verified_title_snippet`i -
+# dosyadan birebir alinmis, UYDURULMAMIS metin). `madde`/`article` bilgisi
+# hala KASITLI olarak YOK - hicbir madde numarasi iddia edilmiyor; ingestion
+# asamasinda gercek metinden cikarilmasi gerekecek.
 #
-# Bir sonraki adim: bu URL'lere internetten erisimi olan bir ortamdan
-# (veya bu oturumun ag politikasi genisletildiginde) gercek PDF indirme +
-# hash/boyut dogrulamasi.
+# source_url alanlari onceki arastirma turunde (WebSearch) dogrulanmis resmi
+# adreslerdir; bu oturumun ag politikasi mevzuat.gov.tr/resmigazete.gov.tr'yi
+# hala ENGELLIYOR (bkz. onceki tur), dolayisiyla bu URL'lerin HALA kendim
+# indirip indirmedigimi teyit edemedim - dosyalar kullanicidan geldi, ben
+# yalnizca ICERIKLERINI acip basliklarla eslestirdim.
 
 documents:
   - id: isg_kanunu_6331
@@ -21,9 +22,11 @@ documents:
     source_url: "https://www.mevzuat.gov.tr/mevzuat?MevzuatNo=6331&MevzuatTur=1&MevzuatTertip=5"
     source_url_alt_pdf: "https://www.mevzuat.gov.tr/MevzuatMetin/1.5.6331.pdf"
     publication_date: "2012-06-30"
-    retrieved_at: null
-    retrieval_status: blocked_egress
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
     target_filename: "official/6331_isg_kanunu.pdf"
+    page_count: 28
+    verified_title_snippet: "İŞ SAĞLIĞI VE GÜVENLİĞİ KANUNU / Kanun Numarası : 6331 / Kabul Tarihi : 20/6/2012"
 
   - id: kkd_yonetmeligi
     title: "Kişisel Koruyucu Donanımların İşyerlerinde Kullanılması Hakkında Yönetmelik"
@@ -32,9 +35,19 @@ documents:
     source_url: "https://www.resmigazete.gov.tr/eskiler/2013/07/20130702-2.htm"
     source_url_alt_pdf: "https://www.mevzuat.gov.tr/File/GeneratePdf?mevzuatNo=31465&mevzuatTur=KurumVeKurulusYonetmeligi&mevzuatTertip=5"
     publication_date: "2013-07-02"
-    retrieved_at: null
-    retrieval_status: blocked_egress
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
     target_filename: "official/kkd_yonetmeligi.pdf"
+    page_count: 24
+    verified_title_snippet: "PDF metadata title: 'Kişisel Koruyucu_Layout 1'"
+    ingestion_note: >
+      Bu PDF'in ilk sayfasi duz metin cikariminda BOZUK/parcali geliyor
+      (orn. "Yönetmelik / Kişisel Koruyucu / Disketten / Ekleri Film / 37-14"
+      - sutunlu/gomulu-font eski bir Resmi Gazete taramasi olabilir).
+      Metadata basligi ve dosya kaynagi KKD Yonetmeligi oldugunu doğruluyor,
+      ancak ingestion pipeline'i kurulurken bu dosya icin OCR veya alternatif
+      bir extraction yolu GEREKEBILIR - duz `extract_text()` guvenilir
+      olmayabilir.
 
   - id: yapi_isleri_isg_yonetmeligi
     title: "Yapı İşlerinde İş Sağlığı ve Güvenliği Yönetmeliği"
@@ -42,9 +55,11 @@ documents:
     institution: "Çalışma ve Sosyal Güvenlik Bakanlığı (ÇSGB)"
     source_url: "https://www.mevzuat.gov.tr/mevzuat?MevzuatNo=18928&MevzuatTur=7&MevzuatTertip=5"
     publication_date: "2013-10-05"
-    retrieved_at: null
-    retrieval_status: blocked_egress
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
     target_filename: "official/yapi_isleri_isg_yonetmeligi.pdf"
+    page_count: 11
+    verified_title_snippet: "YAPI İŞLERİNDE İŞ SAĞLIĞI VE GÜVENLİĞİ YÖNETMELİĞİ"
 
   - id: is_ekipmanlari_yonetmeligi
     title: "İş Ekipmanlarının Kullanımında Sağlık ve Güvenlik Şartları Yönetmeliği"
@@ -52,9 +67,11 @@ documents:
     institution: "Çalışma ve Sosyal Güvenlik Bakanlığı (ÇSGB)"
     source_url: "https://www.mevzuat.gov.tr/MevzuatMetin/yonetmelik/7.5.18318.pdf"
     publication_date: "2013-04-25"
-    retrieved_at: null
-    retrieval_status: blocked_egress
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
     target_filename: "official/is_ekipmanlari_yonetmeligi.pdf"
+    page_count: 28
+    verified_title_snippet: "İŞ EKİPMANLARININ KULLANIMINDA SAĞLIK VE GÜVENLİK ŞARTLARI YÖNETMELİĞİ"
     covers_categories: ["kaldirma/vinc", "forklift/arac-yaya (genel ekipman guvenligi)", "enerji kesme (LOTO'nun Turkiye karsiligi - bagimsiz yonetmelik degil)"]
 
   - id: bykhy
@@ -62,11 +79,13 @@ documents:
     document_type: official_regulation
     institution: "Çevre, Şehircilik ve İklim Değişikliği Bakanlığı"
     source_url: "https://www.mevzuat.gov.tr/mevzuat?MevzuatNo=200712937&MevzuatTur=21&MevzuatTertip=5"
-    publication_date: null
-    publication_date_note: "Ilk yayim tarihi arama sonuclarinda net dogrulanamadi; en son degisiklik 2025-07-01 olarak goruldu (dogrulanmasi gerekir)."
-    retrieved_at: null
-    retrieval_status: blocked_egress
+    publication_date: "2007-11-27"
+    publication_date_note: "Dosyanin kendi metnindeki 'Bakanlar Kurulu Kararının Tarihi: 27/11/2007 No: 2007/12937' esas alindi; sonraki degisiklikler (en son goruleni 2025-07-01) ayrica takip edilmeli."
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
     target_filename: "official/bykhy.pdf"
+    page_count: 104
+    verified_title_snippet: "BİNALARIN YANGINDAN KORUNMASI HAKKINDA YÖNETMELİK / Bakanlar Kurulu Kararının Tarihi: 27/11/2007 No: 2007/12937"
 
   - id: elektrik_kuvvetli_akim_yonetmeligi
     title: "Elektrik Kuvvetli Akım Tesisleri Yönetmeliği"
@@ -74,9 +93,11 @@ documents:
     institution: "Enerji ve Tabii Kaynaklar Bakanlığı"
     source_url: "https://www.mevzuat.gov.tr/mevzuat?MevzuatNo=9949&MevzuatTur=7&MevzuatTertip=5"
     publication_date: null
-    retrieved_at: null
-    retrieval_status: blocked_egress
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
     target_filename: "official/elektrik_kuvvetli_akim_yonetmeligi.pdf"
+    page_count: 46
+    verified_title_snippet: "ELEKTRİK KUVVETLİ AKIM TESİSLERİ YÖNETMELİĞİ"
 
   - id: elektrik_ic_tesisleri_yonetmeligi
     title: "Elektrik İç Tesisleri Yönetmeliği"
@@ -84,9 +105,16 @@ documents:
     institution: "Enerji ve Tabii Kaynaklar Bakanlığı"
     source_url: "https://www.mevzuat.gov.tr/mevzuat?MevzuatNo=10391&MevzuatTur=7&MevzuatTertip=5"
     publication_date: null
-    retrieved_at: null
-    retrieval_status: blocked_egress
-    target_filename: "official/elektrik_ic_tesisleri_yonetmeligi.pdf"
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
+    target_filename: "official/elektrik_ic_tesisleri_yonetmeligi.doc"
+    file_format: "doc"
+    page_count: 85
+    verified_title_snippet: "Windows dosya metadata basligi: 'ELEKTRK  TESSLER YNETMEL' (Turkce karakterler encoding'de dustu, 'ELEKTRİK İÇ TESİSLERİ YÖNETMELİĞİ' olarak okunuyor); mevzuatNo=10391 ile eslesiyor."
+    ingestion_note: >
+      TEK .doc dosyasi bu - digerleri PDF. Ingestion pipeline'i PDF
+      extraction'a ek olarak bir .doc/.docx parser (orn. python-docx veya
+      antiword) gerektirecek; bu asamada henuz kod yazilmadi.
 
   - id: patlayici_ortamlar_yonetmeligi
     title: "Çalışanların Patlayıcı Ortamların Tehlikelerinden Korunması Hakkında Yönetmelik"
@@ -94,9 +122,11 @@ documents:
     institution: "Çalışma ve Sosyal Güvenlik Bakanlığı (ÇSGB)"
     source_url: "https://www.mevzuat.gov.tr/mevzuat?MevzuatNo=18335&MevzuatTur=7&MevzuatTertip=5"
     publication_date: "2013-04-30"
-    retrieved_at: null
-    retrieval_status: blocked_egress
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
     target_filename: "official/patlayici_ortamlar_yonetmeligi.pdf"
+    page_count: 5
+    verified_title_snippet: "ÇALIŞANLARIN PATLAYICI ORTAMLARIN TEHLİKELERİNDEN KORUNMASI HAKKINDA YÖNETMELİK"
     covers_categories: ["sicak calisma izni / atesli is", "kivilcim/patlayici ortam"]
 
   - id: kimyasal_maddeler_yonetmeligi
@@ -105,9 +135,11 @@ documents:
     institution: "Çalışma ve Sosyal Güvenlik Bakanlığı (ÇSGB)"
     source_url: "https://www.mevzuat.gov.tr/mevzuat?MevzuatNo=18709&MevzuatTur=7&MevzuatTertip=5"
     publication_date: "2013-08-12"
-    retrieved_at: null
-    retrieval_status: blocked_egress
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
     target_filename: "official/kimyasal_maddeler_yonetmeligi.pdf"
+    page_count: 19
+    verified_title_snippet: "KİMYASAL MADDELERLE ÇALIŞMALARDA SAĞLIK VE GÜVENLİK ÖNLEMLERİ HAKKINDA YÖNETMELİK"
 
   - id: acil_durumlar_yonetmeligi
     title: "İşyerlerinde Acil Durumlar Hakkında Yönetmelik"
@@ -115,9 +147,11 @@ documents:
     institution: "Çalışma ve Sosyal Güvenlik Bakanlığı (ÇSGB)"
     source_url: "https://mevzuat.gov.tr/File/GeneratePdf?mevzuatNo=18493&mevzuatTur=KurumVeKurulusYonetmeligi&mevzuatTertip=5"
     publication_date: null
-    retrieved_at: null
-    retrieval_status: blocked_egress
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
     target_filename: "official/acil_durumlar_yonetmeligi.pdf"
+    page_count: 4
+    verified_title_snippet: "İŞYERLERİNDE ACİL DURUMLAR HAKKINDA YÖNETMELİK"
 
   - id: risk_degerlendirmesi_yonetmeligi
     title: "İş Sağlığı ve Güvenliği Risk Değerlendirmesi Yönetmeliği"
@@ -125,9 +159,11 @@ documents:
     institution: "Çalışma ve Sosyal Güvenlik Bakanlığı (ÇSGB)"
     source_url: "http://www.mevzuat.gov.tr/Metin.Aspx?MevzuatKod=7.5.16925"
     publication_date: "2012-12-29"
-    retrieved_at: null
-    retrieval_status: blocked_egress
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
     target_filename: "official/risk_degerlendirmesi_yonetmeligi.pdf"
+    page_count: 4
+    verified_title_snippet: "İŞ SAĞLIĞI VE GÜVENLİĞİ RİSK DEĞERLENDİRMESİ YÖNETMELİĞİ"
 
 # Arastirilan ama resmi/bagimsiz karsiligi BULUNAMAYAN kategoriler (bkz.
 # onceki audit raporu "GAPS" bolumu) - knowledge base'e dahil EDILMEDI:
