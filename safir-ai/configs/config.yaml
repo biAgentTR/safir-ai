@@ -179,12 +179,12 @@ memory:
     similarity_threshold: null
   reranker:
     enabled: true
-    provider: "cohere"
-    model_name: "rerank-v4.0-pro"
+    provider: "gemini"                 # embedding ile AYNI Gemini API anahtarini kullanir (tek saglayici)
+    model_name: "gemini-3.5-flash-lite"
     candidate_k: 20
     top_k: 5
     score_threshold: 0.10              # bu skorun ALTINDAKI sonuclar ELENIR (0 sonuc GECERLIDIR)
-    api_key_env: "COHERE_API_KEY"
+    api_key_env: "GEMINI_API_KEY"
 
 # -----------------------------------------------------------------------------
 # 05 - Ajan ve Muhakeme Katmani (LangGraph) - GPU / vLLM

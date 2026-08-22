@@ -1,14 +1,11 @@
-"""SAFIR RAG (Gemini embedding + FAISS + Cohere rerank) icin GERCEK smoke test.
+"""SAFIR RAG (Gemini embedding + FAISS + Gemini rerank) icin GERCEK smoke test.
 
-GEMINI_API_KEY ve COHERE_API_KEY ortam degiskenleri TANIMLIYSA, gercek 748
-mevzuat chunk'ina karsi gercek API cagrilariyla birkaç sorgu calistirir ve
-sonuclari yapilandirilmis sekilde yazdirir. Anahtarlardan biri EKSIKSE,
-bunu ACIKCA belirtip (0 haric bir kodla) cikar - SESSIZCE mock'a DUSMEZ ve
-semantik kalite IDDIA ETMEZ (bkz. gorev tanimi 14. bolum, madde 6).
+Tek saglayici: Gemini (embedding VE rerank icin ayni GEMINI_API_KEY).
+GEMINI_API_KEY TANIMLI DEGILSE, bu script bunu ACIKCA belirtip mock'a
+SESSIZCE DUSMEDEN cikar.
 
 Kullanim:
     export GEMINI_API_KEY=...
-    export COHERE_API_KEY=...
     python scripts/rag_smoke_test.py
 """
 
@@ -24,6 +21,7 @@ if str(_ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(_ROOT_DIR))
 
 _QUERIES = [
+    "fire_detected smoke_detected uncontrolled_open_flame",
     "yangın ve duman",
     "baret kullanılmaması kişisel koruyucu donanım",
     "forklift yaya çarpışma riski",
@@ -36,17 +34,17 @@ def main() -> int:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
     if not os.environ.get("GEMINI_API_KEY", "").strip():
-        print("[ATLANDI] GEMINI_API_KEY tanimli degil - gercek RAG smoke test calistirilamiyor.")
-        print("          (Bu, mock'a SESSIZCE dusmez - test'in kendisi kosulmadi.)")
-        return 0
-    if not os.environ.get("COHERE_API_KEY", "").strip():
-        print("[ATLANDI] COHERE_API_KEY tanimli degil - gercek RAG smoke test calistirilamiyor.")
+        print("[SKIPPED] GEMINI_API_KEY is not set")
         return 0
 
     from src.memory.embedding_rag_service import EmbeddingRAGService, _INDEX_FILE
     from src.utils.config_loader import load_config
 
     config = load_config()
+    if config.memory.reranker.provider != "gemini" or not config.memory.reranker.enabled:
+        print("[SKIPPED] memory.reranker devre disi veya 'gemini' degil - config.yaml'i kontrol edin.")
+        return 0
+
     service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss, config.memory.reranker)
 
     if not _INDEX_FILE.exists():
@@ -59,26 +57,33 @@ def main() -> int:
         print(f"[OK] Persisted index yuklendi ({service.document_count()} dokuman).\n")
 
     print("=" * 72)
-    print("GERCEK RAG SMOKE TEST (Gemini embedding + Cohere rerank, GERCEK API)")
+    print("GERCEK RAG SMOKE TEST (Gemini embedding + Gemini rerank, GERCEK API)")
     print("=" * 72)
 
     for query in _QUERIES:
+        candidate_k = min(config.memory.faiss.candidate_k, service.document_count())
         results = service.query(query)
+
         print(f"\nQUERY: {query!r}")
-        print(f"final_count: {len(results)}")
-        for i, doc in enumerate(results[:3], start=1):
-            title = doc.document_title or doc.document_id or "(bilinmeyen kaynak)"
-            article = doc.article_number or "-"
-            score = doc.rerank_score if doc.rerank_score is not None else doc.embedding_score
-            short_text = doc.text[:150].replace("\n", " ")
-            print(f"  [{i}] document_title={title!r} article_number={article!r} rerank_score={score:.4f}")
-            print(f"      text: {short_text}...")
+        print(f"CANDIDATES: {candidate_k}")
+        print(f"RERANKED: {candidate_k}")
+        print(f"FINAL: {len(results)}")
+
         if not results:
-            print("  (esik-uzeri sonuc yok - GECERLI bir sonuc)")
+            print("  (esik-uzeri sonuc yok - GECERLI bir sonuc, rastgele top-k UYDURULMADI)")
+            continue
+
+        for i, doc in enumerate(results, start=1):
+            score = doc.rerank_score if doc.rerank_score is not None else doc.embedding_score
+            print(f"\n{i}. score={score:.2f}")
+            print(f"   document={doc.document_title or doc.document_id or '(bilinmeyen kaynak)'}")
+            print(f"   article={doc.article_number or '-'}")
+            print(f"   source={doc.source_url or '-'}")
 
     print("\n" + "=" * 72)
     print("Not: sonuclarin semantik kalitesi burada IDDIA EDILMEMEKTEDIR - bu")
-    print("script yalnizca gercek API'lerin uctan uca CALISTIGINI dogrular.")
+    print("script yalnizca gercek API'lerin (embedding + rerank) uctan uca")
+    print("CALISTIGINI dogrular. API anahtarlari hicbir yerde YAZDIRILMADI.")
     return 0
 
 

@@ -327,15 +327,19 @@ class FaissMemoryConfig(BaseModel):
 
 
 class RerankerConfig(BaseModel):
-    """Cohere Rerank ile ikinci-asama siralama ayarlari."""
+    """Gemini (LLM-as-judge) ile ikinci-asama siralama ayarlari.
+
+    Reranker de embedding ile AYNI Gemini API anahtarini kullanir (harici
+    baska bir saglayici/anahtar YOKTUR - bkz. `src/memory/reranker.py`).
+    """
 
     enabled: bool = False
-    provider: str = "cohere"
-    model_name: str = "rerank-v4.0-pro"
+    provider: str = "gemini"
+    model_name: str = "gemini-3.5-flash-lite"
     candidate_k: int = 20
     top_k: int = 5
     score_threshold: float = 0.10       # bu skorun ALTINDAKI sonuclar ELENIR (0 sonuc GECERLIDIR)
-    api_key_env: str = "COHERE_API_KEY"
+    api_key_env: str = "GEMINI_API_KEY"
 
 
 class MemoryConfig(BaseModel):

@@ -1,4 +1,4 @@
-"""Iki-asamali RAG retrieval (FAISS candidate_k -> Cohere rerank -> score_threshold) icin agsiz birim testleri.
+"""Iki-asamali RAG retrieval (FAISS candidate_k -> Gemini rerank -> score_threshold) icin agsiz birim testleri.
 
 Hem embedding hem rerank sahte/deterministik nesnelerle degistirilir - bu
 dosyadaki hicbir test GERCEK bir API cagrisi yapmaz veya semantik kalite

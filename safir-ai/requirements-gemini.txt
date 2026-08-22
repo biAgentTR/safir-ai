@@ -29,10 +29,9 @@ langgraph==0.1.9
 langchain-core==0.2.28
 langchain-openai==0.1.17
 
-# --- Hibrit Bellek Katmani (Embedding: Gemini API, Rerank: Cohere API) ---
+# --- Hibrit Bellek Katmani (Embedding + Rerank: Gemini API, tek saglayici) ---
 faiss-cpu==1.8.0.post1
 google-genai==2.19.0
-cohere==7.0.9
 
 # --- Adim-adim Jupyter walkthrough (notebooks/SAFIR_walkthrough.ipynb) ---
 notebook==7.2.1

@@ -1,4 +1,4 @@
-"""04 - Embedding & RAG Katmani: Gemini embedding + FAISS + Cohere rerank tabanli anlamsal bellek.
+"""04 - Embedding & RAG Katmani: Gemini embedding + FAISS + Gemini rerank tabanli anlamsal bellek.
 
 Operasyonel kurallari ve ISG mevzuatini Google Gemini Embedding API ile
 vektorlestirip FAISS uzerinde saklayan/arayan servistir. LangGraph ajaninin
@@ -15,7 +15,7 @@ Knowledge base kaynagi (2026-08-22, iki asamali guncelleme)
    `RetrievedDocument` artik yapilandirilmis metadata (document_title,
    article_number, source_url, ...) tasiyor (`sources.yaml` ile join
    edilmis - bkz. `_load_kb_chunk_records`); iki-asamali retrieval
-   (FAISS candidate_k -> Cohere rerank -> score_threshold) eklendi; index
+   (FAISS candidate_k -> Gemini rerank -> score_threshold) eklendi; index
    artik DISKE KALICI olarak yaziliyor (`data/knowledge_base/index/`) ve
    pipeline her baslangicta 748 embedding'i YENIDEN URETMEK ZORUNDA
    DEGIL - bkz. `build_knowledge_index.py` (rebuild CLI'i) ve
@@ -60,7 +60,7 @@ import faiss
 import numpy as np
 
 from src.memory.embedding_providers import ConfigurationError, EmbeddingProvider, build_embedding_provider
-from src.memory.reranker import CohereReranker, Reranker, RerankerUnavailableError
+from src.memory.reranker import GeminiReranker, Reranker, RerankerUnavailableError
 from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig, RerankerConfig
 
 logger = logging.getLogger(__name__)
@@ -211,9 +211,9 @@ def _compute_kb_hash(chunks_dir: Path = _KB_CHUNKS_DIR) -> str:
 
 @dataclass
 class RetrievedDocument:
-    """FAISS(+opsiyonel Cohere rerank)ten geri getirilen tek bir chunk'i, yapilandirilmis kaynak metadata'siyla birlikte tasir.
+    """FAISS(+opsiyonel Gemini rerank)ten geri getirilen tek bir chunk'i, yapilandirilmis kaynak metadata'siyla birlikte tasir.
 
-    `embedding_score` (FAISS/cosine benzerligi) ile `rerank_score` (Cohere
+    `embedding_score` (FAISS/cosine benzerligi) ile `rerank_score` (Gemini
     relevance_score, reranker devre disiysa `None`) KASITLI olarak AYRI
     alanlardir - birbirine KARISTIRILMAZ (bkz. modul dokustringi).
     """
@@ -247,7 +247,7 @@ class RetrievedDocument:
 
 
 class EmbeddingRAGService:
-    """ISG mevzuati ve operasyonel kurallari Gemini embedding ile vektorlestirip FAISS'te arayan, Cohere ile yeniden siralayan servis.
+    """ISG mevzuati ve operasyonel kurallari Gemini embedding ile vektorlestirip FAISS'te arayan, Gemini ile yeniden siralayan servis.
 
     `Dynamic Tool Router` icindeki `retriever_tool` tarafindan mevzuat/kural
     sorgulari icin kullanilir. Bkz. modul dokustringi icin tam mimari.
@@ -285,11 +285,11 @@ class EmbeddingRAGService:
 
         self._reranker: Optional[Reranker] = None
         if reranker_config is not None and reranker_config.enabled:
-            if reranker_config.provider != "cohere":
+            if reranker_config.provider != "gemini":
                 raise ConfigurationError(
-                    f"Desteklenmeyen reranker saglayicisi: '{reranker_config.provider}'. Su an yalnizca 'cohere' destekleniyor."
+                    f"Desteklenmeyen reranker saglayicisi: '{reranker_config.provider}'. Su an yalnizca 'gemini' destekleniyor."
                 )
-            self._reranker = CohereReranker(
+            self._reranker = GeminiReranker(
                 model_name=reranker_config.model_name, api_key_env=reranker_config.api_key_env
             )
 
@@ -453,11 +453,11 @@ class EmbeddingRAGService:
         self._add_structured_documents([{"text": d} for d in documents])
 
     def query(self, question: str, top_k: Optional[int] = None) -> List[RetrievedDocument]:
-        """Verilen soruya en yakin dokumanlari, iki-asamali retrieval (FAISS candidate_k -> Cohere rerank -> threshold) ile dondurur.
+        """Verilen soruya en yakin dokumanlari, iki-asamali retrieval (FAISS candidate_k -> Gemini rerank -> threshold) ile dondurur.
 
         Akis:
           1. FAISS'ten `candidate_k` aday cekilir (embedding benzerligi).
-          2. Reranker AKTIFSE: adaylar Cohere Rerank ile YENIDEN siralanir;
+          2. Reranker AKTIFSE: adaylar Gemini (LLM-as-judge) ile YENIDEN siralanir;
              `score_threshold`in ALTINDA kalan sonuclar ELENIR (bkz.
              `RerankerConfig.score_threshold`) - eslesme YOKSA BOS LISTE
              doner, bu GECERLI bir sonuctur, rastgele/dusuk-alakali
