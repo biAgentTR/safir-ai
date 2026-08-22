@@ -190,7 +190,7 @@ memory:
 # 05 - Ajan ve Muhakeme Katmani (LangGraph) - GPU / vLLM
 # -----------------------------------------------------------------------------
 llm:
-  active_model: "gemini"              # qwen3 | gemma3 | gemini — AKTIF: gemini
+  active_model: "groq"                # qwen3 | gemma3 | gemini | groq — AKTIF: groq (GROQ_API_KEY gerektirir)
   models:
     qwen3:                           # aktif model Qwen3-4B-Instruct-2507'dir (VLM'den (Qwen3.5) FARKLI aile — bilerek: olgun/kararli, metin-only, gorsele ihtiyaci yok)
       model_name: "Qwen/Qwen3-4B-Instruct-2507"   # non-thinking mod (<think> bloklari yok), Nisan 2025'ten beri olgun vLLM destegi
@@ -209,6 +209,14 @@ llm:
       model_name: "gemini-3.5-flash-lite"
       base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
       api_key_env: "GEMINI_API_KEY"
+      max_new_tokens: 1024
+      temperature: 0.1
+    groq:                            # gecici TEST backend'i (harici API — offline degildir); Gemini kotasindan
+                                      # BAGIMSIZ ayri bir kota (OpenAI-uyumlu uc, ayni LLMClient/ChatOpenAI sarmalayicisi)
+      provider: "groq"
+      model_name: "qwen/qwen3.6-27b"
+      base_url: "https://api.groq.com/openai/v1"
+      api_key_env: "GROQ_API_KEY"
       max_new_tokens: 1024
       temperature: 0.1
 
