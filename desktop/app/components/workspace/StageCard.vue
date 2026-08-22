@@ -7,6 +7,7 @@ import type {
   Decision,
   Escalation,
   EventsStageData,
+  RagSecurityStageData,
   ReportStageData,
   SamplerStageData,
   TraceStage,
@@ -38,6 +39,7 @@ const sampler = computed(() => view<SamplerStageData>('sampler'))
 const vlm = computed(() => view<VlmStageData>('vlm'))
 const events = computed(() => view<EventsStageData>('events'))
 const context = computed(() => view<ContextStageData>('agent_context'))
+const ragSecurity = computed(() => view<RagSecurityStageData>('rag_security'))
 const decision = computed(() => view<Decision>('decision'))
 const escalation = computed(() => view<Escalation>('escalation'))
 const report = computed(() => view<ReportStageData>('report'))
@@ -54,6 +56,21 @@ const vlmInputFrames = computed(() => {
 // Fix 4: real regulations retrieved by the agent (report.relevant_regulations).
 // No fabricated similarity score / chunk id — the backend does not provide them.
 const regulations = computed(() => store.report?.relevant_regulations ?? [])
+
+const GUARD_SOURCE_LABEL: Record<string, string> = {
+  user_prompt: 'Kullanıcı İstemi',
+  vlm_description: 'VLM Açıklaması',
+  vlm_event_description: 'Geçmiş Olay (VLM)',
+}
+function guardSourceLabel(s: string): string {
+  return GUARD_SOURCE_LABEL[s] ?? s
+}
+function pct(v: number | null): string {
+  return v == null ? 'N/A' : `%${Math.round(v * 100)}`
+}
+function ms(v: number | null): string {
+  return v == null ? 'N/A' : `${Math.round(v)} ms`
+}
 </script>
 
 <template>
@@ -223,6 +240,94 @@ const regulations = computed(() => store.report?.relevant_regulations ?? [])
           <summary class="cursor-pointer text-xs text-slate-400">Teknik: agent context prompt_block</summary>
           <pre class="mt-2 text-[11px] font-mono text-slate-500 bg-surface-2 border border-edge rounded-md p-3 max-h-72 overflow-auto whitespace-pre-wrap">{{ context.prompt_block }}</pre>
         </details>
+      </div>
+
+      <!-- ============ RAG & SECURITY TELEMETRY ============ -->
+      <div v-else-if="ragSecurity" class="space-y-6">
+        <div class="rounded-md border border-edge bg-surface-2/60 px-3 py-2 text-xs text-slate-400">
+          RAG semantik olarak <span class="text-slate-200">ilgili olabilecek kaynakları</span> getirir; risk skoru/seviyesi
+          ve mevzuat eşleşmesi kararı bundan <span class="text-slate-200">bağımsız</span>, deterministik RuleEngine
+          tarafından belirlenir (bkz. "Bağlam ve RAG" sekmesindeki "Getirilen İSG mevzuatı").
+        </div>
+
+        <!-- RAG -->
+        <div>
+          <div class="field-label">Semantik RAG Retrieval</div>
+          <div v-if="!ragSecurity.rag" class="text-sm text-slate-500">
+            Bu turda semantik RAG sorgusu yapılmadı (VLM'den anahtar kelime üretilmedi).
+          </div>
+          <template v-else>
+            <div class="grid grid-cols-3 sm:grid-cols-6 gap-3 mb-3">
+              <MetricCell label="Aday" :value="ragSecurity.rag.candidate_count" />
+              <MetricCell label="Final" :value="ragSecurity.rag.final_count" />
+              <MetricCell label="Durum" :value="ragSecurity.rag.retrieval_status" />
+              <MetricCell label="Embedding Gecikme" :value="ms(ragSecurity.rag.embedding_latency_ms)" />
+              <MetricCell label="Rerank Gecikme" :value="ms(ragSecurity.rag.rerank_latency_ms)" />
+              <MetricCell label="Eşik" :value="ragSecurity.rag.threshold != null ? ragSecurity.rag.threshold : 'N/A'" />
+            </div>
+            <div v-if="ragSecurity.rag.zero_result" class="text-sm text-slate-500 mb-2">
+              Eşik üzerinde hiçbir sonuç bulunamadı (0 sonuç geçerli bir sonuçtur).
+            </div>
+            <div v-if="ragSecurity.rag.results.length" class="overflow-x-auto">
+              <table class="w-full text-xs">
+                <thead>
+                  <tr class="text-left text-[10px] uppercase tracking-wide text-slate-500 border-b border-edge">
+                    <th class="py-1.5 pr-3">Doküman</th>
+                    <th class="py-1.5 pr-3">Madde</th>
+                    <th class="py-1.5 pr-3">Embedding Skoru</th>
+                    <th class="py-1.5 pr-3">Rerank Skoru</th>
+                    <th class="py-1.5 pr-3">Seçildi</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(r, i) in ragSecurity.rag.results" :key="i" class="border-b border-edge/60" :class="r.selected ? '' : 'opacity-50'">
+                    <td class="py-1.5 pr-3 text-slate-200">{{ r.document_title ?? r.document_id ?? '—' }}</td>
+                    <td class="py-1.5 pr-3 text-slate-400">{{ r.article_number ?? '—' }}</td>
+                    <td class="py-1.5 pr-3 font-mono text-slate-300">{{ r.embedding_score.toFixed(3) }}</td>
+                    <td class="py-1.5 pr-3 font-mono text-slate-300">{{ r.rerank_score != null ? r.rerank_score.toFixed(3) : '—' }}</td>
+                    <td class="py-1.5 pr-3" :class="r.selected ? 'text-risk-low' : 'text-slate-600'">{{ r.selected ? 'evet' : 'hayır' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+        </div>
+
+        <!-- SECURITY -->
+        <div>
+          <div class="field-label">Prompt Injection Guard</div>
+          <div v-if="!ragSecurity.security.length" class="text-sm text-slate-500">
+            Bu turda guard kontrolü yapılmadı (guard devre dışı veya kontrol edilecek serbest metin yok).
+          </div>
+          <template v-else>
+            <div class="overflow-x-auto">
+              <table class="w-full text-xs">
+                <thead>
+                  <tr class="text-left text-[10px] uppercase tracking-wide text-slate-500 border-b border-edge">
+                    <th class="py-1.5 pr-3">Kaynak</th>
+                    <th class="py-1.5 pr-3">Karar</th>
+                    <th class="py-1.5 pr-3">Güven</th>
+                    <th class="py-1.5 pr-3">Sebep</th>
+                    <th class="py-1.5 pr-3">Gecikme</th>
+                    <th class="py-1.5 pr-3">Guard Hatası</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(g, i) in ragSecurity.security" :key="i" class="border-b border-edge/60">
+                    <td class="py-1.5 pr-3 text-slate-200">{{ guardSourceLabel(g.source) }}</td>
+                    <td class="py-1.5 pr-3" :class="g.action === 'quarantine' ? 'text-risk-high' : 'text-risk-low'">
+                      {{ g.action === 'quarantine' ? 'Quarantine' : 'Allow' }}
+                    </td>
+                    <td class="py-1.5 pr-3 font-mono text-slate-300">{{ pct(g.confidence) }}</td>
+                    <td class="py-1.5 pr-3 text-slate-400 max-w-[220px] truncate" :title="g.reason ?? ''">{{ g.reason ?? '—' }}</td>
+                    <td class="py-1.5 pr-3 font-mono text-slate-400">{{ ms(g.latency_ms) }}</td>
+                    <td class="py-1.5 pr-3" :class="g.guard_failed ? 'text-risk-high' : 'text-slate-600'">{{ g.guard_failed ? 'evet' : 'hayır' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+        </div>
       </div>
 
       <!-- ============ DECISION ============ -->

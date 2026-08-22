@@ -721,6 +721,7 @@ class SafirPipeline:
         # etkilenmez (guard yalnizca ContextBuilder'a verilir).
         self._guard = build_prompt_injection_guard(config.guard) if config.guard.enabled else None
         self._context_builder = ContextBuilder(self._event_store, guard=self._guard)
+        self._last_stage_rag_telemetry = None  # bkz. stage_context(): yalnizca GERCEK bir query() sonrasi dolar
         self._agent = SafirAgent(
             llm_config=config.llm,
             agent_config=config.agent,
@@ -839,6 +840,13 @@ class SafirPipeline:
             vlm_response, user_prompt, latest_timestamp, rule_matches, temporal_events
         )
         _emit("agent_context", {"prompt_block": prompt_block})
+        _emit(
+            "rag_security",
+            {
+                "rag_telemetry": self._last_stage_rag_telemetry,
+                "guard_results": context.guard_results,
+            },
+        )
 
         decision = self.stage_decide(prompt_block)
         _emit("decision", {"decision": decision})
@@ -1050,9 +1058,18 @@ class SafirPipeline:
         matched_keywords = _aggregate_matched_keywords(temporal_events or [])
         semantic_query = _build_semantic_query(matched_keywords, vlm_response.description)
         semantically_related_chunks: List = []
+        # Bu cagrida GERCEKTEN bir RAG sorgusu yapildiysa (ONCEKI cagridan kalan
+        # `get_last_query_telemetry()` sonucunu "bu cagrinin telemetrisi" gibi
+        # SUNMAMAK icin) yalnizca query() GERCEKTEN calistiysa dolar - bkz. `run()`.
+        self._last_stage_rag_telemetry = None
         if semantic_query:
             try:
                 semantically_related_chunks = self._rag_service.query(semantic_query)
+                # `getattr(..., None)` KASITLI: test/mock RAG servisleri (yalnizca
+                # `.query()` tasiyan duck-typed sahteler) icin de GUVENLI CALISIR -
+                # bkz. `context_builder.py::_format_semantic_chunks` ile ayni gerekce.
+                get_telemetry = getattr(self._rag_service, "get_last_query_telemetry", None)
+                self._last_stage_rag_telemetry = get_telemetry() if get_telemetry else None
             except Exception:  # noqa: BLE001 - semantik RAG best-effort'tur, agent akisini KESMEZ
                 logger.exception("Semantik RAG sorgusu basarisiz; semantik kaynaklar bos birakiliyor.")
                 semantically_related_chunks = []
@@ -2362,6 +2379,23 @@ class SystemOverviewTotals(BaseModel):
     total_messages: int
     analyses_with_trace: int
     stored_representative_frame_count: int
+    # --- RAG + Prompt Injection Guard telemetrisi (persisted trace_events uzerinden,
+    # bkz. _aggregate_rag_security_totals) - hicbir alan UYDURULMAZ: veri yoksa
+    # sayim alanlari 0, ortalama alanlari `None` ("N/A") kalir. ---
+    total_events_detected: int
+    critical_risk_analyses: int
+    rag_query_count: int
+    rag_zero_result_count: int
+    avg_embedding_latency_ms: Optional[float] = None
+    avg_rerank_latency_ms: Optional[float] = None
+    avg_total_rag_latency_ms: Optional[float] = None
+    guard_checks: int
+    guard_allowed: int
+    guard_quarantined: int
+    guard_failures: int
+    guard_fail_closed_blocks: int
+    avg_guard_latency_ms: Optional[float] = None
+    avg_guard_confidence: Optional[float] = None
 
 
 class SystemOverviewResponse(BaseModel):
@@ -2397,6 +2431,84 @@ def _count_persisted_representative_frames(trace_json: Optional[str], job_id: st
     return count
 
 
+@dataclass
+class _RagSecurityAggregate:
+    """`get_system_overview()` icin, tum kaydedilmis trace_events uzerinde biriken GERCEK toplamlar."""
+
+    total_events_detected: int = 0
+    critical_risk_analyses: int = 0
+    rag_query_count: int = 0
+    rag_zero_result_count: int = 0
+    embedding_latencies: List[float] = field(default_factory=list)
+    rerank_latencies: List[float] = field(default_factory=list)
+    total_rag_latencies: List[float] = field(default_factory=list)
+    guard_checks: int = 0
+    guard_allowed: int = 0
+    guard_quarantined: int = 0
+    guard_failures: int = 0
+    guard_fail_closed_blocks: int = 0
+    guard_latencies: List[float] = field(default_factory=list)
+    guard_confidences: List[float] = field(default_factory=list)
+
+
+def _accumulate_rag_security_from_trace(trace_json: Optional[str], agg: _RagSecurityAggregate) -> None:
+    """Bir analizin `trace_json`'undaki `events`/`report`/`rag_security` stage verilerini `agg`e ekler.
+
+    Bozuk/eski (bu alanlari HENUZ icermeyen) kayitlar SESSIZCE atlanir -
+    UYDURULMUS bir deger EKLENMEZ, yalnizca gercekten mevcut olan sayilir.
+    """
+    if not trace_json:
+        return
+    try:
+        events = json.loads(trace_json)
+    except Exception:  # noqa: BLE001 - bozuk/eski kayit sayimi kirmamali
+        return
+
+    events_event = next((e for e in events if e.get("stage") == "events"), None)
+    if events_event is not None:
+        agg.total_events_detected += len(events_event.get("data", {}).get("detected_events", []))
+
+    report_event = next((e for e in events if e.get("stage") == "report"), None)
+    if report_event is not None and report_event.get("data", {}).get("risk_level") == "kritik":
+        agg.critical_risk_analyses += 1
+
+    rag_security_event = next((e for e in events if e.get("stage") == "rag_security"), None)
+    if rag_security_event is None:
+        return
+    data = rag_security_event.get("data", {})
+
+    rag = data.get("rag")
+    if rag is not None:
+        agg.rag_query_count += 1
+        if rag.get("zero_result"):
+            agg.rag_zero_result_count += 1
+        if rag.get("embedding_latency_ms") is not None:
+            agg.embedding_latencies.append(rag["embedding_latency_ms"])
+        if rag.get("rerank_latency_ms") is not None:
+            agg.rerank_latencies.append(rag["rerank_latency_ms"])
+        if rag.get("total_latency_ms") is not None:
+            agg.total_rag_latencies.append(rag["total_latency_ms"])
+
+    for check in data.get("security", []):
+        agg.guard_checks += 1
+        if check.get("action") == "quarantine":
+            agg.guard_quarantined += 1
+            if check.get("guard_failed"):
+                agg.guard_fail_closed_blocks += 1
+        else:
+            agg.guard_allowed += 1
+        if check.get("guard_failed"):
+            agg.guard_failures += 1
+        if check.get("latency_ms") is not None:
+            agg.guard_latencies.append(check["latency_ms"])
+        if check.get("confidence") is not None:
+            agg.guard_confidences.append(check["confidence"])
+
+
+def _avg_or_none(values: List[float]) -> Optional[float]:
+    return round(sum(values) / len(values), 1) if values else None
+
+
 @app.get("/system/overview", response_model=SystemOverviewResponse)
 def get_system_overview() -> SystemOverviewResponse:
     """Operator icin 'Sistem Verileri' (Data Center) ozet KPI'lari — tamamen read-only.
@@ -2415,6 +2527,10 @@ def get_system_overview() -> SystemOverviewResponse:
         _count_persisted_representative_frames(r.trace_json, r.job_id) for r in analysis_records
     )
 
+    rag_security_agg = _RagSecurityAggregate()
+    for r in analysis_records:
+        _accumulate_rag_security_from_trace(r.trace_json, rag_security_agg)
+
     conversation_records = get_conversation_store().list_with_message_counts(
         limit=_SYSTEM_OVERVIEW_SCAN_LIMIT, offset=0
     )
@@ -2430,6 +2546,20 @@ def get_system_overview() -> SystemOverviewResponse:
             total_messages=total_messages,
             analyses_with_trace=with_trace,
             stored_representative_frame_count=stored_frames,
+            total_events_detected=rag_security_agg.total_events_detected,
+            critical_risk_analyses=rag_security_agg.critical_risk_analyses,
+            rag_query_count=rag_security_agg.rag_query_count,
+            rag_zero_result_count=rag_security_agg.rag_zero_result_count,
+            avg_embedding_latency_ms=_avg_or_none(rag_security_agg.embedding_latencies),
+            avg_rerank_latency_ms=_avg_or_none(rag_security_agg.rerank_latencies),
+            avg_total_rag_latency_ms=_avg_or_none(rag_security_agg.total_rag_latencies),
+            guard_checks=rag_security_agg.guard_checks,
+            guard_allowed=rag_security_agg.guard_allowed,
+            guard_quarantined=rag_security_agg.guard_quarantined,
+            guard_failures=rag_security_agg.guard_failures,
+            guard_fail_closed_blocks=rag_security_agg.guard_fail_closed_blocks,
+            avg_guard_latency_ms=_avg_or_none(rag_security_agg.guard_latencies),
+            avg_guard_confidence=_avg_or_none(rag_security_agg.guard_confidences),
         ),
         generated_at=datetime.datetime.utcnow().isoformat() + "Z",
         scan_limit=_SYSTEM_OVERVIEW_SCAN_LIMIT,

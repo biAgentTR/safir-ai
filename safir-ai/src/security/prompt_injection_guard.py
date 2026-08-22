@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -53,6 +54,10 @@ class GuardResult:
     action: str  # "allow" | "quarantine"
     source: str
     guard_failed: bool = False
+    latency_ms: float = 0.0
+    """`inspect()` cagrisinin gecen suresi (ms). Metin bos oldugu icin API
+    cagrisi hic yapilmadiysa 0.0 (UYDURULMUS bir deger DEGIL - gercekten
+    hicbir sey beklenmedi)."""
 
 
 class GuardUnavailableError(Exception):
@@ -182,6 +187,7 @@ class GeminiPromptInjectionGuard(PromptInjectionGuard):
         if not text or not text.strip():
             return GuardResult(is_injection=False, confidence=0.0, reason=None, action="allow", source=source)
 
+        started = time.perf_counter()
         try:
             client = self._get_client()
             prompt = self._build_prompt(text, source)
@@ -200,8 +206,10 @@ class GeminiPromptInjectionGuard(PromptInjectionGuard):
             is_injection, confidence, reason = self._parse_and_validate(raw_text)
         except Exception as exc:  # noqa: BLE001 - HERHANGI bir hata guvenli fail_closed/fail_open politikasina cevrilir
             logger.error("GeminiPromptInjectionGuard: inspect basarisiz (source=%s): %s", source, exc)
-            return self._failure_result(source)
+            latency_ms = (time.perf_counter() - started) * 1000.0
+            return self._failure_result(source, latency_ms)
 
+        latency_ms = (time.perf_counter() - started) * 1000.0
         action = "quarantine" if (is_injection and confidence >= self._confidence_threshold) else "allow"
         return GuardResult(
             is_injection=is_injection,
@@ -209,9 +217,10 @@ class GeminiPromptInjectionGuard(PromptInjectionGuard):
             reason=reason,
             action=action,
             source=source,
+            latency_ms=round(latency_ms, 1),
         )
 
-    def _failure_result(self, source: str) -> GuardResult:
+    def _failure_result(self, source: str, latency_ms: float) -> GuardResult:
         """API/parse hatasi sonrasi `fail_closed` politikasina gore GUVENLI bir sonuc uretir (sessiz fallback DEGIL)."""
         if self._fail_closed:
             logger.error(
@@ -225,6 +234,7 @@ class GeminiPromptInjectionGuard(PromptInjectionGuard):
                 action="quarantine",
                 source=source,
                 guard_failed=True,
+                latency_ms=round(latency_ms, 1),
             )
         logger.error(
             "GeminiPromptInjectionGuard: fail_closed=False, source=%s icerik allow ediliyor (guard basarisiz - acikca loglandi).",
@@ -237,6 +247,7 @@ class GeminiPromptInjectionGuard(PromptInjectionGuard):
             action="allow",
             source=source,
             guard_failed=True,
+            latency_ms=round(latency_ms, 1),
         )
 
     @staticmethod

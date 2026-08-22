@@ -194,6 +194,72 @@ def test_reranker_failure_returns_empty_not_embedding_topk(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Dashboard telemetrisi: get_last_query_telemetry()
+# ---------------------------------------------------------------------------
+
+
+def test_query_telemetry_captures_real_candidate_final_and_scores(tmp_path) -> None:
+    reranker = _FakeReranker(score_by_substring={"ALAKALI": 0.9})
+    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=reranker, score_threshold=0.10)
+    service.add_documents(["Bu metin ALAKALI bir mevzuat."])
+
+    service.query("sorgu")
+    telemetry = service.get_last_query_telemetry()
+
+    assert telemetry is not None
+    assert telemetry.candidate_count == 1
+    assert telemetry.final_count == 1
+    assert telemetry.zero_result is False
+    assert telemetry.retrieval_status == "reranked"
+    assert telemetry.avg_rerank_score == pytest.approx(0.9)
+    assert telemetry.total_latency_ms >= 0.0
+    assert telemetry.results[0].selected is True
+
+
+def test_query_telemetry_on_zero_result_reports_zero_not_fabricated(tmp_path) -> None:
+    reranker = _FakeReranker(default_score=0.01)
+    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=reranker, score_threshold=0.10)
+    service.add_documents(["konu A hakkinda metin"])
+
+    service.query("alakasiz bir sorgu")
+    telemetry = service.get_last_query_telemetry()
+
+    assert telemetry.zero_result is True
+    assert telemetry.final_count == 0
+    assert telemetry.avg_rerank_score is None  # 0 secilen sonuc -> ortalama YOK (0.0 DEGIL)
+    assert all(r.selected is False for r in telemetry.results)
+
+
+def test_query_telemetry_on_reranker_failure_marks_reranker_unavailable(tmp_path) -> None:
+    reranker = _FakeReranker(fail=True)
+    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=reranker)
+    service.add_documents(["kesinlikle alakali bir mevzuat metni"])
+
+    service.query("sorgu")
+    telemetry = service.get_last_query_telemetry()
+
+    assert telemetry.retrieval_status == "reranker_unavailable"
+    assert telemetry.zero_result is True
+    assert telemetry.rerank_latency_ms is not None
+
+
+def test_query_telemetry_is_none_before_any_query(tmp_path) -> None:
+    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=None)
+    assert service.get_last_query_telemetry() is None
+
+
+def test_query_telemetry_on_empty_index_reports_empty_index_status(tmp_path) -> None:
+    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=None)
+    results = service.query("hicbir dokuman yokken sorgu")
+    telemetry = service.get_last_query_telemetry()
+
+    assert results == []
+    assert telemetry.retrieval_status == "empty_index"
+    assert telemetry.zero_result is True
+    assert telemetry.candidate_count == 0
+
+
+# ---------------------------------------------------------------------------
 # 5. Uctan uca RAG (MOCK embedding + MOCK reranker - semantik kalite IDDIA EDILMEZ)
 # ---------------------------------------------------------------------------
 

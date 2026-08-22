@@ -70,6 +70,7 @@ export const STAGE_META: { stage: TraceStage; label: string; blurb: string }[] =
   { stage: 'vlm', label: 'Çok Modlu Analiz', blurb: 'Görsel-dil modeli' },
   { stage: 'events', label: 'Olay Analizi', blurb: 'Tespit / zamansal / kural' },
   { stage: 'agent_context', label: 'Bağlam ve RAG', blurb: 'Ajan bağlamı oluşturma' },
+  { stage: 'rag_security', label: 'RAG ve Güvenlik Telemetrisi', blurb: 'Semantik retrieval + Prompt Injection Guard' },
   { stage: 'decision', label: 'Ajan Kararı', blurb: 'Risk ve önerilen aksiyon' },
   { stage: 'escalation', label: 'Risk Yükseltme', blurb: 'Otomatik tetikleme politikası' },
   { stage: 'report', label: 'Nihai Rapor', blurb: 'Yapılandırılmış çıktı' },
@@ -111,6 +112,11 @@ export function stageFlow(
         in: 'olaylar + mevzuat',
         out: data ? `${d.length ?? 0} karakter bağlam` : 'ajan bağlamı',
       }
+    case 'rag_security': {
+      const ragOut = data ? (d.rag ? `${d.rag.final_count}/${d.rag.candidate_count} sonuç` : 'RAG çalışmadı') : 'RAG sonucu'
+      const guardOut = data ? `${n(d.security)} guard kontrolü` : 'guard kontrolleri'
+      return { in: 'keywords + serbest metin', out: `${ragOut} · ${guardOut}` }
+    }
     case 'decision': {
       const riskOut = data ? (d.risk_status === 'unknown' || d.risk_score == null ? 'risk belirsiz' : `risk ${d.risk_score}/100`) : 'risk'
       return {

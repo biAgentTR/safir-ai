@@ -164,6 +164,9 @@ function basename(src: string | null | undefined): string {
   if (!src) return '—'
   return src.split(/[\\/]/).pop() || src
 }
+function fmtMs(v: number | null | undefined): string {
+  return v == null ? 'N/A' : `${Math.round(v)} ms`
+}
 
 onMounted(() => {
   loadOverview()
@@ -194,6 +197,25 @@ onMounted(() => {
       <MetricCell label="Toplam konuşma" :value="overview.totals.total_conversations" />
       <MetricCell label="Saklanan pipeline izi" :value="overview.totals.analyses_with_trace" />
       <MetricCell label="Saklanan kanıt karesi" :value="overview.totals.stored_representative_frame_count" />
+    </div>
+
+    <!-- AI Güvenlik & Bilgi Katmanı: RAG + Prompt Injection Guard KPI'ları (persisted trace_events'ten, gerçek toplamlar) -->
+    <div v-if="overview" class="mb-6">
+      <h3 class="text-sm font-semibold text-slate-300 mb-2">AI Güvenlik &amp; Bilgi Katmanı</h3>
+      <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+        <MetricCell label="Toplam olay" :value="overview.totals.total_events_detected" />
+        <MetricCell label="Kritik risk analizi" :value="overview.totals.critical_risk_analyses" />
+        <MetricCell label="RAG sorgusu yapıldı" :value="overview.totals.rag_query_count" />
+        <MetricCell label="Ort. embedding gecikmesi" :value="fmtMs(overview.totals.avg_embedding_latency_ms)" />
+        <MetricCell label="Ort. rerank gecikmesi" :value="fmtMs(overview.totals.avg_rerank_latency_ms)" />
+        <MetricCell label="Guard kontrolü" :value="overview.totals.guard_checks" />
+        <MetricCell label="Guard quarantine" :value="overview.totals.guard_quarantined" />
+        <MetricCell label="Guard hatası" :value="overview.totals.guard_failures" />
+      </div>
+      <p class="mt-2 text-xs text-slate-500">
+        Semantik retrieval yalnızca ilgili olabilecek mevzuat kaynaklarını sağlar. Risk skoru ve deterministik kural
+        eşleşmeleri RuleEngine tarafından belirlenir; yukarıdaki RAG/Guard metrikleri risk kararını ETKİLEMEZ.
+      </p>
     </div>
 
     <!-- tabs -->

@@ -119,6 +119,7 @@ export type TraceStage =
   | 'vlm'
   | 'events'
   | 'agent_context'
+  | 'rag_security'
   | 'decision'
   | 'escalation'
   | 'report'
@@ -248,6 +249,53 @@ export interface EventsStageData {
 export interface ContextStageData {
   prompt_block: string
   length: number
+}
+
+/** rag_security stage: src/observability/trace_serializer.py serialize_rag_security. */
+export interface RagResultTelemetry {
+  document_id: string | null
+  document_title: string | null
+  article_number: string | null
+  source_url: string | null
+  embedding_score: number
+  rerank_score: number | null
+  selected: boolean
+}
+
+/**
+ * RAG retrieval telemetrisi for tek bir semantik sorgu. `null` = bu turda hic
+ * RAG sorgusu yapilmadi (VLM keyword uretmedi) — "0 sonuc" ile KARISTIRILMAZ.
+ */
+export interface RagTelemetry {
+  query_length: number
+  candidate_count: number
+  final_count: number
+  zero_result: boolean
+  retrieval_status: 'reranked' | 'embedding_only' | 'reranker_unavailable' | 'empty_index' | string
+  threshold: number | null
+  embedding_latency_ms: number
+  rerank_latency_ms: number | null
+  total_latency_ms: number
+  avg_embedding_score: number | null
+  avg_rerank_score: number | null
+  results: RagResultTelemetry[]
+}
+
+/** Tek bir Prompt Injection Guard kontrolunun GUVENLI (ham metin icermeyen) telemetrisi. */
+export interface SecurityGuardCheck {
+  source: 'user_prompt' | 'vlm_description' | 'vlm_event_description' | string
+  is_injection: boolean
+  confidence: number
+  action: 'allow' | 'quarantine'
+  /** Gemini'nin kisa gerekce metni (bilgi amacli — karar mekanizmasi DEGIL, karari `action`/`confidence` belirler). */
+  reason: string | null
+  guard_failed: boolean
+  latency_ms: number
+}
+
+export interface RagSecurityStageData {
+  rag: RagTelemetry | null
+  security: SecurityGuardCheck[]
 }
 
 /** report stage (compact; full report comes from the polling endpoint). */
@@ -446,6 +494,26 @@ export interface SystemOverviewTotals {
   total_messages: number
   analyses_with_trace: number
   stored_representative_frame_count: number
+  /**
+   * RAG + Prompt Injection Guard telemetrisi (persisted trace_events'in
+   * "rag_security" asamasindan toplanir). Sayim alanlari her zaman gercek
+   * (veri yoksa 0); ortalama alanlari veri yoksa `null` ("N/A") doner —
+   * ASLA uydurulmuş bir sayi degildir.
+   */
+  total_events_detected: number
+  critical_risk_analyses: number
+  rag_query_count: number
+  rag_zero_result_count: number
+  avg_embedding_latency_ms: number | null
+  avg_rerank_latency_ms: number | null
+  avg_total_rag_latency_ms: number | null
+  guard_checks: number
+  guard_allowed: number
+  guard_quarantined: number
+  guard_failures: number
+  guard_fail_closed_blocks: number
+  avg_guard_latency_ms: number | null
+  avg_guard_confidence: number | null
 }
 
 /** GET /system/overview yaniti (src/main.py: SystemOverviewResponse). */

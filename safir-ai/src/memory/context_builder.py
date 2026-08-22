@@ -48,7 +48,7 @@ from typing import Any, Dict, List, Optional
 
 from src.memory.embedding_rag_service import RetrievedDocument
 from src.memory.event_store import EventStore
-from src.security.prompt_injection_guard import PromptInjectionGuard, sanitize_untrusted_text
+from src.security.prompt_injection_guard import GuardResult, PromptInjectionGuard, sanitize_untrusted_text
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,11 @@ class EnrichedContext:
     semantik arama sonuclari (bkz. modul dokustringi). `relevant_regulations`den
     TAMAMEN AYRI bir kavramdir; risk kararini ETKILEMEZ. Bos liste = esik-uzeri
     hicbir sonuc bulunamadi (GECERLI sonuc, rastgele sonuc UYDURULMAZ)."""
+    guard_results: List[GuardResult] = field(default_factory=list)
+    """Bu `build()` cagrisinda calisan Prompt Injection Guard kontrollerinin
+    (varsa) GERCEK, yapilandirilmis sonuclari - dashboard/trace telemetrisi
+    icin (bkz. `src/main.py::stage_context`). Guard devre disiyse (`guard=None`)
+    HER ZAMAN bos liste - UYDURULMUS bir kontrol KAYDI eklenmez."""
 
     def to_prompt_block(self) -> str:
         """Bu baglami LangGraph ajanina verilecek tek bir metin bloguna cevirir.
@@ -184,12 +189,20 @@ class ContextBuilder:
         # Prompt Injection Guard (varsa): Agent'in GORECEGI metni etkiler,
         # RuleEngine/EventEngine zaten bu noktadan ONCE ham metin uzerinde
         # calismisti - burada DEGISTIRILEN hicbir sey geriye etki YAPMAZ.
-        guarded_vlm_description, _ = sanitize_untrusted_text(vlm_description, "vlm_description", self._guard)
-        guarded_user_prompt, _ = sanitize_untrusted_text(user_prompt, "user_prompt", self._guard)
+        guard_results: List[GuardResult] = []
+
+        def _guard(text: str, source: str) -> str:
+            guarded_text, result = sanitize_untrusted_text(text, source, self._guard)
+            if result is not None:
+                guard_results.append(result)
+            return guarded_text
+
+        guarded_vlm_description = _guard(vlm_description, "vlm_description")
+        guarded_user_prompt = _guard(user_prompt, "user_prompt")
         guarded_recent_events: List[Dict[str, Any]] = []
         for event in recent_events:
             description = event.get("description", "")
-            guarded_description, _ = sanitize_untrusted_text(description, "vlm_event_description", self._guard)
+            guarded_description = _guard(description, "vlm_event_description")
             if guarded_description != description:
                 event = {**event, "description": guarded_description}
             guarded_recent_events.append(event)
@@ -201,6 +214,7 @@ class ContextBuilder:
             recent_events=guarded_recent_events,
             relevant_regulations=list(relevant_regulations or []),
             semantically_related_chunks=list(semantically_related_chunks or []),
+            guard_results=guard_results,
         )
         logger.debug(
             "Baglam olusturuldu: %d gecmis olay, %d dogrulanmis mevzuat",

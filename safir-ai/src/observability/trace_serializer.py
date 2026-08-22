@@ -18,7 +18,16 @@ import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # Gercek pipeline stage sirasi (SafirPipeline.run icindeki emit sirasi ile ayni).
-STAGE_ORDER: List[str] = ["sampler", "vlm", "events", "agent_context", "decision", "escalation", "report"]
+STAGE_ORDER: List[str] = [
+    "sampler",
+    "vlm",
+    "events",
+    "agent_context",
+    "rag_security",
+    "decision",
+    "escalation",
+    "report",
+]
 
 # Yalnizca sunum (presentation) metadata'si — pipeline isimleri/isleyisi degismez.
 STAGE_LABELS: Dict[str, str] = {
@@ -26,6 +35,7 @@ STAGE_LABELS: Dict[str, str] = {
     "vlm": "Multimodal Analysis",
     "events": "Event Analysis",
     "agent_context": "Context & RAG",
+    "rag_security": "RAG & Security Telemetry",
     "decision": "Agent Decision",
     "escalation": "Risk Escalation",
     "report": "Final Report",
@@ -235,6 +245,81 @@ def serialize_agent_context(
     return summary, data, {}, "completed", None
 
 
+_MAX_REASON_CHARS = 200
+"""Guard'in kisa gerekce metni icin azami karakter sayisi - ham injection payload'u
+DEGIL, Gemini'nin KISA siniflandirma gerekcesi (bkz. GuardResult.reason); yine
+de operatorun goreceginden emin olmak icin defansif olarak kirpilir."""
+
+
+def serialize_rag_security(
+    payload: Dict[str, Any], job_id: str
+) -> Tuple[str, Dict[str, Any], Dict[str, bytes], str, Optional[str]]:
+    """`rag_security` emit'ini serialize eder: RAG retrieval + Prompt Injection Guard telemetrisi.
+
+    GUVENLIK: ham VLM/kullanici metni, mevzuat chunk METNI veya API anahtari
+    ASLA bu stage'e KONULMAZ - yalnizca yapilandirilmis skor/metadata/latency
+    (bkz. `RagQueryTelemetry`/`GuardResult`). `rag_telemetry`/`guard_results`
+    yoksa (RAG/Guard bu cagrida hic calismadiysa) ilgili alan `None`/bos liste
+    olarak birakilir - UYDURULMUS bir deger KONULMAZ.
+    """
+    rag_telemetry = payload.get("rag_telemetry")
+    guard_results = payload.get("guard_results") or []
+
+    rag_data: Optional[Dict[str, Any]] = None
+    if rag_telemetry is not None:
+        rag_data = {
+            "query_length": len(rag_telemetry.query),
+            "candidate_count": rag_telemetry.candidate_count,
+            "final_count": rag_telemetry.final_count,
+            "zero_result": rag_telemetry.zero_result,
+            "retrieval_status": rag_telemetry.retrieval_status,
+            "threshold": rag_telemetry.threshold,
+            "embedding_latency_ms": rag_telemetry.embedding_latency_ms,
+            "rerank_latency_ms": rag_telemetry.rerank_latency_ms,
+            "total_latency_ms": rag_telemetry.total_latency_ms,
+            "avg_embedding_score": rag_telemetry.avg_embedding_score,
+            "avg_rerank_score": rag_telemetry.avg_rerank_score,
+            "results": [
+                {
+                    "document_id": r.document_id,
+                    "document_title": r.document_title,
+                    "article_number": r.article_number,
+                    "source_url": r.source_url,
+                    "embedding_score": r.embedding_score,
+                    "rerank_score": r.rerank_score,
+                    "selected": r.selected,
+                }
+                for r in rag_telemetry.results
+            ],
+        }
+
+    security_data = [
+        {
+            "source": g.source,
+            "is_injection": g.is_injection,
+            "confidence": g.confidence,
+            "action": g.action,
+            "reason": (g.reason[:_MAX_REASON_CHARS] if g.reason else None),
+            "guard_failed": g.guard_failed,
+            "latency_ms": g.latency_ms,
+        }
+        for g in guard_results
+    ]
+
+    data = {"rag": rag_data, "security": security_data}
+
+    rag_summary = (
+        f"RAG: {rag_telemetry.final_count}/{rag_telemetry.candidate_count} sonuc "
+        f"({rag_telemetry.retrieval_status})"
+        if rag_telemetry is not None
+        else "RAG sorgusu yapilmadi (keyword yok)"
+    )
+    quarantined = sum(1 for g in guard_results if g.action == "quarantine")
+    guard_summary = f"{len(guard_results)} guvenlik kontrolu ({quarantined} quarantine)" if guard_results else "Guard devre disi"
+    summary = f"{rag_summary}; {guard_summary}"
+    return summary, data, {}, "completed", None
+
+
 def serialize_decision(
     payload: Dict[str, Any], job_id: str
 ) -> Tuple[str, Dict[str, Any], Dict[str, bytes], str, Optional[str]]:
@@ -324,6 +409,7 @@ class PipelineTraceCollector:
         "vlm": serialize_vlm,
         "events": serialize_events,
         "agent_context": serialize_agent_context,
+        "rag_security": serialize_rag_security,
         "decision": serialize_decision,
         "escalation": serialize_escalation,
         "report": serialize_report,

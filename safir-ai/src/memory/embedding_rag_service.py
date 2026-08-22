@@ -51,7 +51,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -246,6 +247,66 @@ class RetrievedDocument:
         return self.rerank_score if self.rerank_score is not None else self.embedding_score
 
 
+def _avg(values: List[float]) -> Optional[float]:
+    """Bos listede `None` dondurur (0.0 DEGIL - "hic sonuc yok" ile "ortalama 0" KARISTIRILMAZ)."""
+    return round(sum(values) / len(values), 4) if values else None
+
+
+def _result_telemetry(doc: "RetrievedDocument", selected: bool) -> "RagResultTelemetry":
+    return RagResultTelemetry(
+        document_id=doc.document_id,
+        document_title=doc.document_title,
+        article_number=doc.article_number,
+        source_url=doc.source_url,
+        embedding_score=round(doc.embedding_score, 4),
+        rerank_score=round(doc.rerank_score, 4) if doc.rerank_score is not None else None,
+        selected=selected,
+    )
+
+
+@dataclass
+class RagResultTelemetry:
+    """Tek bir RAG adayinin/sonucunun DASHBOARD-guvenli (metin ICERMEYEN) telemetri kaydi.
+
+    `text` KASITLI OLARAK burada YOKTUR - dashboard'a yalnizca yapilandirilmis
+    kaynak metadata'si ve skorlar gider, tam mevzuat metni degil (bkz. RAG +
+    Security Observability gorev tanimi, bolum 3/14).
+    """
+
+    document_id: Optional[str]
+    document_title: Optional[str]
+    article_number: Optional[str]
+    source_url: Optional[str]
+    embedding_score: float
+    rerank_score: Optional[float]
+    selected: bool
+    """Threshold/top_k sonrasi NIHAI sonuc kumesine girdi mi (final_docs icinde mi)."""
+
+
+@dataclass
+class RagQueryTelemetry:
+    """Bir `EmbeddingRAGService.query()` cagrisinin GERCEK, yapilandirilmis telemetri kaydi.
+
+    Ham/tam mevzuat metni TASIMAZ (yalnizca `RagResultTelemetry`, metadata +
+    skor). Dashboard/trace katmani, bu nesneyi UYDURMADAN, DOGRUDAN sunar -
+    hicbir alan burada yoksa frontend'de "N/A" gosterilmelidir (rastgele
+    deger UYDURULMAZ).
+    """
+
+    query: str
+    candidate_count: int
+    final_count: int
+    zero_result: bool
+    retrieval_status: str  # "reranked" | "embedding_only" | "reranker_unavailable"
+    threshold: Optional[float]
+    embedding_latency_ms: float
+    rerank_latency_ms: Optional[float]
+    total_latency_ms: float
+    avg_embedding_score: Optional[float]
+    avg_rerank_score: Optional[float]
+    results: List[RagResultTelemetry] = field(default_factory=list)
+
+
 class EmbeddingRAGService:
     """ISG mevzuati ve operasyonel kurallari Gemini embedding ile vektorlestirip FAISS'te arayan, Gemini ile yeniden siralayan servis.
 
@@ -295,6 +356,7 @@ class EmbeddingRAGService:
 
         self._index = faiss.IndexFlatIP(self._dimension)
         self._documents: List[Dict[str, Any]] = []
+        self._last_query_telemetry: Optional[RagQueryTelemetry] = None
 
         logger.info(
             "EmbeddingRAGService baslatildi: embedding_provider=%s model=%s dim=%d reranker=%s",
@@ -312,6 +374,14 @@ class EmbeddingRAGService:
     def document_count(self) -> int:
         """FAISS indeksine su ana kadar eklenmis dokuman sayisini dondurur."""
         return len(self._documents)
+
+    def get_last_query_telemetry(self) -> Optional[RagQueryTelemetry]:
+        """En son `query()` cagrisinin yapilandirilmis telemetrisini dondurur; hic sorgu yapilmadiysa `None`.
+
+        Dashboard/trace katmani (bkz. `src/main.py::stage_context`) bunu
+        DOGRUDAN kullanir - burada olmayan bir alan UYDURULMAZ.
+        """
+        return self._last_query_telemetry
 
     def seed_default_regulations(self) -> None:
         """Indeks bossa knowledge base'i yukler: ONCELIKLE persisted index, sonra taze chunk embedding'i, son care DEFAULT_ISG_REGULATIONS.
@@ -478,16 +548,33 @@ class EmbeddingRAGService:
             En alakali (veya rerank aktifse alaka skoruna gore siralanmis)
             `RetrievedDocument` listesi; hicbir esik-uzeri sonuc yoksa BOS LISTE.
         """
+        query_started = time.perf_counter()
         if self._index.ntotal == 0:
             logger.warning("EmbeddingRAGService bos; sorgu icin dokuman bulunamadi.")
+            self._last_query_telemetry = RagQueryTelemetry(
+                query=question,
+                candidate_count=0,
+                final_count=0,
+                zero_result=True,
+                retrieval_status="empty_index",
+                threshold=self._reranker_config.score_threshold if self._reranker_config else None,
+                embedding_latency_ms=0.0,
+                rerank_latency_ms=None,
+                total_latency_ms=round((time.perf_counter() - query_started) * 1000.0, 1),
+                avg_embedding_score=None,
+                avg_rerank_score=None,
+                results=[],
+            )
             return []
 
         final_k = top_k or (self._reranker_config.top_k if self._reranker_config else None) or self._faiss_config.top_k
         candidate_k = max(self._faiss_config.candidate_k, final_k)
         candidate_k = min(candidate_k, self._index.ntotal)
 
+        embedding_started = time.perf_counter()
         query_vector = self._provider.embed_query(question)
         scores, indices = self._index.search(np.expand_dims(query_vector, axis=0), candidate_k)
+        embedding_latency_ms = (time.perf_counter() - embedding_started) * 1000.0
 
         candidates: List[RetrievedDocument] = []
         for score, idx in zip(scores[0], indices[0]):
@@ -515,11 +602,15 @@ class EmbeddingRAGService:
 
         retrieval_status = "embedding_only"
         final_docs: List[RetrievedDocument] = candidates
+        rerank_latency_ms: Optional[float] = None
+        threshold = self._reranker_config.score_threshold if self._reranker_config else None
 
         if self._reranker is not None:
+            rerank_started = time.perf_counter()
             try:
                 ranked = self._reranker.rerank(question, [c.text for c in candidates])
             except RerankerUnavailableError as exc:
+                rerank_latency_ms = (time.perf_counter() - rerank_started) * 1000.0
                 logger.error(
                     "EmbeddingRAGService: reranker basarisiz, retrieval UNAVAILABLE sayiliyor "
                     "(embedding top-k SESSIZCE final sonuc olarak DONDURULMUYOR): %s",
@@ -528,12 +619,26 @@ class EmbeddingRAGService:
                 self._log_retrieval_trace(
                     question, candidates, [], retrieval_status="reranker_unavailable", final_k=final_k
                 )
+                self._last_query_telemetry = RagQueryTelemetry(
+                    query=question,
+                    candidate_count=len(candidates),
+                    final_count=0,
+                    zero_result=True,
+                    retrieval_status="reranker_unavailable",
+                    threshold=threshold,
+                    embedding_latency_ms=round(embedding_latency_ms, 1),
+                    rerank_latency_ms=round(rerank_latency_ms, 1),
+                    total_latency_ms=round((time.perf_counter() - query_started) * 1000.0, 1),
+                    avg_embedding_score=_avg([c.embedding_score for c in candidates]),
+                    avg_rerank_score=None,
+                    results=[_result_telemetry(c, selected=False) for c in candidates],
+                )
                 return []
+            rerank_latency_ms = (time.perf_counter() - rerank_started) * 1000.0
 
-            score_threshold = self._reranker_config.score_threshold if self._reranker_config else None
             reranked_docs: List[RetrievedDocument] = []
             for idx, rerank_score in ranked:
-                if score_threshold is not None and rerank_score < score_threshold:
+                if threshold is not None and rerank_score < threshold:
                     continue
                 doc = candidates[idx]
                 doc.rerank_score = rerank_score
@@ -543,6 +648,22 @@ class EmbeddingRAGService:
 
         final_docs = final_docs[:final_k]
         self._log_retrieval_trace(question, candidates, final_docs, retrieval_status=retrieval_status, final_k=final_k)
+
+        final_ids = {id(d) for d in final_docs}
+        self._last_query_telemetry = RagQueryTelemetry(
+            query=question,
+            candidate_count=len(candidates),
+            final_count=len(final_docs),
+            zero_result=len(final_docs) == 0,
+            retrieval_status=retrieval_status,
+            threshold=threshold if retrieval_status == "reranked" else None,
+            embedding_latency_ms=round(embedding_latency_ms, 1),
+            rerank_latency_ms=round(rerank_latency_ms, 1) if rerank_latency_ms is not None else None,
+            total_latency_ms=round((time.perf_counter() - query_started) * 1000.0, 1),
+            avg_embedding_score=_avg([c.embedding_score for c in candidates]),
+            avg_rerank_score=_avg([d.rerank_score for d in final_docs if d.rerank_score is not None]),
+            results=[_result_telemetry(c, selected=id(c) in final_ids) for c in candidates],
+        )
         return final_docs
 
     def _log_retrieval_trace(
