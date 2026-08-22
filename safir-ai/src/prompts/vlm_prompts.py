@@ -39,7 +39,7 @@ _EVENTS_JSON_INSTRUCTION = (
     '"start_time": <saniye>, "end_time": <saniye>, '
     '"evidence_ids": ["<sana verilen evidence_id degerlerinden SADECE bu olaya ait olanlar>"], '
     '"description": "<Turkce, nesnel, kisa aciklama>", '
-    '"keywords": ["<somut gorsel kanit ifadesi 1>", "<somut gorsel kanit ifadesi 2>", "..."], '
+    '"keywords": ["<kisa risk ifadesi 1, orn. forklift_person_collision_risk>", "<kisa risk ifadesi 2, orn. person_without_helmet>", "..."], '
     '"risk_score": <0-100 kaba tahmin>, "confidence": <0.0-1.0>}\n'
     "]\n\n"
     "## `event_name` VE `canonical_event_type` ARASINDAKI FARK (COK ONEMLI)\n"
@@ -77,18 +77,26 @@ _EVENTS_JSON_INSTRUCTION = (
     "otoriter bir skor sunma. `canonical_event_type=null` oldugunda bu "
     "olay icin deterministik bir risk sonucu URETILMEYEBILIR - bu GECERLI "
     "bir sonuctur, sen bir risk UYDURMA.\n"
-    "6. `keywords`: bu olayin kanitini aciklayan KISA, SOMUT gorsel ifadeler/"
-    "terimler listesi ver (orn. \"duman\", \"yogun siyah duman\", \"alev\", "
-    "\"forklift\", \"cok yakin mesafe\", \"yerde yatan kisi\"). Bu liste "
-    "ONCEDEN TANIMLANMIS bir kategori/taksonomiyle SINIRLI DEGILDIR - "
-    "`keywords`, O OLAYA OZGU, SERBEST BICIMLI kanit ifadeleridir. YALNIZCA "
-    "evidence karelerinde GERCEKTEN GORDUGUN seyleri yaz; hicbir terim "
-    "UYDURMA. Sabit bir sayi siniri YOKTUR (uc-on arasi kisa, somut ifade "
-    "onerilir, ama daha fazlasi da mumkundur); ayni `event_name`e sahip "
-    "farkli gozlemlerin farkli `keywords` listeleri olmasi NORMALDIR "
-    "(birebir ayni terimleri tekrar etmek ZORUNDA DEGILSIN). `keywords` bir "
-    "RISK KARARI DEGILDIR - yalnizca ne GORDUGUNU tarif eder; risk "
-    "seviyesini SEN belirlemezsin."
+    "6. `keywords`: bu olayin RISKINI tanimlayan KISA anahtar kelime/ifadeler "
+    "listesi ver. `keywords` bir NESNE/GOZLEM listesi DEGILDIR - sahnede "
+    "GORDUGUN nesneleri (\"person\", \"forklift\", \"baret\", \"arac\" gibi) "
+    "TEK BASINA bir keyword olarak YAZMA. Bunun yerine, o nesnelerin "
+    "OLUSTURDUGU TEHLIKELI DURUMU/ILISKIYI ifade eden bir terim uret (orn. "
+    "sahnede forklift bir kisiye tehlikeli derecede yakinsa "
+    "\"forklift_person_collision_risk\" veya \"person_in_forklift_path\"; "
+    "kisi baret takmiyorsa \"person_without_helmet\"; kisi yerde hareketsizse "
+    "\"fallen_person\"; duman/alev goruyorsan \"smoke_detected\"/"
+    "\"fire_detected\"). Bunlar SADECE ORNEKTIR, ONCEDEN TANIMLANMIS SABIT "
+    "bir risk sozlugu/taksonomi DEGILDIR - sana ONCEDEN listelenmemis YENI "
+    "bir risk turu gorursen, onu kendi kisa ifadenle (orn. "
+    "\"worker_reaching_into_operating_machine\") SERBESTCE uret. Terimler "
+    "kisa, tercihen snake_case ve VIDEODA GERCEKTEN GOZLEMLEDIGIN riske "
+    "DAYALI olmali; hicbir terim UYDURMA. Sahnede anlamli/somut bir risk "
+    "YOKSA `keywords` alanini BOS LISTE birak - sirf bir sey yazmak icin "
+    "sahnedeki sıradan nesneleri risk gibi etiketleme. Sabit bir sayi siniri "
+    "YOKTUR. `keywords` NIHAI risk SEVERITY'si (dusuk/orta/yuksek/kritik) "
+    "ICERMEZ ve boyle bir karar TASIMAZ - bu karari deterministik Kural "
+    "Motoru (RuleEngine) verir; sen yalnizca RISKI tanimlarsin."
 )
 
 VLM_OBSERVER_SYSTEM_PROMPT = (
@@ -155,8 +163,11 @@ VLM_RECONCILIATION_SYSTEM_PROMPT = (
     "YUKSEK, tutarli bir sekilde) tasi.\n"
     "6. `keywords`: birlesen olaylarin GIRDIDEKI `keywords` listelerinin "
     "BIRLESIMINI (tekrarsiz) tasi - hicbir terimi KAYBETME, YENI bir terim "
-    "de UYDURMA. Girdide `keywords` olmayan bir olay birlesiyorsa, o "
-    "olaydan gelen katki icin bos birakabilirsin.\n"
+    "de UYDURMA, mevcut terimleri NESNE ADINA (orn. \"person\", \"forklift\") "
+    "DONUSTURME. Girdideki terimler zaten RISK ifadeleridir (orn. "
+    "\"person_without_helmet\"); SEN bunlari degistirmeden aynen tasirsin. "
+    "Girdide `keywords` olmayan bir olay birlesiyorsa, o olaydan gelen "
+    "katki icin bos birakabilirsin.\n"
     "7. `event_name`, girdideki batch'lerin KENDI urettigi serbest-bicimli "
     "ismini KORUR - YENIDEN ADLANDIRMA/DEGISTIRME, bilinen bir kategoriye "
     "ZORLAMA yapma. `canonical_event_type`, girdi kayitlarinda ZATEN "
