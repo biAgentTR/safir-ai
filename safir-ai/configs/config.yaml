@@ -154,7 +154,7 @@ vlm:
       model_name: "gemini-3.5-flash-lite"
       base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
       api_key_env: "GEMINI_API_KEY"
-      max_new_tokens: 1024
+      max_new_tokens: 2048
       temperature: 0.2
       top_p: 0.9
 
