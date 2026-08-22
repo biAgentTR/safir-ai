@@ -218,7 +218,12 @@ llm:
       model_name: "qwen/qwen3.6-27b"
       base_url: "https://api.groq.com/openai/v1"
       api_key_env: "GROQ_API_KEY"
-      max_new_tokens: 1024
+      # NOT: qwen3.6-27b muhtemelen varsayilan "thinking" modda (yerel qwen3
+      # yukarida BILEREK "non-thinking" surumu secilmisti, ayni sebep). 1024
+      # token, dusunme adimlari + JSON ciktisi icin YETERSIZ kalip bos/
+      # gecersiz JSON'a (Groq 400 json_validate_failed, bos failed_generation)
+      # yol acabiliyordu - bu yuzden buraya ozel, digerlerinden daha genis.
+      max_new_tokens: 4096
       temperature: 0.1
 
 agent:
