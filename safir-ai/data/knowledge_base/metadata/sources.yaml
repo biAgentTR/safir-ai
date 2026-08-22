@@ -36,18 +36,21 @@ documents:
     source_url_alt_pdf: "https://www.mevzuat.gov.tr/File/GeneratePdf?mevzuatNo=31465&mevzuatTur=KurumVeKurulusYonetmeligi&mevzuatTertip=5"
     publication_date: "2013-07-02"
     retrieved_at: "2026-08-22"
-    retrieval_status: verified_content_match
-    target_filename: "official/kkd_yonetmeligi.pdf"
+    retrieval_status: removed_no_ocr
+    target_filename: null
     page_count: 24
-    verified_title_snippet: "PDF metadata title: 'Kişisel Koruyucu_Layout 1'"
     ingestion_note: >
-      Bu PDF'in ilk sayfasi duz metin cikariminda BOZUK/parcali geliyor
-      (orn. "Yönetmelik / Kişisel Koruyucu / Disketten / Ekleri Film / 37-14"
-      - sutunlu/gomulu-font eski bir Resmi Gazete taramasi olabilir).
-      Metadata basligi ve dosya kaynagi KKD Yonetmeligi oldugunu doğruluyor,
-      ancak ingestion pipeline'i kurulurken bu dosya icin OCR veya alternatif
-      bir extraction yolu GEREKEBILIR - duz `extract_text()` guvenilir
-      olmayabilir.
+      Onceki dosya (official/kkd_yonetmeligi.pdf) goruntu-tabanli/taranmis
+      bir PDF'ti (metin katmani yoktu). OCR (tesseract + tur dil paketi)
+      denendi ve TEKNIK OLARAK CALISTI (orn. sayfa 1'de "Ek-I Kişisel
+      Koruyucu Donanımların Risk Kategorileri" listesi, sayfa 3'te "1.3.
+      Rahatlık ve Etkinlik" madde metni basariyla okundu) - ancak demo
+      kapsaminda OCR yolunu ilerletmemeye karar verildi ve dosya knowledge
+      base'den CIKARILDI. Bu doküman kaynagi hala gecerli/resmi (bkz.
+      source_url); yalnizca bu ortamdaki KB'ye dahil EDILMEDI. Ileride
+      tekrar eklenmek istenirse: farkli bir resmi kaynaktan (orn.
+      mevzuat.gov.tr'nin guncel/metin-tabanli surumu) veya OCR pipeline'i
+      ile yeniden denenebilir.
 
   - id: yapi_isleri_isg_yonetmeligi
     title: "Yapı İşlerinde İş Sağlığı ve Güvenliği Yönetmeliği"
