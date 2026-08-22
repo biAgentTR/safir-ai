@@ -107,14 +107,17 @@ documents:
     publication_date: null
     retrieved_at: "2026-08-22"
     retrieval_status: verified_content_match
-    target_filename: "official/elektrik_ic_tesisleri_yonetmeligi.doc"
-    file_format: "doc"
+    target_filename: "official/elektrik_ic_tesisleri_yonetmeligi.pdf"
+    original_source_filename: "official/elektrik_ic_tesisleri_yonetmeligi.doc"
+    file_format: "pdf (converted from the original .doc via LibreOffice headless --convert-to pdf; original .doc kept alongside as the source-of-record)"
     page_count: 85
-    verified_title_snippet: "Windows dosya metadata basligi: 'ELEKTRK  TESSLER YNETMEL' (Turkce karakterler encoding'de dustu, 'ELEKTRİK İÇ TESİSLERİ YÖNETMELİĞİ' olarak okunuyor); mevzuatNo=10391 ile eslesiyor."
+    verified_title_snippet: "Page 1 metni (PDF'e cevrildikten sonra dogrudan okunabilir hale geldi): 'ELEKTRİK İÇ TESİSLERİ YÖNETMELİĞİ / I.YÖNETMELİĞİN KAPSAMI / KAPSAM / Madde 1 – ...'; mevzuatNo=10391 ile eslesiyor. 86 'Madde' tespiti, 197312 karakter temiz metin."
     ingestion_note: >
-      TEK .doc dosyasi bu - digerleri PDF. Ingestion pipeline'i PDF
-      extraction'a ek olarak bir .doc/.docx parser (orn. python-docx veya
-      antiword) gerektirecek; bu asamada henuz kod yazilmadi.
+      Orijinal .doc bu ortamda (libreoffice-writer eksikti) once acilamadi;
+      paket kurulumundan sonra `soffice --headless --convert-to pdf` ile
+      basariyla PDF'e cevrildi ve icerik/MADDE yapisi diger dokumanlarla
+      ayni sekilde dogrulandi. Digerlerinden farkli tek nokta: kaynak format
+      .doc idi, .pdf'e donusturulerek eklendi (orijinal .doc de korunuyor).
 
   - id: patlayici_ortamlar_yonetmeligi
     title: "Çalışanların Patlayıcı Ortamların Tehlikelerinden Korunması Hakkında Yönetmelik"
