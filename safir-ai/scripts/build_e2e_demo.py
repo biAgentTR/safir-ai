@@ -149,7 +149,7 @@ def build(dev_default: bool) -> nbf.NotebookNode:
     )
     code(
         "if DEV_MODE:\n"
-        "    # Sadece DEV: agir bge-m3 (~2GB) indirmemek icin RAG'i hafif sahteyle degistir.\n"
+        "    # Sadece DEV: gercek Gemini embedding/rerank API'lerini cagirmamak icin RAG'i hafif sahteyle degistir.\n"
         "    from dataclasses import dataclass\n"
         "    import src.main as safir_main\n"
         "    @dataclass\n"
@@ -161,7 +161,7 @@ def build(dev_default: bool) -> nbf.NotebookNode:
         "            return [_Doc('ISG Yonetmeligi Madde 24: KKD zorunludur.'), _Doc('Operasyonel Kural OK-07: yaya gecidi.')][:(top_k or 2)]\n"
         "    safir_main.EmbeddingRAGService = lambda *a, **k: _FakeRAG()\n"
         "else:\n"
-        "    import src.main as safir_main  # gercek EmbeddingRAGService (bge-m3) — ilk kosuda ~2GB inebilir\n"
+        "    import src.main as safir_main  # gercek EmbeddingRAGService (Gemini API) — GEMINI_API_KEY gerektirir\n"
         "\n"
         "USER_PROMPT = 'Sahnede riskli bir durum var mi degerlendir.'\n"
         "pipeline = safir_main.SafirPipeline(config)\n"

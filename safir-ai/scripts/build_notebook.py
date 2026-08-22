@@ -34,7 +34,7 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
     md(
         "## 0) Kurulum ve Ayarlar\n"
         "- `USE_MOCK=False` → `config.yaml`'daki backend (**Gemini**; `GEMINI_API_KEY` gerekli).\n"
-        "- `USE_FAKE_RAG=True` → agir embedding modelini (bge-m3 ~2GB) indirmez; hafif mevzuat kullanir (demo hizli)."
+        "- `USE_FAKE_RAG=True` → gercek Gemini embedding/rerank API'lerini cagirmaz; hafif mevzuat kullanir (demo hizli, offline)."
     )
     code(
         "import sys, os\n"
@@ -48,7 +48,7 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
         "\n"
         "# ---- AYARLAR ----\n"
         f"USE_MOCK = {use_mock_default}       # False: Gemini | True: offline\n"
-        "USE_FAKE_RAG = True    # True: bge-m3 indirmez (hizli) | False: gercek FAISS RAG\n"
+        "USE_FAKE_RAG = True    # True: Gemini API'yi cagirmaz (hizli/offline) | False: gercek Gemini+FAISS RAG\n"
         "\n"
         "from src.utils.config_loader import load_config\n"
         "config = load_config()\n"
@@ -170,7 +170,7 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
         "    rag_service = _FakeRAG()\n"
         "else:\n"
         "    from src.memory.embedding_rag_service import EmbeddingRAGService\n"
-        "    rag_service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss)\n"
+        "    rag_service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss, config.memory.reranker)\n"
         "    rag_service.seed_default_regulations()\n"
         "print('RAG servisi hazir:', type(rag_service).__name__)"
     )
