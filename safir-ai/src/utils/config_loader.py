@@ -327,10 +327,11 @@ class FaissMemoryConfig(BaseModel):
 
 
 class RerankerConfig(BaseModel):
-    """Gemini (LLM-as-judge) ile ikinci-asama siralama ayarlari.
+    """LLM-as-judge ikinci-asama siralama ayarlari (`provider`: "gemini" | "groq").
 
-    Reranker de embedding ile AYNI Gemini API anahtarini kullanir (harici
-    baska bir saglayici/anahtar YOKTUR - bkz. `src/memory/reranker.py`).
+    `provider="gemini"` ise embedding ile AYNI Gemini API anahtarini kullanir;
+    `provider="groq"` ise Groq'un OpenAI-uyumlu ucunu (AYRI kota/anahtar)
+    kullanir - bkz. `src/memory/reranker.py` (`GeminiReranker`/`GroqReranker`).
     """
 
     enabled: bool = False
@@ -340,6 +341,7 @@ class RerankerConfig(BaseModel):
     top_k: int = 5
     score_threshold: float = 0.10       # bu skorun ALTINDAKI sonuclar ELENIR (0 sonuc GECERLIDIR)
     api_key_env: str = "GEMINI_API_KEY"
+    base_url: Optional[str] = None      # yalnizca provider="groq" icin (verilmezse Groq varsayilani kullanilir)
 
 
 class MemoryConfig(BaseModel):
@@ -414,8 +416,8 @@ class GuardConfig(BaseModel):
     hesaplamaz, RuleEngine kararini VEYA RAG retrieval kararini degistirmez -
     yalnizca Agent'a giden guvenilmeyen serbest metni (user_prompt, VLM
     aciklamasi) DETECT -> CLASSIFY -> QUARANTINE/PASS akisindan gecirir.
-    Reranker/embedding ile AYNI Gemini API anahtarini kullanir (harici baska
-    bir saglayici/anahtar YOKTUR).
+    `provider`: "gemini" (embedding ile AYNI Gemini API anahtari) veya "groq"
+    (Groq'un OpenAI-uyumlu ucu, AYRI kota/anahtar).
     """
 
     enabled: bool = False
@@ -424,6 +426,7 @@ class GuardConfig(BaseModel):
     fail_closed: bool = True
     confidence_threshold: float = 0.80
     api_key_env: str = "GEMINI_API_KEY"
+    base_url: Optional[str] = None      # yalnizca provider="groq" icin (verilmezse Groq varsayilani kullanilir)
 
 
 class SafirConfig(BaseModel):

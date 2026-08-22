@@ -1,10 +1,12 @@
-"""SAFIR Prompt Injection Guard (Gemini) icin GERCEK smoke test.
+"""SAFIR Prompt Injection Guard (Gemini veya Groq, config'e gore) icin GERCEK smoke test.
 
-GEMINI_API_KEY TANIMLI DEGILSE, bu script bunu ACIKCA belirtip mock'a
-SESSIZCE DUSMEDEN cikar. API anahtari HICBIR SEKILDE (print/log/dosya) YAZILMAZ.
+`configs/config.yaml` -> `guard.api_key_env`de belirtilen ortam degiskeni
+TANIMLI DEGILSE, bu script bunu ACIKCA belirtip mock'a SESSIZCE DUSMEDEN
+cikar. API anahtari HICBIR SEKILDE (print/log/dosya) YAZILMAZ.
 
-Kullanim:
-    export GEMINI_API_KEY=...
+Kullanim (aktif guard.provider'a gore):
+    export GEMINI_API_KEY=...   # veya
+    export GROQ_API_KEY=...
     python scripts/security_guard_smoke_test.py
 """
 
@@ -32,27 +34,23 @@ _CASES = [
 def main() -> int:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
-    if not os.environ.get("GEMINI_API_KEY", "").strip():
-        print("[SKIPPED] GEMINI_API_KEY is not set")
-        return 0
-
-    from src.security.prompt_injection_guard import GeminiPromptInjectionGuard
+    from src.security.prompt_injection_guard import GuardUnavailableError, build_prompt_injection_guard
     from src.utils.config_loader import load_config
 
     config = load_config()
-    if config.guard.provider != "gemini":
-        print("[SKIPPED] guard.provider 'gemini' degil - config.yaml'i kontrol edin.")
+
+    if not os.environ.get(config.guard.api_key_env, "").strip():
+        print(f"[SKIPPED] {config.guard.api_key_env} is not set")
         return 0
 
-    guard = GeminiPromptInjectionGuard(
-        model_name=config.guard.model_name,
-        fail_closed=config.guard.fail_closed,
-        confidence_threshold=config.guard.confidence_threshold,
-        api_key_env=config.guard.api_key_env,
-    )
+    try:
+        guard = build_prompt_injection_guard(config.guard)
+    except GuardUnavailableError as exc:
+        print(f"[SKIPPED] {exc}")
+        return 0
 
     print("=" * 72)
-    print("GERCEK PROMPT INJECTION GUARD SMOKE TEST (Gemini, GERCEK API)")
+    print(f"GERCEK PROMPT INJECTION GUARD SMOKE TEST ({config.guard.provider}, GERCEK API)")
     print(f"model={config.guard.model_name} fail_closed={config.guard.fail_closed} "
           f"confidence_threshold={config.guard.confidence_threshold}")
     print("=" * 72)

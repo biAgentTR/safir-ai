@@ -61,7 +61,7 @@ import faiss
 import numpy as np
 
 from src.memory.embedding_providers import ConfigurationError, EmbeddingProvider, build_embedding_provider
-from src.memory.reranker import GeminiReranker, Reranker, RerankerUnavailableError
+from src.memory.reranker import GeminiReranker, GroqReranker, Reranker, RerankerUnavailableError
 from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig, RerankerConfig
 
 logger = logging.getLogger(__name__)
@@ -346,13 +346,21 @@ class EmbeddingRAGService:
 
         self._reranker: Optional[Reranker] = None
         if reranker_config is not None and reranker_config.enabled:
-            if reranker_config.provider != "gemini":
-                raise ConfigurationError(
-                    f"Desteklenmeyen reranker saglayicisi: '{reranker_config.provider}'. Su an yalnizca 'gemini' destekleniyor."
+            if reranker_config.provider == "gemini":
+                self._reranker = GeminiReranker(
+                    model_name=reranker_config.model_name, api_key_env=reranker_config.api_key_env
                 )
-            self._reranker = GeminiReranker(
-                model_name=reranker_config.model_name, api_key_env=reranker_config.api_key_env
-            )
+            elif reranker_config.provider == "groq":
+                self._reranker = GroqReranker(
+                    model_name=reranker_config.model_name,
+                    base_url=reranker_config.base_url or "https://api.groq.com/openai/v1",
+                    api_key_env=reranker_config.api_key_env,
+                )
+            else:
+                raise ConfigurationError(
+                    f"Desteklenmeyen reranker saglayicisi: '{reranker_config.provider}'. "
+                    "Su an 'gemini' veya 'groq' destekleniyor."
+                )
 
         self._index = faiss.IndexFlatIP(self._dimension)
         self._documents: List[Dict[str, Any]] = []

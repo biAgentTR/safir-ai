@@ -1,11 +1,14 @@
-"""SAFIR RAG (Gemini embedding + FAISS + Gemini rerank) icin GERCEK smoke test.
+"""SAFIR RAG (Gemini embedding + FAISS + Gemini/Groq rerank) icin GERCEK smoke test.
 
-Tek saglayici: Gemini (embedding VE rerank icin ayni GEMINI_API_KEY).
-GEMINI_API_KEY TANIMLI DEGILSE, bu script bunu ACIKCA belirtip mock'a
+Embedding HER ZAMAN Gemini'dir (`GEMINI_API_KEY`); reranker config'teki
+`memory.reranker.provider`e gore Gemini VEYA Groq (`memory.reranker.api_key_env`)
+olabilir - ikisi de AYRI kotalar/anahtarlardir. Gerekli ortam degiskenlerinden
+HERHANGI BIRI TANIMLI DEGILSE, bu script bunu ACIKCA belirtip mock'a
 SESSIZCE DUSMEDEN cikar.
 
 Kullanim:
     export GEMINI_API_KEY=...
+    export GROQ_API_KEY=...   # reranker.provider="groq" ise gerekir
     python scripts/rag_smoke_test.py
 """
 
@@ -34,15 +37,21 @@ def main() -> int:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
     if not os.environ.get("GEMINI_API_KEY", "").strip():
-        print("[SKIPPED] GEMINI_API_KEY is not set")
+        print("[SKIPPED] GEMINI_API_KEY is not set (embedding icin gerekli)")
         return 0
 
     from src.memory.embedding_rag_service import EmbeddingRAGService, _INDEX_FILE
     from src.utils.config_loader import load_config
 
     config = load_config()
-    if config.memory.reranker.provider != "gemini" or not config.memory.reranker.enabled:
-        print("[SKIPPED] memory.reranker devre disi veya 'gemini' degil - config.yaml'i kontrol edin.")
+    if not config.memory.reranker.enabled:
+        print("[SKIPPED] memory.reranker devre disi - config.yaml'i kontrol edin.")
+        return 0
+    if config.memory.reranker.provider not in ("gemini", "groq"):
+        print(f"[SKIPPED] memory.reranker.provider desteklenmiyor: '{config.memory.reranker.provider}'.")
+        return 0
+    if not os.environ.get(config.memory.reranker.api_key_env, "").strip():
+        print(f"[SKIPPED] {config.memory.reranker.api_key_env} is not set (reranker icin gerekli)")
         return 0
 
     service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss, config.memory.reranker)
@@ -57,7 +66,7 @@ def main() -> int:
         print(f"[OK] Persisted index yuklendi ({service.document_count()} dokuman).\n")
 
     print("=" * 72)
-    print("GERCEK RAG SMOKE TEST (Gemini embedding + Gemini rerank, GERCEK API)")
+    print(f"GERCEK RAG SMOKE TEST (Gemini embedding + {config.memory.reranker.provider} rerank, GERCEK API)")
     print("=" * 72)
 
     for query in _QUERIES:
