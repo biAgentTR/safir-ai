@@ -113,25 +113,61 @@ class RetrieverTool:
         self._rag_service = rag_service
 
     def run(self, question: str, top_k: int = 3) -> str:
-        """`retriever_tool`'u calistirir ve ilgili mevzuat maddelerini dondurur.
+        """`retriever_tool`'u calistirir ve ilgili mevzuat maddelerini kaynak metadata'siyla birlikte dondurur.
 
         Args:
             question: Dogal dil sorgusu.
             top_k: Maksimum sonuc sayisi.
 
         Returns:
-            Ilgili mevzuat maddelerini iceren metin.
+            Her sonuc icin kaynak basligi/madde/sayfa/skor/URL + metni iceren,
+            okunabilir metin. NOT: bu metin risk_score hesaplamasina ASLA
+            girmez - yalnizca ajanin muhakeme baglamini zenginlestirir.
         """
         if self._rag_service is None:
             logger.warning("RetrieverTool: EmbeddingRAGService baglanmadi, mock veri donduruluyor.")
             regulations = _MOCK_REGULATIONS[:top_k]
-        else:
-            regulations = [doc.text for doc in self._rag_service.query(question, top_k=top_k)]
+            if not regulations:
+                return "Sorguyla ilgili mevzuat maddesi bulunamadi."
+            return "Ilgili mevzuat:\n" + "\n".join(f"- {r}" for r in regulations)
 
-        if not regulations:
+        results = self._rag_service.query(question, top_k=top_k)
+        if not results:
             return "Sorguyla ilgili mevzuat maddesi bulunamadi."
 
-        return "Ilgili mevzuat:\n" + "\n".join(f"- {r}" for r in regulations)
+        blocks = []
+        for doc in results:
+            # `getattr(..., None)` KASITLI: eski/duck-typed (yalnizca text/score
+            # tasiyan) sahte RAG nesneleri icin de GUVENLI CALISIR - bkz.
+            # `context_builder.py::_format_semantic_chunks` ile ayni gerekce.
+            rerank_score = getattr(doc, "rerank_score", None)
+            embedding_score = getattr(doc, "embedding_score", None)
+            if rerank_score is not None:
+                score_line = f"Rerank score: {rerank_score:.3f}"
+            elif embedding_score is not None:
+                score_line = f"Embedding score: {embedding_score:.3f}"
+            else:
+                score_line = f"Score: {getattr(doc, 'score', 0.0):.3f}"
+
+            document_title = getattr(doc, "document_title", None)
+            document_id = getattr(doc, "document_id", None)
+            lines = [f"Kaynak: {document_title or document_id or '(bilinmeyen kaynak)'}"]
+            article_number = getattr(doc, "article_number", None)
+            if article_number:
+                lines.append(f"Madde: {article_number}")
+            page_start = getattr(doc, "page_start", None)
+            if page_start:
+                page_end = getattr(doc, "page_end", None)
+                page = f"{page_start}" if page_start == page_end else f"{page_start}-{page_end}"
+                lines.append(f"Sayfa: {page}")
+            lines.append(score_line)
+            source_url = getattr(doc, "source_url", None)
+            if source_url:
+                lines.append(f"Kaynak URL: {source_url}")
+            lines.append(f"Metin:\n{doc.text}")
+            blocks.append("\n".join(lines))
+
+        return "Ilgili mevzuat:\n\n" + "\n\n".join(blocks)
 
     def as_langchain_tool(self) -> StructuredTool:
         """Bu araci LangGraph/LangChain ajanina baglanabilecek `StructuredTool`'a cevirir."""

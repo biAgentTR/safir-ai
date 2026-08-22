@@ -174,6 +174,65 @@ def _summarize_rule_matches(rule_matches: List[RuleMatch]) -> str:
     return "\n".join(f"- [{match.rule_id}] ({match.severity}) {match.rule_description}" for match in rule_matches)
 
 
+# VLM'in urettigi SERBEST BICIMLI risk keyword'lerini (orn. "fire_detected"),
+# semantik RAG sorgusunu IYILESTIRMEK icin (yalnizca bu amacla - event
+# siniflandirmasini veya risk skorunu ETKILEMEZ, bkz. RAG gorev tanimi 8.
+# bolum) Turkce ifadelerle genisleten KUCUK, elle-derlenmis harita. Bilinen
+# bir keyword YOKSA, alt cizgiyi bosluga cevirerek generic bir genisletme
+# yapilir (uydurma anlam eklenmez).
+_KEYWORD_QUERY_EXPANSIONS: Dict[str, str] = {
+    "fire_detected": "yangın tespit edildi, yangın riski, açık alev",
+    "smoke_detected": "duman tespit edildi, duman ve yangın riski",
+    "unattended_fire": "gözetimsiz yangın, kontrolsüz yangın",
+    "unattended_fire_hazard": "gözetimsiz yangın tehlikesi",
+    "uncontrolled_open_flame": "kontrolsüz açık alev",
+    "indoor_fire_risk": "kapalı alanda yangın riski",
+    "person_without_helmet": "baret kullanılmaması, baş koruyucu KKD ihlali",
+    "person_without_safety_vest": "yansıtıcı yelek kullanılmaması, KKD ihlali",
+    "ppe_violation": "kişisel koruyucu donanım kullanılmaması",
+    "forklift_person_collision_risk": "forklift ve yaya çarpışma riski, araç-yaya yakınlığı",
+    "person_in_forklift_path": "yayanın forklift güzergahında bulunması",
+    "fallen_person": "yerde hareketsiz kişi, düşme sonrası kaza",
+    "unauthorized_presence_in_critical_area": "yetkisiz kişinin kritik alanda bulunması",
+}
+
+
+def _expand_keyword_for_query(keyword: str) -> str:
+    """Bir VLM risk keyword'unu (bilinen bir esleme varsa) Turkce ifadeye genisletir; yoksa alt cizgiyi bosluga cevirir."""
+    return _KEYWORD_QUERY_EXPANSIONS.get(keyword, keyword.replace("_", " "))
+
+
+def _aggregate_matched_keywords(temporal_events: List) -> List[str]:
+    """Bu cagriya ait `TemporalEvent`lerin `matched_keywords`lerini, ilk-gorulme sirali ve tekrarsiz olarak birlestirir."""
+    seen: List[str] = []
+    for event in temporal_events:
+        for keyword in getattr(event, "matched_keywords", None) or []:
+            if keyword not in seen:
+                seen.append(keyword)
+    return seen
+
+
+def _build_semantic_query(matched_keywords: List[str], vlm_description: str, max_description_chars: int = 200) -> Optional[str]:
+    """VLM'in dinamik risk keyword'lerinden (+ kisa VLM aciklamasindan) semantik RAG sorgusu kurar.
+
+    Args:
+        matched_keywords: `_aggregate_matched_keywords(...)` ciktisi.
+        vlm_description: VLM'in serbest metin gozlemi (baglam icin kisaltilarak eklenir).
+        max_description_chars: `vlm_description`den sorguya eklenecek azami karakter sayisi.
+
+    Returns:
+        Bos degilse sorgu metni; `matched_keywords` bossa `None` (bu durumda
+        semantik RAG cagrisi HIC YAPILMAZ - keyword yoksa sorgulanacak bir
+        risk sinyali de yoktur, bos/rastgele bir sorgu UYDURULMAZ).
+    """
+    if not matched_keywords:
+        return None
+    expanded = [_expand_keyword_for_query(k) for k in matched_keywords]
+    short_description = vlm_description.strip()[:max_description_chars]
+    parts = expanded + ([short_description] if short_description else [])
+    return ". ".join(parts)
+
+
 _WINDOWS_ABS_PATH_RE = re.compile(r"^[a-zA-Z]:[\\/]")
 
 
@@ -652,7 +711,7 @@ class SafirPipeline:
         self._default_sample_fps = config.sampler.sample_fps
         self._vlm = get_vlm_client(config.vlm, use_mock=config.app.use_mock_vlm)
         self._event_store = EventStore(config.memory.sqlite)
-        self._rag_service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss)
+        self._rag_service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss, config.memory.reranker)
         self._rag_service.seed_default_regulations()
         self._context_builder = ContextBuilder(self._event_store)
         self._agent = SafirAgent(
@@ -770,7 +829,7 @@ class SafirPipeline:
         )
 
         prompt_block, context = self.stage_context(
-            vlm_response, user_prompt, latest_timestamp, rule_matches
+            vlm_response, user_prompt, latest_timestamp, rule_matches, temporal_events
         )
         _emit("agent_context", {"prompt_block": prompt_block})
 
@@ -947,8 +1006,15 @@ class SafirPipeline:
         rule_matches = self._rule_engine.evaluate(temporal_events)
         return detected_events, temporal_events, rule_matches, latest_timestamp
 
-    def stage_context(self, vlm_response: VLMResponse, user_prompt: str, latest_timestamp: float, rule_matches):
-        """04: ContextBuilder (SQLite + RuleEngine-dogrulanmis mevzuat) + kural ozeti -> ajan istem blogu.
+    def stage_context(
+        self,
+        vlm_response: VLMResponse,
+        user_prompt: str,
+        latest_timestamp: float,
+        rule_matches,
+        temporal_events: Optional[List] = None,
+    ):
+        """04: ContextBuilder (SQLite + RuleEngine-dogrulanmis mevzuat + semantik RAG) -> ajan istem blogu.
 
         T017: mevzuat listesi artik `ContextBuilder`in kendi (serbest-metin,
         dogrulanmamis) FAISS aramasindan DEGIL, `RuleEngine.evaluate(...)`
@@ -957,15 +1023,39 @@ class SafirPipeline:
         `rule_matches` bossa mevzuat listesi de bos kalir - "Mevzuat
         eslestirilemedi" GECERLI bir sonuctur, bir mevzuat UYDURULMAZ.
 
+        RAG 2. asama (2026-08-22): `temporal_events`in `matched_keywords`
+        (VLM'in dinamik risk keyword'leri) BURADA, RuleEngine'den TAMAMEN
+        AYRI bir semantik RAG sorgusu icin kullanilir (bkz.
+        `_build_semantic_query`); sonuc `ContextBuilder`in
+        `semantically_related_chunks` alanina gider - `relevant_regulations`i
+        DEGISTIRMEZ. Semantik sorgu basarisiz olursa (API anahtari eksik,
+        reranker "unavailable" vb.) HATA YUTULUR ve bos liste ile devam
+        edilir - bu, agent akisini KESMEZ (bkz. `EmbeddingRAGService.query`
+        docstring'i: bu zaten kendi icinde 'unavailable -> []' davranisina
+        sahiptir; buradaki try/except yalnizca beklenmedik istisnalara karsi
+        ek bir guvenlik agi).
+
         Returns:
             `(prompt_block, context)`.
         """
         regulation_matches = resolve_regulation_matches(rule_matches)
+
+        matched_keywords = _aggregate_matched_keywords(temporal_events or [])
+        semantic_query = _build_semantic_query(matched_keywords, vlm_response.description)
+        semantically_related_chunks: List = []
+        if semantic_query:
+            try:
+                semantically_related_chunks = self._rag_service.query(semantic_query)
+            except Exception:  # noqa: BLE001 - semantik RAG best-effort'tur, agent akisini KESMEZ
+                logger.exception("Semantik RAG sorgusu basarisiz; semantik kaynaklar bos birakiliyor.")
+                semantically_related_chunks = []
+
         context = self._context_builder.build(
             vlm_description=vlm_response.description,
             user_prompt=user_prompt,
             timestamp=latest_timestamp,
             relevant_regulations=[m.regulation_title for m in regulation_matches],
+            semantically_related_chunks=semantically_related_chunks,
         )
         prompt_block = context.to_prompt_block()
         event_analysis_summary = _summarize_rule_matches(rule_matches)

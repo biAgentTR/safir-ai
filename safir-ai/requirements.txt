@@ -32,9 +32,10 @@ langgraph>=0.1.9
 langchain-core>=0.2.28
 langchain-openai>=0.1.17
 
-# --- Hibrit Bellek Katmani ---
+# --- Hibrit Bellek Katmani (Embedding: Gemini API, Rerank: Cohere API) ---
 faiss-cpu>=1.8.0
-sentence-transformers>=3.0.1
+google-genai>=1.0.0
+cohere>=5.0.0
 
 # --- Rapor Disa Aktarma (PDF) ---
 # reportlab: GET /history/{job_id}/report.pdf tarafindan kullanilan

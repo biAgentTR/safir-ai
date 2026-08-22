@@ -1,49 +1,67 @@
-"""04 - Embedding & RAG Katmani: sentence-transformers + FAISS tabanli anlamsal bellek.
+"""04 - Embedding & RAG Katmani: Gemini embedding + FAISS + Cohere rerank tabanli anlamsal bellek.
 
-Operasyonel kurallari ve ISG mevzuatini gercek bir embedding modeliyle
-(varsayilan `BAAI/bge-m3`, alternatif `Qwen/Qwen3-VL-Embedding`) vektorlestirip
-FAISS uzerinde saklayan/arayan servistir. LangGraph ajaninin `retriever_tool`
-araci bu servis uzerinden calisir.
+Operasyonel kurallari ve ISG mevzuatini Google Gemini Embedding API ile
+vektorlestirip FAISS uzerinde saklayan/arayan servistir. LangGraph ajaninin
+`retriever_tool` araci ve `RuleEngine._describe_regulation()` bu servis
+uzerinden calisir.
 
-Knowledge base kaynagi (2026-08-22 guncellemesi)
---------------------------------------------------
-`seed_default_regulations()` artik ONCELIKLE `data/knowledge_base/chunks/*.json`
-altindaki GERCEK, resmi mevzuat metinlerinden turetilmis madde-bazli chunk'lari
-yukler (bkz. `scripts/build_kb_chunks.py` ve `data/knowledge_base/metadata/
-sources.yaml` - hangi resmi kaynaktan geldikleri, dogrulama durumlari orada
-kayitlidir). Bu chunk'lar bulunamazsa (orn. `data/knowledge_base/chunks/`
-klasoru yoksa/bossa), eskiden beri var olan `DEFAULT_ISG_REGULATIONS` (8
-ORNEK/placeholder madde) GERIYE-DONUK UYUMLULUK icin fallback olarak kullanilir
-- bu, chunk klasoru olmayan bir ortamda (orn. bazi test/CI kurulumlari)
-`EmbeddingRAGService`in tamamen bos kalmasini onler.
+Knowledge base kaynagi (2026-08-22, iki asamali guncelleme)
+--------------------------------------------------------------
+1. asama: `seed_default_regulations()` `data/knowledge_base/chunks/*.json`
+   altindaki GERCEK, resmi mevzuat metinlerinden turetilmis madde-bazli
+   chunk'lari (bkz. `scripts/build_kb_chunks.py`) yukledi.
+2. asama (bu dosya): Embedding saglayicisi `sentence-transformers`den
+   Gemini Embedding API'ye (bkz. `embedding_providers.py`) tasindi;
+   `RetrievedDocument` artik yapilandirilmis metadata (document_title,
+   article_number, source_url, ...) tasiyor (`sources.yaml` ile join
+   edilmis - bkz. `_load_kb_chunk_records`); iki-asamali retrieval
+   (FAISS candidate_k -> Cohere rerank -> score_threshold) eklendi; index
+   artik DISKE KALICI olarak yaziliyor (`data/knowledge_base/index/`) ve
+   pipeline her baslangicta 748 embedding'i YENIDEN URETMEK ZORUNDA
+   DEGIL - bkz. `build_knowledge_index.py` (rebuild CLI'i) ve
+   `_try_load_persisted_index()`.
 
-ONEMLI (bilinen sonuc): `RuleEngine._describe_regulation()`, sorguladigi
-sabit kisa etiketin (orn. "ISG Yonetmeligi Madde 12" - `EVENT_TYPE_
-REGULATION_MAP`'ten gelir) donen metinde GERCEKTEN GECIP GECMEDIGINI kontrol
-eder (bkz. `src/event_analysis/rule_engine.py`). Bu etiketler, ESKI/sahte
-8-madde listesiyle EL YORDAMIYLA eslesecek sekilde uydurulmustu; GERCEK
-mevzuat metinlerinde bu TAM ETIKETLER GECMEZ. Sonuc olarak bu degisiklikten
-sonra `_describe_regulation` cogunlukla enrichment'i REDDEDECEK ve kisa
-etikete DONECEKTIR (guvenli davranis - YANLIS bir metin asla rapora
-sizmaz, sadece zenginlestirme kaybolur). Bu, KASITLI olarak bu degisikligin
-kapsami DISINDA birakildi (yalnizca `embedding_rag_service.py` degistirildi,
-`EVENT_TYPE_REGULATION_MAP`in etiketleri GUNCELLENMEDI) - RuleEngine'in
-deterministik event_type->mevzuat eslemesi ayri bir sonraki adimdir.
+`DEFAULT_ISG_REGULATIONS` (8 ORNEK/placeholder madde), persisted index de
+gercek KB chunk'lari da bulunamazsa GERIYE-DONUK UYUMLULUK icin fallback
+olarak KALIR - tamamen SILINMEDI (bkz. gorev tanimi).
+
+ONEMLI (bilinen, KASITLI sinirlama): `RuleEngine._describe_regulation()`,
+sorguladigi sabit kisa etiketin (orn. "ISG Yonetmeligi Madde 12" -
+`EVENT_TYPE_REGULATION_MAP`'ten gelir) donen metinde GERCEKTEN GECIP
+GECMEDIGINI kontrol eder. Bu etiketler ESKI/sahte 8-madde listesiyle EL
+YORDAMIYLA eslesecek sekilde uydurulmustu; GERCEK mevzuat metinlerinde bu
+TAM ETIKETLER GECMEZ. Sonuc olarak `_describe_regulation` COGUNLUKLA
+enrichment'i REDDEDECEK ve kisa etikete DONECEKTIR - bu GUVENLI bir
+davranistir (yanlis bir metin ASLA rapora sizmaz, yalnizca zenginlestirme
+kaybolur) ve BILEREK bu degisikligin kapsami DISINDA birakildi;
+`EVENT_TYPE_REGULATION_MAP`in etiketleri GUNCELLENMEDI - RuleEngine'in
+deterministik event_type->mevzuat eslemesi ayri, gelecekteki bir adimdir.
+
+MIMARI AYRIM (ONEMLI): Bu serviste uretilen `embedding_score`/`rerank_score`
+DEGERLERI, `RuleEngine`in deterministik risk_score/risk_level/escalation
+kararina ASLA girdi OLMAZ (bkz. `src/event_analysis/risk_resolver.py`,
+degistirilmedi). Bu servis yalnizca (A) `RuleEngine._describe_regulation`
+icin kisa-etiket lookup'i ve (B) ajanin opsiyonel `retriever_tool` cagrisi
+VE (C) `ContextBuilder`in `semantically_related_chunks` alani icin
+KULLANILIR - hicbiri risk kararini degistirmez.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import faiss
 import numpy as np
-from sentence_transformers import SentenceTransformer
 
-from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig
+from src.memory.embedding_providers import ConfigurationError, EmbeddingProvider, build_embedding_provider
+from src.memory.reranker import CohereReranker, Reranker, RerankerUnavailableError
+from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig, RerankerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +83,17 @@ DEFAULT_ISG_REGULATIONS: List[str] = [
     "ISG Yonetmeligi Madde 52: Agir yuk kaldirma ekipmanlari (vinc, kren) calisma alaninda, operatorun "
     "gorus alani disindaki bolgelerde sinyalman gorevlendirilmesi zorunludur.",
 ]
-"""Chunk klasoru bulunamazsa kullanilan GERIYE-DONUK UYUMLULUK fallback'i
-(orn. `src/agent/agent_workflow.py`nin mock ornekleri hala bunu kullanir).
-Canli sistemde artik BIRINCIL kaynak DEGILDIR - bkz. modul dokustringi."""
+"""Persisted index de gercek KB chunk'lari da bulunamazsa kullanilan GERIYE-DONUK
+UYUMLULUK fallback'i (orn. `src/agent/agent_workflow.py`nin mock ornekleri hala
+bunu kullanir). Canli sistemde artik BIRINCIL kaynak DEGILDIR - bkz. modul dokustringi."""
 
-_KB_CHUNKS_DIR = Path(__file__).resolve().parents[2] / "data" / "knowledge_base" / "chunks"
+_KB_ROOT = Path(__file__).resolve().parents[2] / "data" / "knowledge_base"
+_KB_CHUNKS_DIR = _KB_ROOT / "chunks"
+_KB_SOURCES_YAML = _KB_ROOT / "metadata" / "sources.yaml"
+_KB_INDEX_DIR = _KB_ROOT / "index"
+_INDEX_FILE = _KB_INDEX_DIR / "faiss.index"
+_DOCUMENTS_FILE = _KB_INDEX_DIR / "documents.json"
+_INDEX_META_FILE = _KB_INDEX_DIR / "index_meta.json"
 
 _LEVEL_LABELS = {
     "madde": "MADDE",
@@ -79,31 +103,63 @@ _LEVEL_LABELS = {
 }
 
 
-def _load_kb_chunk_documents(chunks_dir: Path = _KB_CHUNKS_DIR) -> List[str]:
-    """`data/knowledge_base/chunks/*.json` altindaki madde-bazli chunk'lari, her biri kendi kaynak baslikli tek bir metin olarak dondurur.
+def _load_sources_metadata(sources_yaml: Path = _KB_SOURCES_YAML) -> Dict[str, Dict[str, Any]]:
+    """`data/knowledge_base/metadata/sources.yaml`i `document_id -> {title, institution, source_url, publication_date}` sozlugune cevirir.
 
-    Her `*.json` dosyasi `scripts/build_kb_chunks.py::Chunk` alanlarina
-    sahip bir sozluk listesidir (`chunk_id`, `document_id`, `level`,
-    `number`, `page_start`, `page_end`, `text`). Bu fonksiyon her chunk'i,
-    hangi dokuman/madde/sayfadan geldigini belirten kisa bir baslikla
-    (orn. "[6331 Sayılı İş Sağlığı ve Güvenliği Kanunu - MADDE 12]")
-    onceleyerek FAISS'e eklenecek tek bir metne cevirir; boylece kisa/parca
-    bir chunk metni bile hangi kaynaga ait oldugunu kendi icinde tasir
-    (`RetrievedDocument` yalnizca duz `text` tasidigi icin ayri bir
-    metadata alani yoktur).
+    Dosya yoksa/gecersizse BOS SOZLUK doner - hicbir metadata UYDURULMAZ,
+    cagiran taraf eksik alanlari `None` olarak tasir.
+    """
+    if not sources_yaml.exists():
+        return {}
+    try:
+        import yaml
+
+        data = yaml.safe_load(sources_yaml.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001 - metadata join en kotu ihtimalle bos kalir
+        logger.warning("sources.yaml okunamadi/gecersiz: %s", sources_yaml)
+        return {}
+
+    result: Dict[str, Dict[str, Any]] = {}
+    for doc in data.get("documents", []) or []:
+        doc_id = doc.get("id")
+        if not doc_id:
+            continue
+        result[doc_id] = {
+            "document_title": doc.get("title"),
+            "institution": doc.get("institution"),
+            "source_url": doc.get("source_url"),
+            "publication_date": doc.get("publication_date"),
+        }
+    return result
+
+
+def _load_kb_chunk_records(chunks_dir: Path = _KB_CHUNKS_DIR, sources_yaml: Path = _KB_SOURCES_YAML) -> List[Dict[str, Any]]:
+    """`data/knowledge_base/chunks/*.json` chunk'larini `sources.yaml` metadata'siyla JOIN ederek yapilandirilmis kayit listesine cevirir.
+
+    Her kayit, `RetrievedDocument` alanlarinin buyuk kismini (text HARIC
+    tumunu) doldurur: `chunk_id`, `document_id`, `document_title`, `level`,
+    `article_number`, `article_title`, `is_annex`, `page_start`, `page_end`,
+    `source_url`, `institution`, `publication_date`, `text`.
+
+    `article_title` bu surumde HENUZ cikarilamiyor (chunk metninde ayri bir
+    alan olarak yok) - acikca `None` birakilir, UYDURULMAZ. `sources.yaml`de
+    karsiligi olmayan bir `document_id` icin `document_title`/`institution`/
+    `source_url`/`publication_date` de acikca `None` kalir.
 
     Args:
         chunks_dir: `*.json` chunk dosyalarinin bulundugu klasor.
+        sources_yaml: Doküman-seviyesi metadata dosyasi.
 
     Returns:
-        Chunk basina bir metin dizesi listesi (dosya adina, sonra dosya
-        icindeki sıraya gore deterministik siralanir). Klasor yoksa/bossa/
-        hicbir gecerli chunk yoksa BOS LISTE doner - hicbir metin UYDURULMAZ.
+        Kayit listesi (dosya adina, sonra dosya icindeki sıraya gore
+        deterministik siralanir). Klasor yoksa/bossa BOS LISTE doner.
     """
     if not chunks_dir.exists():
         return []
 
-    documents: List[str] = []
+    sources = _load_sources_metadata(sources_yaml)
+    records: List[Dict[str, Any]] = []
+
     for chunk_file in sorted(chunks_dir.glob("*.json")):
         try:
             items = json.loads(chunk_file.read_text(encoding="utf-8"))
@@ -119,62 +175,133 @@ def _load_kb_chunk_documents(chunks_dir: Path = _KB_CHUNKS_DIR) -> List[str]:
             text = str(item.get("text") or "").strip()
             if not text:
                 continue
-            level = str(item.get("level") or "")
-            number = str(item.get("number") or "")
             document_id = str(item.get("document_id") or chunk_file.stem)
-            label = _LEVEL_LABELS.get(level, level.upper() or "MADDE")
-            header = f"[{document_id} - {label} {number}]".strip()
-            documents.append(f"{header}\n{text}")
+            meta = sources.get(document_id, {})
+            records.append(
+                {
+                    "chunk_id": item.get("chunk_id"),
+                    "document_id": document_id,
+                    "document_title": meta.get("document_title"),
+                    "level": item.get("level"),
+                    "article_number": item.get("number"),
+                    "article_title": None,  # bkz. docstring: bu surumde cikarilamiyor, UYDURULMAZ
+                    "is_annex": item.get("is_annex"),
+                    "page_start": item.get("page_start"),
+                    "page_end": item.get("page_end"),
+                    "source_url": meta.get("source_url"),
+                    "institution": meta.get("institution"),
+                    "publication_date": meta.get("publication_date"),
+                    "text": text,
+                }
+            )
 
-    return documents
+    return records
+
+
+def _compute_kb_hash(chunks_dir: Path = _KB_CHUNKS_DIR) -> str:
+    """Chunk klasorunun icerik hash'ini hesaplar (persisted index'in GUNCEL olup olmadigini anlamak icin)."""
+    if not chunks_dir.exists():
+        return "no-chunks-dir"
+    hasher = hashlib.sha256()
+    for chunk_file in sorted(chunks_dir.glob("*.json")):
+        hasher.update(chunk_file.name.encode("utf-8"))
+        hasher.update(chunk_file.read_bytes())
+    return hasher.hexdigest()
 
 
 @dataclass
 class RetrievedDocument:
-    """FAISS'ten geri getirilen tek bir belgeyi ve benzerlik skorunu tasir."""
+    """FAISS(+opsiyonel Cohere rerank)ten geri getirilen tek bir chunk'i, yapilandirilmis kaynak metadata'siyla birlikte tasir.
+
+    `embedding_score` (FAISS/cosine benzerligi) ile `rerank_score` (Cohere
+    relevance_score, reranker devre disiysa `None`) KASITLI olarak AYRI
+    alanlardir - birbirine KARISTIRILMAZ (bkz. modul dokustringi).
+    """
 
     text: str
-    score: float
+    embedding_score: float
+    rerank_score: Optional[float] = None
+    chunk_id: Optional[str] = None
+    document_id: Optional[str] = None
+    document_title: Optional[str] = None
+    level: Optional[str] = None
+    article_number: Optional[str] = None
+    article_title: Optional[str] = None
+    is_annex: Optional[bool] = None
+    page_start: Optional[int] = None
+    page_end: Optional[int] = None
+    source_url: Optional[str] = None
+    institution: Optional[str] = None
+    publication_date: Optional[str] = None
+
+    @property
+    def score(self) -> float:
+        """Geriye-uyumluluk: eski `{text, score}` sozlesmesine bagli cagiran kod icin.
+
+        Rerank yapildiysa `rerank_score`, yapilmadiysa `embedding_score`
+        dondurur - "en guvenilir elimizdeki skor" anlaminda, ama bu ikisini
+        BIRBIRINE KARISTIRMAZ (asil kod `embedding_score`/`rerank_score`e
+        AYRI AYRI erismelidir).
+        """
+        return self.rerank_score if self.rerank_score is not None else self.embedding_score
 
 
 class EmbeddingRAGService:
-    """ISG mevzuati ve operasyonel kurallari embedding modeliyle vektorlestirip FAISS'te arayan servis.
+    """ISG mevzuati ve operasyonel kurallari Gemini embedding ile vektorlestirip FAISS'te arayan, Cohere ile yeniden siralayan servis.
 
     `Dynamic Tool Router` icindeki `retriever_tool` tarafindan mevzuat/kural
-    sorgulari icin kullanilir. Embedding modeli config uzerinden
-    (`memory.embedding.model_name`) degistirilebilir; FAISS indeks boyutu,
-    model tarafindan uretilen vektor boyutundan otomatik cikarilir.
+    sorgulari icin kullanilir. Bkz. modul dokustringi icin tam mimari.
     """
 
-    def __init__(self, embedding_config: EmbeddingConfig, faiss_config: FaissMemoryConfig) -> None:
-        """EmbeddingRAGService'i embedding modeli ve FAISS konfigurasyonuyla baslatir.
+    def __init__(
+        self,
+        embedding_config: EmbeddingConfig,
+        faiss_config: FaissMemoryConfig,
+        reranker_config: Optional[RerankerConfig] = None,
+    ) -> None:
+        """EmbeddingRAGService'i konfigurasyondan kurar (HICBIR AG CAGRISI YAPMAZ).
 
         Args:
             embedding_config: `configs/config.yaml` icindeki `memory.embedding` blogu.
             faiss_config: `configs/config.yaml` icindeki `memory.faiss` blogu.
+            reranker_config: `configs/config.yaml` icindeki `memory.reranker` blogu; `None`/`enabled=False` ise rerank atlanir.
 
         Raises:
-            ValueError: `embedding_config.provider` desteklenmeyen bir deger olursa.
+            ConfigurationError: `embedding_config.provider` desteklenmiyorsa
+                veya `output_dimensionality` eksikse. API ANAHTARI eksikligi
+                BURADA degil, ilk gercek embed/rerank cagrisinda firlatilir.
         """
-        if embedding_config.provider != "sentence-transformers":
-            raise ValueError(
-                f"Desteklenmeyen embedding saglayicisi: '{embedding_config.provider}'. "
-                "Su an yalnizca 'sentence-transformers' destekleniyor."
-            )
-
         self._embedding_config = embedding_config
         self._faiss_config = faiss_config
-        self._model = SentenceTransformer(embedding_config.model_name, device=embedding_config.device)
-        self._dimension = int(self._model.get_sentence_embedding_dimension())
+        self._reranker_config = reranker_config
+
+        self._provider: EmbeddingProvider = build_embedding_provider(
+            provider=embedding_config.provider,
+            model_name=embedding_config.model_name,
+            output_dimensionality=embedding_config.output_dimensionality,
+            api_key_env=embedding_config.api_key_env,
+        )
+        self._dimension = self._provider.dimension
+
+        self._reranker: Optional[Reranker] = None
+        if reranker_config is not None and reranker_config.enabled:
+            if reranker_config.provider != "cohere":
+                raise ConfigurationError(
+                    f"Desteklenmeyen reranker saglayicisi: '{reranker_config.provider}'. Su an yalnizca 'cohere' destekleniyor."
+                )
+            self._reranker = CohereReranker(
+                model_name=reranker_config.model_name, api_key_env=reranker_config.api_key_env
+            )
+
         self._index = faiss.IndexFlatIP(self._dimension)
-        self._documents: List[str] = []
-        self._index_path = Path(faiss_config.index_path)
+        self._documents: List[Dict[str, Any]] = []
 
         logger.info(
-            "EmbeddingRAGService baslatildi: model=%s device=%s dim=%d",
+            "EmbeddingRAGService baslatildi: embedding_provider=%s model=%s dim=%d reranker=%s",
+            embedding_config.provider,
             embedding_config.model_name,
-            embedding_config.device,
             self._dimension,
+            reranker_config.model_name if (reranker_config and reranker_config.enabled) else "devre-disi",
         )
 
     @property
@@ -187,55 +314,127 @@ class EmbeddingRAGService:
         return len(self._documents)
 
     def seed_default_regulations(self) -> None:
-        """Indeks bossa knowledge base'i yukler: ONCELIKLE gercek KB chunk'lari, yoksa `DEFAULT_ISG_REGULATIONS` fallback'i.
+        """Indeks bossa knowledge base'i yukler: ONCELIKLE persisted index, sonra taze chunk embedding'i, son care DEFAULT_ISG_REGULATIONS.
 
-        Indeks zaten dokuman iceriyorsa hicbir sey yapmaz (idempotent); boylece
-        uygulama her yeniden baslatildiginda ayni maddeler tekrar tekrar
-        eklenmez. Kaynak sirasi icin bkz. modul dokustringi.
+        Indeks zaten dokuman iceriyorsa hicbir sey yapmaz (idempotent).
+        Kaynak sirasi (ONEMLI - maliyet/performans icin):
+          1. `data/knowledge_base/index/` altinda GUNCEL (model/dimension/kb_hash
+             eslesen) bir persisted index varsa, hicbir API cagrisi yapmadan
+             YUKLENIR (bkz. `_try_load_persisted_index`).
+          2. Yoksa/guncel degilse: acik bir uyari loglanir ("python -m
+             src.memory.build_knowledge_index calistirin") ve GERIYE-DONUK
+             UYUMLULUK icin yalnizca `DEFAULT_ISG_REGULATIONS` (8 kisa
+             placeholder madde) embed edilir - 748 chunk'in TAMAMI HER
+             pipeline baslangicinda YENIDEN embed EDILMEZ (bkz. gorev
+             tanimi 15. bolum).
         """
         if self.document_count() > 0:
-            logger.info(
-                "EmbeddingRAGService zaten %d dokuman iceriyor; seed atlandi.",
-                self.document_count(),
-            )
+            logger.info("EmbeddingRAGService zaten %d dokuman iceriyor; seed atlandi.", self.document_count())
             return
 
-        kb_documents = _load_kb_chunk_documents()
-        if kb_documents:
-            self.add_documents(kb_documents)
-            logger.info(
-                "EmbeddingRAGService: %d gercek KB chunk'i yuklendi (kaynak: %s).",
-                len(kb_documents),
-                _KB_CHUNKS_DIR,
-            )
+        if self._try_load_persisted_index():
             return
 
         logger.warning(
-            "EmbeddingRAGService: %s altinda KB chunk'i bulunamadi; "
-            "geriye-donuk uyumluluk icin %d placeholder ISG maddesine (DEFAULT_ISG_REGULATIONS) dusuluyor.",
-            _KB_CHUNKS_DIR,
+            "EmbeddingRAGService: %s altinda GUNCEL bir persisted KB index'i bulunamadi. "
+            "Gercek 748 mevzuat chunk'ini kullanmak icin 'python -m src.memory.build_knowledge_index' "
+            "calistirin. Su an icin GERIYE-DONUK UYUMLULUK amacli %d placeholder ISG maddesine dusuluyor.",
+            _KB_INDEX_DIR,
             len(DEFAULT_ISG_REGULATIONS),
         )
         self.add_documents(DEFAULT_ISG_REGULATIONS)
 
-    def _embed(self, texts: List[str]) -> np.ndarray:
-        """Metin listesini embedding modeliyle vektorlere cevirir.
-
-        Args:
-            texts: Vektore cevrilecek metinler.
+    def _try_load_persisted_index(self) -> bool:
+        """Diskteki persisted FAISS index + metadata'yi, GUNCEL (model/dimension/kb_hash eslesen) ise yukler.
 
         Returns:
-            `(len(texts), dimension)` boyutunda float32 vektor dizisi.
+            Basariyla yuklendiyse `True`; dosyalar yoksa, bozuksa veya
+            GUNCEL DEGILSE (model/dimension/kb_hash uyusmuyorsa) `False`
+            (hicbir sey degistirilmez, cagiran taraf fallback'e duser).
         """
-        vectors = self._model.encode(
-            texts,
-            normalize_embeddings=self._embedding_config.normalize_embeddings,
-            convert_to_numpy=True,
+        if not (_INDEX_FILE.exists() and _DOCUMENTS_FILE.exists() and _INDEX_META_FILE.exists()):
+            return False
+
+        try:
+            meta = json.loads(_INDEX_META_FILE.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning("Persisted KB index_meta.json okunamadi/gecersiz: %s", _INDEX_META_FILE)
+            return False
+
+        if meta.get("model_name") != self._embedding_config.model_name:
+            logger.warning(
+                "Persisted KB index farkli bir embedding modeliyle uretilmis (%r != %r); index rebuild gerekiyor.",
+                meta.get("model_name"),
+                self._embedding_config.model_name,
+            )
+            return False
+        if meta.get("dimension") != self._dimension:
+            logger.warning(
+                "Persisted KB index farkli boyutta (%r != %r); index rebuild gerekiyor.",
+                meta.get("dimension"),
+                self._dimension,
+            )
+            return False
+        current_hash = _compute_kb_hash()
+        if meta.get("kb_hash") != current_hash:
+            logger.warning(
+                "Persisted KB index guncel chunk'larla uyusmuyor (kb_hash farkli); "
+                "'python -m src.memory.build_knowledge_index' ile yeniden olusturun."
+            )
+            return False
+
+        try:
+            index = faiss.read_index(str(_INDEX_FILE))
+            documents = json.loads(_DOCUMENTS_FILE.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001 - bozuk persisted dosya, guvenli sekilde fallback'e dus
+            logger.warning("Persisted KB index yuklenemedi: %s", exc)
+            return False
+
+        self._index = index
+        self._documents = documents
+        logger.info(
+            "EmbeddingRAGService: persisted KB index yuklendi (%d dokuman, model=%s, kb_version=%s).",
+            len(documents),
+            meta.get("model_name"),
+            meta.get("kb_hash", "")[:12],
         )
-        return np.asarray(vectors, dtype="float32")
+        return True
+
+    def build_index_from_chunks(self) -> int:
+        """TUM `data/knowledge_base/chunks/*.json` kayitlarini `sources.yaml` ile join edip embed eder (rebuild CLI'i icin).
+
+        Bu metod idempotency GUARD'INI ATLAR (mevcut dokumanlarin ustune
+        EKLER) - yalnizca `scripts`/`build_knowledge_index.py` gibi
+        BILEREK taze bir `EmbeddingRAGService` orneginde cagrilmasi
+        beklenir.
+
+        Returns:
+            Eklenen dokuman (chunk) sayisi.
+
+        Raises:
+            RuntimeError: `data/knowledge_base/chunks/` altinda hicbir chunk bulunamazsa.
+        """
+        records = _load_kb_chunk_records()
+        if not records:
+            raise RuntimeError(
+                f"{_KB_CHUNKS_DIR} altinda hicbir chunk bulunamadi. Once "
+                "'python scripts/build_kb_chunks.py' calistirip chunk'lari uretin."
+            )
+        self._add_structured_documents(records)
+        return len(records)
+
+    def _add_structured_documents(self, records: List[Dict[str, Any]]) -> None:
+        """Yapilandirilmis kayitlari (metadata + text) embed edip FAISS'e ve `self._documents`e ekler."""
+        if not records:
+            return
+        texts = [str(r.get("text") or "") for r in records]
+        vectors = self._provider.embed_documents(texts)
+        self._index.add(vectors)
+        self._documents.extend(records)
+        logger.info("EmbeddingRAGService: %d dokuman indekslendi (toplam=%d)", len(records), len(self._documents))
 
     def add_document(self, text: str) -> None:
-        """Bir kural/mevzuat metnini anlamsal bellege ekler.
+        """Bir kural/mevzuat metnini (metadata'siz, DUZ METIN) anlamsal bellege ekler.
 
         Args:
             text: Eklenecek dokuman icerigi (orn. bir ISG maddesi).
@@ -243,46 +442,137 @@ class EmbeddingRAGService:
         self.add_documents([text])
 
     def add_documents(self, documents: List[str]) -> None:
-        """Birden fazla dokumani toplu olarak embedding'leyip FAISS indeksine ekler.
+        """Birden fazla DUZ METIN dokumani (metadata'siz - geriye-uyum/fallback yolu) toplu olarak embed'leyip FAISS indeksine ekler.
+
+        Yapilandirilmis (metadata'li) chunk eklemek icin `build_index_from_chunks()`/
+        `_add_structured_documents()` kullanin.
 
         Args:
             documents: Eklenecek dokuman metinleri listesi.
         """
-        if not documents:
-            return
-
-        vectors = self._embed(documents)
-        self._index.add(vectors)
-        self._documents.extend(documents)
-        logger.info(
-            "EmbeddingRAGService: %d dokuman indekslendi (toplam=%d)",
-            len(documents),
-            len(self._documents),
-        )
+        self._add_structured_documents([{"text": d} for d in documents])
 
     def query(self, question: str, top_k: Optional[int] = None) -> List[RetrievedDocument]:
-        """Verilen soruya en yakin dokumanlari benzerlik skoruyla birlikte dondurur.
+        """Verilen soruya en yakin dokumanlari, iki-asamali retrieval (FAISS candidate_k -> Cohere rerank -> threshold) ile dondurur.
+
+        Akis:
+          1. FAISS'ten `candidate_k` aday cekilir (embedding benzerligi).
+          2. Reranker AKTIFSE: adaylar Cohere Rerank ile YENIDEN siralanir;
+             `score_threshold`in ALTINDA kalan sonuclar ELENIR (bkz.
+             `RerankerConfig.score_threshold`) - eslesme YOKSA BOS LISTE
+             doner, bu GECERLI bir sonuctur, rastgele/dusuk-alakali
+             sonuc UYDURULMAZ.
+          3. Reranker cagrisi BASARISIZ olursa (`RerankerUnavailableError`):
+             embedding-sirali adaylar SESSIZCE "final sonuc" gibi
+             SUNULMAZ - retrieval "unavailable" sayilir ve BOS LISTE doner.
+          4. Reranker DEVRE DISIYSA: adaylar yalnizca embedding skoruna
+             gore siralanir (`similarity_threshold` varsa uygulanir),
+             ilk `top_k` dondurulur.
 
         Args:
-            question: Dogal dil sorgusu (orn. "yuksekte calisma kurallari nedir?").
-            top_k: Dondurulecek maksimum sonuc sayisi; verilmezse config degeri kullanilir.
+            question: Dogal dil sorgusu.
+            top_k: NIHAI (rerank/filtre SONRASI) sonuc sayisi; verilmezse
+                `faiss_config.top_k`/`reranker_config.top_k` kullanilir.
 
         Returns:
-            Benzerlik skoruna gore azalan sirali `RetrievedDocument` listesi.
+            En alakali (veya rerank aktifse alaka skoruna gore siralanmis)
+            `RetrievedDocument` listesi; hicbir esik-uzeri sonuc yoksa BOS LISTE.
         """
         if self._index.ntotal == 0:
             logger.warning("EmbeddingRAGService bos; sorgu icin dokuman bulunamadi.")
             return []
 
-        k = min(top_k or self._faiss_config.top_k, self._index.ntotal)
-        query_vector = self._embed([question])
-        scores, indices = self._index.search(query_vector, k)
+        final_k = top_k or (self._reranker_config.top_k if self._reranker_config else None) or self._faiss_config.top_k
+        candidate_k = max(self._faiss_config.candidate_k, final_k)
+        candidate_k = min(candidate_k, self._index.ntotal)
 
-        return [
-            RetrievedDocument(text=self._documents[idx], score=float(score))
-            for score, idx in zip(scores[0], indices[0])
-            if idx != -1
-        ]
+        query_vector = self._provider.embed_query(question)
+        scores, indices = self._index.search(np.expand_dims(query_vector, axis=0), candidate_k)
+
+        candidates: List[RetrievedDocument] = []
+        for score, idx in zip(scores[0], indices[0]):
+            if idx == -1:
+                continue
+            record = self._documents[idx]
+            candidates.append(
+                RetrievedDocument(
+                    text=record.get("text", ""),
+                    embedding_score=float(score),
+                    chunk_id=record.get("chunk_id"),
+                    document_id=record.get("document_id"),
+                    document_title=record.get("document_title"),
+                    level=record.get("level"),
+                    article_number=record.get("article_number"),
+                    article_title=record.get("article_title"),
+                    is_annex=record.get("is_annex"),
+                    page_start=record.get("page_start"),
+                    page_end=record.get("page_end"),
+                    source_url=record.get("source_url"),
+                    institution=record.get("institution"),
+                    publication_date=record.get("publication_date"),
+                )
+            )
+
+        retrieval_status = "embedding_only"
+        final_docs: List[RetrievedDocument] = candidates
+
+        if self._reranker is not None:
+            try:
+                ranked = self._reranker.rerank(question, [c.text for c in candidates])
+            except RerankerUnavailableError as exc:
+                logger.error(
+                    "EmbeddingRAGService: reranker basarisiz, retrieval UNAVAILABLE sayiliyor "
+                    "(embedding top-k SESSIZCE final sonuc olarak DONDURULMUYOR): %s",
+                    exc,
+                )
+                self._log_retrieval_trace(
+                    question, candidates, [], retrieval_status="reranker_unavailable", final_k=final_k
+                )
+                return []
+
+            score_threshold = self._reranker_config.score_threshold if self._reranker_config else None
+            reranked_docs: List[RetrievedDocument] = []
+            for idx, rerank_score in ranked:
+                if score_threshold is not None and rerank_score < score_threshold:
+                    continue
+                doc = candidates[idx]
+                doc.rerank_score = rerank_score
+                reranked_docs.append(doc)
+            final_docs = reranked_docs
+            retrieval_status = "reranked"
+
+        final_docs = final_docs[:final_k]
+        self._log_retrieval_trace(question, candidates, final_docs, retrieval_status=retrieval_status, final_k=final_k)
+        return final_docs
+
+    def _log_retrieval_trace(
+        self,
+        question: str,
+        candidates: List[RetrievedDocument],
+        final_docs: List[RetrievedDocument],
+        retrieval_status: str,
+        final_k: int,
+    ) -> None:
+        """RAG cagrisinin tani/izleme (trace) bilgisini yapilandirilmis sekilde loglar (API anahtari/secret ASLA loglanmaz)."""
+        logger.info(
+            "RAG retrieval: query=%r embedding_model=%s candidate_count=%d reranker_model=%s "
+            "reranked_count=%d final_count=%d threshold=%s retrieval_status=%s "
+            "embedding_scores=%s rerank_scores=%s sources=%s",
+            question,
+            self._embedding_config.model_name,
+            len(candidates),
+            self._reranker_config.model_name if self._reranker is not None else None,
+            len(final_docs) if retrieval_status == "reranked" else 0,
+            len(final_docs),
+            self._reranker_config.score_threshold if self._reranker_config else None,
+            retrieval_status,
+            [round(c.embedding_score, 4) for c in candidates],
+            [round(d.rerank_score, 4) for d in final_docs if d.rerank_score is not None],
+            [
+                {"document_id": d.document_id, "article_number": d.article_number, "source_url": d.source_url}
+                for d in final_docs
+            ],
+        )
 
     def search_laws(self, query: str, top_k: Optional[int] = None) -> List[RetrievedDocument]:
         """Modul 3 spesifikasyonundaki isim: `query()` metoduna dogrudan devreder.
@@ -297,10 +587,19 @@ class EmbeddingRAGService:
         return self.query(query, top_k)
 
     def persist(self) -> None:
-        """FAISS indeksini diske yazar (kalicilik icin)."""
-        self._index_path.parent.mkdir(parents=True, exist_ok=True)
-        faiss.write_index(self._index, str(self._index_path))
-        logger.info("FAISS indeksi kaydedildi: %s", self._index_path)
+        """FAISS indeksini, dokuman metadata'sini ve index meta bilgisini (model/dimension/kb_hash) diske yazar."""
+        _KB_INDEX_DIR.mkdir(parents=True, exist_ok=True)
+        faiss.write_index(self._index, str(_INDEX_FILE))
+        _DOCUMENTS_FILE.write_text(json.dumps(self._documents, ensure_ascii=False, indent=2), encoding="utf-8")
+        meta = {
+            "model_name": self._embedding_config.model_name,
+            "dimension": self._dimension,
+            "kb_hash": _compute_kb_hash(),
+            "chunk_count": len(self._documents),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        _INDEX_META_FILE.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("KB index persisted: %s (%d dokuman)", _KB_INDEX_DIR, len(self._documents))
 
 
 # Modul 3 spesifikasyonundaki isim: ayni sinifa isaret eden alias (geriye
@@ -317,7 +616,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
     demo_config = load_config()
-    demo_service = FAISSRagService(demo_config.memory.embedding, demo_config.memory.faiss)
+    demo_service = FAISSRagService(demo_config.memory.embedding, demo_config.memory.faiss, demo_config.memory.reranker)
     demo_service.seed_default_regulations()
 
     demo_query = "Yuksekte calisirken hangi ekipmanlar zorunlu?"

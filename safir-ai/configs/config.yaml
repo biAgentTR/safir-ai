@@ -165,14 +165,26 @@ memory:
   sqlite:
     db_path: "data/events.db"
   embedding:
-    provider: "sentence-transformers"
-    model_name: "sentence-transformers/all-MiniLM-L6-v2"
-    device: "cpu"                      # RAG embedding hesaplama CPU'da yapilir, GPU'yu VLM/LLM'e ayirir
+    provider: "gemini"                 # Google Gemini Embedding API (harici) - GEMINI_API_KEY gerektirir
+    model_name: "gemini-embedding-001"
+    output_dimensionality: 768
+    device: "api"
     normalize_embeddings: true
+    api_key_env: "GEMINI_API_KEY"
   faiss:
-    index_path: "data/faiss_index"
-    embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+    index_path: "data/knowledge_base/index/faiss.index"
+    embedding_model: "gemini-embedding-001"
+    top_k: 5                           # RERANK SONRASI nihai sonuc sayisi
+    candidate_k: 20                    # FAISS'ten cekilecek aday sayisi (rerank ONCESI)
+    similarity_threshold: null
+  reranker:
+    enabled: true
+    provider: "cohere"
+    model_name: "rerank-v4.0-pro"
+    candidate_k: 20
     top_k: 5
+    score_threshold: 0.10              # bu skorun ALTINDAKI sonuclar ELENIR (0 sonuc GECERLIDIR)
+    api_key_env: "COHERE_API_KEY"
 
 # -----------------------------------------------------------------------------
 # 05 - Ajan ve Muhakeme Katmani (LangGraph) - GPU / vLLM

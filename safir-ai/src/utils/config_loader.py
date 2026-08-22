@@ -303,26 +303,48 @@ class SQLiteMemoryConfig(BaseModel):
 
 
 class EmbeddingConfig(BaseModel):
-    """Embedding & RAG Katmani icin sentence-transformers tabanli model ayarlari."""
+    """Embedding & RAG Katmani icin Gemini Embedding API model ayarlari.
 
-    provider: str                       # "sentence-transformers"
-    model_name: str                     # orn. "BAAI/bge-m3" veya "Qwen/Qwen3-VL-Embedding"
-    device: str                         # "cpu" | "cuda"
+    2026-08-22 guncellemesi: eskiden yerel/CPU `sentence-transformers`
+    kullanilirdi; artik TEK saglayici Gemini Embedding API'dir (bkz.
+    `src/memory/embedding_providers.py::GeminiEmbeddingProvider`).
+    """
+
+    provider: str = "gemini"            # su an yalnizca "gemini" destekleniyor
+    model_name: str                     # orn. "gemini-embedding-001"
+    output_dimensionality: Optional[int] = None  # HARD-CODE edilmez, config'ten gelir
+    device: str = "api"                 # geriye-uyum/bilgi amacli; Gemini icin her zaman "api"
     normalize_embeddings: bool = True
+    api_key_env: str = "GEMINI_API_KEY"
 
 
 class FaissMemoryConfig(BaseModel):
     index_path: str
     embedding_model: str                # bkz. memory.embedding.model_name (ayni deger, senkron tutulmali)
-    top_k: int
+    top_k: int                          # RERANK SONRASI nihai sonuc sayisi
+    candidate_k: int = 20               # FAISS'ten cekilecek ADAY sayisi (rerank ONCESI)
+    similarity_threshold: Optional[float] = None  # embedding-seviyesi filtre (opsiyonel, genelde None)
+
+
+class RerankerConfig(BaseModel):
+    """Cohere Rerank ile ikinci-asama siralama ayarlari."""
+
+    enabled: bool = False
+    provider: str = "cohere"
+    model_name: str = "rerank-v4.0-pro"
+    candidate_k: int = 20
+    top_k: int = 5
+    score_threshold: float = 0.10       # bu skorun ALTINDAKI sonuclar ELENIR (0 sonuc GECERLIDIR)
+    api_key_env: str = "COHERE_API_KEY"
 
 
 class MemoryConfig(BaseModel):
-    """Yapilandirilmis olay bellegi (SQLite) ve anlamsal bellek (Embedding+FAISS) ayarlari."""
+    """Yapilandirilmis olay bellegi (SQLite) ve anlamsal bellek (Embedding+FAISS+Rerank) ayarlari."""
 
     sqlite: SQLiteMemoryConfig
     embedding: EmbeddingConfig
     faiss: FaissMemoryConfig
+    reranker: RerankerConfig = Field(default_factory=RerankerConfig)
 
 
 class RiskThresholds(BaseModel):
