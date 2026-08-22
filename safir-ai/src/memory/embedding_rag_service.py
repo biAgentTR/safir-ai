@@ -4,10 +4,36 @@ Operasyonel kurallari ve ISG mevzuatini gercek bir embedding modeliyle
 (varsayilan `BAAI/bge-m3`, alternatif `Qwen/Qwen3-VL-Embedding`) vektorlestirip
 FAISS uzerinde saklayan/arayan servistir. LangGraph ajaninin `retriever_tool`
 araci bu servis uzerinden calisir.
+
+Knowledge base kaynagi (2026-08-22 guncellemesi)
+--------------------------------------------------
+`seed_default_regulations()` artik ONCELIKLE `data/knowledge_base/chunks/*.json`
+altindaki GERCEK, resmi mevzuat metinlerinden turetilmis madde-bazli chunk'lari
+yukler (bkz. `scripts/build_kb_chunks.py` ve `data/knowledge_base/metadata/
+sources.yaml` - hangi resmi kaynaktan geldikleri, dogrulama durumlari orada
+kayitlidir). Bu chunk'lar bulunamazsa (orn. `data/knowledge_base/chunks/`
+klasoru yoksa/bossa), eskiden beri var olan `DEFAULT_ISG_REGULATIONS` (8
+ORNEK/placeholder madde) GERIYE-DONUK UYUMLULUK icin fallback olarak kullanilir
+- bu, chunk klasoru olmayan bir ortamda (orn. bazi test/CI kurulumlari)
+`EmbeddingRAGService`in tamamen bos kalmasini onler.
+
+ONEMLI (bilinen sonuc): `RuleEngine._describe_regulation()`, sorguladigi
+sabit kisa etiketin (orn. "ISG Yonetmeligi Madde 12" - `EVENT_TYPE_
+REGULATION_MAP`'ten gelir) donen metinde GERCEKTEN GECIP GECMEDIGINI kontrol
+eder (bkz. `src/event_analysis/rule_engine.py`). Bu etiketler, ESKI/sahte
+8-madde listesiyle EL YORDAMIYLA eslesecek sekilde uydurulmustu; GERCEK
+mevzuat metinlerinde bu TAM ETIKETLER GECMEZ. Sonuc olarak bu degisiklikten
+sonra `_describe_regulation` cogunlukla enrichment'i REDDEDECEK ve kisa
+etikete DONECEKTIR (guvenli davranis - YANLIS bir metin asla rapora
+sizmaz, sadece zenginlestirme kaybolur). Bu, KASITLI olarak bu degisikligin
+kapsami DISINDA birakildi (yalnizca `embedding_rag_service.py` degistirildi,
+`EVENT_TYPE_REGULATION_MAP`in etiketleri GUNCELLENMEDI) - RuleEngine'in
+deterministik event_type->mevzuat eslemesi ayri bir sonraki adimdir.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +65,68 @@ DEFAULT_ISG_REGULATIONS: List[str] = [
     "ISG Yonetmeligi Madde 52: Agir yuk kaldirma ekipmanlari (vinc, kren) calisma alaninda, operatorun "
     "gorus alani disindaki bolgelerde sinyalman gorevlendirilmesi zorunludur.",
 ]
+"""Chunk klasoru bulunamazsa kullanilan GERIYE-DONUK UYUMLULUK fallback'i
+(orn. `src/agent/agent_workflow.py`nin mock ornekleri hala bunu kullanir).
+Canli sistemde artik BIRINCIL kaynak DEGILDIR - bkz. modul dokustringi."""
+
+_KB_CHUNKS_DIR = Path(__file__).resolve().parents[2] / "data" / "knowledge_base" / "chunks"
+
+_LEVEL_LABELS = {
+    "madde": "MADDE",
+    "gecici_madde": "GEÇİCİ MADDE",
+    "ek_alt_madde": "EK",
+    "ek_liste": "EK",
+}
+
+
+def _load_kb_chunk_documents(chunks_dir: Path = _KB_CHUNKS_DIR) -> List[str]:
+    """`data/knowledge_base/chunks/*.json` altindaki madde-bazli chunk'lari, her biri kendi kaynak baslikli tek bir metin olarak dondurur.
+
+    Her `*.json` dosyasi `scripts/build_kb_chunks.py::Chunk` alanlarina
+    sahip bir sozluk listesidir (`chunk_id`, `document_id`, `level`,
+    `number`, `page_start`, `page_end`, `text`). Bu fonksiyon her chunk'i,
+    hangi dokuman/madde/sayfadan geldigini belirten kisa bir baslikla
+    (orn. "[6331 Sayılı İş Sağlığı ve Güvenliği Kanunu - MADDE 12]")
+    onceleyerek FAISS'e eklenecek tek bir metne cevirir; boylece kisa/parca
+    bir chunk metni bile hangi kaynaga ait oldugunu kendi icinde tasir
+    (`RetrievedDocument` yalnizca duz `text` tasidigi icin ayri bir
+    metadata alani yoktur).
+
+    Args:
+        chunks_dir: `*.json` chunk dosyalarinin bulundugu klasor.
+
+    Returns:
+        Chunk basina bir metin dizesi listesi (dosya adina, sonra dosya
+        icindeki sıraya gore deterministik siralanir). Klasor yoksa/bossa/
+        hicbir gecerli chunk yoksa BOS LISTE doner - hicbir metin UYDURULMAZ.
+    """
+    if not chunks_dir.exists():
+        return []
+
+    documents: List[str] = []
+    for chunk_file in sorted(chunks_dir.glob("*.json")):
+        try:
+            items = json.loads(chunk_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning("KB chunk dosyasi okunamadi/gecersiz JSON, atlaniyor: %s", chunk_file)
+            continue
+        if not isinstance(items, list):
+            continue
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            level = str(item.get("level") or "")
+            number = str(item.get("number") or "")
+            document_id = str(item.get("document_id") or chunk_file.stem)
+            label = _LEVEL_LABELS.get(level, level.upper() or "MADDE")
+            header = f"[{document_id} - {label} {number}]".strip()
+            documents.append(f"{header}\n{text}")
+
+    return documents
 
 
 @dataclass
@@ -99,21 +187,36 @@ class EmbeddingRAGService:
         return len(self._documents)
 
     def seed_default_regulations(self) -> None:
-        """Indeks bossa `DEFAULT_ISG_REGULATIONS` varsayilan mevzuat setini ekler.
+        """Indeks bossa knowledge base'i yukler: ONCELIKLE gercek KB chunk'lari, yoksa `DEFAULT_ISG_REGULATIONS` fallback'i.
 
         Indeks zaten dokuman iceriyorsa hicbir sey yapmaz (idempotent); boylece
         uygulama her yeniden baslatildiginda ayni maddeler tekrar tekrar
-        eklenmez.
+        eklenmez. Kaynak sirasi icin bkz. modul dokustringi.
         """
         if self.document_count() > 0:
             logger.info(
-                "EmbeddingRAGService zaten %d dokuman iceriyor; varsayilan ISG mevzuati atlandi.",
+                "EmbeddingRAGService zaten %d dokuman iceriyor; seed atlandi.",
                 self.document_count(),
             )
             return
 
+        kb_documents = _load_kb_chunk_documents()
+        if kb_documents:
+            self.add_documents(kb_documents)
+            logger.info(
+                "EmbeddingRAGService: %d gercek KB chunk'i yuklendi (kaynak: %s).",
+                len(kb_documents),
+                _KB_CHUNKS_DIR,
+            )
+            return
+
+        logger.warning(
+            "EmbeddingRAGService: %s altinda KB chunk'i bulunamadi; "
+            "geriye-donuk uyumluluk icin %d placeholder ISG maddesine (DEFAULT_ISG_REGULATIONS) dusuluyor.",
+            _KB_CHUNKS_DIR,
+            len(DEFAULT_ISG_REGULATIONS),
+        )
         self.add_documents(DEFAULT_ISG_REGULATIONS)
-        logger.info("EmbeddingRAGService: %d varsayilan ISG mevzuat maddesi yuklendi.", len(DEFAULT_ISG_REGULATIONS))
 
     def _embed(self, texts: List[str]) -> np.ndarray:
         """Metin listesini embedding modeliyle vektorlere cevirir.

@@ -16,7 +16,12 @@ import numpy as np
 import pytest
 
 from src.memory import embedding_rag_service as rag_module
-from src.memory.embedding_rag_service import DEFAULT_ISG_REGULATIONS, EmbeddingRAGService, FAISSRagService
+from src.memory.embedding_rag_service import (
+    DEFAULT_ISG_REGULATIONS,
+    EmbeddingRAGService,
+    FAISSRagService,
+    _load_kb_chunk_documents,
+)
 from src.memory.event_store import EventStore, SQLiteEventStore
 from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig, SQLiteMemoryConfig
 
@@ -239,10 +244,17 @@ def test_query_on_empty_index_returns_empty_list(rag_service) -> None:
 
 
 def test_seed_default_regulations_is_idempotent(rag_service) -> None:
+    """`seed_default_regulations()` gercek KB chunk'larini (varsa) veya `DEFAULT_ISG_REGULATIONS`
+    fallback'ini yukler (bkz. `_load_kb_chunk_documents`/modul dokustringi); hangisi olursa olsun
+    tekrar cagirma ayni sayida dokumani KORUR (idempotent)."""
+    kb_documents = _load_kb_chunk_documents()
+    expected_count = len(kb_documents) if kb_documents else len(DEFAULT_ISG_REGULATIONS)
+
     rag_service.seed_default_regulations()
     count_after_first = rag_service.document_count()
 
-    assert count_after_first == len(DEFAULT_ISG_REGULATIONS)
+    assert count_after_first == expected_count
+    assert count_after_first > 0
 
     rag_service.seed_default_regulations()
     assert rag_service.document_count() == count_after_first
