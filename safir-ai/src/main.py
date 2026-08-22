@@ -56,6 +56,8 @@ from src.memory import document_extraction
 from src.memory.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
 from src.sampler.adaptive_sampler import EvidenceFrame, sampler_from_config
+from src.security.prompt_injection_guard import build_prompt_injection_guard
+
 from src.schemas.report import EventSummary, EvidenceFrameOut, SafirReport, SamplerStats, TimelineEntry
 from src.utils.config_loader import SafirConfig, load_config
 from src.vlm.base_vlm import VLMResponse
@@ -713,7 +715,12 @@ class SafirPipeline:
         self._event_store = EventStore(config.memory.sqlite)
         self._rag_service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss, config.memory.reranker)
         self._rag_service.seed_default_regulations()
-        self._context_builder = ContextBuilder(self._event_store)
+        # Prompt Injection Guard (bkz. src/security/prompt_injection_guard.py):
+        # `guard.enabled=false` ise `self._guard=None` -> ContextBuilder davranisi
+        # TAMAMEN degismez. RuleEngine/EventEngine bu satirdan hicbir sekilde
+        # etkilenmez (guard yalnizca ContextBuilder'a verilir).
+        self._guard = build_prompt_injection_guard(config.guard) if config.guard.enabled else None
+        self._context_builder = ContextBuilder(self._event_store, guard=self._guard)
         self._agent = SafirAgent(
             llm_config=config.llm,
             agent_config=config.agent,

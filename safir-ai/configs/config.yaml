@@ -240,6 +240,29 @@ escalation:
   auto_alarm_score: 51               # yuksek/kritik -> otomatik saha alarmi
 
 # -----------------------------------------------------------------------------
+# Guvenlik - Prompt Injection Guard
+# -----------------------------------------------------------------------------
+# Agent'a giden guvenilmeyen serbest metni (user_prompt, VLM aciklamasi)
+# talimat olarak yorumlanmaya karsi kontrol eder. risk_score/risk_level/
+# event_type/RuleEngine/RAG kararlarina DOKUNMAZ (bkz. src/security/
+# prompt_injection_guard.py modul dokustringi). embedding/reranker ile AYNI
+# Gemini API anahtarini kullanir.
+# NOT (varsayilan KAPALI): reranker'in aksine (yalnizca RAG sonucunu bos
+# birakir - `stage_context` icinde try/except ile yutulur), guard basarisiz
+# oldugunda fail_closed=true politikasi vlm_description/user_prompt metnini
+# GORUNUR sekilde quarantine ile isaretler. GEMINI_API_KEY tanimli DEGILSE
+# (orn. CI/test ortami) bu her cagrida tetiklenir - bu yuzden guard,
+# GEMINI_API_KEY provizyonlanip dogrulandiktan SONRA acikca enabled:true
+# yapilmalidir (production).
+guard:
+  enabled: false
+  provider: "gemini"
+  model_name: "gemini-3.5-flash-lite"
+  fail_closed: true                  # true: guard API/parse hatasinda icerik QUARANTINE edilir (production)
+  confidence_threshold: 0.80         # is_injection=true VE confidence >= bu deger -> quarantine
+  api_key_env: "GEMINI_API_KEY"
+
+# -----------------------------------------------------------------------------
 # API / Servis Katmani
 # -----------------------------------------------------------------------------
 api:

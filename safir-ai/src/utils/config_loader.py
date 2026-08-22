@@ -407,6 +407,25 @@ class OutputConfig(BaseModel):
     streamlit_port: int
 
 
+class GuardConfig(BaseModel):
+    """Prompt Injection Guard ayarlari (bkz. `src/security/prompt_injection_guard.py`).
+
+    Guard AYRI bir guvenlik katmanidir: risk_score/risk_level/event_type
+    hesaplamaz, RuleEngine kararini VEYA RAG retrieval kararini degistirmez -
+    yalnizca Agent'a giden guvenilmeyen serbest metni (user_prompt, VLM
+    aciklamasi) DETECT -> CLASSIFY -> QUARANTINE/PASS akisindan gecirir.
+    Reranker/embedding ile AYNI Gemini API anahtarini kullanir (harici baska
+    bir saglayici/anahtar YOKTUR).
+    """
+
+    enabled: bool = False
+    provider: str = "gemini"
+    model_name: str = "gemini-3.5-flash-lite"
+    fail_closed: bool = True
+    confidence_threshold: float = 0.80
+    api_key_env: str = "GEMINI_API_KEY"
+
+
 class SafirConfig(BaseModel):
     """SAFIR sisteminin butun katmanlarini kapsayan kok konfigurasyon modeli."""
 
@@ -418,6 +437,7 @@ class SafirConfig(BaseModel):
     llm: LLMConfig
     agent: AgentConfig
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
+    guard: GuardConfig = Field(default_factory=GuardConfig)
     api: ApiConfig
     output: OutputConfig
 
