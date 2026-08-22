@@ -218,6 +218,7 @@ export interface Escalation {
 
 /** events stage: detected_events[] (trace_serializer.serialize_events). */
 export interface DetectedEvent {
+  event_name: string
   event_type: string
   timestamp: number
   confidence: number

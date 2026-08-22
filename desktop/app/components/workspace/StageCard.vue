@@ -165,11 +165,21 @@ const regulations = computed(() => store.report?.relevant_regulations ?? [])
             <li
               v-for="(d, i) in events.detected_events"
               :key="i"
-              class="flex items-center gap-3 bg-surface-2 border border-edge rounded-md px-3 py-2"
+              class="flex flex-col gap-1 bg-surface-2 border border-edge rounded-md px-3 py-2"
             >
-              <span class="font-mono text-xs text-slate-400 w-12">{{ mmss(d.timestamp) }}</span>
-              <span class="text-sm text-slate-100">{{ d.event_type }}</span>
-              <span class="ml-auto text-xs text-slate-400">güven {{ d.confidence }}</span>
+              <div class="flex items-center gap-3">
+                <span class="font-mono text-xs text-slate-400 w-12">{{ mmss(d.timestamp) }}</span>
+                <span class="text-sm text-slate-100">{{
+                  d.event_type === 'siniflandirilamadi' ? d.event_type : (d.event_name || d.event_type)
+                }}</span>
+                <span class="ml-auto text-xs text-slate-400">güven {{ d.confidence }}</span>
+              </div>
+              <div
+                v-if="d.event_type !== 'siniflandirilamadi' && d.matched_keywords.length"
+                class="text-xs text-slate-400 pl-[3.75rem]"
+              >
+                Risk: {{ d.matched_keywords.join(', ') }}
+              </div>
             </li>
           </ul>
         </div>
