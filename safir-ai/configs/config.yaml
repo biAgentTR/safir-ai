@@ -151,7 +151,7 @@ vlm:
       top_p: 0.9
     gemini:                          # gecici TEST backend'i (harici API — offline degildir)
       provider: "gemini"
-      model_name: "gemini-3.5-flash-lite"
+      model_name: "gemini-3.5-flash"
       base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
       api_key_env: "GEMINI_API_KEY"
       max_new_tokens: 2048
@@ -180,7 +180,7 @@ memory:
   reranker:
     enabled: true
     provider: "gemini"                 # embedding ile AYNI Gemini API anahtarini kullanir (tek saglayici)
-    model_name: "gemini-3.5-flash-lite"
+    model_name: "gemini-3.5-flash"
     candidate_k: 20
     top_k: 5
     score_threshold: 0.10              # bu skorun ALTINDAKI sonuclar ELENIR (0 sonuc GECERLIDIR)
@@ -206,7 +206,7 @@ llm:
       temperature: 0.1
     gemini:                          # gecici TEST backend'i (harici API — offline degildir)
       provider: "gemini"
-      model_name: "gemini-3.5-flash-lite"
+      model_name: "gemini-3.5-flash"
       base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
       api_key_env: "GEMINI_API_KEY"
       max_new_tokens: 1024
@@ -257,7 +257,7 @@ escalation:
 guard:
   enabled: false
   provider: "gemini"
-  model_name: "gemini-3.5-flash-lite"
+  model_name: "gemini-3.5-flash"
   fail_closed: true                  # true: guard API/parse hatasinda icerik QUARANTINE edilir (production)
   confidence_threshold: 0.80         # is_injection=true VE confidence >= bu deger -> quarantine
   api_key_env: "GEMINI_API_KEY"

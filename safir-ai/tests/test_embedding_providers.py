@@ -137,6 +137,75 @@ def test_build_embedding_provider_requires_output_dimensionality() -> None:
         build_embedding_provider(provider="gemini", model_name="gemini-embedding-001", output_dimensionality=None)
 
 
+class _FakeRateLimitError(Exception):
+    def __init__(self, code: int = 429, status: str = "RESOURCE_EXHAUSTED"):
+        super().__init__(f"{code} {status}")
+        self.code = code
+        self.status = status
+
+
+class _FlakyThenOkModels(_FakeModels):
+    """Ilk `fail_times` cagride 429 firlatir, sonra normal davranir."""
+
+    def __init__(self, dimension: int, fail_times: int):
+        super().__init__(dimension)
+        self._fail_times = fail_times
+        self._attempts = 0
+
+    def embed_content(self, *, model, contents, config):
+        self._attempts += 1
+        if self._attempts <= self._fail_times:
+            raise _FakeRateLimitError()
+        return super().embed_content(model=model, contents=contents, config=config)
+
+
+def test_rate_limit_429_is_retried_with_backoff_and_eventually_succeeds(monkeypatch) -> None:
+    fake_client = _install_fake_genai(monkeypatch)
+    fake_client.models = _FlakyThenOkModels(dimension=8, fail_times=2)
+    sleep_calls = []
+    monkeypatch.setattr("src.memory.embedding_providers.time.sleep", lambda s: sleep_calls.append(s))
+
+    provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8)
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+
+    result = provider.embed_documents(["metin"])
+
+    assert result.shape == (1, 8)
+    assert fake_client.models._attempts == 3  # 2 basarisiz + 1 basarili
+    assert len(sleep_calls) == 2
+    assert sleep_calls[1] > sleep_calls[0]  # katlanarak artan bekleme
+
+
+def test_rate_limit_429_gives_up_after_max_retries(monkeypatch) -> None:
+    fake_client = _install_fake_genai(monkeypatch)
+    fake_client.models = _FlakyThenOkModels(dimension=8, fail_times=999)
+    monkeypatch.setattr("src.memory.embedding_providers.time.sleep", lambda s: None)
+
+    provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8)
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+
+    with pytest.raises(_FakeRateLimitError):
+        provider.embed_documents(["metin"])
+
+
+def test_non_rate_limit_error_is_not_retried(monkeypatch) -> None:
+    class _AuthErrorModels(_FakeModels):
+        def embed_content(self, *, model, contents, config):
+            raise RuntimeError("401 unauthorized")
+
+    fake_client = _install_fake_genai(monkeypatch)
+    fake_client.models = _AuthErrorModels(dimension=8)
+    sleep_calls = []
+    monkeypatch.setattr("src.memory.embedding_providers.time.sleep", lambda s: sleep_calls.append(s))
+
+    provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8)
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+
+    with pytest.raises(RuntimeError, match="401 unauthorized"):
+        provider.embed_documents(["metin"])
+    assert sleep_calls == []  # 429 disi hata icin HIC bekleme yapilmaz
+
+
 def test_build_embedding_provider_returns_gemini_provider() -> None:
     provider = build_embedding_provider(provider="gemini", model_name="gemini-embedding-001", output_dimensionality=768)
     assert isinstance(provider, GeminiEmbeddingProvider)

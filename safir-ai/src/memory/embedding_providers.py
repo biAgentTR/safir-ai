@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
@@ -27,6 +28,25 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_BATCH_SIZE = 100
 """Gemini embed_content'e tek istekte gonderilecek azami metin sayisi."""
+
+_MAX_RATE_LIMIT_RETRIES = 5
+"""429 (RESOURCE_EXHAUSTED) alindiginda, batch basina denenecek azami yeniden-deneme sayisi.
+
+`google-genai` SDK'sinin kendi (tenacity tabanli) yeniden-denemesi kisa
+araliklidir (saniyeler); dakikalik RPM kotasi asildiginda bu YETERSIZ
+kalabilir (bkz. gercek 429 hatasi). Bu yuzden burada AYRICA, katlanarak
+artan (exponential backoff) bir bekleme uygulanir - yalnizca GERCEKTEN
+429 alindiginda devreye girer, normal akisi ETKILEMEZ."""
+
+_RATE_LIMIT_BACKOFF_BASE_SEC = 20.0
+"""Ilk 429 sonrasi bekleme suresi (saniye); her tekrarda ikiye katlanir."""
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Verilen istisnanin Gemini API'sinin 429 (RESOURCE_EXHAUSTED) hatasi olup olmadigini kontrol eder."""
+    code = getattr(exc, "code", None)
+    status = str(getattr(exc, "status", "") or "")
+    return code == 429 or "RESOURCE_EXHAUSTED" in status.upper()
 
 
 class ConfigurationError(Exception):
@@ -131,18 +151,43 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         vectors: List[List[float]] = []
         for start in range(0, len(texts), self._batch_size):
             batch = texts[start : start + self._batch_size]
-            response = client.models.embed_content(
-                model=self._model_name,
-                contents=batch,
-                config=types.EmbedContentConfig(
-                    task_type=task_type,
-                    output_dimensionality=self._dimension,
-                ),
-            )
+            response = self._embed_batch_with_rate_limit_retry(client, types, batch, task_type)
             vectors.extend(embedding.values for embedding in response.embeddings)
 
         array = np.asarray(vectors, dtype="float32")
         return _l2_normalize(array)
+
+    def _embed_batch_with_rate_limit_retry(self, client, types, batch: List[str], task_type: str):
+        """Tek bir `embed_content` batch cagrisini yapar; 429 (RESOURCE_EXHAUSTED) alinirsa katlanarak-artan bekleme ile yeniden dener.
+
+        Yalnizca RATE-LIMIT hatasinda (429) yeniden dener - baska bir hata
+        (gecersiz istek, auth vb.) OLDUGU GIBI yukari firlatilir (sessizce
+        yutulmaz/mock'a dusulmez).
+        """
+        attempt = 0
+        while True:
+            try:
+                return client.models.embed_content(
+                    model=self._model_name,
+                    contents=batch,
+                    config=types.EmbedContentConfig(
+                        task_type=task_type,
+                        output_dimensionality=self._dimension,
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001 - yalnizca 429 ise yeniden denenir, aksi halde yeniden firlatilir
+                if not _is_rate_limit_error(exc) or attempt >= _MAX_RATE_LIMIT_RETRIES:
+                    raise
+                wait_sec = _RATE_LIMIT_BACKOFF_BASE_SEC * (2**attempt)
+                attempt += 1
+                logger.warning(
+                    "GeminiEmbeddingProvider: 429 RESOURCE_EXHAUSTED (deneme %d/%d), %.0fs bekleniyor: %s",
+                    attempt,
+                    _MAX_RATE_LIMIT_RETRIES,
+                    wait_sec,
+                    exc,
+                )
+                time.sleep(wait_sec)
 
     def embed_documents(self, texts: List[str]) -> np.ndarray:
         return self._embed(texts, task_type="RETRIEVAL_DOCUMENT")
