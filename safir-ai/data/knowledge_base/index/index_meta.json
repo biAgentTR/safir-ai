@@ -1,0 +1,10 @@
+{
+  "model_name": "intfloat/multilingual-e5-small",
+  "dimension": 384,
+  "normalization": "l2",
+  "metric": "cosine_via_inner_product",
+  "kb_hash": "539612404d5fc4ca49a5a498af77fddc2d5be83dab39d8739474abc2866f82d1",
+  "corpus_fingerprint": "539612404d5fc4ca49a5a498af77fddc2d5be83dab39d8739474abc2866f82d1",
+  "chunk_count": 748,
+  "created_at": "2026-08-23T21:22:46.319911+00:00"
+}
