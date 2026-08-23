@@ -295,6 +295,7 @@ def serialize_rag_security(
             "avg_rerank_score": rag_telemetry.avg_rerank_score,
             "results": [
                 {
+                    "chunk_id": getattr(r, "chunk_id", None),
                     "document_id": r.document_id,
                     "document_title": r.document_title,
                     "article_number": r.article_number,

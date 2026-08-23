@@ -370,3 +370,87 @@ def test_content_based_retrieval_ranks_the_relevant_document_first(tmp_path, mon
     yangin_results = service.query(query_b)
     assert yangin_results
     assert yangin_results[0].text == document_b
+
+
+# ---------------------------------------------------------------------------
+# 7. Persisted index round-trip + corpus_source (RAG P0: "index/ diskte yok,
+#    sistem SESSIZCE placeholder'a duser" bulgusunun dogrulama testleri)
+# ---------------------------------------------------------------------------
+
+
+def test_persisted_index_round_trip_sets_corpus_source_and_survives_reload(tmp_path, monkeypatch) -> None:
+    """`persist()` ile yazilan bir index, TAZE bir `EmbeddingRAGService` tarafindan gercekten geri yuklenebilmeli.
+
+    Gercek `data/knowledge_base/index/` dizinine DOKUNMAMAK icin modul-
+    seviyesi path sabitleri (`_KB_INDEX_DIR`/`_INDEX_FILE`/`_DOCUMENTS_FILE`/
+    `_INDEX_META_FILE`) `tmp_path`e yonlendirilir - `persist()`/
+    `_try_load_persisted_index()`in KENDISI (gercek production kodu)
+    degistirilmeden cagrilir.
+    """
+    monkeypatch.setattr(rag_module, "_KB_INDEX_DIR", tmp_path)
+    monkeypatch.setattr(rag_module, "_INDEX_FILE", tmp_path / "faiss.index")
+    monkeypatch.setattr(rag_module, "_DOCUMENTS_FILE", tmp_path / "documents.json")
+    monkeypatch.setattr(rag_module, "_INDEX_META_FILE", tmp_path / "index_meta.json")
+
+    builder = _make_service(tmp_path, candidate_k=5, top_k=3, reranker=None)
+    builder.add_documents(["Forklift çalışma alanında yaya bulunması yasaktır."])
+    builder.persist()
+
+    assert (tmp_path / "faiss.index").exists()
+    assert (tmp_path / "documents.json").exists()
+    assert (tmp_path / "index_meta.json").exists()
+
+    fresh = _make_service(tmp_path, candidate_k=5, top_k=3, reranker=None)
+    assert fresh.corpus_source == "unseeded"
+
+    loaded = fresh._try_load_persisted_index()
+
+    assert loaded is True
+    assert fresh.corpus_source == "persisted_index"
+    assert fresh.document_count() == 1
+
+    results = fresh.query("Forklift yakınında yaya")
+    telemetry = fresh.get_last_query_telemetry()
+
+    assert telemetry.corpus_source == "persisted_index"
+    assert results
+    assert results[0].text == "Forklift çalışma alanında yaya bulunması yasaktır."
+
+
+def test_fallback_placeholder_corpus_source_when_no_persisted_index(tmp_path, monkeypatch) -> None:
+    """Persisted index dosyalari yoksa `seed_default_regulations()` acikca `fallback_placeholder`e duser."""
+    monkeypatch.setattr(rag_module, "_KB_INDEX_DIR", tmp_path / "does_not_exist")
+    monkeypatch.setattr(rag_module, "_INDEX_FILE", tmp_path / "does_not_exist" / "faiss.index")
+    monkeypatch.setattr(rag_module, "_DOCUMENTS_FILE", tmp_path / "does_not_exist" / "documents.json")
+    monkeypatch.setattr(rag_module, "_INDEX_META_FILE", tmp_path / "does_not_exist" / "index_meta.json")
+
+    service = _make_service(tmp_path, candidate_k=5, top_k=3, reranker=None)
+    service.seed_default_regulations()
+
+    assert service.corpus_source == "fallback_placeholder"
+    assert service.document_count() == len(rag_module.DEFAULT_ISG_REGULATIONS)
+
+
+def test_retrieval_result_carries_chunk_id_document_id_and_scores_end_to_end(tmp_path) -> None:
+    """HEDEF 4/6: her retrieval sonucunda chunk_id + document_id + skor GORULEBILIR olmali (UYDURULMAMIS metadata)."""
+    records = _load_kb_chunk_records()
+    if not records:
+        pytest.skip("data/knowledge_base/chunks/ bos - bu test gercek KB corpus'una bagimlidir.")
+
+    reranker = _FakeReranker(score_by_substring={"forklift": 0.9}, default_score=0.02)
+    service = _make_service(tmp_path, candidate_k=20, top_k=3, reranker=reranker, score_threshold=0.10)
+    service._add_structured_documents(records[:200])
+    service._corpus_source = "chunks_rebuild"
+
+    results = service.query("forklift yaya güvenliği")
+    telemetry = service.get_last_query_telemetry()
+
+    assert telemetry.corpus_source == "chunks_rebuild"
+    for result_telemetry in telemetry.results:
+        # her aday icin chunk_id/document_id UYDURULMADAN tasinmis olmali
+        # (gercek chunk kaydindan geliyorsa None olamaz).
+        assert result_telemetry.chunk_id is not None
+        assert result_telemetry.document_id is not None
+    for doc in results:
+        assert doc.chunk_id is not None
+        assert doc.rerank_score is not None

@@ -254,6 +254,7 @@ def _avg(values: List[float]) -> Optional[float]:
 
 def _result_telemetry(doc: "RetrievedDocument", selected: bool) -> "RagResultTelemetry":
     return RagResultTelemetry(
+        chunk_id=doc.chunk_id,
         document_id=doc.document_id,
         document_title=doc.document_title,
         article_number=doc.article_number,
@@ -281,6 +282,9 @@ class RagResultTelemetry:
     rerank_score: Optional[float]
     selected: bool
     """Threshold/top_k sonrasi NIHAI sonuc kumesine girdi mi (final_docs icinde mi)."""
+    chunk_id: Optional[str] = None
+    """Kaynak chunk'in kimligi (bkz. `RetrievedDocument.chunk_id`) - hangi
+    dokumanin HANGI maddesinden/parcasindan geldigini izlenebilir kilar."""
 
 
 @dataclass
@@ -745,7 +749,7 @@ class EmbeddingRAGService:
             [round(c.embedding_score, 4) for c in candidates],
             [round(d.rerank_score, 4) for d in final_docs if d.rerank_score is not None],
             [
-                {"document_id": d.document_id, "article_number": d.article_number, "source_url": d.source_url}
+                {"chunk_id": d.chunk_id, "document_id": d.document_id, "article_number": d.article_number, "source_url": d.source_url}
                 for d in final_docs
             ],
         )
