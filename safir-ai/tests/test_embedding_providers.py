@@ -37,12 +37,12 @@ class _FakeModels:
         self.calls = []
 
     def embed_content(self, *, model, contents, config):
-        self.calls.append({"model": model, "contents": list(contents), "config": config})
-        # Her metin icin deterministik, metne bagli bir vektor uretir.
-        embeddings = [
-            _FakeEmbedding([float((hash(text) >> i) % 7) for i in range(self.dimension)]) for text in contents
-        ]
-        return _FakeEmbedContentResponse(embeddings)
+        # `_embed()` artik HER ZAMAN TEK bir string gonderir (liste degil) -
+        # bkz. embedding_providers.py::_embed docstring'i (kok neden aciklamasi).
+        assert isinstance(contents, str), "contents TEK bir string olmali, liste degil (batch endpoint kullanilmamali)"
+        self.calls.append({"model": model, "contents": contents, "config": config})
+        embedding = _FakeEmbedding([float((hash(contents) >> i) % 7) for i in range(self.dimension)])
+        return _FakeEmbedContentResponse([embedding])
 
 
 class _FakeClient:
@@ -99,25 +99,26 @@ def test_embed_query_uses_retrieval_query_task_type(monkeypatch) -> None:
 
     assert vector.shape == (8,)
     assert fake_client.models.calls[0]["config"].task_type == "RETRIEVAL_QUERY"
-    assert fake_client.models.calls[0]["contents"] == ["yangın riski"]
+    assert fake_client.models.calls[0]["contents"] == "yangın riski"
 
 
-def test_embed_documents_uses_retrieval_document_task_type_and_batches(monkeypatch) -> None:
+def test_embed_documents_uses_retrieval_document_task_type_and_sends_one_request_per_text(monkeypatch) -> None:
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
     fake_client = _install_fake_genai(monkeypatch, dimension=8)
     sleep_calls = []
     monkeypatch.setattr("src.rag.embedding_providers.time.sleep", lambda s: sleep_calls.append(s))
 
-    provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8, batch_size=2)
+    provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8)
     texts = ["madde 1", "madde 2", "madde 3"]
     vectors = provider.embed_documents(texts)
 
     assert vectors.shape == (3, 8)
-    # batch_size=2 -> 3 metin 2 istekte gitmeli (2 + 1)
-    assert len(fake_client.models.calls) == 2
+    # Batch endpoint KESINLIKLE kullanilmaz - her metin kendi tekil istegini alir.
+    assert len(fake_client.models.calls) == 3
+    assert [call["contents"] for call in fake_client.models.calls] == texts
     assert fake_client.models.calls[0]["config"].task_type == "RETRIEVAL_DOCUMENT"
-    # RPM yukunu azaltmak icin batch'ler arasinda (ama SONUNCUDAN SONRA DEGIL) beklenmeli.
-    assert sleep_calls == [3.0]
+    # RPM yukunu azaltmak icin istekler arasinda (ama SONUNCUDAN SONRA DEGIL) beklenmeli.
+    assert sleep_calls == [3.0, 3.0]
 
 
 def test_embed_documents_returns_normalized_vectors(monkeypatch) -> None:

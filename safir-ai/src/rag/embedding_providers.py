@@ -26,11 +26,9 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_BATCH_SIZE = 100
-"""Gemini embed_content'e tek istekte gonderilecek azami metin sayisi."""
 
 _MAX_RATE_LIMIT_RETRIES = 5
-"""429 (RESOURCE_EXHAUSTED) alindiginda, batch basina denenecek azami yeniden-deneme sayisi.
+"""429 (RESOURCE_EXHAUSTED) alindiginda, istek basina denenecek azami yeniden-deneme sayisi.
 
 `google-genai` SDK'sinin kendi (tenacity tabanli) yeniden-denemesi kisa
 araliklidir (saniyeler); dakikalik RPM kotasi asildiginda bu YETERSIZ
@@ -42,16 +40,15 @@ _RATE_LIMIT_BACKOFF_BASE_SEC = 20.0
 """Ilk 429 sonrasi bekleme suresi (saniye); her tekrarda ikiye katlanir."""
 
 _INTER_BATCH_DELAY_SEC = 3.0
-"""BASARILI her batch cagrisi arasinda beklenecek sabit sure (saniye).
+"""BASARILI her `embed_content` cagrisi arasinda beklenecek sabit sure (saniye).
 
 429'a REAKTIF olan yukaridaki backoff'tan farkli olarak bu, rate limit'e
 HIC CARPMADAN once RPM (dakika basi istek) yukunu azaltmak icin PROAKTIF
-bir onlemdir - Gemini embedding API'sinin ucretsiz katmaninin RPM kotasi
-dusuk oldugunda (748 chunk / 100'luk batch = 8 istek bile arka arkaya
-gonderilirse kotayi asabilir), bu araya giren bekleme sorunu BASTAN
-onler. `build_index_from_chunks()` gibi tek-seferlik, toplu islemler
-disinda (tekil `embed_query` cagrilarinda) etkisi yoktur - yalnizca
-`_embed()`in KENDI ic dongusunde, birden fazla batch varsa uygulanir."""
+bir onlemdir - `_embed()` artik HER metin icin AYRI bir istek attigindan
+(bkz. `_embed` docstring'i - toplu `batchEmbedContents` cagrisi bu hesapta
+calismiyordu), 748 chunk'lik bir corpus 748 ayri istek demektir; bu araya
+giren bekleme, o kadar isteğin RPM kotasini patlatmadan gonderilmesini
+saglar. `embed_query` (tek metin, tek istek) icin etkisi yoktur."""
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -116,7 +113,6 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         model_name: str,
         output_dimensionality: int,
         api_key_env: str = "GEMINI_API_KEY",
-        batch_size: int = _DEFAULT_BATCH_SIZE,
     ) -> None:
         """GeminiEmbeddingProvider'i model adi ve vektor boyutuyla kurar (AG CAGRISI YAPMAZ).
 
@@ -124,12 +120,10 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
             model_name: Gemini embedding model adi (orn. "gemini-embedding-001").
             output_dimensionality: Istenen vektor boyutu (config'ten gelir, HARD-CODE degildir).
             api_key_env: API anahtarinin okunacagi ortam degiskeni adi.
-            batch_size: Tek `embed_content` cagrisina gonderilecek azami metin sayisi.
         """
         self._model_name = model_name
         self._dimension = output_dimensionality
         self._api_key_env = api_key_env
-        self._batch_size = max(1, batch_size)
         self._client = None  # lazy - ilk gercek cagriya kadar olusturulmaz
 
     @property
@@ -154,6 +148,19 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         return self._client
 
     def _embed(self, texts: List[str], task_type: str) -> np.ndarray:
+        """Her metni AYRI bir `embed_content` cagrisiyla (TEK string olarak, LISTE DEGIL) vektorlestirir.
+
+        KOK NEDEN (gercek hesapla dogrulandi, 2026-08-23): SDK'ya `contents`
+        parametresi bir LISTE (`["a", "b"]`, tek elemanli olsa bile) olarak
+        verilirse, `google-genai` istegi `:batchEmbedContents` uc noktasina
+        yonlendiriyor - bu hesapta bu uc nokta HER ZAMAN 429 RESOURCE_EXHAUSTED
+        ("check your plan and billing") donuyordu, HALBUKI ayni hesabin
+        "Gemini Embedding 1" kotasi (RPM/TPM/RPD) rahatlikla musaitti. `contents`
+        TEK bir string (liste DEGIL) olarak verildiginde istek `:embedContent`
+        (tekil) uc noktasina gidiyor ve BASARIYLA calisiyor - dogrudan gercek
+        API'ye karsi test edildi. Bu yuzden burada KASITLI olarak toplu/batch
+        cagri YAPILMAZ; her metin kendi tekil istegini alir.
+        """
         if not texts:
             return np.zeros((0, self._dimension), dtype="float32")
 
@@ -161,19 +168,17 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
 
         client = self._get_client()
         vectors: List[List[float]] = []
-        batch_starts = list(range(0, len(texts), self._batch_size))
-        for i, start in enumerate(batch_starts):
-            batch = texts[start : start + self._batch_size]
-            response = self._embed_batch_with_rate_limit_retry(client, types, batch, task_type)
-            vectors.extend(embedding.values for embedding in response.embeddings)
-            if i < len(batch_starts) - 1:
+        for i, text in enumerate(texts):
+            embedding_values = self._embed_one_with_rate_limit_retry(client, types, text, task_type)
+            vectors.append(embedding_values)
+            if i < len(texts) - 1:
                 time.sleep(_INTER_BATCH_DELAY_SEC)
 
         array = np.asarray(vectors, dtype="float32")
         return _l2_normalize(array)
 
-    def _embed_batch_with_rate_limit_retry(self, client, types, batch: List[str], task_type: str):
-        """Tek bir `embed_content` batch cagrisini yapar; 429 (RESOURCE_EXHAUSTED) alinirsa katlanarak-artan bekleme ile yeniden dener.
+    def _embed_one_with_rate_limit_retry(self, client, types, text: str, task_type: str) -> List[float]:
+        """Tek bir metin icin (TEK string `contents`, liste DEGIL) `embed_content` cagirir; 429'da katlanarak-artan bekleme ile yeniden dener.
 
         Yalnizca RATE-LIMIT hatasinda (429) yeniden dener - baska bir hata
         (gecersiz istek, auth vb.) OLDUGU GIBI yukari firlatilir (sessizce
@@ -182,14 +187,15 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         attempt = 0
         while True:
             try:
-                return client.models.embed_content(
+                response = client.models.embed_content(
                     model=self._model_name,
-                    contents=batch,
+                    contents=text,
                     config=types.EmbedContentConfig(
                         task_type=task_type,
                         output_dimensionality=self._dimension,
                     ),
                 )
+                return response.embeddings[0].values
             except Exception as exc:  # noqa: BLE001 - yalnizca 429 ise yeniden denenir, aksi halde yeniden firlatilir
                 if not _is_rate_limit_error(exc) or attempt >= _MAX_RATE_LIMIT_RETRIES:
                     raise
