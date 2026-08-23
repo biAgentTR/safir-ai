@@ -126,11 +126,27 @@ def test_to_event_store_kwargs_matches_event_store_add_event_signature() -> None
 
     kwargs = structured.to_event_store_kwargs()
 
-    assert set(kwargs.keys()) == {"timestamp", "description", "risk_score", "risk_level", "source_model"}
+    assert set(kwargs.keys()) == {
+        "timestamp",
+        "description",
+        "risk_score",
+        "risk_level",
+        "source_model",
+        "temporal_event_id",
+        "event_name",
+        "event_type",
+        "confidence",
+        "occurrence_count",
+        "duration",
+        "evidence_ids",
+        "keywords",
+    }
     assert kwargs["timestamp"] == 42.0
     assert kwargs["description"] == structured.description
     assert kwargs["risk_score"] is None
     assert kwargs["risk_level"] is None
+    assert kwargs["evidence_ids"] == structured.evidence_ids
+    assert kwargs["temporal_event_id"] == structured.temporal_event_id
     assert kwargs["source_model"] == "test-vlm"
 
 

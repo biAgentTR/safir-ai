@@ -38,14 +38,35 @@ class EventEngineInput(BaseModel):
             "anahtar-kelime fallback'ine duser."
         ),
     )
+    evidence_timestamps: Dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "SAFIR-specific deterministic temporal consistency validation icin: "
+            "`EvidenceFrame.evidence_id -> EvidenceFrame.timestamp_sec` eslemesi "
+            "(bu cagriya ait TUM evidence kareleri, `sampler`den gelen gercek "
+            "zaman damgalariyla). `EventEngine._detect_from_structured`, VLM'in "
+            "urettigi `start_time`/`end_time`in bu GERCEK zaman damgalariyla "
+            "tutarli olup olmadigini bu esleme uzerinden dogrular - VLM'in "
+            "zaman iddiasini 'duzeltmek' degil, DOGRULAMAK icindir (bkz. "
+            "`EventEngine._enforce_temporal_consistency` docstring'i). Bos "
+            "birakilirsa (eski davranisla uyumlu) hicbir dogrulama yapilmaz."
+        ),
+    )
 
     @classmethod
-    def from_vlm_response(cls, vlm_response: "VLMResponse", timestamp: float) -> "EventEngineInput":
+    def from_vlm_response(
+        cls,
+        vlm_response: "VLMResponse",
+        timestamp: float,
+        evidence_timestamps: Optional[Dict[str, float]] = None,
+    ) -> "EventEngineInput":
         """`VLMResponse` orneginden bir `EventEngineInput` uretir.
 
         Args:
             vlm_response: `BaseVLM.analyze_evidence(...)`/`reconcile_events(...)` ciktisi.
             timestamp: Gozlemin zaman damgasi (orn. son evidence karesinin zaman damgasi).
+            evidence_timestamps: Bkz. `EventEngineInput.evidence_timestamps`;
+                `None`/bos birakilirsa zamansal tutarlilik dogrulamasi atlanir.
 
         Returns:
             Event Engine'e dogrudan verilebilecek girdi nesnesi.
@@ -56,6 +77,7 @@ class EventEngineInput(BaseModel):
             source_model=vlm_response.model_name,
             frame_count=vlm_response.frame_count,
             structured_events=list(getattr(vlm_response, "structured_events", []) or []),
+            evidence_timestamps=dict(evidence_timestamps or {}),
         )
 
 
@@ -312,10 +334,16 @@ class StructuredEvent(BaseModel):
     def to_event_store_kwargs(self) -> Dict[str, object]:
         """`EventStore.add_event(...)`e dogrudan `**kwargs` olarak verilebilecek sozluk uretir.
 
+        Izlenebilirlik duzeltmesi: onceden yalnizca 5 alan (`timestamp`/
+        `description`/`risk_score`/`risk_level`/`source_model`) tasiniyordu;
+        `evidence_ids`/`temporal_event_id`/`event_name`/`event_type`/
+        `confidence`/`occurrence_count`/`duration`/`keywords` SQLite'a hic
+        yazilmiyordu (bkz. `EventStore._TRACEABILITY_COLUMNS`). Artik bu
+        alanlarin tumu de tasinir - kalici bir olay kaydinin hangi kanit
+        karelerine dayandigi SONRADAN yeniden kurulabilir.
+
         Returns:
-            `timestamp`, `description`, `risk_score`, `risk_level`,
-            `source_model` anahtarlarini iceren, `EventStore.add_event`
-            imzasiyla birebir eslesen sozluk.
+            `EventStore.add_event` imzasiyla birebir eslesen sozluk.
         """
         return {
             "timestamp": self.timestamp,
@@ -323,6 +351,14 @@ class StructuredEvent(BaseModel):
             "risk_score": self.risk_score,
             "risk_level": self.risk_level,
             "source_model": self.source_model,
+            "temporal_event_id": self.temporal_event_id,
+            "event_name": self.event_name,
+            "event_type": self.event_type,
+            "confidence": self.confidence,
+            "occurrence_count": self.occurrence_count,
+            "duration": self.duration,
+            "evidence_ids": list(self.evidence_ids),
+            "keywords": list(self.keywords),
         }
 
 

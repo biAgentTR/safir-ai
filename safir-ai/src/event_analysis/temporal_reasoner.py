@@ -133,6 +133,18 @@ class TemporalReasoner:
           yeni gruba guncellenir (eski grup bir daha asla yeniden acilmaz -
           zaten zaman ilerledikce ona olan uzaklik sadece artabilir).
 
+        Formalizasyon (temporal proximity): iki tespit `E_i=(name_i,t_i)`,
+        `E_j=(name_j,t_j)` (j, i'den once, ayni ismin en son GRUBUNUN son
+        elemani) icin, ayni gruba dahil edilirler ancak VE ancak:
+
+            name_i == name_j  VE  (t_i - t_j) <= Delta   (Delta = self._merge_window_sec)
+
+        Farkli `event_name` (dolayisiyla farkli `canonical_event_type`,
+        cogu durumda) hicbir zaman YALNIZCA zaman yakinligindan dolayi
+        birlestirilmez - esitlik birinci, zorunlu kosuldur. Bu, SAFIR'in
+        TEK gruplama mekanizmasidir; ikinci bir gruplama/kumeleme
+        mantigi (orn. embedding-tabanli benzerlik) YOKTUR.
+
         Args:
             sorted_events: Zaman damgasina gore artan sirali `DetectedEvent` listesi.
 

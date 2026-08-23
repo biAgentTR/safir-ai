@@ -995,7 +995,10 @@ class SafirPipeline:
             `temporal_events`/`rule_matches`, cagrilar arasi kalici buffer uzerinden hesaplanir.
         """
         onset_timestamp = evidence_frames[0].timestamp_sec if evidence_frames else 0.0
-        engine_input = EventEngineInput.from_vlm_response(vlm_response, timestamp=onset_timestamp)
+        evidence_timestamps = {ef.evidence_id: ef.timestamp_sec for ef in evidence_frames}
+        engine_input = EventEngineInput.from_vlm_response(
+            vlm_response, timestamp=onset_timestamp, evidence_timestamps=evidence_timestamps
+        )
         detected_events = self._event_engine.detect(engine_input)
         self._event_history_buffer.extend(detected_events)
 
@@ -1220,6 +1223,8 @@ class SafirPipeline:
                     keywords=se.keywords,
                     risk_level=se.risk_level,
                     risk_score=se.risk_score,
+                    evidence_ids=se.evidence_ids,
+                    rule_ids=[m.rule_id for m in se.related_rule_matches],
                 )
                 for se in structured_events
             ],

@@ -38,6 +38,18 @@ her siddet seviyesi icin temsili 0-100 skor."""
 def resolve_deterministic_risk(rule_matches: List[RuleMatch]) -> Tuple[Optional[str], Optional[int]]:
     """Bir olay/cagriya ait `RuleMatch` listesinden EN YUKSEK siddetli, deterministik risk cikarir.
 
+    Formalizasyon (SAFIR'in nihai risk fonksiyonu, TAM olarak budur - baska
+    bir yerde ikinci bir risk hesaplamasi YOKTUR):
+
+        risk_level = argmax_{m in rule_matches} severity_rank(m.severity)
+        risk_score = SEVERITY_MIDPOINT_SCORE[risk_level]
+
+    Girdi kumesi YALNIZCA `RuleMatch.severity` degerlerinden olusur - VLM
+    confidence, VLM'in kendi risk_score/anomaly-score ipucu, RAG/embedding
+    benzerlik skoru veya LLM'in kendi risk tahmini bu fonksiyona ASLA
+    girmez (bkz. `src/main.py::stage_finalize_risk`, `context_builder.py`
+    modul dokustringi: bu kaynaklar risk_score/risk_level'i ETKILEMEZ).
+
     Hicbir kural eslesmediyse `(None, None)` doner - risk UYDURULMAZ; cagiran
     taraf bu durumda mevcut (orn. LLM Agent'tan gelen ya da "unknown") degeri
     korumalidir.

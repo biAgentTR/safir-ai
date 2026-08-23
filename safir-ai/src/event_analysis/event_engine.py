@@ -393,7 +393,11 @@ class EventEngine:
                 item.get("start_time", item.get("timestamp")), engine_input.timestamp
             )
             end_time_raw = item.get("end_time")
+            end_time = self._coerce_timestamp(end_time_raw, start_time) if end_time_raw is not None else None
             evidence_ids = [str(eid) for eid in (item.get("evidence_ids") or []) if isinstance(eid, (str, int))]
+            start_time, end_time = self._enforce_temporal_consistency(
+                start_time, end_time, evidence_ids, engine_input.evidence_timestamps
+            )
             keywords = self._normalize_free_form_keywords(item.get("keywords"))
             if not keywords and event_type is not None:
                 # VLM bu olay icin `keywords` uretmediyse (eski prompt/model
@@ -409,7 +413,7 @@ class EventEngine:
                     event_type=event_type,
                     description=evidence,
                     timestamp=start_time,
-                    end_timestamp=self._coerce_timestamp(end_time_raw, start_time) if end_time_raw is not None else None,
+                    end_timestamp=end_time,
                     confidence=confidence,
                     matched_keywords=keywords,
                     source_model=engine_input.source_model,
@@ -445,6 +449,95 @@ class EventEngine:
             return float(value)
         except (TypeError, ValueError):
             return fallback
+
+    @staticmethod
+    def _enforce_temporal_consistency(
+        start_time: float,
+        end_time: Optional[float],
+        evidence_ids: List[str],
+        evidence_timestamps: Dict[str, float],
+    ) -> "tuple[float, Optional[float]]":
+        """SAFIR-specific deterministic temporal consistency validation.
+
+        VLM'in `EVENTS_JSON.start_time`/`end_time` alanlari kendi urettigi
+        degerlerdir (bkz. `vlm_prompts.py`: VLM'e bunlari atadigi evidence
+        karelerinin GERCEK zaman damgalarindan turetmesi SOYLENIR, ama bu
+        hicbir yerde koda DOGRULANMAZ). Bu, SEASON (arXiv:2512.04643)
+        makalesinin decode-ici, attention-tabanli kontrastif mekanizmasinin
+        bir implementasyonu DEGILDIR (o mekanizma, barindirilan bir API
+        uzerinden erisilemez); yalnizca SAFIR'e ozgu, tamamen deterministik,
+        kod-tarafi bir tutarlilik dogrulamasidir.
+
+        Degismez (invariant): bir olayin span'i `T_event = [t_start, t_end]`,
+        kendisine atanan evidence karelerinin gercek zaman damgalari
+        `T_e = {t_1, ..., t_n}` icin
+            t_start <= min(T_e)  ve  t_end >= max(T_e)
+        kosulunu SAGLAMALIDIR - yani olay araligi, dayandigi TUM kanitlari
+        kapsamalidir. Ihlal edilirse, VLM'in iddiasi SILINMEZ; yalnizca bu
+        degismezi saglayacak sekilde GENISLETILIR (guvenli, minimal
+        duzeltme - bkz. gorev tanimi: "amac VLM timestamp'ini 'duzeltmek'
+        degil, dogrulamaktir" - burada duzeltme yalnizca ihlal durumunda,
+        span'i DARALTMADAN, yalnizca genisleterek yapilir).
+
+        Args:
+            start_time: VLM'in urettigi (veya cagri zaman damgasina dusmus) baslangic.
+            end_time: VLM'in urettigi bitis (varsa).
+            evidence_ids: Bu olaya atanan evidence kimlikleri (henuz
+                `main.py::_reconcile_unassigned_evidence` ile dogrulanmamis
+                olabilir - bilinmeyen kimlikler asagida sessizce yoksayilir).
+            evidence_timestamps: `EventEngineInput.evidence_timestamps`
+                (evidence_id -> gercek zaman damgasi). Bos ise (cagiran
+                bunu hic saglamadiysa) VLM'in zaman iddiasi TAMAMEN kopuk
+                sayilir ve dogrulama atlanir - guvenli fallback, mevcut
+                deger degistirilmeden aynen dondurulur.
+
+        Returns:
+            `(start_time, end_time)` - ihlal yoksa GIRDIYLE BIREBIR AYNI;
+            ihlal varsa yalnizca degismezi saglayacak minimal genisletme
+            uygulanmis hali. `start_time <= end_time` de her zaman saglanir
+            (end_time varsa).
+        """
+        # Evidence'dan tamamen bagimsiz, kosulsuz invariant: start <= end.
+        # VLM start_time > end_time gibi gecersiz bir span uretirse (evidence
+        # eslemesi olsun ya da olmasin), bu asla asagi akisa (duration
+        # hesabina) negatif olarak sizmamalidir.
+        if end_time is not None and end_time < start_time:
+            end_time = start_time
+
+        known_timestamps = [
+            evidence_timestamps[eid] for eid in evidence_ids if eid in evidence_timestamps
+        ]
+        if not known_timestamps:
+            # Evidence'dan tamamen kopuk (bilinen hicbir evidence_id yok) -
+            # guvenli fallback: VLM'in iddiasina (start<=end disinda) dokunma.
+            return start_time, end_time
+
+        evidence_min = min(known_timestamps)
+        evidence_max = max(known_timestamps)
+
+        corrected_start = min(start_time, evidence_min)
+        # end_time VLM tarafindan hic verilmediyse (None) bu "bilinmiyor"
+        # demektir - bir deger UYDURULMAZ, None oldugu gibi kalir. Yalnizca
+        # VLM zaten bir end_time VERMISSE ve bu, evidence'in gercek ust
+        # sinirinin ALTINDA kalmissa genisletilir.
+        corrected_end = max(end_time, evidence_max) if end_time is not None else None
+        if corrected_end is not None and corrected_end < corrected_start:
+            corrected_end = corrected_start
+
+        if corrected_start != start_time or corrected_end != end_time:
+            logger.warning(
+                "EventEngine: VLM start_time/end_time (%.2f/%s) atadigi evidence "
+                "karelerinin gercek zaman araligini (%.2f-%.2f) kapsamiyordu; "
+                "SAFIR-specific deterministic temporal consistency validation "
+                "geregi span genisletildi -> (%.2f/%s).",
+                start_time,
+                end_time,
+                evidence_min,
+                evidence_max,
+                corrected_start,
+                corrected_end,
+            )
+        return corrected_start, corrected_end
 
     @staticmethod
     def _normalize_free_form_keywords(raw: Any) -> List[str]:

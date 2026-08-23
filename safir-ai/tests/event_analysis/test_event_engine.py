@@ -277,6 +277,113 @@ def test_structured_type_not_in_taxonomy_is_kept_as_free_form_event_name_not_rej
     assert events[0].event_type is None
 
 
+def _input_structured_with_evidence(structured, evidence_timestamps, description="belirgin tehlike yok", timestamp=15.0) -> EventEngineInput:
+    return EventEngineInput(
+        vlm_description=description,
+        timestamp=timestamp,
+        source_model="test-vlm",
+        frame_count=1,
+        structured_events=structured,
+        evidence_timestamps=evidence_timestamps,
+    )
+
+
+def test_temporal_consistency_widens_start_time_to_cover_evidence_min() -> None:
+    """VLM'in start_time'i, atadigi evidence'in gercek en erken zaman damgasindan SONRA ise, span geriye genisletilir."""
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured_with_evidence(
+            [{"type": "yangin_duman", "start_time": 10.0, "end_time": 12.0, "confidence": 0.9,
+              "evidence_ids": ["ev1", "ev2"]}],
+            evidence_timestamps={"ev1": 5.0, "ev2": 11.0},
+        )
+    )
+    assert len(events) == 1
+    assert events[0].timestamp == 5.0
+    assert events[0].end_timestamp == 12.0
+
+
+def test_temporal_consistency_widens_end_time_to_cover_evidence_max() -> None:
+    """VLM'in end_time'i, atadigi evidence'in gercek en gec zaman damgasindan ONCE ise, span ileriye genisletilir."""
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured_with_evidence(
+            [{"type": "yangin_duman", "start_time": 5.0, "end_time": 6.0, "confidence": 0.9,
+              "evidence_ids": ["ev1", "ev2"]}],
+            evidence_timestamps={"ev1": 5.0, "ev2": 20.0},
+        )
+    )
+    assert len(events) == 1
+    assert events[0].timestamp == 5.0
+    assert events[0].end_timestamp == 20.0
+
+
+def test_temporal_consistency_leaves_already_consistent_span_untouched() -> None:
+    """VLM'in span'i zaten evidence'in gercek araligini kapsiyorsa hicbir sey degistirilmez."""
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured_with_evidence(
+            [{"type": "yangin_duman", "start_time": 1.0, "end_time": 30.0, "confidence": 0.9,
+              "evidence_ids": ["ev1", "ev2"]}],
+            evidence_timestamps={"ev1": 5.0, "ev2": 20.0},
+        )
+    )
+    assert events[0].timestamp == 1.0
+    assert events[0].end_timestamp == 30.0
+
+
+def test_temporal_consistency_skips_validation_when_evidence_ids_unknown() -> None:
+    """Atanan evidence_id'ler evidence_timestamps eslemesinde YOKSA (kopuk), VLM'in iddiasina dokunulmaz - guvenli fallback."""
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured_with_evidence(
+            [{"type": "yangin_duman", "start_time": 999.0, "end_time": 1000.0, "confidence": 0.9,
+              "evidence_ids": ["unknown_ev"]}],
+            evidence_timestamps={"ev1": 5.0, "ev2": 20.0},
+        )
+    )
+    assert events[0].timestamp == 999.0
+    assert events[0].end_timestamp == 1000.0
+
+
+def test_temporal_consistency_clamps_end_time_before_start_time_even_without_evidence() -> None:
+    """VLM start_time > end_time gibi gecersiz bir span uretirse, evidence eslemesi olmasa bile end_time start_time'a clamp edilir."""
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured(
+            [{"type": "yangin_duman", "start_time": 100.0, "end_time": 50.0, "confidence": 0.9}]
+        )
+    )
+    assert events[0].timestamp == 100.0
+    assert events[0].end_timestamp == 100.0
+
+
+def test_temporal_consistency_skips_validation_when_no_evidence_timestamps_provided() -> None:
+    """`evidence_timestamps` hic saglanmadiysa (eski davranisla uyumlu) dogrulama tamamen atlanir."""
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured(
+            [{"type": "yangin_duman", "start_time": 999.0, "end_time": 1000.0, "confidence": 0.9,
+              "evidence_ids": ["ev1"]}]
+        )
+    )
+    assert events[0].timestamp == 999.0
+    assert events[0].end_timestamp == 1000.0
+
+
+def test_temporal_consistency_does_not_invent_end_time_when_vlm_gave_none() -> None:
+    """VLM end_time hic vermediyse (None), evidence'tan bir deger UYDURULMAZ - None kalir."""
+    engine = EventEngine()
+    events = engine.detect(
+        _input_structured_with_evidence(
+            [{"type": "yangin_duman", "start_time": 50.0, "confidence": 0.9, "evidence_ids": ["ev1"]}],
+            evidence_timestamps={"ev1": 5.0},
+        )
+    )
+    assert events[0].timestamp == 5.0
+    assert events[0].end_timestamp is None
+
+
 def test_structured_confidence_clamped_and_timestamp_defaults() -> None:
     """Guven skoru 0-1'e kirpilir; timestamp yoksa cagrinin zaman damgasina duser."""
     engine = EventEngine()

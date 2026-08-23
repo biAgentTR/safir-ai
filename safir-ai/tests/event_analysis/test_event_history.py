@@ -28,6 +28,7 @@ class _FakeEventStore:
         risk_level: str | None = None,
         source_model: str | None = None,
         video_source: str | None = None,
+        **kwargs: object,
     ) -> int:
         event_id = len(self.rows)
         self.rows.append(
@@ -39,6 +40,7 @@ class _FakeEventStore:
                 "risk_level": risk_level,
                 "source_model": source_model,
                 "video_source": video_source,
+                **kwargs,
             }
         )
         return event_id

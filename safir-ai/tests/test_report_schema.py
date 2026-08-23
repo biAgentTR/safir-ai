@@ -77,6 +77,8 @@ def test_events_survive_model_dump_api_payload_simulation() -> None:
             "keywords": ["yerde yatan kişi", "hareketsiz kişi"],
             "risk_level": None,
             "risk_score": None,
+            "evidence_ids": [],
+            "rule_ids": [],
         }
     ]
 

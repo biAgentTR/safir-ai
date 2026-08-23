@@ -64,6 +64,18 @@ class EventSummary(BaseModel):
         default=None, description="Bu olaya ait deterministik RuleEngine eslesmesi (varsa); yoksa 'Degerlendirilmedi'."
     )
     risk_score: Optional[int] = Field(default=None, ge=0, le=100, description="Bkz. `risk_level`.")
+    evidence_ids: List[str] = Field(
+        default_factory=list,
+        description="Izlenebilirlik: bu olayin dayandigi kanit karesi kimlikleri (bkz. "
+        "`StructuredEvent.evidence_ids`) - Evidence -> Event -> Rapor zincirini rapor "
+        "duzeyinde de takip edilebilir kilar.",
+    )
+    rule_ids: List[str] = Field(
+        default_factory=list,
+        description="Izlenebilirlik: bu olaya uygulanan `RuleMatch.rule_id` degerleri (bkz. "
+        "`StructuredEvent.related_rule_matches`) - `risk_level`in HANGI kural(lar)dan "
+        "geldigini gosterir; kurallar INSAN-YAZIMI ve sabittir, LLM tarafindan uretilmez.",
+    )
 
 
 class RagContext(BaseModel):
