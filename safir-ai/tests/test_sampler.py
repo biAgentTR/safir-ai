@@ -1785,3 +1785,61 @@ def test_short_sudden_events_are_unaffected_by_the_slow_baseline_channels(tmp_pa
         "Ani/kisa olay, yavas uzun-baz kanallari ACIKKEN de aninda "
         "yakalanmaya devam etmeli."
     )
+
+
+# =============================================================================
+# KOK NEDEN: `max_temporal_gap_sec` garantisi ("en fazla X saniye sessizlik")
+# DOLAYLI olarak `selection_reason == temporal_coverage`e (ki bu da `density_
+# state == CALM`a, ki bu da cooldown'lara baglidir) BAGLIYDI - dedup SADECE
+# coverage DISINDA uygulaniyordu. Eger bir cooldown (ör. tekrarlayan zayif
+# sinyallerle uzayan) `max_temporal_gap_sec`den UZUN surerse, dedup bu
+# GARANTIYI erteleyebiliyordu - "en fazla X saniye" sozu KOSULSUZ olmasi
+# gerekirken density durumuna BAGIMLI hale geliyordu.
+# =============================================================================
+
+
+def test_max_temporal_gap_guarantee_is_unconditional_even_when_cooldown_outlasts_it(tmp_path: Path) -> None:
+    """28) KOK NEDEN REGRESYONU: guclu bir olay sonrasi, cooldown `max_
+    temporal_gap_sec`den UZUN surerse (ör. `strong_change_cooldown_sec`
+    daha buyuk ayarlanmis/uzatilmissa) VE geriye kalan sahne son secilen
+    kareye 'neredeyse ayni' kalirsa (dedup), garanti ARTIK density
+    durumundan BAGIMSIZ olarak KOSULSUZ uygulanmali - hicbir ardisik iki
+    evidence karesi arasindaki fark `max_temporal_gap_sec`i GECMEMELI."""
+    path = tmp_path / "cooldown_outlasts_gap.mp4"
+    frames = []
+    total = 750
+    for i in range(total):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if 100 <= i < 120:
+            cv2.rectangle(frame, (5, 5), (120, 90), (255, 255, 255), -1)
+        if i >= 120:
+            # son secilen (patlama) kareye GORSEL OLARAK cok yakin, sabit
+            # kalan bir "ardil parlaklik" - dedup'in TEKRAR TEKRAR
+            # engelleyecegi bir senaryo.
+            cv2.rectangle(frame, (5, 5), (120, 90), (250, 250, 250), -1)
+        frames.append(frame)
+    _write_video(path, frames)
+
+    sampler = AdaptiveFrameSampler(
+        min_change_threshold=0.00008,
+        blur_kernel_size=(21, 21),
+        history_window=180,
+        max_temporal_gap_sec=4.0,
+        early_change_score_ratio=0.4,
+        early_change_window=3,
+        early_change_min_count=2,
+        early_change_selection_interval_sec=1.0,
+        early_change_cooldown_sec=6.0,  # KASITLI OLARAK max_temporal_gap_sec'den (4.0) BUYUK
+        significant_change_selection_interval_sec=0.2,
+        strong_change_cooldown_sec=6.0,  # KASITLI OLARAK max_temporal_gap_sec'den (4.0) BUYUK
+        dedup_similarity_ratio=0.2,
+        evidence_output_dir=str(tmp_path / "evid"),
+    )
+    evidence = sampler.process_video(path, sample_fps=30)
+
+    timestamps = [f.timestamp_sec for f in evidence]
+    gaps = [b - a for a, b in zip(timestamps, timestamps[1:])]
+    assert all(g <= sampler.max_temporal_gap_sec + 1e-6 for g in gaps), (
+        f"max_temporal_gap_sec ({sampler.max_temporal_gap_sec}) garantisi, "
+        f"cooldown daha uzun surse bile ihlal edilmemeli. Gaps: {gaps}"
+    )

@@ -2031,8 +2031,27 @@ class AdaptiveFrameSampler:
                                 # secilen kareyle "ayni" cikar ve "uzun araliklar
                                 # tamamen bos birakilmasin" garantisi (onceki
                                 # gorevde eklenen coverage mekanizmasi) bozulur.
+                                # SAGLAMLASTIRMA (kullanici geri bildirimi: "bazen
+                                # sistem calismiyor gibi"): `selection_reason ==
+                                # COVERAGE` DOLAYLI bir kosuldur - `density_state ==
+                                # CALM` olmasina baglidir, bu da `strong_change_
+                                # cooldown_sec`/`early_change_cooldown_sec`e
+                                # baglidir. Eger bu cooldown'lar (ör. tekrarlayan
+                                # zayif sinyallerle) `max_temporal_gap_sec`e ESIT
+                                # veya ONDAN UZUN kalirsa, dedup teorik olarak
+                                # `max_temporal_gap_sec` GARANTISINI density
+                                # CALM'a donene kadar ERTELEYEBILIRDI - "en fazla
+                                # X saniye sessizlik" sozu density durumuna
+                                # BAGIMLI hale gelirdi, oysa KOSULSUZ olmasi
+                                # gerekir. Bu yuzden dedup, GERCEK bosluk zaten
+                                # `max_temporal_gap_sec`e ULASTIYSA (density
+                                # durumu ne olursa olsun) ARTIK UYGULANMAZ -
+                                # garanti boylece density/cooldown etkilesiminden
+                                # TAMAMEN BAGIMSIZ, KOSULSUZ hale gelir.
+                                gap_since_last_evidence_sec = timestamp_sec - last_evidence_timestamp
                                 blocked_by_dedup = (
                                     selection_reason != _SELECTION_REASON_COVERAGE
+                                    and gap_since_last_evidence_sec < self.max_temporal_gap_sec
                                     and self._is_near_duplicate(pending_best.gray, last_selected_gray)
                                 )
                                 if blocked_by_dedup:
@@ -2150,8 +2169,14 @@ class AdaptiveFrameSampler:
                 pending_best.timestamp_sec, strong_cooldown_until, early_cooldown_until
             )
             final_interval, final_reason = self._selection_interval_and_reason(final_density_state)
+            # SAGLAMLASTIRMA: donguce-ici ayni duzeltmeyle TUTARLI (bkz.
+            # yukaridaki "gap_since_last_evidence_sec" yorumu) - video sonunda
+            # da `max_temporal_gap_sec` garantisi density durumundan BAGIMSIZ
+            # olmalidir.
+            final_gap_sec = pending_best.timestamp_sec - last_evidence_timestamp
             final_blocked_by_dedup = (
                 final_reason != _SELECTION_REASON_COVERAGE
+                and final_gap_sec < self.max_temporal_gap_sec
                 and self._is_near_duplicate(pending_best.gray, last_selected_gray)
             )
             if (
