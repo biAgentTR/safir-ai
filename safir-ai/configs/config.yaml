@@ -45,13 +45,16 @@ sampler:
   # "daha da hassas olabilir" diyerek AYNI yonde devam istedi, bu yuzden
   # BIR KEZ DAHA yariya indirildi (0.0005 -> 0.00025). TUM oranli alt-
   # esikler yine OTOMATIK olarak ayni oranda duser - ayrica dokunulmadi.
-  # ONEMLI (birikimli risk uyarisi): esik artik ILK degerin 1/4'u - false-
-  # positive (onemsiz titreme/kompresyon artefaktinin evidence sayilmasi)
-  # riski KUMULATIF olarak buyudu; bu noktadan sonraki HER EK dusus icin
-  # gercek diagnostic veri/video ONERILIR (kor tahmin yerine). Operator
-  # panelindeki `min_change_threshold_override` slider'i ile sahne
-  # bazinda GERI yukseltilebilir (bkz. `sampler_from_config`).
-  min_change_threshold: 0.00025      # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani (yuksek hassasiyet)
+  # ONEMLI (birikimli risk uyarisi - guncellendi): kullanici "biraz daha
+  # oynayalim" diyerek AYNI yonde bir adim daha istedi; bu kez BUTUN
+  # yariya-indirme yerine daha OLCULU bir adim atildi (0.00025 -> 0.00015,
+  # ~1.7x) - esik artik ILK degerin (0.001) ~1/6.7'si. False-positive riski
+  # bu noktada ARTIK KUCUMSENMEMELI; bir SONRAKI adim icin gercek
+  # diagnostic veri/video KESINLIKLE onerilir (kor tahminle daha fazla
+  # ILERLEMEK, "hicbir sey kacirilmasin" ugruna "her sey evidence sayilsin"a
+  # cok yaklasabilir). Operator panelindeki `min_change_threshold_override`
+  # slider'i ile sahne bazinda GERI yukseltilebilir (bkz. `sampler_from_config`).
+  min_change_threshold: 0.00015      # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani (yuksek hassasiyet)
   blur_kernel_size: [21, 21]         # Gauss bulaniklastirma cekirdek boyutu (tek sayilar)
   # KANITA DAYALI DEGISIKLIK (30 -> 60): `sample_fps` 5'ten 10'a
   # cikarildiginda (asagisi), `history_window` SABIT KALDIGI icin adaptif
@@ -107,7 +110,9 @@ sampler:
   # olarak artirir; ayni zamanda "uzun bosluk" HISSINI de azaltir. `10.0`,
   # asagidaki `early_change_selection_interval_sec` (2.0) <= `max_temporal_
   # gap_sec` sirasini hala korur (constructor bu sirayi dogrular).
-  max_temporal_gap_sec: 10.0         # Son evidence karesinden bu yana izin verilen azami sessizlik suresi (saniye)
+  # KANITA DAYALI DEGISIKLIK (10.0 -> 7.0): "daha sik frame" talebiyle
+  # devam - sakin bolge araligi bir kademe daha kisaltildi.
+  max_temporal_gap_sec: 7.0          # Son evidence karesinden bu yana izin verilen azami sessizlik suresi (saniye)
 
   # NOT (yogunluk-uyarlamali secim): Kaynak/analiz FPS'i (sample_fps) HER
   # ZAMAN sabittir - adaptif olan yalnizca VLM'e gonderilecek karelerin secim
@@ -126,7 +131,8 @@ sampler:
   # mekanizmasi da AYNI degeri kullaniyor (bkz. adaptive_sampler.py), yani
   # bu tek deger HEM onay-oncesi HEM onay-sonrasi erken-durumda VLM'e giden
   # kare yogunlugunu artirir.
-  early_change_selection_interval_sec: 2.0  # Erken-degisimde azami secim araligi (sakin moddan daha sik)
+  # KANITA DAYALI DEGISIKLIK (2.0 -> 1.5): "daha sik frame" talebiyle devam.
+  early_change_selection_interval_sec: 1.5  # Erken-degisimde azami secim araligi (sakin moddan daha sik)
   early_change_cooldown_sec: 4.0     # Erken-degisim sinyali kesildikten sonra sakin moda donmeden once beklenen sure
 
   # KANITA DAYALI DEGISIKLIK (1.0 -> 0.5): ana esik gecildikten sonraki EN
@@ -136,7 +142,8 @@ sampler:
   # sinirsiz secildigi icin bu deger yalnizca ARADAKI esik-alti kareleri
   # etkiler - eklenen kareler halihazirda VAR OLAN "significant_change"
   # kategorisine girer, yeni bir kategori EKLENMEZ.
-  significant_change_selection_interval_sec: 0.5  # Guclu-degisim hysteresis penceresinde azami secim araligi (en sik)
+  # KANITA DAYALI DEGISIKLIK (0.5 -> 0.3): "daha sik frame" talebiyle devam.
+  significant_change_selection_interval_sec: 0.3  # Guclu-degisim hysteresis penceresinde azami secim araligi (en sik)
   strong_change_cooldown_sec: 4.0    # Ana esik gecildikten sonra "guclu degisim" durumunun korunacagi sure
 
   # NOT (duplicate onleme): Yalnizca coverage/early_change/significant_change
@@ -148,7 +155,8 @@ sampler:
   # yakin ama yine de farkli olan ardisik kareler artik daha az elenir; bu
   # da toplam evidence/VLM kare sayisini artiran DIGER bir kanal. threshold_
   # exceeded kareler zaten bu kontrolden HICBIR ZAMAN gecmiyor - etkilenmez.
-  dedup_similarity_ratio: 0.35       # Son secilen kareye gore fark orani bu_oran*min_change_threshold'dan dusukse "duplicate"
+  # KANITA DAYALI DEGISIKLIK (0.35 -> 0.25): "daha sik frame" talebiyle devam.
+  dedup_similarity_ratio: 0.25       # Son secilen kareye gore fark orani bu_oran*min_change_threshold'dan dusukse "duplicate"
 
   # NOT (tek-kareli guclu/lokal degisim): early_change_min_count'un cok-kareli
   # onayindan BAGIMSIZ, ayri bir yol - ana esigin ALTINDA ama TEK bir karede
