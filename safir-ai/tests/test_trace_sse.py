@@ -19,7 +19,14 @@ from fastapi.testclient import TestClient
 
 import src.main as main
 from src.main import JobState, app
-from src.observability.trace_serializer import STAGE_ORDER, serialize_decision, serialize_vlm
+from src.event_analysis.risk_resolver import resolve_deterministic_risk_with_provenance
+from src.event_analysis.schemas import RuleMatch
+from src.observability.trace_serializer import (
+    STAGE_ORDER,
+    serialize_decision,
+    serialize_decision_final,
+    serialize_vlm,
+)
 
 
 # --------------------------- ortak yardimcilar ---------------------------
@@ -96,6 +103,54 @@ def test_serialize_decision_excludes_raw_response_and_internal_reasoning():
     assert "GIZLI" not in json.dumps(data)
     assert data["risk_score"] == 80 and data["actions"] == ["a", "b"]
     assert status == "completed"
+
+
+def test_serialize_decision_final_explains_rule_engine_override_of_agent_draft():
+    """Kok neden testi (90 vs 88): 'decision_final' artik trace'e ULASIYOR ve
+    RuleEngine'in NEDEN/HANGI kuralla Agent'in taslak skorunu ezdigini gosteriyor."""
+
+    class _Decision:
+        risk_score = 88
+        risk_level = "kritik"
+        risk_status = "assessed"
+
+    rule_matches = [
+        RuleMatch(
+            rule_id="YG-03",
+            rule_description="Yangin Guvenligi Talimati YG-03",
+            event_type="yangin_duman",
+            severity="kritik",
+            source_event_id="evt_0",
+        )
+    ]
+    provenance = resolve_deterministic_risk_with_provenance(rule_matches)
+
+    summary, data, frames, status, error = serialize_decision_final(
+        {"decision": _Decision(), "risk_provenance": provenance}, "job1"
+    )
+
+    assert status == "completed"
+    assert data["risk_score"] == 88
+    assert data["risk_provenance"]["risk_source"] == "rule_engine"
+    assert data["risk_provenance"]["rule_ids"] == ["YG-03"]
+    assert "YG-03" in data["risk_provenance"]["explanation"]
+    assert "NIHAI" in summary and "YG-03" in summary
+
+
+def test_serialize_decision_final_marks_agent_only_when_no_rule_matched():
+    class _Decision:
+        risk_score = 30
+        risk_level = "dusuk"
+        risk_status = "assessed"
+
+    provenance = resolve_deterministic_risk_with_provenance([])
+
+    summary, data, frames, status, error = serialize_decision_final(
+        {"decision": _Decision(), "risk_provenance": provenance}, "job1"
+    )
+
+    assert data["risk_provenance"]["risk_source"] is None
+    assert "Agent" in summary
 
 
 def test_serialize_vlm_marks_degraded_as_failed():

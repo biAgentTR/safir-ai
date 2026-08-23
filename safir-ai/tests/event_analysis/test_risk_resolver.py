@@ -6,7 +6,10 @@ deterministik bir risk seviyesi/skoru turetme davranisini dogrular.
 
 from __future__ import annotations
 
-from src.event_analysis.risk_resolver import resolve_deterministic_risk
+from src.event_analysis.risk_resolver import (
+    resolve_deterministic_risk,
+    resolve_deterministic_risk_with_provenance,
+)
 from src.event_analysis.schemas import RuleMatch
 
 
@@ -72,3 +75,69 @@ def test_known_and_unknown_severity_mixed_uses_only_known_ones() -> None:
     ]
 
     assert resolve_deterministic_risk(matches) == ("orta", 38)
+
+
+# --- resolve_deterministic_risk_with_provenance: risk explainability (90 vs 88 root cause fix) ---
+
+
+def test_provenance_matches_resolve_deterministic_risk_exactly() -> None:
+    """Provenance fonksiyonu, 2-tuple donen fonksiyonla AYNI risk_level/risk_score'u uretmelidir (tek kaynak)."""
+    matches = [_match("ISG-M24", "orta"), _match("COMBO-01", "kritik"), _match("ISG-M12", "yuksek")]
+
+    risk_level, risk_score = resolve_deterministic_risk(matches)
+    provenance = resolve_deterministic_risk_with_provenance(matches)
+
+    assert provenance.risk_level == risk_level == "kritik"
+    assert provenance.risk_score == risk_score == 88
+
+
+def test_provenance_lists_only_the_winning_severity_rule_ids() -> None:
+    matches = [_match("ISG-M24", "orta"), _match("COMBO-01", "kritik")]
+
+    provenance = resolve_deterministic_risk_with_provenance(matches)
+
+    assert provenance.rule_ids == ["COMBO-01"]
+    assert provenance.rule_severities == ["kritik"]
+    assert "ISG-M24" not in provenance.rule_ids
+
+
+def test_provenance_includes_all_rule_ids_tied_at_the_winning_severity() -> None:
+    matches = [_match("YG-03", "kritik"), _match("ISG-M45", "kritik")]
+
+    provenance = resolve_deterministic_risk_with_provenance(matches)
+
+    assert set(provenance.rule_ids) == {"YG-03", "ISG-M45"}
+
+
+def test_provenance_tracks_contributing_event_ids_including_combo_related_events() -> None:
+    combo_match = RuleMatch(
+        rule_id="COMBO-01",
+        rule_description="KKD + arac-yaya yakinligi",
+        event_type="kkd_ihlali+arac_yaya_yakinligi",
+        severity="kritik",
+        source_event_id="evt_0",
+        related_event_ids=["evt_1"],
+    )
+
+    provenance = resolve_deterministic_risk_with_provenance([combo_match])
+
+    assert provenance.contributing_event_ids == ["evt_0", "evt_1"]
+
+
+def test_provenance_no_match_returns_none_risk_and_empty_lists_not_fabricated() -> None:
+    provenance = resolve_deterministic_risk_with_provenance([])
+
+    assert provenance.risk_level is None
+    assert provenance.risk_score is None
+    assert provenance.rule_ids == []
+    assert provenance.contributing_event_ids == []
+    assert "belirlenemedi" in provenance.explanation()
+
+
+def test_provenance_explanation_is_deterministic_and_cites_the_rule_id() -> None:
+    provenance = resolve_deterministic_risk_with_provenance([_match("YG-03", "kritik")])
+
+    explanation = provenance.explanation()
+
+    assert "YG-03" in explanation
+    assert "kritik" in explanation

@@ -289,3 +289,84 @@ def test_end_to_end_query_against_real_748_chunks_with_mocks(tmp_path) -> None:
         assert doc.rerank_score >= 0.10
         # gercek KB'den geldigi icin en az document_id dolu olmali (UYDURULMAMIS metadata)
         assert doc.document_id is not None
+
+
+# ---------------------------------------------------------------------------
+# 6. Icerik-tabanli retrieval dogrulugu (RAG P0: "chunks var ama retrieval
+#    dogru sonuc veriyor mu?" sorusunun deterministik cevabi)
+# ---------------------------------------------------------------------------
+
+
+class _VocabEmbeddingProvider:
+    """Corpus'a ozel, COLLISION-SIZ (hash yok, gercek kelime->boyut haritasi) sahte embedding sağlayıcı.
+
+    `_FakeEmbeddingProvider` (16 boyut, hash-mod-tabanli) mevcut testler icin
+    yeterlidir (yalnizca akis mekanigini dogrularlar), ama kisa cumlelerde
+    hash CARPISMASI riski tasir - bir icerik-dogrulugu testi icin (bu dogru
+    dokumani mi getiriyor?) bu risk kabul edilemez (yanlis-negatif/pozitif
+    testi anlamsizlastirir). Bu siniftaki her benzersiz kelime KENDI boyutuna
+    sahiptir - carpisma MATEMATIKSEL OLARAK IMKANSIZDIR, hala GERCEK Gemini
+    API'sine bagimli DEGILDIR (bkz. gorev tanimi 8. bolum: "unit/in-memory
+    deterministic alternatif kullan").
+    """
+
+    def __init__(self, vocabulary: list[str]) -> None:
+        self._index = {word: i for i, word in enumerate(vocabulary)}
+
+    @property
+    def dimension(self) -> int:
+        return len(self._index)
+
+    def _vector_for(self, text: str) -> np.ndarray:
+        vector = np.zeros(len(self._index), dtype="float32")
+        for token in text.lower().split():
+            if token in self._index:
+                vector[self._index[token]] += 1.0
+        norm = np.linalg.norm(vector)
+        return vector / norm if norm > 0 else vector
+
+    def embed_documents(self, texts):
+        return np.array([self._vector_for(t) for t in texts], dtype="float32")
+
+    def embed_query(self, text):
+        return self._vector_for(text)
+
+
+def test_content_based_retrieval_ranks_the_relevant_document_first(tmp_path, monkeypatch) -> None:
+    """Kucuk, deterministik iki-dokumanli corpus: dogru sorgu dogru dokumani getirmeli (RAG P0).
+
+    Zinciri (document -> chunk -> embed -> FAISS index -> query embed ->
+    retrieval) GERCEK implementasyon kodunun (`add_documents`/`query`)
+    UZERINDEN, reranker'i DEVRE DISI birakarak (`reranker=None`) SAF
+    embedding-tabanli ayirt ediciligi dogrular - RAG mekanizmasinin
+    "chunk'lar var ama alakasiz sonuc donuyor" seklinde sessizce bozuk
+    OLMADIGINI kanitlar. `_VocabEmbeddingProvider` carpisma-siz oldugu icin
+    bu, "test corpus'u kucuk oldugu icin tesadufen gecti" degil, gercekten
+    dogru dokumanin secildiginin kaniti.
+    """
+    document_a = "Forklift çalışma alanında yaya bulunması yasaktır."
+    document_b = "Yangın söndürücülerin aylık kontrolü yapılmalıdır."
+    query_a = "Forklift yakınında yaya bulunması"
+    query_b = "Yangın söndürücü kontrolü"
+
+    vocabulary = sorted(
+        {tok for text in (document_a, document_b, query_a, query_b) for tok in text.lower().split()}
+    )
+    monkeypatch.setattr(
+        rag_module, "build_embedding_provider", lambda **kwargs: _VocabEmbeddingProvider(vocabulary)
+    )
+
+    embedding_config = EmbeddingConfig(provider="gemini", model_name="fake-model", output_dimensionality=len(vocabulary))
+    faiss_config = FaissMemoryConfig(
+        index_path=str(tmp_path / "index.faiss"), embedding_model="fake-model", top_k=2, candidate_k=5
+    )
+    service = EmbeddingRAGService(embedding_config, faiss_config, RerankerConfig(enabled=False))
+    service.add_documents([document_a, document_b])
+
+    forklift_results = service.query(query_a)
+    assert forklift_results
+    assert forklift_results[0].text == document_a
+
+    yangin_results = service.query(query_b)
+    assert yangin_results
+    assert yangin_results[0].text == document_b

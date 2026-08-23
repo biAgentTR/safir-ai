@@ -143,6 +143,28 @@ class SafirReport(BaseModel):
             "'unknown': VLM/LLM/ajan karar zincirinde hata olustu veya guvenilir karar uretilemedi."
         ),
     )
+    risk_source: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nihai `risk_score`/`risk_level`in HANGI mekanizmadan geldigi (izlenebilirlik): "
+            "'rule_engine' (deterministik RuleEngine eslesmesi, HER ZAMAN Agent'in kendi tahminini "
+            "EZER), 'agent' (hicbir kural eslesmedi, Agent'in KENDI dogrulanmamis tahmini korundu), "
+            "'unknown' (analiz basarisiz oldu, risk hic belirlenemedi)."
+        ),
+    )
+    risk_explanation: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nihai riskin deterministik, LLM'e SORULMAMIS Turkce gerekcesi (bkz. "
+            "`risk_resolver.RiskProvenance.explanation`). Operatorun 'bu risk neden bu deger?' "
+            "sorusunu, structured RuleMatch verisinden turemis bir cumleyle cevaplar."
+        ),
+    )
+    contributing_rule_ids: List[str] = Field(
+        default_factory=list,
+        description="Nihai risk_level'i belirleyen (en yuksek siddetli) RuleMatch(ler)in rule_id'leri; "
+        "risk_source='rule_engine' degilse bos liste.",
+    )
     recommended_action: str = Field(
         description="Saha operatorune yonelik birincil aksiyon onerisi (geriye-uyum: actions[0])."
     )

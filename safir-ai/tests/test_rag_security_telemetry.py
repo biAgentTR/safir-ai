@@ -94,6 +94,30 @@ def test_serialize_rag_security_zero_result_is_reported_not_fabricated() -> None
     assert data["rag"]["avg_rerank_score"] is None
 
 
+def test_serialize_rag_security_flags_fallback_placeholder_corpus_loudly() -> None:
+    """RAG P0 kok neden testi: gercek mevzuat indeksi yoksa (fallback), bu SESSIZCE gecilmemeli - trace'te acikca UYARI olarak gorunmeli."""
+    telemetry = _sample_rag_telemetry()
+    telemetry.corpus_source = "fallback_placeholder"
+    payload = {"rag_telemetry": telemetry, "guard_results": []}
+
+    summary, data, _frames, _status, _error = serialize_rag_security(payload, "job1")
+
+    assert data["rag"]["corpus_source"] == "fallback_placeholder"
+    assert "UYARI" in summary
+    assert "PLACEHOLDER" in summary
+
+
+def test_serialize_rag_security_persisted_index_corpus_is_not_flagged() -> None:
+    telemetry = _sample_rag_telemetry()
+    telemetry.corpus_source = "persisted_index"
+    payload = {"rag_telemetry": telemetry, "guard_results": []}
+
+    summary, data, _frames, _status, _error = serialize_rag_security(payload, "job1")
+
+    assert data["rag"]["corpus_source"] == "persisted_index"
+    assert "UYARI" not in summary
+
+
 # --- guard detection serialization ---
 def test_serialize_rag_security_guard_quarantine_is_reported() -> None:
     payload = {"rag_telemetry": None, "guard_results": [_sample_guard_result(action="quarantine")]}

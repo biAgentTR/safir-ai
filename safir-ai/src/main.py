@@ -45,7 +45,11 @@ from src.event_analysis.event_builder import EventBuilder
 from src.event_analysis.event_engine import EventEngine
 from src.event_analysis.event_history import EventHistory
 from src.event_analysis.regulation_matcher import resolve_regulation_matches
-from src.event_analysis.risk_resolver import resolve_deterministic_risk
+from src.event_analysis.risk_resolver import (
+    RiskProvenance,
+    resolve_deterministic_risk,
+    resolve_deterministic_risk_with_provenance,
+)
 from src.event_analysis.rule_engine import RuleEngine
 from src.event_analysis.schemas import DetectedEvent, EventEngineInput, RuleMatch, TemporalEvent
 from src.event_analysis.temporal_reasoner import DEFAULT_RELATION_WINDOW_SEC, TemporalReasoner
@@ -857,7 +861,8 @@ class SafirPipeline:
         _emit("decision", {"decision": decision})
 
         decision = self.stage_finalize_risk(decision, rule_matches)
-        _emit("decision_final", {"decision": decision})
+        risk_provenance = resolve_deterministic_risk_with_provenance(rule_matches)
+        _emit("decision_final", {"decision": decision, "risk_provenance": risk_provenance})
 
         escalation = self.stage_escalate(decision, vlm_response)
         _emit("escalation", {"escalation": escalation})
@@ -874,6 +879,7 @@ class SafirPipeline:
             rule_matches=rule_matches,
             latest_timestamp=latest_timestamp,
             detected_events=detected_events,
+            risk_provenance=risk_provenance,
         )
         logger.info(
             "SAFIR pipeline tamamlandi: video=%s risk=%s(%s) status=%s sure=%.3fs",
@@ -1176,8 +1182,17 @@ class SafirPipeline:
         rule_matches,
         latest_timestamp: float,
         detected_events: Optional[List[DetectedEvent]] = None,
+        risk_provenance: Optional[RiskProvenance] = None,
     ) -> SafirReport:
-        """06-07: Olay kaydi (EventBuilder/History/Store) + nihai `SafirReport` insasi."""
+        """06-07: Olay kaydi (EventBuilder/History/Store) + nihai `SafirReport` insasi.
+
+        `risk_provenance`: verilmezse (orn. Jupyter demo'da `build_report`
+        dogrudan/tek basina cagrilirsa) `rule_matches`den GUVENLI sekilde
+        yeniden hesaplanir - `run()`daki degerle BIREBIR AYNI sonucu verir
+        (bkz. `risk_resolver._pick_provenance`, tek kaynak).
+        """
+        if risk_provenance is None:
+            risk_provenance = resolve_deterministic_risk_with_provenance(rule_matches)
         current_call_events = _select_current_call_events(temporal_events, latest_timestamp, detected_events)
         detected_event_names = sorted({te.event_name for te in current_call_events})
         detected_event_types = sorted({te.event_type for te in current_call_events if te.event_type})
@@ -1201,6 +1216,24 @@ class SafirPipeline:
             start_ts=onset_timestamp, end_ts=latest_timestamp, video_source=video_source
         )
 
+        # Risk explainability (P0 duzeltmesi): "risk_score NEREDEN geldi?"
+        # sorusunu LLM'e SORMADAN, `risk_provenance`den (deterministik)
+        # cevaplayan uc alan. `decision.risk_score` (nihai/authoritative
+        # deger) ile HANGI kural(lar)in onu urettigini rapor duzeyinde de
+        # gorunur kilar (bkz. `risk_resolver.RiskProvenance`).
+        if decision.risk_status == "unknown":
+            risk_source = "unknown"
+            risk_explanation = "Analiz guvenilir sekilde tamamlanamadi; risk belirlenemedi."
+        elif risk_provenance.rule_ids:
+            risk_source = "rule_engine"
+            risk_explanation = risk_provenance.explanation()
+        else:
+            risk_source = "agent"
+            risk_explanation = (
+                "Hicbir deterministik kural eslesmedi; risk seviyesi Agent'in kendi "
+                "degerlendirmesinden alindi (RuleEngine tarafindan dogrulanmamis)."
+            )
+
         return SafirReport(
             event_id=event_id,
             video_source=video_source,
@@ -1210,6 +1243,9 @@ class SafirPipeline:
             risk_score=decision.risk_score,
             risk_level=decision.risk_level,
             risk_status=decision.risk_status,
+            risk_source=risk_source,
+            risk_explanation=risk_explanation,
+            contributing_rule_ids=risk_provenance.rule_ids,
             recommended_action=decision.recommended_action,
             actions=decision.actions,
             onset_timestamp_str=getattr(decision, "onset_timestamp", None)

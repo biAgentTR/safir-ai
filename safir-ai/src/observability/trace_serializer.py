@@ -18,6 +18,17 @@ import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # Gercek pipeline stage sirasi (SafirPipeline.run icindeki emit sirasi ile ayni).
+#
+# `decision_final` KOK NEDEN DUZELTMESI (risk explainability P0): `main.py::run()`
+# `_emit("decision", ...)` (Agent'in KENDI taslak risk_score'u, orn. 90) VE
+# ayrica `_emit("decision_final", ...)` (RuleEngine'in EZDIGI, nihai/authoritative
+# risk_score, orn. 88) uretiyordu - ama bu STAGE_ORDER/`_SERIALIZERS`de
+# "decision_final" hic TANIMLI DEGILDI; `PipelineTraceCollector.__call__`
+# taninmayan bir stage icin SESSIZCE `return` ediyordu (asagida). Sonuc: 90
+# gorunuyordu, 88'e NEDEN/NASIL donustugunu acikca soyleyen olay trace'e HIC
+# ULASMIYORDU - operator icin "90 mi 88 mi authoritative?" sorusu koddan
+# CEVAPLANAMAZ hale geliyordu. Bu artik "decision" ile "escalation" arasina
+# eklenerek (gercek emit sirasiyla BIREBIR ayni) duzeltildi.
 STAGE_ORDER: List[str] = [
     "sampler",
     "vlm",
@@ -25,6 +36,7 @@ STAGE_ORDER: List[str] = [
     "agent_context",
     "rag_security",
     "decision",
+    "decision_final",
     "escalation",
     "report",
 ]
@@ -36,7 +48,8 @@ STAGE_LABELS: Dict[str, str] = {
     "events": "Event Analysis",
     "agent_context": "Context & RAG",
     "rag_security": "RAG & Security Telemetry",
-    "decision": "Agent Decision",
+    "decision": "Agent Decision (draft)",
+    "decision_final": "Final Risk (RuleEngine-authoritative)",
     "escalation": "Risk Escalation",
     "report": "Final Report",
 }
@@ -273,6 +286,7 @@ def serialize_rag_security(
             "final_count": rag_telemetry.final_count,
             "zero_result": rag_telemetry.zero_result,
             "retrieval_status": rag_telemetry.retrieval_status,
+            "corpus_source": getattr(rag_telemetry, "corpus_source", "unseeded"),
             "threshold": rag_telemetry.threshold,
             "embedding_latency_ms": rag_telemetry.embedding_latency_ms,
             "rerank_latency_ms": rag_telemetry.rerank_latency_ms,
@@ -308,12 +322,19 @@ def serialize_rag_security(
 
     data = {"rag": rag_data, "security": security_data}
 
-    rag_summary = (
-        f"RAG: {rag_telemetry.final_count}/{rag_telemetry.candidate_count} sonuc "
-        f"({rag_telemetry.retrieval_status})"
-        if rag_telemetry is not None
-        else "RAG sorgusu yapilmadi (keyword yok)"
-    )
+    if rag_telemetry is None:
+        rag_summary = "RAG sorgusu yapilmadi (keyword yok)"
+    elif getattr(rag_telemetry, "corpus_source", None) == "fallback_placeholder":
+        rag_summary = (
+            f"RAG: {rag_telemetry.final_count}/{rag_telemetry.candidate_count} sonuc "
+            f"({rag_telemetry.retrieval_status}) — UYARI: GERCEK mevzuat corpus'u YOK, "
+            "8 maddelik PLACEHOLDER'dan geliyor"
+        )
+    else:
+        rag_summary = (
+            f"RAG: {rag_telemetry.final_count}/{rag_telemetry.candidate_count} sonuc "
+            f"({rag_telemetry.retrieval_status})"
+        )
     quarantined = sum(1 for g in guard_results if g.action == "quarantine")
     guard_summary = f"{len(guard_results)} guvenlik kontrolu ({quarantined} quarantine)" if guard_results else "Guard devre disi"
     summary = f"{rag_summary}; {guard_summary}"
@@ -339,6 +360,53 @@ def serialize_decision(
         summary = "Risk BELIRSIZ (analiz guvenilir sekilde tamamlanamadi)"
     else:
         summary = f"Risk {d.risk_level.upper()} ({d.risk_score}/100)"
+    return summary, data, {}, "completed", None
+
+
+def serialize_decision_final(
+    payload: Dict[str, Any], job_id: str
+) -> Tuple[str, Dict[str, Any], Dict[str, bytes], str, Optional[str]]:
+    """`decision_final` emit'ini serialize eder: RuleEngine'in EZDIGI (veya degistirmeden biraktiği) nihai risk.
+
+    Bkz. `STAGE_ORDER` yorumu: bu stage'in trace'e HIC ULASMAMASI, "90 vs 88"
+    aciklanabilirlik P0'inin kok nedeniydi. `data["risk_provenance"]`,
+    `risk_resolver.RiskProvenance`den (LLM'e SORULMADAN, deterministik)
+    turer - hangi kural(lar)in bu karari urettigini acikca gosterir.
+    """
+    d = payload["decision"]
+    provenance = payload.get("risk_provenance")
+    risk_status = getattr(d, "risk_status", "assessed")
+
+    provenance_data = None
+    if provenance is not None:
+        provenance_data = {
+            "risk_source": "rule_engine" if provenance.rule_ids else None,
+            "rule_ids": provenance.rule_ids,
+            "rule_severities": provenance.rule_severities,
+            "contributing_event_ids": provenance.contributing_event_ids,
+            "explanation": provenance.explanation(),
+        }
+
+    data = {
+        "risk_score": d.risk_score,
+        "risk_level": d.risk_level,
+        "risk_status": risk_status,
+        "risk_provenance": provenance_data,
+    }
+
+    if risk_status == "unknown" or d.risk_score is None:
+        summary = "Nihai risk BELIRSIZ (analiz guvenilir sekilde tamamlanamadi)"
+    elif provenance_data and provenance_data["risk_source"] == "rule_engine":
+        summary = (
+            f"NIHAI (authoritative) risk: {d.risk_level.upper()} ({d.risk_score}/100) "
+            f"- kaynak: RuleEngine [{', '.join(provenance_data['rule_ids'])}] "
+            "(Agent'in kendi taslak tahminini EZER)"
+        )
+    else:
+        summary = (
+            f"NIHAI (authoritative) risk: {d.risk_level.upper()} ({d.risk_score}/100) "
+            "- hicbir kural eslesmedi, Agent'in kendi tahmini KORUNDU (dogrulanmamis)"
+        )
     return summary, data, {}, "completed", None
 
 
@@ -411,6 +479,7 @@ class PipelineTraceCollector:
         "agent_context": serialize_agent_context,
         "rag_security": serialize_rag_security,
         "decision": serialize_decision,
+        "decision_final": serialize_decision_final,
         "escalation": serialize_escalation,
         "report": serialize_report,
     }

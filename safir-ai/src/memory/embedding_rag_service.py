@@ -304,6 +304,12 @@ class RagQueryTelemetry:
     total_latency_ms: float
     avg_embedding_score: Optional[float]
     avg_rerank_score: Optional[float]
+    corpus_source: str = "unseeded"
+    """'persisted_index' | 'fallback_placeholder' | 'chunks_rebuild' | 'unseeded'
+    (bkz. `EmbeddingRAGService.corpus_source`). 'fallback_placeholder' ise bu
+    sonuclar GERCEK mevzuat corpus'undan DEGIL, 8 maddelik placeholder
+    listeden geliyor - retrieval mekanizmasi calisiyor olsa da bu, RAG'in
+    "gercekte" calismadigi anlamina gelir (bkz. gorev tanimi P0)."""
     results: List[RagResultTelemetry] = field(default_factory=list)
 
 
@@ -365,6 +371,17 @@ class EmbeddingRAGService:
         self._index = faiss.IndexFlatIP(self._dimension)
         self._documents: List[Dict[str, Any]] = []
         self._last_query_telemetry: Optional[RagQueryTelemetry] = None
+        self._corpus_source: str = "unseeded"
+        """RAG'in P0 aciklanabilirlik bulgusu: "chunks/metadata diskte var ama
+        retrieval sonucu yanlis gorunuyor" semptomunun kok nedeni, retrieval
+        KODUNUN kirik olmasi DEGIL - `data/knowledge_base/index/` hic
+        olusturulmamissa (bkz. `seed_default_regulations`), sistem SESSIZCE
+        yalnizca 8 maddelik `DEFAULT_ISG_REGULATIONS` PLACEHOLDER corpus'una
+        duser; gercek yuzlerce chunk'lik mevzuat indeksi retrieval'a HIC
+        girmez. Bu alan, HANGI corpus'un aktif oldugunu (persisted_index |
+        fallback_placeholder | chunks_rebuild | unseeded) her `query()`
+        telemetrisine tasiyarak bu durumu operator icin GORUNUR kilar (bkz.
+        `RagQueryTelemetry.corpus_source`, `trace_serializer.serialize_rag_security`)."""
 
         logger.info(
             "EmbeddingRAGService baslatildi: embedding_provider=%s model=%s dim=%d reranker=%s",
@@ -383,6 +400,18 @@ class EmbeddingRAGService:
         """FAISS indeksine su ana kadar eklenmis dokuman sayisini dondurur."""
         return len(self._documents)
 
+    @property
+    def corpus_source(self) -> str:
+        """Aktif corpus'un kaynagi: 'persisted_index' | 'fallback_placeholder' | 'chunks_rebuild' | 'unseeded'.
+
+        'fallback_placeholder' = sistem YALNIZCA 8 maddelik placeholder
+        `DEFAULT_ISG_REGULATIONS` uzerinde calisiyor - gercek mevzuat
+        indeksi (`data/knowledge_base/index/`) diskte bulunamadi/guncel
+        degil. Bu durumda retrieval "calisir" (hata vermez) ama sonuclar
+        gercek mevzuat corpus'unu YANSITMAZ.
+        """
+        return self._corpus_source
+
     def get_last_query_telemetry(self) -> Optional[RagQueryTelemetry]:
         """En son `query()` cagrisinin yapilandirilmis telemetrisini dondurur; hic sorgu yapilmadiysa `None`.
 
@@ -392,10 +421,14 @@ class EmbeddingRAGService:
         return self._last_query_telemetry
 
     def seed_default_regulations(self) -> None:
-        """Indeks bossa knowledge base'i yukler: ONCELIKLE persisted index, sonra taze chunk embedding'i, son care DEFAULT_ISG_REGULATIONS.
+        """Indeks bossa knowledge base'i yukler: ONCELIKLE persisted index, yoksa DEFAULT_ISG_REGULATIONS.
 
         Indeks zaten dokuman iceriyorsa hicbir sey yapmaz (idempotent).
-        Kaynak sirasi (ONEMLI - maliyet/performans icin):
+        Kaynak sirasi (ONEMLI - maliyet/performans icin, bilerek YALNIZCA 2
+        adim - taze chunk embedding'i BURADA OTOMATIK TETIKLENMEZ, cunku bu
+        her pipeline baslangicinda gercek bir Gemini API maliyeti/gecikmesi
+        demektir; taze embedding yalnizca `build_knowledge_index.py`
+        CLI'inin BILEREK cagirdigi `build_index_from_chunks()` ile olur):
           1. `data/knowledge_base/index/` altinda GUNCEL (model/dimension/kb_hash
              eslesen) bir persisted index varsa, hicbir API cagrisi yapmadan
              YUKLENIR (bkz. `_try_load_persisted_index`).
@@ -420,6 +453,7 @@ class EmbeddingRAGService:
             _KB_INDEX_DIR,
             len(DEFAULT_ISG_REGULATIONS),
         )
+        self._corpus_source = "fallback_placeholder"
         self.add_documents(DEFAULT_ISG_REGULATIONS)
 
     def _try_load_persisted_index(self) -> bool:
@@ -470,6 +504,7 @@ class EmbeddingRAGService:
 
         self._index = index
         self._documents = documents
+        self._corpus_source = "persisted_index"
         logger.info(
             "EmbeddingRAGService: persisted KB index yuklendi (%d dokuman, model=%s, kb_version=%s).",
             len(documents),
@@ -499,6 +534,7 @@ class EmbeddingRAGService:
                 "'python scripts/build_kb_chunks.py' calistirip chunk'lari uretin."
             )
         self._add_structured_documents(records)
+        self._corpus_source = "chunks_rebuild"
         return len(records)
 
     def _add_structured_documents(self, records: List[Dict[str, Any]]) -> None:
@@ -571,6 +607,7 @@ class EmbeddingRAGService:
                 total_latency_ms=round((time.perf_counter() - query_started) * 1000.0, 1),
                 avg_embedding_score=None,
                 avg_rerank_score=None,
+                corpus_source=self._corpus_source,
                 results=[],
             )
             return []
@@ -639,6 +676,7 @@ class EmbeddingRAGService:
                     total_latency_ms=round((time.perf_counter() - query_started) * 1000.0, 1),
                     avg_embedding_score=_avg([c.embedding_score for c in candidates]),
                     avg_rerank_score=None,
+                    corpus_source=self._corpus_source,
                     results=[_result_telemetry(c, selected=False) for c in candidates],
                 )
                 return []
@@ -670,6 +708,7 @@ class EmbeddingRAGService:
             total_latency_ms=round((time.perf_counter() - query_started) * 1000.0, 1),
             avg_embedding_score=_avg([c.embedding_score for c in candidates]),
             avg_rerank_score=_avg([d.rerank_score for d in final_docs if d.rerank_score is not None]),
+            corpus_source=self._corpus_source,
             results=[_result_telemetry(c, selected=id(c) in final_ids) for c in candidates],
         )
         return final_docs
@@ -683,11 +722,19 @@ class EmbeddingRAGService:
         final_k: int,
     ) -> None:
         """RAG cagrisinin tani/izleme (trace) bilgisini yapilandirilmis sekilde loglar (API anahtari/secret ASLA loglanmaz)."""
+        if self._corpus_source == "fallback_placeholder":
+            logger.warning(
+                "RAG retrieval: query=%r corpus_source=fallback_placeholder - sonuclar GERCEK mevzuat "
+                "corpus'undan DEGIL, 8 maddelik placeholder listeden geliyor ('python -m "
+                "src.memory.build_knowledge_index' hic calistirilmamis/GUNCEL DEGIL).",
+                question,
+            )
         logger.info(
-            "RAG retrieval: query=%r embedding_model=%s candidate_count=%d reranker_model=%s "
+            "RAG retrieval: query=%r corpus_source=%s embedding_model=%s candidate_count=%d reranker_model=%s "
             "reranked_count=%d final_count=%d threshold=%s retrieval_status=%s "
             "embedding_scores=%s rerank_scores=%s sources=%s",
             question,
+            self._corpus_source,
             self._embedding_config.model_name,
             len(candidates),
             self._reranker_config.model_name if self._reranker is not None else None,

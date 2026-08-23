@@ -257,6 +257,10 @@ def test_seed_default_regulations_is_idempotent(rag_service) -> None:
 
     assert count_after_first == len(DEFAULT_ISG_REGULATIONS)
     assert count_after_first > 0
+    # RAG P0 kok neden dogrulamasi: bu durumda `corpus_source` acikca
+    # 'fallback_placeholder' olmali - operator/trace bu degrade durumu
+    # GORMELI, sessizce "calisiyor" gibi gorunmemeli (bkz. embedding_rag_service.py).
+    assert rag_service.corpus_source == "fallback_placeholder"
 
     rag_service.seed_default_regulations()
     assert rag_service.document_count() == count_after_first
