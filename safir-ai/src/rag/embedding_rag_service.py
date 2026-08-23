@@ -221,13 +221,26 @@ def _load_kb_chunk_records(chunks_dir: Path = _KB_CHUNKS_DIR, sources_yaml: Path
 
 
 def _compute_kb_hash(chunks_dir: Path = _KB_CHUNKS_DIR) -> str:
-    """Chunk klasorunun icerik hash'ini hesaplar (persisted index'in GUNCEL olup olmadigini anlamak icin)."""
+    """Chunk klasorunun icerik hash'ini hesaplar (persisted index'in GUNCEL olup olmadigini anlamak icin).
+
+    2026-08-24 duzeltmesi: satir sonu (LF/CRLF) temsili NORMALIZE edilir
+    (CRLF'e - bkz. asagida) - aksi halde AYNI chunk ICERIGI, farkli isletim
+    sistemi/git `core.autocrlf` ayariyla checkout edilmis iki ortamda
+    FARKLI hash uretiyordu (gercek bir kopukluk: Windows'ta uretilen bir
+    persisted index, Linux'ta - veya tam tersi - SADECE satir sonu farki
+    yuzunden "guncel degil" sayilip fail-fast ile REDDEDILIYORDU, halbuki
+    metin icerigi TAMAMEN AYNIYDI). Normalizasyon CRLF'e yapilir (LF'e
+    DEGIL) - zaten persist edilmis `index_meta.json`lardaki `kb_hash`
+    degerleri boyle uretilmisti; bu index'lerin YENIDEN insa EDILMESINI
+    gerektirmeden GUNCEL sayilabilmesi icin bu yon secildi.
+    """
     if not chunks_dir.exists():
         return "no-chunks-dir"
     hasher = hashlib.sha256()
     for chunk_file in sorted(chunks_dir.glob("*.json")):
         hasher.update(chunk_file.name.encode("utf-8"))
-        hasher.update(chunk_file.read_bytes())
+        normalized = chunk_file.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+        hasher.update(normalized)
     return hasher.hexdigest()
 
 

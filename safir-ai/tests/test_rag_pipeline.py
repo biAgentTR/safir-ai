@@ -16,9 +16,9 @@ import numpy as np
 import pytest
 
 from src.rag import embedding_rag_service as rag_module
-from src.rag.embedding_rag_service import EmbeddingRAGService, _load_kb_chunk_records
+from src.rag.embedding_rag_service import EmbeddingRAGService, RetrievedDocument, _load_kb_chunk_records
 from src.rag.reranker import RerankerUnavailableError
-from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig, RerankerConfig
+from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig, RerankerConfig, SQLiteMemoryConfig
 
 
 class _FakeEmbeddingProvider:
@@ -456,3 +456,87 @@ def test_retrieval_result_carries_chunk_id_document_id_and_scores_end_to_end(tmp
     for doc in results:
         assert doc.chunk_id is not None
         assert doc.rerank_score is not None
+
+
+# ---------------------------------------------------------------------------
+# RAG entegrasyon dogrulama turu (2026-08-24): GERCEK repo-persisted index
+# ("data/knowledge_base/index/") -> ContextBuilder -> agent prompt zincirini
+# dogrular. Embedding modeli SAHTE'dir (bu ortamda gercek sentence-transformers
+# modelini indiremiyoruz) - bu testler SEMANTIK kalite IDDIA ETMEZ; yalnizca
+# GERCEK persisted index dosyalarinin GERCEKTEN yuklendigini ve gercek
+# chunk metni + provenance'in ContextBuilder uzerinden agent prompt'una
+# KADAR kayipsiz tasindigini kanitlar.
+# ---------------------------------------------------------------------------
+
+
+class _Fake384DimProvider(_FakeEmbeddingProvider):
+    """GERCEK persisted index'in boyutuyla (384) eslesen sahte saglayici - `_try_load_persisted_index()`in dimension kontrolunu GECEBILMEK icin."""
+
+    _DIMENSION = 384
+
+
+def test_real_persisted_repo_index_loads_with_full_corpus(monkeypatch) -> None:
+    """`data/knowledge_base/index/` altindaki GERCEK, repo'ya pushlanmis index'in yuklendigini dogrular (mock kullanilmaz)."""
+    if not rag_module._INDEX_FILE.exists():
+        pytest.skip("data/knowledge_base/index/ bu checkout'ta yok.")
+
+    monkeypatch.setattr(rag_module, "build_embedding_provider", lambda **kwargs: _Fake384DimProvider())
+    embedding_config = EmbeddingConfig(provider="local", model_name="intfloat/multilingual-e5-small", output_dimensionality=384)
+    faiss_config = FaissMemoryConfig(
+        index_path=str(rag_module._INDEX_FILE), embedding_model="intfloat/multilingual-e5-small", top_k=5, candidate_k=20
+    )
+    service = EmbeddingRAGService(embedding_config, faiss_config, RerankerConfig(enabled=False))
+
+    service.seed_default_regulations()
+
+    assert service.corpus_source == "persisted_index"
+    assert service.document_count() == 748
+
+
+def test_real_persisted_chunk_text_and_provenance_reach_context_builder_prompt(monkeypatch, tmp_path) -> None:
+    """HEDEF 1/4/5: GERCEK persisted index'ten alinan bir chunk'in TAM METNI + provenance'i, ContextBuilder.to_prompt_block()'a (Agent'in GORDUGU metin) kayipsiz ulasiyor mu?"""
+    if not rag_module._INDEX_FILE.exists():
+        pytest.skip("data/knowledge_base/index/ bu checkout'ta yok.")
+
+    import json
+
+    from src.memory.context_builder import ContextBuilder
+    from src.memory.event_store import EventStore
+
+    documents = json.loads(rag_module._DOCUMENTS_FILE.read_text(encoding="utf-8"))
+    # Gorev tanimindaki somut ornek: "Is Ekipmanlari ... Ek I, I.3.1" - GERCEK corpus'ta var mi dogrula.
+    real_chunk = next(
+        (d for d in documents if d.get("document_id") == "is_ekipmanlari_yonetmeligi" and d.get("article_number") == "I.3.1"),
+        None,
+    )
+    assert real_chunk is not None, "GERCEK corpus'ta is_ekipmanlari_yonetmeligi Ek I.3.1 chunk'i bulunamadi."
+    assert real_chunk["chunk_id"] == "is_ekipmanlari_yonetmeligi__ek_alt_madde_I.3.1"
+
+    retrieved = RetrievedDocument(
+        text=real_chunk["text"],
+        embedding_score=0.87,
+        chunk_id=real_chunk["chunk_id"],
+        document_id=real_chunk["document_id"],
+        document_title=real_chunk["document_title"],
+        article_number=real_chunk["article_number"],
+        source_url=real_chunk["source_url"],
+    )
+
+    event_store = EventStore(SQLiteMemoryConfig(db_path=str(tmp_path / "events.db")))
+    builder = ContextBuilder(event_store, guard=None)
+    context = builder.build(
+        vlm_description="Operator KKD olmadan is ekipmani kullaniyor.",
+        user_prompt="Risk durumu nedir?",
+        timestamp=10.0,
+        relevant_regulations=[],
+        semantically_related_chunks=[retrieved],
+    )
+    prompt_block = context.to_prompt_block()
+
+    # Agent'in GORDUGU nihai metinde hem GERCEK chunk metni hem provenance (baslik+madde) var mi.
+    assert real_chunk["text"][:200] in prompt_block
+    assert real_chunk["document_title"] in prompt_block
+    assert f"Madde {real_chunk['article_number']}" in prompt_block
+    # chunk_id, ContextBuilder'in ISLENMIS `EnrichedContext` nesnesinde HALA GERI OKUNABILIR
+    # (agent'in ham metninde gorunmez ama trace/telemetri icin objede korunur - bkz. main.py::stage_context).
+    assert context.semantically_related_chunks[0].chunk_id == real_chunk["chunk_id"]

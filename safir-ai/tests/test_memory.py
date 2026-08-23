@@ -16,11 +16,7 @@ import numpy as np
 import pytest
 
 from src.rag import embedding_rag_service as rag_module
-from src.rag.embedding_rag_service import (
-    EmbeddingRAGService,
-    FAISSRagService,
-    _INDEX_FILE,
-)
+from src.rag.embedding_rag_service import EmbeddingRAGService, FAISSRagService
 from src.memory.event_store import EventStore, SQLiteEventStore
 from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig, RerankerConfig, SQLiteMemoryConfig
 
@@ -238,16 +234,22 @@ def test_query_on_empty_index_returns_empty_list(rag_service) -> None:
     assert rag_service.query("herhangi bir soru") == []
 
 
-def test_seed_default_regulations_fails_fast_without_persisted_index(rag_service) -> None:
+def test_seed_default_regulations_fails_fast_without_persisted_index(rag_service, tmp_path, monkeypatch) -> None:
     """`seed_default_regulations()`, GUNCEL bir persisted KB index'i YOKSA artik
     `DEFAULT_ISG_REGULATIONS` gibi bir placeholder'a SESSIZCE DUSMEZ - acik bir
     `KnowledgeBaseNotBuiltError` firlatir (fail-fast, bkz. modul dokustringi).
 
-    Bu test, bu repo checkout'unda HENUZ bir persisted index olusturulmadigini
-    varsayar (`python -m src.rag.build_knowledge_index` calistirilmadi);
-    persisted index varsa bu varsayim GECERSIZ olur ve test guncellenmelidir.
+    Index yollari BILEREK var-olmayan bir `tmp_path` alt klasorune monkeypatch
+    edilir - bu testin sonucu, repo'da GERCEK bir persisted index olup
+    olmamasindan (2026-08-24: artik VAR - `data/knowledge_base/index/`)
+    BAGIMSIZ, deterministik olmalidir.
     """
-    assert not _INDEX_FILE.exists(), "Bu test persisted index olmadigini varsayar."
+    missing_dir = tmp_path / "no_index_here"
+    monkeypatch.setattr(rag_module, "_KB_INDEX_DIR", missing_dir)
+    monkeypatch.setattr(rag_module, "_INDEX_FILE", missing_dir / "faiss.index")
+    monkeypatch.setattr(rag_module, "_DOCUMENTS_FILE", missing_dir / "documents.json")
+    monkeypatch.setattr(rag_module, "_INDEX_META_FILE", missing_dir / "index_meta.json")
+    assert not (missing_dir / "faiss.index").exists()
 
     with pytest.raises(rag_module.KnowledgeBaseNotBuiltError, match="build_knowledge_index"):
         rag_service.seed_default_regulations()
