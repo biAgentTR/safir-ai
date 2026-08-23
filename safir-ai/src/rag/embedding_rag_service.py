@@ -1,29 +1,33 @@
-"""04 - Embedding & RAG Katmani: Gemini embedding + FAISS + Gemini rerank tabanli anlamsal bellek.
+"""04 - Embedding & RAG Katmani: LOKAL embedding + FAISS + (opsiyonel) LLM rerank tabanli anlamsal bellek.
 
-Operasyonel kurallari ve ISG mevzuatini Google Gemini Embedding API ile
-vektorlestirip FAISS uzerinde saklayan/arayan servistir. LangGraph ajaninin
-`retriever_tool` araci ve `RuleEngine._describe_regulation()` bu servis
-uzerinden calisir.
+Operasyonel kurallari ve ISG mevzuatini TAMAMEN LOKAL (`sentence-transformers`,
+CPU, harici API/kota YOK) bir embedding modeliyle vektorlestirip FAISS
+uzerinde saklayan/arayan servistir. LangGraph ajaninin `retriever_tool` araci
+ve `RuleEngine._describe_regulation()` bu servis uzerinden calisir.
 
-Knowledge base kaynagi (2026-08-22, iki asamali guncelleme)
+Knowledge base kaynagi (2026-08-23, uc asamali guncelleme)
 --------------------------------------------------------------
 1. asama: `seed_default_regulations()` `data/knowledge_base/chunks/*.json`
    altindaki GERCEK, resmi mevzuat metinlerinden turetilmis madde-bazli
    chunk'lari (bkz. `scripts/build_kb_chunks.py`) yukledi.
-2. asama (bu dosya): Embedding saglayicisi `sentence-transformers`den
-   Gemini Embedding API'ye (bkz. `embedding_providers.py`) tasindi;
-   `RetrievedDocument` artik yapilandirilmis metadata (document_title,
-   article_number, source_url, ...) tasiyor (`sources.yaml` ile join
-   edilmis - bkz. `_load_kb_chunk_records`); iki-asamali retrieval
-   (FAISS candidate_k -> Gemini rerank -> score_threshold) eklendi; index
-   artik DISKE KALICI olarak yaziliyor (`data/knowledge_base/index/`) ve
-   pipeline her baslangicta 748 embedding'i YENIDEN URETMEK ZORUNDA
-   DEGIL - bkz. `build_knowledge_index.py` (rebuild CLI'i) ve
-   `_try_load_persisted_index()`.
+2. asama: Embedding saglayicisi `sentence-transformers`den Gemini Embedding
+   API'ye tasindi; `RetrievedDocument` yapilandirilmis metadata (document_title,
+   article_number, source_url, ...) tasimaya basladi (`sources.yaml` ile join
+   edilmis - bkz. `_load_kb_chunk_records`); iki-asamali retrieval (FAISS
+   candidate_k -> LLM rerank -> score_threshold) eklendi; index DISKE KALICI
+   olarak yazilmaya basladi (`data/knowledge_base/index/`).
+3. asama (bu dosya, 2026-08-23): Gemini Embedding API TAMAMEN KALDIRILDI -
+   embedding artik yeniden (ve KALICI olarak) TAMAMEN LOKAL'dir (bkz.
+   `embedding_providers.py::LocalEmbeddingProvider`). GERCEK bir persisted
+   index yoksa artik SESSIZCE placeholder'a DUSULMEZ - `seed_default_regulations()`
+   ACIK bir hatayla FAIL-FAST eder (bkz. asagida).
 
-`DEFAULT_ISG_REGULATIONS` (8 ORNEK/placeholder madde), persisted index de
-gercek KB chunk'lari da bulunamazsa GERIYE-DONUK UYUMLULUK icin fallback
-olarak KALIR - tamamen SILINMEDI (bkz. gorev tanimi).
+ONEMLI (davranis degisikligi, 2026-08-23): Persisted index (`data/knowledge_base/index/`)
+GUNCEL degilse/yoksa, `seed_default_regulations()` artik `DEFAULT_ISG_REGULATIONS`
+(8 ornek madde) placeholder'ina SESSIZCE DUSMEZ - acikca `KnowledgeBaseNotBuiltError`
+firlatir. `DEFAULT_ISG_REGULATIONS` sabiti yalnizca DIGER modullerin (orn.
+`src/agent/agent_workflow.py`nin mock ornekleri) DOGRUDAN, bu servisten
+BAGIMSIZ kullanimi icin KALIR - bu servisin otomatik fallback'i DEGILDIR.
 
 ONEMLI (bilinen, KASITLI sinirlama): `RuleEngine._describe_regulation()`,
 sorguladigi sabit kisa etiketin (orn. "ISG Yonetmeligi Madde 12" -
@@ -84,9 +88,20 @@ DEFAULT_ISG_REGULATIONS: List[str] = [
     "ISG Yonetmeligi Madde 52: Agir yuk kaldirma ekipmanlari (vinc, kren) calisma alaninda, operatorun "
     "gorus alani disindaki bolgelerde sinyalman gorevlendirilmesi zorunludur.",
 ]
-"""Persisted index de gercek KB chunk'lari da bulunamazsa kullanilan GERIYE-DONUK
-UYUMLULUK fallback'i (orn. `src/agent/agent_workflow.py`nin mock ornekleri hala
-bunu kullanir). Canli sistemde artik BIRINCIL kaynak DEGILDIR - bkz. modul dokustringi."""
+"""SADECE diger modullerin (orn. `src/agent/agent_workflow.py`nin mock ornekleri)
+DOGRUDAN kullanimi icin duran sabit bir metin listesi - `EmbeddingRAGService`nin
+KENDISI bunu ARTIK OTOMATIK FALLBACK olarak kullanmaz (bkz. modul dokustringi,
+`seed_default_regulations`: persisted index yoksa SESSIZCE bu listeye DUSMEZ,
+acik bir hatayla FAIL-FAST eder)."""
+
+
+class KnowledgeBaseNotBuiltError(RuntimeError):
+    """Gercek, persisted bir KB FAISS index'i bulunamadi/guncel degil ve SESSIZCE placeholder'a DUSULMEDI.
+
+    `seed_default_regulations()` tarafindan firlatilir - operator/gelistirici
+    `python -m src.rag.build_knowledge_index` calistirmadan sistemi
+    BASLATAMAZ (bkz. gorev tanimi: "acik sekilde fail-fast et").
+    """
 
 _KB_ROOT = Path(__file__).resolve().parents[2] / "data" / "knowledge_base"
 _KB_CHUNKS_DIR = _KB_ROOT / "chunks"
@@ -95,6 +110,12 @@ _KB_INDEX_DIR = _KB_ROOT / "index"
 _INDEX_FILE = _KB_INDEX_DIR / "faiss.index"
 _DOCUMENTS_FILE = _KB_INDEX_DIR / "documents.json"
 _INDEX_META_FILE = _KB_INDEX_DIR / "index_meta.json"
+
+_INDEX_NORMALIZATION = "l2"
+"""Manifest'te persist edilen normalization semasi (bkz. `embedding_providers.py::_l2_normalize`) -
+hem indeksleme hem sorgu vektorleri AYNI (L2) normalizasyondan gecer."""
+_INDEX_METRIC = "cosine_via_inner_product"
+"""FAISS `IndexFlatIP` (inner product) L2-normalize vektorler uzerinde cosine benzerligiyle ES DEGERDIR."""
 
 _LEVEL_LABELS = {
     "madde": "MADDE",
@@ -350,7 +371,7 @@ class EmbeddingRAGService:
             provider=embedding_config.provider,
             model_name=embedding_config.model_name,
             output_dimensionality=embedding_config.output_dimensionality,
-            api_key_env=embedding_config.api_key_env,
+            device=embedding_config.device,
         )
         self._dimension = self._provider.dimension
 
@@ -408,11 +429,10 @@ class EmbeddingRAGService:
     def corpus_source(self) -> str:
         """Aktif corpus'un kaynagi: 'persisted_index' | 'fallback_placeholder' | 'chunks_rebuild' | 'unseeded'.
 
-        'fallback_placeholder' = sistem YALNIZCA 8 maddelik placeholder
-        `DEFAULT_ISG_REGULATIONS` uzerinde calisiyor - gercek mevzuat
-        indeksi (`data/knowledge_base/index/`) diskte bulunamadi/guncel
-        degil. Bu durumda retrieval "calisir" (hata vermez) ama sonuclar
-        gercek mevzuat corpus'unu YANSITMAZ.
+        'fallback_placeholder' degeri geriye-uyum/telemetri semasi icin
+        KORUNUR ama `seed_default_regulations()` ARTIK bunu URETMEZ (bkz.
+        modul dokustringi) - persisted index yoksa SESSIZCE bu duruma
+        DUSULMEZ, `KnowledgeBaseNotBuiltError` firlatilir (fail-fast).
         """
         return self._corpus_source
 
@@ -425,23 +445,23 @@ class EmbeddingRAGService:
         return self._last_query_telemetry
 
     def seed_default_regulations(self) -> None:
-        """Indeks bossa knowledge base'i yukler: ONCELIKLE persisted index, yoksa DEFAULT_ISG_REGULATIONS.
+        """Indeks bossa, YALNIZCA gercek persisted KB index'ini yukler - BASKA HICBIR KAYNAGA DUSMEZ.
 
         Indeks zaten dokuman iceriyorsa hicbir sey yapmaz (idempotent).
-        Kaynak sirasi (ONEMLI - maliyet/performans icin, bilerek YALNIZCA 2
-        adim - taze chunk embedding'i BURADA OTOMATIK TETIKLENMEZ, cunku bu
-        her pipeline baslangicinda gercek bir Gemini API maliyeti/gecikmesi
-        demektir; taze embedding yalnizca `build_knowledge_index.py`
-        CLI'inin BILEREK cagirdigi `build_index_from_chunks()` ile olur):
-          1. `data/knowledge_base/index/` altinda GUNCEL (model/dimension/kb_hash
-             eslesen) bir persisted index varsa, hicbir API cagrisi yapmadan
-             YUKLENIR (bkz. `_try_load_persisted_index`).
-          2. Yoksa/guncel degilse: acik bir uyari loglanir ("python -m
-             src.rag.build_knowledge_index calistirin") ve GERIYE-DONUK
-             UYUMLULUK icin yalnizca `DEFAULT_ISG_REGULATIONS` (8 kisa
-             placeholder madde) embed edilir - 748 chunk'in TAMAMI HER
-             pipeline baslangicinda YENIDEN embed EDILMEZ (bkz. gorev
-             tanimi 15. bolum).
+        Kaynak (ONEMLI - taze chunk embedding'i BURADA OTOMATIK TETIKLENMEZ,
+        cunku bu her pipeline baslangicinda CPU maliyeti/gecikmesi demektir;
+        taze embedding yalnizca `build_knowledge_index.py` CLI'inin BILEREK
+        cagirdigi `build_index_from_chunks()` ile olur):
+          - `data/knowledge_base/index/` altinda GUNCEL (model/dimension/kb_hash
+            eslesen) bir persisted index varsa YUKLENIR (bkz. `_try_load_persisted_index`).
+          - Yoksa/guncel degilse: `DEFAULT_ISG_REGULATIONS` gibi bir placeholder'a
+            SESSIZCE DUSULMEZ - acik, yakalan(mayan)abilir bir
+            `KnowledgeBaseNotBuiltError` FIRLATILIR (fail-fast). Cagiran taraf
+            (orn. `SafirPipeline.__init__`) bunu yutmaz; sistem gercek bir KB
+            index'i olmadan CALISMAZ.
+
+        Raises:
+            KnowledgeBaseNotBuiltError: Diskte GUNCEL bir persisted index bulunamadi.
         """
         if self.document_count() > 0:
             logger.info("EmbeddingRAGService zaten %d dokuman iceriyor; seed atlandi.", self.document_count())
@@ -450,23 +470,28 @@ class EmbeddingRAGService:
         if self._try_load_persisted_index():
             return
 
-        logger.warning(
-            "EmbeddingRAGService: %s altinda GUNCEL bir persisted KB index'i bulunamadi. "
-            "Gercek 748 mevzuat chunk'ini kullanmak icin 'python -m src.rag.build_knowledge_index' "
-            "calistirin. Su an icin GERIYE-DONUK UYUMLULUK amacli %d placeholder ISG maddesine dusuluyor.",
-            _KB_INDEX_DIR,
-            len(DEFAULT_ISG_REGULATIONS),
+        raise KnowledgeBaseNotBuiltError(
+            f"{_KB_INDEX_DIR} altinda GUNCEL bir persisted KB index'i bulunamadi. "
+            "Gercek 748 mevzuat chunk'ini lokal embedding modeliyle indekslemek icin "
+            "'python -m src.rag.build_knowledge_index' calistirin. Sessiz bir placeholder'a "
+            "DUSULMEDI - bu, RAG'in operator/gelistiriciye GORUNMEDEN 'sahte' verilerle "
+            "calismasini ONLER (fail-fast)."
         )
-        self._corpus_source = "fallback_placeholder"
-        self.add_documents(DEFAULT_ISG_REGULATIONS)
 
     def _try_load_persisted_index(self) -> bool:
         """Diskteki persisted FAISS index + metadata'yi, GUNCEL (model/dimension/kb_hash eslesen) ise yukler.
 
         Returns:
             Basariyla yuklendiyse `True`; dosyalar yoksa, bozuksa veya
-            GUNCEL DEGILSE (model/dimension/kb_hash uyusmuyorsa) `False`
-            (hicbir sey degistirilmez, cagiran taraf fallback'e duser).
+            GUNCEL DEGILSE (model/dimension/normalization/metric/kb_hash
+            uyusmuyorsa) `False` (hicbir sey degistirilmez, cagiran taraf
+            `seed_default_regulations()` uzerinden FAIL-FAST eder - bkz.
+            `KnowledgeBaseNotBuiltError`, artik SESSIZCE bir placeholder'a
+            DUSULMEZ).
+
+        NOT (gorev tanimi 7. madde): model/dimension/normalization/metric
+        uyusmazligi HICBIR ZAMAN sessizce kabul EDILMEZ - her biri ayri ayri
+        kontrol edilir, herhangi biri uyusmuyorsa index GUNCEL DEGIL sayilir.
         """
         if not (_INDEX_FILE.exists() and _DOCUMENTS_FILE.exists() and _INDEX_META_FILE.exists()):
             return False
@@ -489,6 +514,20 @@ class EmbeddingRAGService:
                 "Persisted KB index farkli boyutta (%r != %r); index rebuild gerekiyor.",
                 meta.get("dimension"),
                 self._dimension,
+            )
+            return False
+        if meta.get("normalization") != _INDEX_NORMALIZATION:
+            logger.warning(
+                "Persisted KB index farkli normalization semasiyla uretilmis (%r != %r); index rebuild gerekiyor.",
+                meta.get("normalization"),
+                _INDEX_NORMALIZATION,
+            )
+            return False
+        if meta.get("metric") != _INDEX_METRIC:
+            logger.warning(
+                "Persisted KB index farkli metric ile uretilmis (%r != %r); index rebuild gerekiyor.",
+                meta.get("metric"),
+                _INDEX_METRIC,
             )
             return False
         current_hash = _compute_kb_hash()
@@ -767,14 +806,23 @@ class EmbeddingRAGService:
         return self.query(query, top_k)
 
     def persist(self) -> None:
-        """FAISS indeksini, dokuman metadata'sini ve index meta bilgisini (model/dimension/kb_hash) diske yazar."""
+        """FAISS indeksini, dokuman metadata'sini ve index manifest'ini (model/dimension/normalization/metric/corpus fingerprint) diske yazar.
+
+        Manifest (`index_meta.json`), runtime'da `_try_load_persisted_index()`
+        tarafindan model/dimension/normalization/metric/kb_hash UYUSMAZLIGINI
+        SESSIZCE KABUL ETMEMEK icin kullanilir (bkz. gorev tanimi 6/7. madde).
+        """
         _KB_INDEX_DIR.mkdir(parents=True, exist_ok=True)
         faiss.write_index(self._index, str(_INDEX_FILE))
         _DOCUMENTS_FILE.write_text(json.dumps(self._documents, ensure_ascii=False, indent=2), encoding="utf-8")
+        kb_hash = _compute_kb_hash()
         meta = {
             "model_name": self._embedding_config.model_name,
             "dimension": self._dimension,
-            "kb_hash": _compute_kb_hash(),
+            "normalization": _INDEX_NORMALIZATION,
+            "metric": _INDEX_METRIC,
+            "kb_hash": kb_hash,
+            "corpus_fingerprint": kb_hash,  # kb_hash ile AYNI deger - manifest'te ACIK isimle de bulunsun diye
             "chunk_count": len(self._documents),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }

@@ -75,7 +75,7 @@ def _patch_embedding_provider(monkeypatch):
 
 
 def _make_service(tmp_path, candidate_k=20, top_k=5, reranker=None, score_threshold=0.10) -> EmbeddingRAGService:
-    embedding_config = EmbeddingConfig(provider="gemini", model_name="fake-model", output_dimensionality=16)
+    embedding_config = EmbeddingConfig(provider="local", model_name="fake-model", output_dimensionality=16)
     faiss_config = FaissMemoryConfig(
         index_path=str(tmp_path / "index.faiss"),
         embedding_model="fake-model",
@@ -356,7 +356,7 @@ def test_content_based_retrieval_ranks_the_relevant_document_first(tmp_path, mon
         rag_module, "build_embedding_provider", lambda **kwargs: _VocabEmbeddingProvider(vocabulary)
     )
 
-    embedding_config = EmbeddingConfig(provider="gemini", model_name="fake-model", output_dimensionality=len(vocabulary))
+    embedding_config = EmbeddingConfig(provider="local", model_name="fake-model", output_dimensionality=len(vocabulary))
     faiss_config = FaissMemoryConfig(
         index_path=str(tmp_path / "index.faiss"), embedding_model="fake-model", top_k=2, candidate_k=5
     )
@@ -417,18 +417,20 @@ def test_persisted_index_round_trip_sets_corpus_source_and_survives_reload(tmp_p
     assert results[0].text == "Forklift çalışma alanında yaya bulunması yasaktır."
 
 
-def test_fallback_placeholder_corpus_source_when_no_persisted_index(tmp_path, monkeypatch) -> None:
-    """Persisted index dosyalari yoksa `seed_default_regulations()` acikca `fallback_placeholder`e duser."""
+def test_seed_default_regulations_fails_fast_when_no_persisted_index(tmp_path, monkeypatch) -> None:
+    """Gorev tanimi 8. madde: persisted index yoksa DEFAULT_ISG_REGULATIONS gibi bir placeholder'a SESSIZ FALLBACK YOK - acik hata."""
     monkeypatch.setattr(rag_module, "_KB_INDEX_DIR", tmp_path / "does_not_exist")
     monkeypatch.setattr(rag_module, "_INDEX_FILE", tmp_path / "does_not_exist" / "faiss.index")
     monkeypatch.setattr(rag_module, "_DOCUMENTS_FILE", tmp_path / "does_not_exist" / "documents.json")
     monkeypatch.setattr(rag_module, "_INDEX_META_FILE", tmp_path / "does_not_exist" / "index_meta.json")
 
     service = _make_service(tmp_path, candidate_k=5, top_k=3, reranker=None)
-    service.seed_default_regulations()
 
-    assert service.corpus_source == "fallback_placeholder"
-    assert service.document_count() == len(rag_module.DEFAULT_ISG_REGULATIONS)
+    with pytest.raises(rag_module.KnowledgeBaseNotBuiltError, match="build_knowledge_index"):
+        service.seed_default_regulations()
+
+    assert service.document_count() == 0
+    assert service.corpus_source == "unseeded"
 
 
 def test_retrieval_result_carries_chunk_id_document_id_and_scores_end_to_end(tmp_path) -> None:

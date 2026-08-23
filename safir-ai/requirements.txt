@@ -32,8 +32,13 @@ langgraph>=0.1.9
 langchain-core>=0.2.28
 langchain-openai>=0.1.17
 
-# --- Hibrit Bellek Katmani (Embedding + Rerank: Gemini API, tek saglayici) ---
+# --- Hibrit Bellek Katmani (Embedding: LOKAL/sentence-transformers, harici API/kota YOK) ---
 faiss-cpu>=1.8.0
+sentence-transformers>=3.0.0
+
+# --- Rerank (opsiyonel, Groq/Gemini) + Prompt Injection Guard icin ---
+# NOT: google-genai artik embedding icin KULLANILMIYOR (bkz. yukarida) - yalnizca
+# reranker.provider="gemini" secilirse VEYA guard.enabled=true ise gereklidir.
 google-genai>=1.0.0
 
 # --- Rapor Disa Aktarma (PDF) ---

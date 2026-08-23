@@ -2,64 +2,38 @@
 
 `EmbeddingRAGService`, hangi embedding backend'inin kullanildigini bilmeden
 `embed_documents(texts)`/`embed_query(text)` cagirabilsin diye bu soyutlama
-tanimlanmistir. Su an TEK gercek implementasyon `GeminiEmbeddingProvider`
-(Google Gemini Embedding API, `google-genai` SDK); eskiden dogrudan
-`SentenceTransformer` kullanan yerel/CPU yol KALDIRILDI (bkz.
-`embedding_rag_service.py` modul dokustringi).
+tanimlanmistir.
 
-API anahtari (`GEMINI_API_KEY`) YALNIZCA ilk gercek embed cagrisinda
-okunur (lazy client) - boylece bu modulun import edilmesi veya
-`GeminiEmbeddingProvider` orneklenmesi, anahtar tanimli olmasa bile
-ASLA patlamaz; anahtar eksikse `ConfigurationError` yalnizca gercekten
-bir embed cagrisi yapilmaya calisildiginda, acik bir mesajla firlatilir.
+2026-08-23 guncellemesi (Gemini Embedding API TAMAMEN KALDIRILDI): embedding
+artik TAMAMEN LOKAL calisir - `sentence-transformers` ile CPU uzerinde,
+harici bir API/kota/API anahtari OLMADAN. Tek gercek implementasyon
+`LocalEmbeddingProvider`dir. Gemini Embedding API'ye giden HICBIR kod yolu
+KALMADI (ne birincil yol ne de fallback) - bkz. `build_embedding_provider`.
+
+Model (`sentence-transformers`/HuggingFace agirliklari) YALNIZCA ilk gercek
+embed cagrisinda (lazy) diskten/HuggingFace Hub onbelleginden yuklenir -
+boylece bu modulun import edilmesi veya `LocalEmbeddingProvider` orneklenmesi
+ASLA agir bir model yuklemesi TETIKLEMEZ.
 """
 
 from __future__ import annotations
 
-import logging
-import os
-import time
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
 import numpy as np
 
-logger = logging.getLogger(__name__)
-
-
-_MAX_RATE_LIMIT_RETRIES = 5
-"""429 (RESOURCE_EXHAUSTED) alindiginda, istek basina denenecek azami yeniden-deneme sayisi.
-
-`google-genai` SDK'sinin kendi (tenacity tabanli) yeniden-denemesi kisa
-araliklidir (saniyeler); dakikalik RPM kotasi asildiginda bu YETERSIZ
-kalabilir (bkz. gercek 429 hatasi). Bu yuzden burada AYRICA, katlanarak
-artan (exponential backoff) bir bekleme uygulanir - yalnizca GERCEKTEN
-429 alindiginda devreye girer, normal akisi ETKILEMEZ."""
-
-_RATE_LIMIT_BACKOFF_BASE_SEC = 20.0
-"""Ilk 429 sonrasi bekleme suresi (saniye); her tekrarda ikiye katlanir."""
-
-_INTER_BATCH_DELAY_SEC = 3.0
-"""BASARILI her `embed_content` cagrisi arasinda beklenecek sabit sure (saniye).
-
-429'a REAKTIF olan yukaridaki backoff'tan farkli olarak bu, rate limit'e
-HIC CARPMADAN once RPM (dakika basi istek) yukunu azaltmak icin PROAKTIF
-bir onlemdir - `_embed()` artik HER metin icin AYRI bir istek attigindan
-(bkz. `_embed` docstring'i - toplu `batchEmbedContents` cagrisi bu hesapta
-calismiyordu), 748 chunk'lik bir corpus 748 ayri istek demektir; bu araya
-giren bekleme, o kadar isteğin RPM kotasini patlatmadan gonderilmesini
-saglar. `embed_query` (tek metin, tek istek) icin etkisi yoktur."""
-
-
-def _is_rate_limit_error(exc: Exception) -> bool:
-    """Verilen istisnanin Gemini API'sinin 429 (RESOURCE_EXHAUSTED) hatasi olup olmadigini kontrol eder."""
-    code = getattr(exc, "code", None)
-    status = str(getattr(exc, "status", "") or "")
-    return code == 429 or "RESOURCE_EXHAUSTED" in status.upper()
+_QUERY_PREFIX = "query: "
+_PASSAGE_PREFIX = "passage: "
+"""`intfloat/multilingual-e5-*` model ailesinin GEREKTIRDIGI, retrieval kalitesi
+icin ZORUNLU giris on-ekleri (bkz. modelin resmi kullanim talimatlari) - bu
+on-ekler OLMADAN model onemli olcude daha zayif retrieval performansi verir.
+Sorgu/dokuman AYRIMI, eski Gemini `task_type=RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT`
+ayrimiyla AYNI amaca hizmet eder (asimetrik retrieval semasi)."""
 
 
 class ConfigurationError(Exception):
-    """Embedding saglayicisi icin gerekli konfigurasyon (orn. API anahtari) eksik/gecersiz."""
+    """Embedding saglayicisi icin gerekli konfigurasyon eksik/gecersiz (orn. desteklenmeyen provider, boyut uyusmazligi)."""
 
 
 class EmbeddingProvider(ABC):
@@ -99,152 +73,127 @@ def _l2_normalize(vectors: np.ndarray) -> np.ndarray:
     return vectors / norms
 
 
-class GeminiEmbeddingProvider(EmbeddingProvider):
-    """Google Gemini Embedding API (`google-genai` SDK) uzerinden calisan `EmbeddingProvider`.
+class LocalEmbeddingProvider(EmbeddingProvider):
+    """`sentence-transformers` (HuggingFace) uzerinden CALISAN, TAMAMEN LOKAL `EmbeddingProvider`.
 
-    Dokuman embedding'i icin `task_type="RETRIEVAL_DOCUMENT"`, sorgu
-    embedding'i icin `task_type="RETRIEVAL_QUERY"` kullanilir (Gemini'nin
-    onerdigi asimetrik retrieval semasi - ayni metin farkli rollerde farkli
-    vektorlere karsilik gelebilir).
+    Harici bir API cagrisi, API anahtari veya kota YOKTUR - model agirliklari
+    ilk kullanimda (lazy) HuggingFace Hub onbelleginden/diskten yuklenir, tum
+    hesaplama CPU uzerinde yerel olarak yapilir. Varsayilan model
+    (`intfloat/multilingual-e5-small`, 384 boyut) kucuk (~118M parametre),
+    CPU'da makul hizda calisan, coklu-dilli (Turkce dahil) bir retrieval
+    modelidir; dokuman/sorgu embedding'i icin `passage: `/`query: ` on-ekleri
+    kullanir (modelin kendi resmi kullanim semasi - eski Gemini
+    `task_type=RETRIEVAL_DOCUMENT/RETRIEVAL_QUERY` ayrimiyla ES DEGERDIR).
     """
 
     def __init__(
         self,
         model_name: str,
-        output_dimensionality: int,
-        api_key_env: str = "GEMINI_API_KEY",
+        output_dimensionality: Optional[int] = None,
+        device: str = "cpu",
     ) -> None:
-        """GeminiEmbeddingProvider'i model adi ve vektor boyutuyla kurar (AG CAGRISI YAPMAZ).
+        """LocalEmbeddingProvider'i model adi ve (varsa) beklenen boyutla kurar (HICBIR MODEL YUKLEMEZ).
 
         Args:
-            model_name: Gemini embedding model adi (orn. "gemini-embedding-001").
-            output_dimensionality: Istenen vektor boyutu (config'ten gelir, HARD-CODE degildir).
-            api_key_env: API anahtarinin okunacagi ortam degiskeni adi.
+            model_name: HuggingFace/`sentence-transformers` model kimligi
+                (orn. "intfloat/multilingual-e5-small").
+            output_dimensionality: Config'ten gelen BEKLENEN vektor boyutu;
+                verilmisse ilk gercek embed cagrisinda modelin GERCEKTEN
+                urettigi boyutla KARSILASTIRILIR (uyusmazlik sessizce KABUL
+                EDILMEZ, bkz. `_ensure_dimension_matches`). `None` ise
+                modelin kendi boyutu oldugu gibi kabul edilir.
+            device: `sentence-transformers` cihaz parametresi ("cpu"/"cuda"); varsayilan "cpu".
         """
         self._model_name = model_name
-        self._dimension = output_dimensionality
-        self._api_key_env = api_key_env
-        self._client = None  # lazy - ilk gercek cagriya kadar olusturulmaz
+        self._configured_dimension = output_dimensionality
+        self._device = device
+        self._model = None  # lazy - ilk gercek cagriya kadar YUKLENMEZ
 
     @property
     def dimension(self) -> int:
-        return self._dimension
+        if self._configured_dimension is not None:
+            return self._configured_dimension
+        return self._get_model().get_sentence_embedding_dimension()
 
-    def _get_client(self):
-        """Gemini istemcisini (lazy) olusturur; API anahtari yoksa acik `ConfigurationError` firlatir."""
-        if self._client is not None:
-            return self._client
+    def _get_model(self):
+        """`sentence-transformers` modelini (lazy) yukler; paket kurulu degilse acik `ConfigurationError` firlatir."""
+        if self._model is not None:
+            return self._model
 
-        api_key = os.environ.get(self._api_key_env, "").strip()
-        if not api_key:
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
             raise ConfigurationError(
-                f"Gemini embedding icin '{self._api_key_env}' ortam degiskeni tanimli degil. "
-                "Gercek bir RAG retrieval cagrisi yapabilmek icin bu anahtari tanimlayin."
+                "'sentence-transformers' paketi kurulu degil. Lokal embedding icin "
+                "'pip install sentence-transformers' calistirin."
+            ) from exc
+
+        self._model = SentenceTransformer(self._model_name, device=self._device)
+        self._ensure_dimension_matches(self._model.get_sentence_embedding_dimension())
+        return self._model
+
+    def _ensure_dimension_matches(self, actual_dimension: int) -> None:
+        """Modelin GERCEKTEN urettigi boyutu, config'te BEKLENEN boyutla karsilastirir - uyusmazlik SESSIZCE KABUL EDILMEZ."""
+        if self._configured_dimension is not None and actual_dimension != self._configured_dimension:
+            raise ConfigurationError(
+                f"Embedding modeli '{self._model_name}' {actual_dimension} boyutunda vektor uretiyor, "
+                f"ancak config'te output_dimensionality={self._configured_dimension} tanimli. "
+                "configs/config.yaml -> memory.embedding.output_dimensionality'i duzeltin."
             )
 
-        from google import genai  # gec import: paket kurulu degilse bile modul import'u patlamasin
-
-        self._client = genai.Client(api_key=api_key)
-        return self._client
-
-    def _embed(self, texts: List[str], task_type: str) -> np.ndarray:
-        """Her metni AYRI bir `embed_content` cagrisiyla (TEK string olarak, LISTE DEGIL) vektorlestirir.
-
-        KOK NEDEN (gercek hesapla dogrulandi, 2026-08-23): SDK'ya `contents`
-        parametresi bir LISTE (`["a", "b"]`, tek elemanli olsa bile) olarak
-        verilirse, `google-genai` istegi `:batchEmbedContents` uc noktasina
-        yonlendiriyor - bu hesapta bu uc nokta HER ZAMAN 429 RESOURCE_EXHAUSTED
-        ("check your plan and billing") donuyordu, HALBUKI ayni hesabin
-        "Gemini Embedding 1" kotasi (RPM/TPM/RPD) rahatlikla musaitti. `contents`
-        TEK bir string (liste DEGIL) olarak verildiginde istek `:embedContent`
-        (tekil) uc noktasina gidiyor ve BASARIYLA calisiyor - dogrudan gercek
-        API'ye karsi test edildi. Bu yuzden burada KASITLI olarak toplu/batch
-        cagri YAPILMAZ; her metin kendi tekil istegini alir.
-        """
+    def _embed(self, texts: List[str], prefix: str) -> np.ndarray:
         if not texts:
-            return np.zeros((0, self._dimension), dtype="float32")
+            return np.zeros((0, self.dimension), dtype="float32")
 
-        from google.genai import types
-
-        client = self._get_client()
-        vectors: List[List[float]] = []
-        for i, text in enumerate(texts):
-            embedding_values = self._embed_one_with_rate_limit_retry(client, types, text, task_type)
-            vectors.append(embedding_values)
-            if i < len(texts) - 1:
-                time.sleep(_INTER_BATCH_DELAY_SEC)
-
+        model = self._get_model()
+        prefixed = [f"{prefix}{t}" for t in texts]
+        vectors = model.encode(
+            prefixed,
+            batch_size=32,
+            show_progress_bar=False,
+            convert_to_numpy=True,
+            normalize_embeddings=False,  # kendi _l2_normalize'imizla yapiyoruz (Gemini yolundakiyle AYNI davranis)
+        )
         array = np.asarray(vectors, dtype="float32")
+        self._ensure_dimension_matches(array.shape[1])
         return _l2_normalize(array)
 
-    def _embed_one_with_rate_limit_retry(self, client, types, text: str, task_type: str) -> List[float]:
-        """Tek bir metin icin (TEK string `contents`, liste DEGIL) `embed_content` cagirir; 429'da katlanarak-artan bekleme ile yeniden dener.
-
-        Yalnizca RATE-LIMIT hatasinda (429) yeniden dener - baska bir hata
-        (gecersiz istek, auth vb.) OLDUGU GIBI yukari firlatilir (sessizce
-        yutulmaz/mock'a dusulmez).
-        """
-        attempt = 0
-        while True:
-            try:
-                response = client.models.embed_content(
-                    model=self._model_name,
-                    contents=text,
-                    config=types.EmbedContentConfig(
-                        task_type=task_type,
-                        output_dimensionality=self._dimension,
-                    ),
-                )
-                return response.embeddings[0].values
-            except Exception as exc:  # noqa: BLE001 - yalnizca 429 ise yeniden denenir, aksi halde yeniden firlatilir
-                if not _is_rate_limit_error(exc) or attempt >= _MAX_RATE_LIMIT_RETRIES:
-                    raise
-                wait_sec = _RATE_LIMIT_BACKOFF_BASE_SEC * (2**attempt)
-                attempt += 1
-                logger.warning(
-                    "GeminiEmbeddingProvider: 429 RESOURCE_EXHAUSTED (deneme %d/%d), %.0fs bekleniyor: %s",
-                    attempt,
-                    _MAX_RATE_LIMIT_RETRIES,
-                    wait_sec,
-                    exc,
-                )
-                time.sleep(wait_sec)
-
     def embed_documents(self, texts: List[str]) -> np.ndarray:
-        return self._embed(texts, task_type="RETRIEVAL_DOCUMENT")
+        return self._embed(texts, prefix=_PASSAGE_PREFIX)
 
     def embed_query(self, text: str) -> np.ndarray:
-        return self._embed([text], task_type="RETRIEVAL_QUERY")[0]
+        return self._embed([text], prefix=_QUERY_PREFIX)[0]
 
 
 def build_embedding_provider(
     provider: str,
     model_name: str,
     output_dimensionality: Optional[int],
-    api_key_env: str = "GEMINI_API_KEY",
+    device: str = "cpu",
 ) -> EmbeddingProvider:
     """Config'teki `provider` degerine gore uygun `EmbeddingProvider`i uretir.
 
     Args:
-        provider: `configs/config.yaml` -> `memory.embedding.provider` (su an yalnizca "gemini").
-        model_name: Embedding model adi.
-        output_dimensionality: Istenen vektor boyutu; `None` ise `ConfigurationError`.
-        api_key_env: API anahtarinin okunacagi ortam degiskeni adi.
+        provider: `configs/config.yaml` -> `memory.embedding.provider` (su an YALNIZCA "local").
+        model_name: Embedding model adi (`sentence-transformers`/HuggingFace kimligi).
+        output_dimensionality: Beklenen vektor boyutu; `None` ise `ConfigurationError`.
+        device: `sentence-transformers` cihaz parametresi.
 
     Returns:
-        Kurulmus (ama henuz hicbir AG CAGRISI yapmamis) `EmbeddingProvider`.
+        Kurulmus (ama henuz hicbir model agirligi YUKLEMEMIS) `EmbeddingProvider`.
 
     Raises:
         ConfigurationError: `provider` desteklenmiyorsa veya `output_dimensionality` eksikse.
+            "gemini" DAHIL, "local" DISINDAKI HICBIR deger kabul EDILMEZ -
+            Gemini Embedding API'ye SESSIZCE fallback YAPILMAZ.
     """
-    if provider != "gemini":
+    if provider != "local":
         raise ConfigurationError(
-            f"Desteklenmeyen embedding saglayicisi: '{provider}'. Su an yalnizca 'gemini' destekleniyor."
+            f"Desteklenmeyen embedding saglayicisi: '{provider}'. Su an YALNIZCA 'local' destekleniyor "
+            "(Gemini Embedding API kaldirildi - harici API/kota gerektiren hicbir fallback yoktur)."
         )
     if not output_dimensionality:
         raise ConfigurationError(
             "memory.embedding.output_dimensionality config'te tanimli olmalidir (hard-code edilmez)."
         )
-    return GeminiEmbeddingProvider(
-        model_name=model_name, output_dimensionality=output_dimensionality, api_key_env=api_key_env
-    )
+    return LocalEmbeddingProvider(model_name=model_name, output_dimensionality=output_dimensionality, device=device)

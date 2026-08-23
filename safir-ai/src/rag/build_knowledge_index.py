@@ -1,23 +1,25 @@
 """04 - Embedding & RAG Katmani: Knowledge Base index REBUILD CLI'i.
 
 `data/knowledge_base/chunks/*.json` icindeki TUM (su an 748) madde-bazli
-chunk'i `sources.yaml` ile join edip Gemini Embedding API ile embed eder,
-bir FAISS `IndexFlatIP` insa eder ve `data/knowledge_base/index/` altina
-KALICI olarak yazar (`faiss.index`, `documents.json`, `index_meta.json`).
+chunk'i `sources.yaml` ile join edip TAMAMEN LOKAL bir embedding modeliyle
+(`sentence-transformers`, CPU, harici API/kota YOK) embed eder, bir FAISS
+`IndexFlatIP` insa eder ve `data/knowledge_base/index/` altina KALICI olarak
+yazar (`faiss.index`, `documents.json`, `index_meta.json`).
 
 Bu script YALNIZCA knowledge base ICERIGI DEGISTIGINDE (yeni doküman,
 chunk stratejisi degisikligi, embedding modeli degisikligi) calistirilmasi
 gereken, EXPLICIT bir komuttur - `SafirPipeline` HER BASLANGICTA bunu
 OTOMATIK cagirmaz (bkz. `embedding_rag_service.py::seed_default_regulations`,
 `_try_load_persisted_index`); pipeline yalnizca bu scriptin urettigi
-persisted index'i YUKLER.
+persisted index'i YUKLER - GUNCEL bir index YOKSA pipeline artik SESSIZCE
+bir placeholder'a DUSMEZ, `KnowledgeBaseNotBuiltError` ile FAIL-FAST eder.
 
 Kullanim:
     python -m src.rag.build_knowledge_index
 
-GEMINI_API_KEY ortam degiskeni tanimli olmalidir (748 dokuman embed etmek
-gercek API cagrisi ve maliyet gerektirir - bu YALNIZCA bilinçli, tek seferlik
-bir komutla tetiklenir).
+API anahtari/kota GEREKMEZ - model agirliklari ilk calistirmada HuggingFace
+Hub'dan (bir kereye mahsus, yerel diske) indirilir, sonraki calistirmalarda
+yerel onbellekten yuklenir.
 """
 
 from __future__ import annotations
@@ -141,7 +143,10 @@ def main() -> int:
     print(f"\nINDEX: {_KB_INDEX_DIR}")
     print(f"  - faiss.index    ({service.document_count()} vektor, dim={service.dimension})")
     print("  - documents.json (yapilandirilmis metadata + text)")
-    print("  - index_meta.json (model_name/dimension/kb_hash/chunk_count/created_at)")
+    print(
+        "  - index_meta.json (model_name/dimension/normalization/metric/"
+        "kb_hash=corpus_fingerprint/chunk_count/created_at)"
+    )
 
     if not _run_load_verification_and_smoke_test(config):
         print(

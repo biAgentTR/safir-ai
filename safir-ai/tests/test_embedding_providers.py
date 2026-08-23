@@ -1,7 +1,7 @@
 """`src/rag/embedding_providers.py` icin agsiz birim testleri.
 
-`google.genai` gercekten cagrilmaz - `genai.Client`/`types.EmbedContentConfig`
-monkeypatch ile sahte, deterministik nesnelerle degistirilir.
+`sentence_transformers.SentenceTransformer` gercekten yuklenmez/indirilmez -
+monkeypatch ile sahte, deterministik bir modelle degistirilir.
 """
 
 from __future__ import annotations
@@ -14,122 +14,138 @@ import pytest
 
 from src.rag.embedding_providers import (
     ConfigurationError,
-    GeminiEmbeddingProvider,
+    LocalEmbeddingProvider,
     build_embedding_provider,
 )
 
 
-class _FakeEmbedding:
-    def __init__(self, values):
-        self.values = values
+class _FakeSentenceTransformer:
+    """`SentenceTransformer(model_name, device=...)` yerine gecen, metne bagli deterministik vektor ureten sahte model."""
+
+    def __init__(self, model_name: str, device: str = "cpu", dimension: int = 8):
+        self.model_name = model_name
+        self.device = device
+        self._dimension = dimension
+        self.encode_calls = []
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return self._dimension
+
+    def encode(self, texts, *, batch_size, show_progress_bar, convert_to_numpy, normalize_embeddings):
+        self.encode_calls.append(
+            {
+                "texts": list(texts),
+                "batch_size": batch_size,
+                "normalize_embeddings": normalize_embeddings,
+            }
+        )
+        return np.array(
+            [[float((hash(t) >> i) % 7) for i in range(self._dimension)] for t in texts],
+            dtype="float32",
+        )
 
 
-class _FakeEmbedContentResponse:
-    def __init__(self, embeddings):
-        self.embeddings = embeddings
+def _install_fake_sentence_transformers(monkeypatch, dimension: int = 8):
+    """`sentence_transformers` modulunu sahte bir surumle degistirir; olusan model orneklerini yakalar."""
+    created_models = []
 
+    fake_module = types.ModuleType("sentence_transformers")
 
-class _FakeModels:
-    """`client.models.embed_content(...)` cagrisini kaydeden sahte istemci parcasi."""
+    def _factory(model_name, device="cpu"):
+        model = _FakeSentenceTransformer(model_name, device=device, dimension=dimension)
+        created_models.append(model)
+        return model
 
-    def __init__(self, dimension: int):
-        self.dimension = dimension
-        self.calls = []
-
-    def embed_content(self, *, model, contents, config):
-        # `_embed()` artik HER ZAMAN TEK bir string gonderir (liste degil) -
-        # bkz. embedding_providers.py::_embed docstring'i (kok neden aciklamasi).
-        assert isinstance(contents, str), "contents TEK bir string olmali, liste degil (batch endpoint kullanilmamali)"
-        self.calls.append({"model": model, "contents": contents, "config": config})
-        embedding = _FakeEmbedding([float((hash(contents) >> i) % 7) for i in range(self.dimension)])
-        return _FakeEmbedContentResponse([embedding])
-
-
-class _FakeClient:
-    def __init__(self, dimension: int):
-        self.models = _FakeModels(dimension)
-
-
-def _install_fake_genai(monkeypatch, dimension: int = 8) -> _FakeClient:
-    """`google.genai`/`google.genai.types` modullerini sahte surumlerle degistirir ve olusan istemciyi dondurur."""
-    fake_client = _FakeClient(dimension)
-
-    fake_genai_module = types.ModuleType("google.genai")
-    fake_genai_module.Client = lambda api_key: fake_client  # noqa: ARG005
-
-    fake_types_module = types.ModuleType("google.genai.types")
-
-    class _FakeEmbedContentConfig:
-        def __init__(self, task_type, output_dimensionality):
-            self.task_type = task_type
-            self.output_dimensionality = output_dimensionality
-
-    fake_types_module.EmbedContentConfig = _FakeEmbedContentConfig
-
-    fake_google_module = sys.modules.get("google") or types.ModuleType("google")
-    fake_google_module.genai = fake_genai_module
-
-    monkeypatch.setitem(sys.modules, "google", fake_google_module)
-    monkeypatch.setitem(sys.modules, "google.genai", fake_genai_module)
-    monkeypatch.setitem(sys.modules, "google.genai.types", fake_types_module)
-    return fake_client
-
-
-def test_missing_api_key_raises_configuration_error(monkeypatch) -> None:
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8)
-
-    with pytest.raises(ConfigurationError):
-        provider.embed_query("test sorgusu")
+    fake_module.SentenceTransformer = _factory
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_module)
+    return created_models
 
 
 def test_provider_construction_never_touches_network(monkeypatch) -> None:
-    """Yapicinin (constructor) API anahtari olmasa bile PATLAMAMASI gerekir - lazy client."""
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8)
-    assert provider.dimension == 8
+    """Yapicinin (constructor) HICBIR model yuklemesi/agsi tetiklememesi gerekir - lazy model."""
+    monkeypatch.delitem(sys.modules, "sentence_transformers", raising=False)
+    provider = LocalEmbeddingProvider(model_name="intfloat/multilingual-e5-small", output_dimensionality=384)
+    assert provider.dimension == 384  # config'ten geliyor, model YUKLENMEDEN
 
 
-def test_embed_query_uses_retrieval_query_task_type(monkeypatch) -> None:
-    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
-    fake_client = _install_fake_genai(monkeypatch, dimension=8)
+def test_missing_sentence_transformers_package_raises_configuration_error(monkeypatch) -> None:
+    monkeypatch.delitem(sys.modules, "sentence_transformers", raising=False)
+    monkeypatch.setattr(
+        "builtins.__import__",
+        _raising_import_for("sentence_transformers"),
+    )
+    provider = LocalEmbeddingProvider(model_name="fake-model", output_dimensionality=8)
+    with pytest.raises(ConfigurationError, match="sentence-transformers"):
+        provider.embed_query("test")
 
-    provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8)
+
+def _raising_import_for(blocked_module: str):
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _fake_import(name, *args, **kwargs):
+        if name == blocked_module or name.startswith(blocked_module + "."):
+            raise ImportError(f"'{blocked_module}' kurulu degil (test simulasyonu)")
+        return real_import(name, *args, **kwargs)
+
+    return _fake_import
+
+
+def test_embed_query_uses_query_prefix(monkeypatch) -> None:
+    models = _install_fake_sentence_transformers(monkeypatch, dimension=8)
+
+    provider = LocalEmbeddingProvider(model_name="intfloat/multilingual-e5-small", output_dimensionality=8)
     vector = provider.embed_query("yangın riski")
 
     assert vector.shape == (8,)
-    assert fake_client.models.calls[0]["config"].task_type == "RETRIEVAL_QUERY"
-    assert fake_client.models.calls[0]["contents"] == "yangın riski"
+    assert models[0].encode_calls[0]["texts"] == ["query: yangın riski"]
 
 
-def test_embed_documents_uses_retrieval_document_task_type_and_sends_one_request_per_text(monkeypatch) -> None:
-    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
-    fake_client = _install_fake_genai(monkeypatch, dimension=8)
-    sleep_calls = []
-    monkeypatch.setattr("src.rag.embedding_providers.time.sleep", lambda s: sleep_calls.append(s))
+def test_embed_documents_uses_passage_prefix_and_single_call(monkeypatch) -> None:
+    models = _install_fake_sentence_transformers(monkeypatch, dimension=8)
 
-    provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8)
+    provider = LocalEmbeddingProvider(model_name="intfloat/multilingual-e5-small", output_dimensionality=8)
     texts = ["madde 1", "madde 2", "madde 3"]
     vectors = provider.embed_documents(texts)
 
     assert vectors.shape == (3, 8)
-    # Batch endpoint KESINLIKLE kullanilmaz - her metin kendi tekil istegini alir.
-    assert len(fake_client.models.calls) == 3
-    assert [call["contents"] for call in fake_client.models.calls] == texts
-    assert fake_client.models.calls[0]["config"].task_type == "RETRIEVAL_DOCUMENT"
-    # RPM yukunu azaltmak icin istekler arasinda (ama SONUNCUDAN SONRA DEGIL) beklenmeli.
-    assert sleep_calls == [3.0, 3.0]
+    # Lokal model - agirlik/kota kisitlamasi yok, TUM metinler TEK `encode()` cagrisinda gider.
+    assert len(models[0].encode_calls) == 1
+    assert models[0].encode_calls[0]["texts"] == [f"passage: {t}" for t in texts]
 
 
 def test_embed_documents_returns_normalized_vectors(monkeypatch) -> None:
-    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
-    _install_fake_genai(monkeypatch, dimension=8)
+    _install_fake_sentence_transformers(monkeypatch, dimension=8)
 
-    provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8)
+    provider = LocalEmbeddingProvider(model_name="intfloat/multilingual-e5-small", output_dimensionality=8)
     vectors = provider.embed_documents(["bir metin"])
 
     norm = np.linalg.norm(vectors[0])
     assert norm == pytest.approx(1.0, abs=1e-5)
+
+
+def test_document_and_query_embedding_share_same_model_instance(monkeypatch) -> None:
+    """Gorev tanimi 4. madde: dokuman ve sorgu embedding'i AYNI model/dimension/normalization kullanmali."""
+    models = _install_fake_sentence_transformers(monkeypatch, dimension=8)
+
+    provider = LocalEmbeddingProvider(model_name="intfloat/multilingual-e5-small", output_dimensionality=8)
+    provider.embed_documents(["madde 1"])
+    provider.embed_query("soru")
+
+    # Lazy client TEK bir kez olusturulur - hem dokuman hem sorgu embedding'i AYNI model orneğini kullanir.
+    assert len(models) == 1
+
+
+def test_dimension_mismatch_is_not_silently_accepted(monkeypatch) -> None:
+    """Gorev tanimi 7. madde: model/dimension uyumsuzlugu SESSIZCE KABUL EDILMEZ."""
+    _install_fake_sentence_transformers(monkeypatch, dimension=8)
+
+    # Config 16 boyut bekliyor ama sahte model 8 boyut uretiyor.
+    provider = LocalEmbeddingProvider(model_name="intfloat/multilingual-e5-small", output_dimensionality=16)
+
+    with pytest.raises(ConfigurationError, match="boyut"):
+        provider.embed_query("test")
 
 
 def test_build_embedding_provider_rejects_unsupported_provider() -> None:
@@ -137,81 +153,20 @@ def test_build_embedding_provider_rejects_unsupported_provider() -> None:
         build_embedding_provider(provider="unknown-provider", model_name="x", output_dimensionality=8)
 
 
+def test_build_embedding_provider_rejects_gemini() -> None:
+    """Gorev tanimi 2. madde: Gemini embedding'e SESSIZ FALLBACK YOK - 'gemini' provider'i acikca REDDEDILIR."""
+    with pytest.raises(ConfigurationError, match="local"):
+        build_embedding_provider(provider="gemini", model_name="gemini-embedding-001", output_dimensionality=768)
+
+
 def test_build_embedding_provider_requires_output_dimensionality() -> None:
     with pytest.raises(ConfigurationError):
-        build_embedding_provider(provider="gemini", model_name="gemini-embedding-001", output_dimensionality=None)
+        build_embedding_provider(provider="local", model_name="intfloat/multilingual-e5-small", output_dimensionality=None)
 
 
-class _FakeRateLimitError(Exception):
-    def __init__(self, code: int = 429, status: str = "RESOURCE_EXHAUSTED"):
-        super().__init__(f"{code} {status}")
-        self.code = code
-        self.status = status
-
-
-class _FlakyThenOkModels(_FakeModels):
-    """Ilk `fail_times` cagride 429 firlatir, sonra normal davranir."""
-
-    def __init__(self, dimension: int, fail_times: int):
-        super().__init__(dimension)
-        self._fail_times = fail_times
-        self._attempts = 0
-
-    def embed_content(self, *, model, contents, config):
-        self._attempts += 1
-        if self._attempts <= self._fail_times:
-            raise _FakeRateLimitError()
-        return super().embed_content(model=model, contents=contents, config=config)
-
-
-def test_rate_limit_429_is_retried_with_backoff_and_eventually_succeeds(monkeypatch) -> None:
-    fake_client = _install_fake_genai(monkeypatch)
-    fake_client.models = _FlakyThenOkModels(dimension=8, fail_times=2)
-    sleep_calls = []
-    monkeypatch.setattr("src.rag.embedding_providers.time.sleep", lambda s: sleep_calls.append(s))
-
-    provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8)
-    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
-
-    result = provider.embed_documents(["metin"])
-
-    assert result.shape == (1, 8)
-    assert fake_client.models._attempts == 3  # 2 basarisiz + 1 basarili
-    assert len(sleep_calls) == 2
-    assert sleep_calls[1] > sleep_calls[0]  # katlanarak artan bekleme
-
-
-def test_rate_limit_429_gives_up_after_max_retries(monkeypatch) -> None:
-    fake_client = _install_fake_genai(monkeypatch)
-    fake_client.models = _FlakyThenOkModels(dimension=8, fail_times=999)
-    monkeypatch.setattr("src.rag.embedding_providers.time.sleep", lambda s: None)
-
-    provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8)
-    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
-
-    with pytest.raises(_FakeRateLimitError):
-        provider.embed_documents(["metin"])
-
-
-def test_non_rate_limit_error_is_not_retried(monkeypatch) -> None:
-    class _AuthErrorModels(_FakeModels):
-        def embed_content(self, *, model, contents, config):
-            raise RuntimeError("401 unauthorized")
-
-    fake_client = _install_fake_genai(monkeypatch)
-    fake_client.models = _AuthErrorModels(dimension=8)
-    sleep_calls = []
-    monkeypatch.setattr("src.rag.embedding_providers.time.sleep", lambda s: sleep_calls.append(s))
-
-    provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8)
-    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
-
-    with pytest.raises(RuntimeError, match="401 unauthorized"):
-        provider.embed_documents(["metin"])
-    assert sleep_calls == []  # 429 disi hata icin HIC bekleme yapilmaz
-
-
-def test_build_embedding_provider_returns_gemini_provider() -> None:
-    provider = build_embedding_provider(provider="gemini", model_name="gemini-embedding-001", output_dimensionality=768)
-    assert isinstance(provider, GeminiEmbeddingProvider)
-    assert provider.dimension == 768
+def test_build_embedding_provider_returns_local_provider() -> None:
+    provider = build_embedding_provider(
+        provider="local", model_name="intfloat/multilingual-e5-small", output_dimensionality=384
+    )
+    assert isinstance(provider, LocalEmbeddingProvider)
+    assert provider.dimension == 384

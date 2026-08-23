@@ -319,15 +319,14 @@ memory:
   sqlite:
     db_path: "data/events.db"
   embedding:
-    provider: "gemini"                 # Google Gemini Embedding API (harici) - GEMINI_API_KEY gerektirir
-    model_name: "gemini-embedding-001"
-    output_dimensionality: 768
-    device: "api"
+    provider: "local"                  # sentence-transformers, CPU, harici API/kota YOK
+    model_name: "intfloat/multilingual-e5-small"
+    output_dimensionality: 384
+    device: "cpu"
     normalize_embeddings: true
-    api_key_env: "GEMINI_API_KEY"
   faiss:
     index_path: "data/knowledge_base/index/faiss.index"
-    embedding_model: "gemini-embedding-001"
+    embedding_model: "intfloat/multilingual-e5-small"
     top_k: 5                           # RERANK SONRASI nihai sonuc sayisi
     candidate_k: 20                    # FAISS'ten cekilecek aday sayisi (rerank ONCESI)
     similarity_threshold: null

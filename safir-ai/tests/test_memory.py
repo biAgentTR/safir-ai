@@ -17,7 +17,6 @@ import pytest
 
 from src.rag import embedding_rag_service as rag_module
 from src.rag.embedding_rag_service import (
-    DEFAULT_ISG_REGULATIONS,
     EmbeddingRAGService,
     FAISSRagService,
     _INDEX_FILE,
@@ -222,7 +221,7 @@ def _patch_embedding_provider(monkeypatch):
 
 @pytest.fixture
 def rag_service(tmp_path) -> EmbeddingRAGService:
-    embedding_config = EmbeddingConfig(provider="gemini", model_name="fake-model", output_dimensionality=16)
+    embedding_config = EmbeddingConfig(provider="local", model_name="fake-model", output_dimensionality=16)
     faiss_config = FaissMemoryConfig(
         index_path=str(tmp_path / "index.faiss"), embedding_model="fake-model", top_k=3, candidate_k=10
     )
@@ -239,31 +238,22 @@ def test_query_on_empty_index_returns_empty_list(rag_service) -> None:
     assert rag_service.query("herhangi bir soru") == []
 
 
-def test_seed_default_regulations_is_idempotent(rag_service) -> None:
-    """`seed_default_regulations()`, GUNCEL bir persisted KB index'i YOKSA
-    `DEFAULT_ISG_REGULATIONS` fallback'ine duser (748 gercek chunk'i HER
-    pipeline baslangicinda YENIDEN embed ETMEZ - bkz. modul dokustringi);
-    tekrar cagirma ayni sayida dokumani KORUR (idempotent).
+def test_seed_default_regulations_fails_fast_without_persisted_index(rag_service) -> None:
+    """`seed_default_regulations()`, GUNCEL bir persisted KB index'i YOKSA artik
+    `DEFAULT_ISG_REGULATIONS` gibi bir placeholder'a SESSIZCE DUSMEZ - acik bir
+    `KnowledgeBaseNotBuiltError` firlatir (fail-fast, bkz. modul dokustringi).
 
     Bu test, bu repo checkout'unda HENUZ bir persisted index olusturulmadigini
-    varsayar (`python -m src.rag.build_knowledge_index` calistirilmadi -
-    gercek API anahtari gerektirir); persisted index varsa bu varsayim GECERSIZ
-    olur ve test guncellenmelidir.
+    varsayar (`python -m src.rag.build_knowledge_index` calistirilmadi);
+    persisted index varsa bu varsayim GECERSIZ olur ve test guncellenmelidir.
     """
     assert not _INDEX_FILE.exists(), "Bu test persisted index olmadigini varsayar."
 
-    rag_service.seed_default_regulations()
-    count_after_first = rag_service.document_count()
+    with pytest.raises(rag_module.KnowledgeBaseNotBuiltError, match="build_knowledge_index"):
+        rag_service.seed_default_regulations()
 
-    assert count_after_first == len(DEFAULT_ISG_REGULATIONS)
-    assert count_after_first > 0
-    # RAG P0 kok neden dogrulamasi: bu durumda `corpus_source` acikca
-    # 'fallback_placeholder' olmali - operator/trace bu degrade durumu
-    # GORMELI, sessizce "calisiyor" gibi gorunmemeli (bkz. embedding_rag_service.py).
-    assert rag_service.corpus_source == "fallback_placeholder"
-
-    rag_service.seed_default_regulations()
-    assert rag_service.document_count() == count_after_first
+    assert rag_service.document_count() == 0
+    assert rag_service.corpus_source == "unseeded"
 
 
 def test_search_laws_finds_relevant_document(rag_service) -> None:

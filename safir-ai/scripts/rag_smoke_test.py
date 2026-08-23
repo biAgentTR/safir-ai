@@ -1,14 +1,13 @@
-"""SAFIR RAG (Gemini embedding + FAISS + Gemini/Groq rerank) icin GERCEK smoke test.
+"""SAFIR RAG (LOKAL embedding + FAISS + opsiyonel Gemini/Groq rerank) icin GERCEK smoke test.
 
-Embedding HER ZAMAN Gemini'dir (`GEMINI_API_KEY`); reranker config'teki
-`memory.reranker.provider`e gore Gemini VEYA Groq (`memory.reranker.api_key_env`)
-olabilir - ikisi de AYRI kotalar/anahtarlardir. Gerekli ortam degiskenlerinden
-HERHANGI BIRI TANIMLI DEGILSE, bu script bunu ACIKCA belirtip mock'a
-SESSIZCE DUSMEDEN cikar.
+Embedding artik TAMAMEN LOKAL'dir (`sentence-transformers`, CPU, API anahtari
+GEREKMEZ). Reranker OPSIYONELDIR; config'teki `memory.reranker.provider`e gore
+Gemini VEYA Groq (`memory.reranker.api_key_env`) kullanabilir - gerekli ortam
+degiskeni TANIMLI DEGILSE, bu script bunu ACIKCA belirtip mock'a SESSIZCE
+DUSMEDEN cikar.
 
 Kullanim:
-    export GEMINI_API_KEY=...
-    export GROQ_API_KEY=...   # reranker.provider="groq" ise gerekir
+    export GROQ_API_KEY=...   # reranker.provider="groq" ise gerekir (varsayilan)
     python scripts/rag_smoke_test.py
 """
 
@@ -36,10 +35,6 @@ _QUERIES = [
 def main() -> int:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
-    if not os.environ.get("GEMINI_API_KEY", "").strip():
-        print("[SKIPPED] GEMINI_API_KEY is not set (embedding icin gerekli)")
-        return 0
-
     from src.rag.embedding_rag_service import EmbeddingRAGService, _INDEX_FILE
     from src.utils.config_loader import load_config
 
@@ -57,7 +52,7 @@ def main() -> int:
     service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss, config.memory.reranker)
 
     if not _INDEX_FILE.exists():
-        print(f"[BILGI] Persisted index yok ({_INDEX_FILE}); simdi 748 chunk GERCEK Gemini API ile embed edilecek.")
+        print(f"[BILGI] Persisted index yok ({_INDEX_FILE}); simdi 748 chunk LOKAL modelle embed edilecek.")
         print("        (Bu, yalnizca bir kez calisir; sonrasi icin 'python -m src.rag.build_knowledge_index' tercih edin.)")
         count = service.build_index_from_chunks()
         print(f"[OK] {count} chunk embed edildi.\n")
@@ -66,7 +61,7 @@ def main() -> int:
         print(f"[OK] Persisted index yuklendi ({service.document_count()} dokuman).\n")
 
     print("=" * 72)
-    print(f"GERCEK RAG SMOKE TEST (Gemini embedding + {config.memory.reranker.provider} rerank, GERCEK API)")
+    print(f"GERCEK RAG SMOKE TEST (lokal embedding + {config.memory.reranker.provider} rerank, GERCEK API)")
     print("=" * 72)
 
     for query in _QUERIES:
@@ -91,7 +86,7 @@ def main() -> int:
 
     print("\n" + "=" * 72)
     print("Not: sonuclarin semantik kalitesi burada IDDIA EDILMEMEKTEDIR - bu")
-    print("script yalnizca gercek API'lerin (embedding + rerank) uctan uca")
+    print("script yalnizca lokal embedding + gercek rerank API'sinin uctan uca")
     print("CALISTIGINI dogrular. API anahtarlari hicbir yerde YAZDIRILMADI.")
     return 0
 

@@ -336,19 +336,19 @@ class SQLiteMemoryConfig(BaseModel):
 
 
 class EmbeddingConfig(BaseModel):
-    """Embedding & RAG Katmani icin Gemini Embedding API model ayarlari.
+    """Embedding & RAG Katmani icin LOKAL (`sentence-transformers`) embedding model ayarlari.
 
-    2026-08-22 guncellemesi: eskiden yerel/CPU `sentence-transformers`
-    kullanilirdi; artik TEK saglayici Gemini Embedding API'dir (bkz.
-    `src/rag/embedding_providers.py::GeminiEmbeddingProvider`).
+    2026-08-23 guncellemesi: Gemini Embedding API TAMAMEN KALDIRILDI (ne
+    birincil yol ne fallback) - TEK saglayici artik "local"dir: harici API/
+    kota/API anahtari OLMADAN, CPU uzerinde `sentence-transformers` ile
+    calisir (bkz. `src/rag/embedding_providers.py::LocalEmbeddingProvider`).
     """
 
-    provider: str = "gemini"            # su an yalnizca "gemini" destekleniyor
-    model_name: str                     # orn. "gemini-embedding-001"
+    provider: str = "local"             # su an yalnizca "local" destekleniyor
+    model_name: str                     # orn. "intfloat/multilingual-e5-small"
     output_dimensionality: Optional[int] = None  # HARD-CODE edilmez, config'ten gelir
-    device: str = "api"                 # geriye-uyum/bilgi amacli; Gemini icin her zaman "api"
+    device: str = "cpu"                 # `sentence-transformers` cihazi ("cpu"/"cuda")
     normalize_embeddings: bool = True
-    api_key_env: str = "GEMINI_API_KEY"
 
 
 class FaissMemoryConfig(BaseModel):
