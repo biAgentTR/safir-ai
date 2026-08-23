@@ -1529,3 +1529,45 @@ def test_higher_sample_fps_captures_more_stages_of_a_rapidly_escalating_event(tm
         "Daha yuksek ornekleme hizi, ayni hizla tirmanan olayin DAHA FAZLA "
         "asamasini kareye almali (secim mantigi degismeden)."
     )
+
+
+def test_sample_fps_must_cover_native_fps_or_a_critical_frame_is_still_missed(tmp_path: Path) -> None:
+    """21) Kanita dayali `sample_fps` (15 -> 30) degisikligi: `sample_fps=15`,
+    25fps'lik bir kaynak icin native hiz veriyordu ama 30fps'lik (yaygin)
+    bir kaynakta `frame_step=int(30/15)=2` HALA kare atliyordu - bu, secim
+    mantigindaki (esik/interval/cooldown/dedup) HICBIR ayarla duzeltilemez,
+    cunku o kare zaten hic OKUNMUYOR. `sample_fps=30`, 30fps'lik bir
+    kaynakta da `frame_step=1` (native, atlamasiz) saglamali."""
+    path = tmp_path / "native_30fps_critical_frame.mp4"
+    frames = []
+    total = 150
+    crit_frame = 75
+    for i in range(total):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if i == crit_frame:
+            cv2.rectangle(frame, (5, 5), (120, 90), (255, 255, 255), -1)
+        frames.append(frame)
+    h, w = frames[0].shape[:2]
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(path), fourcc, 30.0, (w, h))  # 30fps native kaynak
+    for f in frames:
+        writer.write(f)
+    writer.release()
+
+    sampler_15 = AdaptiveFrameSampler(
+        min_change_threshold=0.02, blur_kernel_size=(3, 3), evidence_output_dir=str(tmp_path / "e15")
+    )
+    evidence_15 = sampler_15.process_video(path, sample_fps=15)
+    assert all(f.selection_reason == "fallback" for f in evidence_15), (
+        "Bu senaryo, 25fps varsayimiyla secilmis bir sample_fps'in 30fps'lik "
+        "GERCEK bir kaynakta hala kare atlayabildigini gosterir."
+    )
+
+    sampler_30 = AdaptiveFrameSampler(
+        min_change_threshold=0.02, blur_kernel_size=(3, 3), evidence_output_dir=str(tmp_path / "e30")
+    )
+    evidence_30 = sampler_30.process_video(path, sample_fps=30)
+    assert any(f.selection_reason == "threshold_exceeded" for f in evidence_30), (
+        "sample_fps, GERCEK kaynak hizini (30fps) karsilamali - ayni kritik "
+        "kareyi yakalamali."
+    )
