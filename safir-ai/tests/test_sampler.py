@@ -1571,3 +1571,144 @@ def test_sample_fps_must_cover_native_fps_or_a_critical_frame_is_still_missed(tm
         "sample_fps, GERCEK kaynak hizini (30fps) karsilamali - ayni kritik "
         "kareyi yakalamali."
     )
+
+
+# =============================================================================
+# Kok neden regresyon testleri: yuksek `sample_fps` (kisa/ani olaylari
+# yakalamak icin gecen turlarda kademeli yukseltildi), ardisik-ornek araligini
+# kisalttigi icin, dusuk kontrastli/kademeli baslayan olaylarin (ör. dumanin
+# ilk gorulme ani) ORNEK-ARASI degisimini blur+sabit piksel-fark esigiyle
+# birlikte SIFIRA dusurebiliyordu - `min_change_threshold` bunu DUZELTEMEZ
+# (ham sinyal kayboluyor). `long_baseline_change_enabled` bu kaybi, ardisik-
+# ornek karsilastirmasina (kisa/ani olaylar icin DEGISTIRILMEDEN korunan)
+# dokunmadan, EK bir uzun-baz karsilastirmasiyla telafi eder.
+# =============================================================================
+
+
+def _low_contrast_gradual_video(path: Path, total_frames: int = 400, ramp_start: int = 100) -> None:
+    """Dusuk kontrastli (delta=35), yavas/kademeli buyuyen bir yama (ör. duman)
+    iceren, 25fps native bir video yazar - ardisik NATIVE kareler arasindaki
+    fark, yuksek `sample_fps`de (native hiza yakin okuma) blur+sabit piksel-
+    fark esigi (25) tarafindan TAMAMEN bastirilacak kadar kucuktur; yalnizca
+    daha UZUN bir zaman araliginda GORUNUR hale gelir."""
+    frames = []
+    for i in range(total_frames):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if i >= ramp_start:
+            size = 6 + min(i - ramp_start, 250) * 1
+            cv2.rectangle(frame, (10, 10), (10 + size, 10 + size), (65, 65, 65), -1)
+        frames.append(frame)
+    _write_video(path, frames)
+
+
+def _high_sample_fps_config(tmp_path: Path, **overrides) -> dict:
+    params = dict(
+        min_change_threshold=0.00015,
+        blur_kernel_size=(21, 21),
+        history_window=180,
+        max_temporal_gap_sec=7.0,
+        early_change_score_ratio=0.4,
+        early_change_window=3,
+        early_change_min_count=2,
+        early_change_selection_interval_sec=1.5,
+        early_change_cooldown_sec=4.0,
+        significant_change_selection_interval_sec=0.3,
+        strong_change_cooldown_sec=4.0,
+        dedup_similarity_ratio=0.25,
+        evidence_output_dir=str(tmp_path / "evid_lb"),
+    )
+    params.update(overrides)
+    return params
+
+
+def test_low_contrast_gradual_onset_no_longer_lost_at_high_sample_fps(tmp_path: Path) -> None:
+    """22) KOK NEDEN REGRESYONU: dusuk kontrastli/kademeli baslayan bir olay
+    (ör. duman), yuksek `sample_fps`de (mevcut production degerleri)
+    `long_baseline_change_enabled=True` ile YAKALANMALI - `False` ile (eski,
+    regresyonlu davranis) tamamen kaybolmali."""
+    path = tmp_path / "low_contrast_gradual.mp4"
+    _low_contrast_gradual_video(path)
+
+    disabled = AdaptiveFrameSampler(
+        **_high_sample_fps_config(tmp_path, long_baseline_change_enabled=False)
+    ).process_video(path, sample_fps=30)
+    assert all(f.selection_reason in {"temporal_coverage", "fallback"} for f in disabled), (
+        "Bu senaryo, uzun-baz mekanizmasi KAPALIYKEN (eski/regresyonlu "
+        "davranis) dusuk kontrastli baslangicin kaybolduğunu gosterir."
+    )
+
+    enabled = AdaptiveFrameSampler(
+        **_high_sample_fps_config(tmp_path, long_baseline_change_enabled=True, evidence_output_dir=str(tmp_path / "e2"))
+    ).process_video(path, sample_fps=30)
+    assert any(f.selection_reason == "early_change" for f in enabled), (
+        "long_baseline_change_enabled=True iken dusuk kontrastli baslangic "
+        "early_change olarak yakalanmali."
+    )
+    first_early = next(f for f in enabled if f.selection_reason == "early_change")
+    # Baslangic (ramp_start=100 -> t=4.0s) civarinda, guclenmeden COK ONCE
+    # yakalanmali - "yalnizca olay guclendikten sonraki kareler seciliyor"
+    # regresyonunun TAM TERSI.
+    assert first_early.timestamp_sec < 5.0
+
+
+def test_static_noisy_scene_still_produces_no_false_evidence_with_long_baseline(tmp_path: Path) -> None:
+    """23) Uzun-baz mekanizmasi ACIKKEN bile, tamamen duragan/gurultulu bir
+    sahne yanlis (early_change/threshold_exceeded/single_frame_change)
+    evidence URETMEMELI - yalnizca coverage."""
+    path = tmp_path / "noisy_static.mp4"
+    rng = np.random.default_rng(3)
+    frames = []
+    for _ in range(750):
+        base = np.full((96, 128, 3), 30, dtype=np.uint8)
+        noise = rng.integers(-6, 7, size=base.shape, dtype=np.int16)
+        frames.append(np.clip(base.astype(np.int16) + noise, 0, 255).astype(np.uint8))
+    _write_video(path, frames)
+
+    sampler = AdaptiveFrameSampler(**_high_sample_fps_config(tmp_path, long_baseline_change_enabled=True))
+    evidence = sampler.process_video(path, sample_fps=30)
+
+    assert all(f.selection_reason in {"temporal_coverage", "fallback"} for f in evidence), (
+        "Duragan/gurultulu bir sahne, uzun-baz mekanizmasi ACIKKEN bile "
+        "yanlis evidence uretmemeli."
+    )
+
+
+def test_one_time_step_change_is_not_mistaken_for_a_sustained_gradual_trend(tmp_path: Path) -> None:
+    """24) TEK SEFERLIK bir adim degisikligi (belirip SABIT kalan bir yama),
+    uzun-baz referansi henuz yenilenmediyse bile SURDURULEN bir egilim
+    sayilip yanlislikla early_change'e ONAYLANMAMALI (long_baseline_
+    prev_net_score'a gore 'hala buyumekte mi' kontrolu bunu engellemeli)."""
+    path = tmp_path / "one_time_step.mp4"
+    _isolated_appearance_video(path, total_frames=150, appear_at=50, size=14)
+
+    sampler = AdaptiveFrameSampler(
+        **_high_sample_fps_config(tmp_path, long_baseline_interval_sec=2.0)
+    )
+    evidence = sampler.process_video(path, sample_fps=30)
+
+    assert all(f.selection_reason != "early_change" for f in evidence), (
+        "Tek seferlik bir adim degisikligi, uzun-baz referansi yenilenmeden "
+        "onceki uzun 'hala yuksek gorunme' penceresinde SURDURULEN bir "
+        "egilim sanilip yanlislikla onaylanmamali."
+    )
+
+
+def test_short_and_long_baseline_both_still_correctly_confirmed(tmp_path: Path) -> None:
+    """25) Ana esigi acikca gecen KISA bir olay (ör. izmarit atma) ve UZUN,
+    gelisen bir olay (ör. duman) - HER IKISI de uzun-baz mekanizmasi
+    ACIKKEN dogru sekilde yakalanmali (biri threshold/early_change'e KISA
+    surede ulasir, digeri uzun-baz sayesinde ERKEN yakalanir)."""
+    short_path = tmp_path / "short_event.mp4"
+    _isolated_appearance_video(short_path, total_frames=90, appear_at=40, size=110)
+    long_path = tmp_path / "gradual_event.mp4"
+    _low_contrast_gradual_video(long_path, total_frames=400, ramp_start=100)
+
+    short_evidence = AdaptiveFrameSampler(
+        **_high_sample_fps_config(tmp_path, evidence_output_dir=str(tmp_path / "e_short"))
+    ).process_video(short_path, sample_fps=30)
+    assert any(f.selection_reason != "fallback" for f in short_evidence), "Kisa, guclu olay hala yakalanmali."
+
+    long_evidence = AdaptiveFrameSampler(
+        **_high_sample_fps_config(tmp_path, evidence_output_dir=str(tmp_path / "e_long"))
+    ).process_video(long_path, sample_fps=30)
+    assert any(f.selection_reason == "early_change" for f in long_evidence), "Uzun, kademeli olay hala yakalanmali."

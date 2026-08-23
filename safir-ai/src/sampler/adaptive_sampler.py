@@ -153,6 +153,8 @@ _DIAGNOSTIC_FIELDNAMES: Tuple[str, ...] = (
     "rejection_reason",
     "evidence_id",
     "vlm_payload_label",
+    "long_baseline_net_score",
+    "long_baseline_early_suspicious",
 )
 
 
@@ -429,6 +431,8 @@ class AdaptiveFrameSampler:
         single_frame_change_enabled: bool = True,
         single_frame_change_noise_floor_ratio: float = 2.0,
         single_frame_change_max_area_ratio: float = 0.35,
+        long_baseline_change_enabled: bool = True,
+        long_baseline_interval_sec: float = 0.5,
         diagnostic_enabled: bool = False,
         diagnostic_output_dir: str = "outputs/diagnostics",
         diagnostic_output_format: str = "jsonl",
@@ -538,6 +542,22 @@ class AdaptiveFrameSampler:
                 parlaklik degisimi/kamera titremesi (genelde tum kareye
                 yayilir, oran ~1'e yakin) buyuk olcude bastirilir; kucuk/
                 lokal nesne hareketleri (dusuk oran) korunur.
+            long_baseline_change_enabled: `True` ise, ardisik-ornek
+                karsilastirmasina (`self.prev_gray`, DEGISMEDEN korunur) EK
+                olarak, `long_baseline_interval_sec`de bir yenilenen DAHA
+                ESKI bir referans kareyle de karsilastirma yapilir; bu ikinci
+                sinyal yalnizca `is_early_suspicious`i (esik-alti aday
+                tespiti) etkileyebilir - `is_suspicious`/`threshold_exceeded`
+                yoluna ASLA dokunmaz. `sample_fps` yukseldikce ardisik-ornek
+                araligi kisaldigindan, dusuk kontrastli/kademeli baslayan
+                (ör. dumanin ilk gorulme ani) olaylarin ORNEK-ARASI degisimi
+                gurultu-esigi/bulaniklastirma tarafindan bastirilip
+                kaybolabilir - bu ikinci, daha uzun bazli sinyal o kaybi
+                telafi eder. `False` ile bu yol tamamen devre disi kalir
+                (yalnizca ardisik-ornek karsilastirmasi kullanilir - eski,
+                bu mekanizma eklenmeden ONCEKI davranisla BIREBIR AYNI).
+            long_baseline_interval_sec: Uzun-baz referans karenin yenilenme
+                araligi (saniye); `0`dan buyuk olmalidir.
             diagnostic_enabled: `True` ise `process_video`, HER ornek kare
                 icin tam karar izini (skorlar, esikler, durum, secim/red
                 nedeni) `diagnostic_output_dir`e yazar (bkz.
@@ -649,6 +669,10 @@ class AdaptiveFrameSampler:
             raise ValueError(
                 f"diagnostic_output_format 'csv' veya 'jsonl' olmalidir, verilen: {diagnostic_output_format!r}"
             )
+        if long_baseline_interval_sec <= 0:
+            raise ValueError(
+                f"long_baseline_interval_sec 0'dan buyuk olmalidir, verilen: {long_baseline_interval_sec}"
+            )
 
         self.min_change_threshold = min_change_threshold
         self.blur_kernel_size = blur_kernel_size
@@ -668,12 +692,19 @@ class AdaptiveFrameSampler:
         self.single_frame_change_enabled = single_frame_change_enabled
         self.single_frame_change_noise_floor_ratio = single_frame_change_noise_floor_ratio
         self.single_frame_change_max_area_ratio = single_frame_change_max_area_ratio
+        self.long_baseline_change_enabled = long_baseline_change_enabled
+        self.long_baseline_interval_sec = long_baseline_interval_sec
         self.diagnostic_enabled = diagnostic_enabled
         self.diagnostic_output_dir = Path(diagnostic_output_dir)
         self.diagnostic_output_format = diagnostic_output_format
 
         self.prev_gray: np.ndarray | None = None
         self.noise_floor_history: List[float] = []
+        # Uzun-baz karsilastirma (bkz. `long_baseline_change_enabled`):
+        # `self.prev_gray` gibi, taze bir video icin dogal olarak `None`
+        # baslar; periyodik olarak yenilenir (bkz. `process_video`).
+        self.long_baseline_gray: np.ndarray | None = None
+        self.long_baseline_noise_floor_history: List[float] = []
         self.last_run_stats: Optional[SamplerRunStats] = None
         self._recent_threshold_decisions: Deque[bool] = deque(maxlen=temporal_vote_window)
         # Erken-degisim onayi icin sabit boyutlu pencere (bkz.
@@ -900,6 +931,16 @@ class AdaptiveFrameSampler:
         self._recent_threshold_decisions.clear()
         self._recent_early_decisions.clear()
 
+        # Uzun-baz karsilastirma icin bu videoya OZEL zaman-damgasi sayaci
+        # (bkz. `long_baseline_change_enabled`); `self.long_baseline_gray`nin
+        # kendisi (`prev_gray`/`noise_floor_history` ile AYNI desen geregi)
+        # ornekler-arasi taze bir `AdaptiveFrameSampler` uzerinden dogal
+        # olarak sifirlanir (bkz. `sampler_from_config`).
+        long_baseline_timestamp: Optional[float] = None
+        # Bir onceki ornegin uzun-baz net skoru (bkz. asagisi - "hala
+        # GELISMEKTE mi" testi icin).
+        long_baseline_prev_net_score: float = 0.0
+
         evidence_frames: List[EvidenceFrame] = []
         frame_id = 0
         sampled_frame_count = 0
@@ -970,6 +1011,8 @@ class AdaptiveFrameSampler:
             selected: bool,
             selection_reason: Optional[str],
             rejection_reason: Optional[str],
+            long_baseline_net_score: Optional[float] = None,
+            long_baseline_early_suspicious: Optional[bool] = None,
         ) -> Dict[str, Any]:
             """Bir tanilama satirinin TUM alanlarini, cagiran taraftan gelen
             kare-ozel degerlerle + o anki (kapanis-uzeninden okunan, DEGISTIRMEYEN)
@@ -1013,6 +1056,8 @@ class AdaptiveFrameSampler:
                 "selected": selected,
                 "selection_reason": selection_reason,
                 "rejection_reason": rejection_reason,
+                "long_baseline_net_score": long_baseline_net_score,
+                "long_baseline_early_suspicious": long_baseline_early_suspicious,
             }
 
         def _discard_pending_early_if_same_frame(flushed_frame_id: int) -> None:
@@ -1071,6 +1116,72 @@ class AdaptiveFrameSampler:
 
                     adaptive_noise_floor = np.median(self.noise_floor_history)
                     net_change_score = max(0.0, change_ratio - adaptive_noise_floor)
+
+                    # Uzun-baz karsilastirma (bkz. `long_baseline_change_enabled`
+                    # docstring'i - kok neden: yuksek `sample_fps`de ardisik-ornek
+                    # araligi kisaldigindan, dusuk kontrastli/kademeli baslayan bir
+                    # olayin ORNEK-ARASI degisimi blur+sabit piksel-fark esigiyle
+                    # (25) birlesince SIFIRA duser; `min_change_threshold` bunu
+                    # DUZELTEMEZ cunku ham sinyalin kendisi kayboluyor). `self.
+                    # prev_gray` (ardisik-ornek) DEGISTIRILMEDEN korunur - bu,
+                    # TAMAMEN AYRI, EK bir sinyaldir. Yalnizca `is_early_
+                    # suspicious`i (asagida) etkileyebilir; `is_suspicious`/
+                    # `threshold_exceeded` yoluna (kosulsuz secim) ASLA dokunmaz.
+                    long_net_score: Optional[float] = None
+                    long_is_early_suspicious = False
+                    if self.long_baseline_change_enabled:
+                        if self.long_baseline_gray is None:
+                            self.long_baseline_gray = curr_gray
+                            long_baseline_timestamp = timestamp_sec
+                        else:
+                            long_diff = cv2.absdiff(curr_gray, self.long_baseline_gray)
+                            _, long_thresh = cv2.threshold(long_diff, 25, 255, cv2.THRESH_BINARY)
+                            long_raw_ratio = np.sum(long_thresh > 0) / float(long_thresh.size)
+                            long_noise_floor = (
+                                np.median(self.long_baseline_noise_floor_history)
+                                if self.long_baseline_noise_floor_history
+                                else 0.0
+                            )
+                            long_net_score = max(0.0, long_raw_ratio - long_noise_floor)
+                            # ONEMLI (yanlis-pozitif koruma - bkz. gorev notu
+                            # "duragan/gurultulu sahnelerde yanlis evidence
+                            # uretmesin"): TEK SEFERLIK bir sicrama (ör. bir
+                            # yamanin belirip SABIT kalmasi), referans HENUZ
+                            # yenilenmediyse, referansa gore uzun sure "yuksek"
+                            # gorunmeye devam eder - ama bu SURDURULEN bir
+                            # GELISME DEGILDIR, TEK bir adimdir. Bu yuzden
+                            # "supheli" saymak icin skorun bir ONCEKI ornege
+                            # gore HALA ARTMAKTA olmasi da GEREKIR (gercek
+                            # kademeli buyume - ör. dumanin genisemesi - HER
+                            # ornekte referansa gore biraz DAHA FAZLA fark
+                            # biriktirir; tek seferlik bir adim ise referans
+                            # yenilenene kadar SABIT/DUZ kalir, bir DAHA
+                            # ARTMAZ).
+                            long_is_early_suspicious = (
+                                long_net_score >= (self.early_change_score_ratio * self.min_change_threshold)
+                                and long_net_score > long_baseline_prev_net_score
+                            )
+                            long_baseline_prev_net_score = long_net_score
+                            if (
+                                long_baseline_timestamp is None
+                                or timestamp_sec - long_baseline_timestamp >= self.long_baseline_interval_sec
+                            ):
+                                # Referans yenilenmeden ONCE, o anki ham fark orani
+                                # kendi gurultu-tabani gecmisine eklenir (bkz.
+                                # `noise_floor_history` ile AYNI desen, ama uzun-baz
+                                # araligina GORELI) - boylece bu sinyalin de
+                                # KENDI adaptif tabani vardir, kisa-baz `adaptive_
+                                # noise_floor`u YENIDEN KULLANMAZ (o, cok DAHA KISA
+                                # bir araliga gore kalibredir).
+                                self.long_baseline_noise_floor_history.append(long_raw_ratio)
+                                if len(self.long_baseline_noise_floor_history) > self.history_window:
+                                    self.long_baseline_noise_floor_history.pop(0)
+                                self.long_baseline_gray = curr_gray
+                                long_baseline_timestamp = timestamp_sec
+                                # Yeni referansa gore skor SIFIRDAN baslar - bir
+                                # onceki (ESKI referansa gore hesaplanmis, farkli
+                                # olcekteki) skorla KARSILASTIRILAMAZ.
+                                long_baseline_prev_net_score = 0.0
 
                     # Temporal voting: mevcut esik sonucunu (degismedi) girdi olarak
                     # kullanip, izole/tek karelik supheli kareleri (kamera titremesi,
@@ -1200,8 +1311,9 @@ class AdaptiveFrameSampler:
                             timestamp_sec, strong_cooldown_until, early_cooldown_until
                         )
 
-                        is_early_suspicious = net_change_score >= (
-                            self.early_change_score_ratio * self.min_change_threshold
+                        is_early_suspicious = (
+                            net_change_score >= (self.early_change_score_ratio * self.min_change_threshold)
+                            or long_is_early_suspicious
                         )
 
                         selected_this_frame = False
@@ -1418,6 +1530,8 @@ class AdaptiveFrameSampler:
                                     selected=False,
                                     selection_reason=None,
                                     rejection_reason=None,
+                                    long_baseline_net_score=long_net_score,
+                                    long_baseline_early_suspicious=long_is_early_suspicious,
                                 )
 
                         confirmed_early_now = self._confirm_early_change(is_early_suspicious)
@@ -1684,7 +1798,41 @@ class AdaptiveFrameSampler:
                                 pending_best is None or net_change_score >= pending_best.net_change_score
                             )
                             if current_wins_pending_best:
-                                if diag is not None and pending_best_diag is not None:
+                                # ONEMLI (tanilama kaydi dogrulugu - kok neden:
+                                # "duragan/gurultulu sahnelerde yanlis evidence
+                                # uretmesin" testleri sirasinda kesfedildi):
+                                # yerinden edilen ONCEKI `pending_best`,
+                                # HALEN COZULMEMIS bir `pending_early_
+                                # candidate`in TAM DA AYNI karesi olabilir
+                                # (ikisi de "o ana kadarki en iyi esik-alti
+                                # aday"i BAGIMSIZ olarak izler ve genellikle
+                                # AYNI karede baslar). Bu durumda burada
+                                # "rejected" bir satir YAZMAK, o frame_index
+                                # icin `_DiagnosticRecorder`in KENDI "tek
+                                # satir" guvenlik agini erken TUKETIR - daha
+                                # SONRA pending_early_candidate GERCEKTEN
+                                # onaylanip flush edildiginde (bkz. "SAKIN ->
+                                # ERKEN gecisi" blogu), o satirin KENDI
+                                # `selected=True` kaydi bu erken/yanlis
+                                # kayittan dolayi "already_selected_frame_
+                                # index" olarak BASTIRILIRDI - GERCEK secim
+                                # (`evidence_frames`) DOGRU kalsa da,
+                                # diagnostic gunlugu o kareyi (yanlislikla)
+                                # hic secilmemis gosterirdi. Bu yuzden, HALA
+                                # AKTIF pending_early_candidate ile AYNI
+                                # frame_index icin bu "rejected" satir hic
+                                # YAZILMAZ - o frame_index'in TEK satiri,
+                                # pending_early_candidate'in kendi NIHAI
+                                # (selected VEYA nihayetinde reddedilen)
+                                # sonucuna birakilir.
+                                if (
+                                    diag is not None
+                                    and pending_best_diag is not None
+                                    and not (
+                                        pending_early_candidate is not None
+                                        and pending_best_diag["frame_index"] == pending_early_candidate.frame_id
+                                    )
+                                ):
                                     # ONCEKI pending_best (daha eski bir
                                     # frame_index), simdi kazanan bu kare
                                     # tarafindan YERINDEN edildi - genel
@@ -1694,6 +1842,8 @@ class AdaptiveFrameSampler:
                                     row["selection_reason"] = None
                                     row["rejection_reason"] = _REJECTION_NOT_BEST_COVERAGE_CANDIDATE
                                     diag.record(row)
+                                    pending_best_diag = None
+                                elif diag is not None and pending_best_diag is not None:
                                     pending_best_diag = None
                                 pending_best = _PendingSelectionCandidate(
                                     frame=frame.copy(),
@@ -1727,13 +1877,34 @@ class AdaptiveFrameSampler:
                                         selected=False,
                                         selection_reason=None,
                                         rejection_reason=None,
+                                        long_baseline_net_score=long_net_score,
+                                        long_baseline_early_suspicious=long_is_early_suspicious,
                                     )
-                            elif diag is not None:
+                            elif diag is not None and not (
+                                pending_early_candidate is not None
+                                and pending_early_candidate.frame_id == frame_id
+                            ):
                                 # Bu kare pending_best yarisini KAYBETTI - genel
                                 # pencerenin adayi olmadi, bir daha da olmayacak
                                 # (o an sadece EN GUNCEL/EN YUKSEK skorlu aday
                                 # tutulur), dolayisiyla kendi kaderi burada
                                 # KESIN: reddedildi.
+                                # ISTISNA (tanilama kaydi dogrulugu - bkz. yukarida
+                                # "current_wins_pending_best" dalindaki AYNI
+                                # gerekce): bu kare (`frame_id`), pending_best
+                                # yarisini KAYBETSE BILE, AYNI anda HALA COZULMEMIS
+                                # bir `pending_early_candidate` olabilir (ör.
+                                # `net_change_score`u dusuk ama uzun-baz sinyali
+                                # onu supheli-erken yapmis bir kare) - bu durumda
+                                # burada "kesin reddedildi" satiri YAZILMAZ, aksi
+                                # halde bu frame_index'in DiagnosticRecorder'daki
+                                # TEK satiri erken TUKETILIR ve pending_early_
+                                # candidate GERCEKTEN onaylanip flush edildiginde
+                                # (`selected=True`) o dogru kayit "already_
+                                # selected_frame_index" olarak BASTIRILIR - GERCEK
+                                # secim (`evidence_frames`) DOGRU kalsa da,
+                                # diagnostic gunlugu yanlislikla o kareyi hic
+                                # secilmemis gosterirdi.
                                 diag.record(
                                     _diag_row(
                                         fid=frame_id,
@@ -1758,6 +1929,8 @@ class AdaptiveFrameSampler:
                                         selected=False,
                                         selection_reason=None,
                                         rejection_reason=_REJECTION_NOT_BEST_COVERAGE_CANDIDATE,
+                                        long_baseline_net_score=long_net_score,
+                                        long_baseline_early_suspicious=long_is_early_suspicious,
                                     )
                                 )
 
@@ -2133,6 +2306,8 @@ def sampler_from_config(
         single_frame_change_enabled=config.single_frame_change_enabled,
         single_frame_change_noise_floor_ratio=config.single_frame_change_noise_floor_ratio,
         single_frame_change_max_area_ratio=config.single_frame_change_max_area_ratio,
+        long_baseline_change_enabled=config.long_baseline_change_enabled,
+        long_baseline_interval_sec=config.long_baseline_interval_sec,
         diagnostic_enabled=config.diagnostic_enabled,
         diagnostic_output_dir=config.diagnostic_output_dir,
         diagnostic_output_format=config.diagnostic_output_format,

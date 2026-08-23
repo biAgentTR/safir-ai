@@ -169,6 +169,32 @@ class SamplerConfig(BaseModel):
     degeri ASARSA aday LOKAL sayilmaz (`(0, 1]`) - kareyi butunuyle etkileyen
     ani parlaklik degisimi/kamera titremesi buyuk olcude bastirilir."""
 
+    # --- Uzun-baz karsilastirma (long baseline): `sample_fps` art arda
+    # yukseltildikce (kisa/ani olaylari yakalamak icin - bkz. `sample_fps`
+    # alani), ARDISIK ORNEKLER arasindaki gercek zaman farki kuculur; bu,
+    # DUSUK KONTRASTLI/KADEMELI baslayan olaylarda (ör. dumanin ilk
+    # gorulme ani) HER ORNEK ARASI degisimi o kadar KUCULTUR ki (blur +
+    # sabit piksel-fark esigi 25 ile birlesince) `raw_change_ratio`
+    # SIFIRA duser - bu, `min_change_threshold` NE KADAR dusurulurse
+    # dusurulsun DUZELTILEMEZ, cunku sorun oran DEGIL, HAM sinyalin
+    # kendisinin kaybolmasidir. Bu blok, `self.prev_gray`e (kisa/ardisik-
+    # ornek karsilastirmasi - ani/kisa olaylar icin DEGISTIRILMEDEN korunur)
+    # EK olarak, periyodik olarak yenilenen DAHA ESKI bir referans kareyle
+    # de karsilastirma yapar; bu, kucuk-ama-birikimli degisimin daha uzun
+    # bir zaman araliginda GORUNUR hale gelmesini saglar. Yalnizca
+    # `is_early_suspicious`i (esik-alti aday tespiti, HALA cok-kareli
+    # onaydan - `early_change_min_count` - GECMEK ZORUNDA) etkiler;
+    # `is_suspicious`/`threshold_exceeded` (kosulsuz secim) yoluna ASLA
+    # dokunmaz - bkz. `AdaptiveFrameSampler.process_video`. ---
+    long_baseline_change_enabled: bool = True
+    """`True` ise, ardisik-ornek karsilastirmasina EK olarak periyodik
+    yenilenen bir referans kareyle de karsilastirma yapilir (bkz. yukarisi).
+    `False` ile bu yol tamamen devre disi kalir (yalnizca ardisik-ornek
+    karsilastirmasi kullanilir)."""
+    long_baseline_interval_sec: float = 0.5
+    """Uzun-baz referans karenin yenilenme araligi (saniye). `0`dan buyuk
+    olmalidir."""
+
     # --- Tanilama (diagnostic) modu: varsayilan KAPALI, sampler secim
     # davranisini/performansini HICBIR sekilde degistirmez. Acildiginda HER
     # ORNEKLENEN kare icin tam karar izini (skorlar, esikler, durum, secim/

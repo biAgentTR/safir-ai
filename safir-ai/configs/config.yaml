@@ -168,6 +168,39 @@ sampler:
   single_frame_change_noise_floor_ratio: 2.0   # skor >= bu_oran * max(adaptive_noise_floor, early_esik) ise "guclu"
   single_frame_change_max_area_ratio: 0.35     # hareket kutusu/kare alani bu orani asarsa "lokal degil" (elenir)
 
+  # KOK NEDEN DUZELTMESI (regresyon): kullanicidan gelen geri bildirim -
+  # "onceden yakalanan dusuk kontrastli/yavas gelisen bir olay baslangici
+  # (ör. yaziciden ilk dumanin cikisi) artik kaciyor, yalnizca olay
+  # guclendikten sonraki kareler seciliyor". `git diff` ile onceki/mevcut
+  # config karsilastirildi: `min_change_threshold` DUSURULMUS olmasina
+  # RAGMEN sorun buydu degil - as gecen turlarda `sample_fps` art arda
+  # yukseltildikce (kisa/ani olaylari yakalamak icin, bkz. `sample_fps`
+  # yorumu) ARDISIK ORNEKLER arasindaki gercek zaman farki kisaldi. Dusuk
+  # kontrastli/kademeli buyuyen bir olayda (ör. duman), her ORNEK ARASI
+  # gerceklesen degisim de o kadar KUCULDU ki (21x21 blur + sabit piksel-
+  # fark esigi 25 ile birlesince) `raw_change_ratio` TAMAMEN SIFIRA dustu -
+  # bu, `min_change_threshold` NE KADAR dusurulurse dusurulsun DUZELTILEMEZ,
+  # cunku sorun ORAN degil, HAM sinyalin kendisinin kaybolmasidir (izole
+  # test: `git diff` ONCESI TUM esik/interval degerleriyle ama YALNIZCA
+  # `sample_fps=30` ile calistirildiginda ayni olay YINE kacirildi -
+  # degisken `sample_fps`ti, esik degerleri degildi).
+  #
+  # Bu, "sample_fps'i geri dusur" ile DUZELTILMEDI (bu, gecen turlarda
+  # kazanilan kisa/ani olay yakalama iyilestirmelerini GERI ALIRDI - gorev
+  # kisiti "eski ayarlara tamamen donme"). Bunun yerine, ardisik-ornek
+  # karsilastirmasina (`prev_gray`, sample_fps'e bagli, kisa/ani olaylar
+  # icin DEGISTIRILMEDEN korunur) EK olarak, periyodik yenilenen DAHA UZUN
+  # bazli bir referans karsilastirmasi eklendi (bkz.
+  # `AdaptiveFrameSampler.process_video` - `long_baseline_*`). Bu, KUCUK-
+  # AMA-BIRIKIMLI degisimin daha uzun bir zaman araliginda GORUNUR hale
+  # gelmesini saglar; yalnizca esik-alti aday tespitini (`is_early_
+  # suspicious`) etkiler, `threshold_exceeded` (kosulsuz secim) yoluna ASLA
+  # dokunmaz. Yanlis-pozitif korumasi: yalnizca skor bir ONCEKI ornege gore
+  # HALA ARTMAKTAYSA "supheli" sayilir (TEK seferlik bir sicrama/adim
+  # DEGIL, SURDURULEN bir buyume) - bkz. kod yorumu.
+  long_baseline_change_enabled: true  # false ile bu yol tamamen devre disi (eski davranisla BIREBIR ayni)
+  long_baseline_interval_sec: 0.5     # uzun-baz referansin yenilenme araligi (saniye)
+
   # NOT (tanilama/diagnostic): Varsayilan KAPALI - secim davranisini/
   # performansini DEGISTIRMEZ. Acildiginda her ornek kare icin tam karar
   # izini (skorlar, esikler, durum, secim/red nedeni) diske yazar; goruntu/
