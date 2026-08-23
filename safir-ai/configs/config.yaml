@@ -34,9 +34,38 @@ system:
 # -----------------------------------------------------------------------------
 sampler:
   # --- AdaptiveFrameSampler tarafindan aktif olarak kullanilan parametreler ---
-  min_change_threshold: 0.001        # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani (yuksek hassasiyet)
+  # KANITA DAYALI DEGISIKLIK (0.001 -> 0.0005): kullanicidan gelen ek geri
+  # bildirim - "bazen cok uzun araliklarda frame alamiyorum VE kritik kisa
+  # anlari da alamiyorum" - AYNI ANDA GORULUYOR; bu ikilinin birlikte
+  # gorulmesi, `min_change_threshold`in (dolayisiyla ondan TURETILEN TUM
+  # oranli esiklerin: `early_change_score_ratio`, `dedup_similarity_ratio`,
+  # `single_frame_change_noise_floor_ratio`) GERCEK sahne hareketini bile
+  # bastiracak kadar yuksek olabilecegine isaret eder - esik asilamadigi
+  # icin ne coverage'in "bir sey secildi" referansi degisir (uzun bosluk
+  # HISSI) ne de gercek kisa bir hareket net_change_score'u yeterince
+  # yukseltebilir. Esik yariya indirildi (0.001 -> 0.0005); TUM oranli alt-
+  # esikler (`early_change_score_ratio`, `dedup_similarity_ratio`,
+  # `single_frame_change_noise_floor_ratio` * taban) OTOMATIK olarak AYNI
+  # ORANDA duser - ayrica DOKUNULMEDI. Yan etki: false-positive (onemsiz
+  # titreme/kompresyon artefaktinin evidence sayilmasi) riski bir miktar
+  # ARTAR - operator panelindeki `min_change_threshold_override` slider'i
+  # ile sahne bazinda GERI yukseltilebilir (bkz. `sampler_from_config`).
+  # ELDE GERCEK DIAGNOSTIC VERI/VIDEO YOKTU; bu tahmine dayali, TERSINE
+  # CEVRILEBILIR bir ilk adimdir - gercek footage/diagnostic log elde
+  # edildiginde KESIN kok nedene gore yeniden kalibre edilmelidir.
+  min_change_threshold: 0.0005       # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani (yuksek hassasiyet)
   blur_kernel_size: [21, 21]         # Gauss bulaniklastirma cekirdek boyutu (tek sayilar)
-  history_window: 30                 # Dinamik gurultu tabani (medyan) icin tutulan kare gecmisi
+  # KANITA DAYALI DEGISIKLIK (30 -> 60): `sample_fps` 5'ten 10'a
+  # cikarildiginda (asagisi), `history_window` SABIT KALDIGI icin adaptif
+  # gurultu tabaninin (medyan) baktigi GERCEK sure 6 saniyeden 3 saniyeye
+  # YARIYA DUSTU (30 ornek / 5fps = 6s idi; 30 ornek / 10fps = 3s oldu).
+  # Daha kisa bir pencere, gercek/surdurulen bir hareketi DAHA HIZLI "yeni
+  # normal" (gurultu) sayip net_change_score'u bastirir - hem "uzun
+  # bosluk" hem "kisa an kacirma" sikayetlerine KATKIDA bulunabilecek bir
+  # yan etkidir. 60'a cikarilarak eski 6 saniyelik pencere (60 ornek /
+  # 10fps = 6s) GERI getirildi - sample_fps degisikliginin DIGER
+  # parametreleri sessizce kaydirmasi onlendi.
+  history_window: 60                 # Dinamik gurultu tabani (medyan) icin tutulan kare gecmisi
   # KANITA DAYALI DEGISIKLIK (5 -> 10): cok kisa/ani hareketler (ör. bir
   # objenin hizlica atilmasi/cikarilmasi) `sample_fps` tarafindan belirlenen
   # "kor pencere"ye - iki ORNEKLENEN kare arasindaki suzeye - TAMAMEN
