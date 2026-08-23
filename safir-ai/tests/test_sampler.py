@@ -1499,3 +1499,33 @@ def test_higher_sample_fps_catches_events_entirely_between_old_sample_points(tmp
     assert any(f.selection_reason == "threshold_exceeded" for f in evidence_new), (
         "Yeni (10) ornekleme hizi, ayni cok kisa olayi yakalamali."
     )
+
+
+def test_higher_sample_fps_captures_more_stages_of_a_rapidly_escalating_event(tmp_path: Path) -> None:
+    """20) Kanita dayali `sample_fps` (10 -> 15) degisikligi: `threshold_exceeded`
+    yolu zaten kosulsuz/sinirsiz oldugundan, hizla tirmanan (kisa surede
+    birden fazla asamadan gecen) bir olayin KAC ASAMASININ yakalanacagini
+    BELIRLEYEN TEK degisken kaynak tarama hizidir - daha yuksek `sample_fps`,
+    AYNI hizla tirmanan olay icin DAHA FAZLA asama karesi vermeli."""
+    path = tmp_path / "rapid_escalation.mp4"
+    frames = []
+    total = 200
+    for i in range(total):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if 100 <= i < 109:
+            size = 10 + (i - 100) * 12
+            cv2.rectangle(frame, (10, 10), (10 + size, 10 + size), (200, 200, 200), -1)
+        elif i >= 109:
+            cv2.rectangle(frame, (10, 10), (10 + 106, 10 + 106), (200, 200, 200), -1)
+        frames.append(frame)
+    _write_video(path, frames)
+
+    def _stage_frame_count(sample_fps: int) -> int:
+        sampler = _density_sampler(tmp_path, max_temporal_gap_sec=10.0, evidence_output_dir=str(tmp_path / f"e_{sample_fps}"))
+        evidence = sampler.process_video(path, sample_fps=sample_fps)
+        return sum(1 for f in evidence if 100 <= f.frame_id <= 112)
+
+    assert _stage_frame_count(15) > _stage_frame_count(10), (
+        "Daha yuksek ornekleme hizi, ayni hizla tirmanan olayin DAHA FAZLA "
+        "asamasini kareye almali (secim mantigi degismeden)."
+    )

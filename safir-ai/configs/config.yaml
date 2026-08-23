@@ -65,20 +65,29 @@ sampler:
   # yan etkidir. 60'a cikarilarak eski 6 saniyelik pencere (60 ornek /
   # 10fps = 6s) GERI getirildi - sample_fps degisikliginin DIGER
   # parametreleri sessizce kaydirmasi onlendi.
-  history_window: 60                 # Dinamik gurultu tabani (medyan) icin tutulan kare gecmisi
-  # KANITA DAYALI DEGISIKLIK (5 -> 10): cok kisa/ani hareketler (ör. bir
-  # objenin hizlica atilmasi/cikarilmasi) `sample_fps` tarafindan belirlenen
-  # "kor pencere"ye - iki ORNEKLENEN kare arasindaki suzeye - TAMAMEN
-  # sigabiliyordu; bu durumda secim mantigindaki (esik/interval/cooldown/
-  # dedup) HICBIR ayar bu kareyi kurtaramaz, cunku o kare zaten hic OKUNMUYOR
-  # (`frame_step = native_fps // sample_fps` ile atlaniyor). 25fps kaynakta
-  # eski deger (5) en kotu durumda 200ms'lik bir kor pencere birakiyordu
-  # (`int(25/5)=5` -> her 5. kare); yeni deger (10) bunu ~80-100ms'ye
-  # (`int(25/10)=2` -> her 2. kare) indirir - CPU maliyeti (hafif OpenCV gri-
-  # tonlama+fark islemi, GPU'suz) ~2x artar ama secim mantigindaki (esik/
-  # interval/cooldown/dedup) HICBIR deger degismez; yalnizca kaynak
-  # TARAMA hizi yukselir.
-  sample_fps: 10                     # Videonun kac saniyede bir kare kontrol edilecegini belirleyen hiz
+  # KANITA DAYALI DEGISIKLIK (60 -> 90): asagidaki `sample_fps` (10 -> 15)
+  # artisiyla ORANTILI olarak buyutuldu - GERCEK 6 saniyelik gurultu-tabani
+  # penceresini (90 ornek / 15fps = 6s, oncekiyle AYNI) korur; aksi halde
+  # sample_fps artisi bu pencereyi sessizce daraltirdi (bkz. bir onceki tur
+  # notu - ayni kalip TEKRAR uygulaniyor).
+  history_window: 90                 # Dinamik gurultu tabani (medyan) icin tutulan kare gecmisi
+  # KANITA DAYALI DEGISIKLIK (5 -> 10 -> 15): "ani gelisen olaylar" (kisa
+  # surede birden fazla asamadan gecen, hizla tirmanan olaylar - ör. bir
+  # dusme/carpisma) icin, `threshold_exceeded` yolu zaten KOSULSUZ/SINIRSIZ
+  # secim yaptigindan (bkz. onceki turlar), olayin KAC ASAMASININ
+  # yakalanacagini BELIRLEYEN TEK kalan degisken kaynak TARAMA HIZIDIR
+  # (`sample_fps`) - esik/interval/cooldown/dedup ayarlarinin hicbiri bunu
+  # ETKILEMEZ, cunku o ara kareler zaten hic OKUNMUYOR (`frame_step =
+  # native_fps // sample_fps`). 25fps kaynakta `15`, `int(25/15)=1` ile
+  # NATIVE hizda (kare atlanmadan, 40ms) okur - bu, 25fps bir kaynak icin
+  # ULASILABILECEK EN INCE zamansal cozunurluktur (daha yuksek sample_fps
+  # degerleri 25fps'lik bir kaynakta HICBIR ek fayda saglamaz, `frame_step`
+  # zaten 1'in altina inemez). CPU maliyeti (hafif OpenCV gri-tonlama+fark
+  # islemi, GPU'suz) ilk turdaki (5) degere gore ~3x artar ama secim
+  # mantigindaki HICBIR deger degismez. Senkron bir "hizla tirmanan olay"
+  # testinde (9 native kare/~360ms'lik tirmanma), yakalanan kare sayisi
+  # 5'ten (sample_fps=10) 9'a (sample_fps=15) cikti.
+  sample_fps: 15                      # Videonun kac saniyede bir kare kontrol edilecegini belirleyen hiz
 
   # NOT (mimari): Sampler artik hicbir OLAY KUMELEMESI yapmaz (eski
   # min_event_interval_sec/cluster_merge_gap_sec/bbox_iou_merge_threshold/

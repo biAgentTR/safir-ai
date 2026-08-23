@@ -854,7 +854,7 @@ class AdaptiveFrameSampler:
             raise RuntimeError("Kare JPEG formatina kodlanamadi.")
         return buffer.tobytes()
 
-    def process_video(self, video_path: str, sample_fps: int = 10) -> List[EvidenceFrame]:
+    def process_video(self, video_path: str, sample_fps: int = 15) -> List[EvidenceFrame]:
         """Videoyu okur, kare farklarini hesaplar ve suzulmus Kanit Karelerini dondurur.
 
         Esik-gecmis HICBIR kare burada elenmez: sabit bir ust sinir yoktur
