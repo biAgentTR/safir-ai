@@ -1463,3 +1463,39 @@ def test_approach_window_produces_multiple_early_change_frames_without_a_cap(tmp
     # Ana esigi gecen kareler HALA kosulsuz/sinirsiz secilmeye devam etmeli
     # (bu mekanizma onlarin yerine GECMEZ, onlara EK yapar).
     assert any(f.selection_reason == "threshold_exceeded" for f in evidence)
+
+
+def test_higher_sample_fps_catches_events_entirely_between_old_sample_points(tmp_path: Path) -> None:
+    """19) Kanita dayali `sample_fps` (5 -> 10) degisikligi: cok kisa (tek native
+    kare, 25fps'te 40ms) bir olay, ESKI ornekleme hizinda (5) ORNEKLENEN iki
+    kare arasindaki kor pencereye tamamen sigip HIC OKUNMAYABILIR - bu, secim
+    mantiginin (esik/interval/cooldown/dedup) hicbir ayariyla duzeltilemez,
+    cunku o kare zaten taranmiyor. Yeni hiz (10) bu kor pencereyi yariya
+    indirir ve olayi yakalar."""
+    path = tmp_path / "single_native_frame_event.mp4"
+    frames = []
+    total = 125  # 5s @ 25fps
+    brief_frame = 62
+    for i in range(total):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if i == brief_frame:
+            cv2.rectangle(frame, (5, 5), (120, 90), (255, 255, 255), -1)
+        frames.append(frame)
+    _write_video(path, frames)
+
+    sampler_old = AdaptiveFrameSampler(
+        min_change_threshold=0.02, blur_kernel_size=(3, 3), evidence_output_dir=str(tmp_path / "e_old")
+    )
+    evidence_old = sampler_old.process_video(path, sample_fps=5)
+    assert all(f.selection_reason == "fallback" for f in evidence_old), (
+        "Bu senaryo, eski (5) ornekleme hizinin kor pencereye tamamen sigan "
+        "cok kisa bir olayi neden hic yakalayamadigini gosterir."
+    )
+
+    sampler_new = AdaptiveFrameSampler(
+        min_change_threshold=0.02, blur_kernel_size=(3, 3), evidence_output_dir=str(tmp_path / "e_new")
+    )
+    evidence_new = sampler_new.process_video(path, sample_fps=10)
+    assert any(f.selection_reason == "threshold_exceeded" for f in evidence_new), (
+        "Yeni (10) ornekleme hizi, ayni cok kisa olayi yakalamali."
+    )

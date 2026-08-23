@@ -37,7 +37,19 @@ sampler:
   min_change_threshold: 0.001        # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani (yuksek hassasiyet)
   blur_kernel_size: [21, 21]         # Gauss bulaniklastirma cekirdek boyutu (tek sayilar)
   history_window: 30                 # Dinamik gurultu tabani (medyan) icin tutulan kare gecmisi
-  sample_fps: 5                      # Videonun kac saniyede bir kare kontrol edilecegini belirleyen hiz
+  # KANITA DAYALI DEGISIKLIK (5 -> 10): cok kisa/ani hareketler (ör. bir
+  # objenin hizlica atilmasi/cikarilmasi) `sample_fps` tarafindan belirlenen
+  # "kor pencere"ye - iki ORNEKLENEN kare arasindaki suzeye - TAMAMEN
+  # sigabiliyordu; bu durumda secim mantigindaki (esik/interval/cooldown/
+  # dedup) HICBIR ayar bu kareyi kurtaramaz, cunku o kare zaten hic OKUNMUYOR
+  # (`frame_step = native_fps // sample_fps` ile atlaniyor). 25fps kaynakta
+  # eski deger (5) en kotu durumda 200ms'lik bir kor pencere birakiyordu
+  # (`int(25/5)=5` -> her 5. kare); yeni deger (10) bunu ~80-100ms'ye
+  # (`int(25/10)=2` -> her 2. kare) indirir - CPU maliyeti (hafif OpenCV gri-
+  # tonlama+fark islemi, GPU'suz) ~2x artar ama secim mantigindaki (esik/
+  # interval/cooldown/dedup) HICBIR deger degismez; yalnizca kaynak
+  # TARAMA hizi yukselir.
+  sample_fps: 10                     # Videonun kac saniyede bir kare kontrol edilecegini belirleyen hiz
 
   # NOT (mimari): Sampler artik hicbir OLAY KUMELEMESI yapmaz (eski
   # min_event_interval_sec/cluster_merge_gap_sec/bbox_iou_merge_threshold/
