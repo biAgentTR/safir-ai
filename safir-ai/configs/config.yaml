@@ -62,7 +62,12 @@ sampler:
   # Yine de piksel esigi de biraz daha dusuruldu ki gercek ama zayif bir
   # sinyal, coverage'in "hicbir sey secilmedi" bekleme suresini SIFIRLAYAN
   # bir esik/erken-degisim/single-frame karesi olarak DAHA SIK yakalansin.
-  min_change_threshold: 0.0001       # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani (yuksek hassasiyet)
+  # KANITA DAYALI DEGISIKLIK (0.0001 -> 0.00008): kullanicidan "cok az daha
+  # hassasiyet" talebi - KUCUK, olculu bir adim (onceki turlardaki tam
+  # yariya indirmelerin cok altinda, ~%20 dusus). Esik artik ilk degerin
+  # (0.001) 1/12.5'i - bu noktadan sonraki EK dususler icin GERCEK
+  # diagnostic veri/video onerilir, kor tahmin degil.
+  min_change_threshold: 0.00008      # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani (yuksek hassasiyet)
   blur_kernel_size: [21, 21]         # Gauss bulaniklastirma cekirdek boyutu (tek sayilar)
   # KANITA DAYALI DEGISIKLIK (30 -> 60): `sample_fps` 5'ten 10'a
   # cikarildiginda (asagisi), `history_window` SABIT KALDIGI icin adaptif
