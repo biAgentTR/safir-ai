@@ -1424,6 +1424,108 @@ class AdaptiveFrameSampler:
                         if confirmed_early_now:
                             early_cooldown_until = timestamp_sec + self.early_change_cooldown_sec
 
+                        # ONEMLI (kanita dayali minimal iyilestirme - "olay
+                        # baslangicina YAKLASAN saniyelerden VLM'e daha fazla
+                        # kare gitsin, sabit bir ust sinir/kota EKLENMEDEN"):
+                        # bir zincir (`pending_early_candidate`) HENUZ onay
+                        # bekliyorken - yani cok-kareli onay
+                        # (`early_change_min_count`) tamamlanana kadar
+                        # gecebilecek birden fazla saniyelik "yaklasma"
+                        # penceresinde - o ana kadar YALNIZCA zincirin ILK
+                        # karesi (`pending_early_candidate`in kendisi,
+                        # onaylandiginda ayrica flush edilir) evidence'a
+                        # girer; supheli-erken kalan ARADAKI kareler (bu
+                        # kare de dahil) hicbir yere kaydedilmez. Bu blok,
+                        # `pending_best`/`pending_early_candidate`in KENDI
+                        # bekleme/onay mantigina HICBIR SEKILDE dokunmadan
+                        # (o ikisi DEGISMEDEN, TAMAMEN BAGIMSIZ), bu ARADAKI
+                        # zaman penceresinde `early_change_selection_
+                        # interval_sec`den daha uzun sure evidence
+                        # eklenmediyse SUPHELI-ERKEN kalan GUNCEL kareyi
+                        # dogrudan (EK, ikinci bir) `"early_change"`
+                        # kaniti olarak ekler - boylece VLM, olayin
+                        # baslangicina yaklasirken tek bir kare degil,
+                        # yoğunluga oranli SAYIDA kare gorur.
+                        # `confirmed_early_now` bu kare icin `True` ISE bu
+                        # blok ATLANIR - o zaten asagidaki ADANMIS
+                        # SAKIN->ERKEN gecis blogu tarafindan (dogru
+                        # `pending_early_candidate` ile) islenecektir; ayni
+                        # kareyi iki kez eklemekten kacinilir.
+                        # `pending_early_candidate.frame_id != frame_id`:
+                        # zincirin ILK karesini (bu kare zaten `pending_
+                        # early_candidate` olarak beklemede - onaylandiginda
+                        # KENDI zaman damgasiyla eklenecek) burada ikinci
+                        # kez EKLEMEZ.
+                        if (
+                            not selected_this_frame
+                            and not confirmed_early_now
+                            and is_early_suspicious
+                            and pending_early_candidate is not None
+                            and pending_early_candidate.frame_id != frame_id
+                            and last_evidence_timestamp is not None
+                            and (timestamp_sec - last_evidence_timestamp) >= self.early_change_selection_interval_sec
+                        ):
+                            prior_approach_evidence_ts = last_evidence_timestamp
+                            approach_is_dup = self._is_near_duplicate(curr_gray, last_selected_gray)
+                            if not approach_is_dup:
+                                evidence_frames.append(
+                                    self._build_evidence_frame(
+                                        frame,
+                                        frame_id,
+                                        timestamp_sec,
+                                        net_change_score,
+                                        motion_bbox,
+                                        selection_reason=_SELECTION_REASON_EARLY_CHANGE,
+                                    )
+                                )
+                                last_evidence_timestamp = timestamp_sec
+                                # ONEMLI: `last_selected_gray` BILEREK
+                                # GUNCELLENMEZ. Bu, halihazirda bekleyen
+                                # `pending_early_candidate`in (zincirin
+                                # GERCEK ilk karesi) ONAYLANDIGINDA yapacagi
+                                # KENDI `_is_near_duplicate` kontrolunu bu ARA
+                                # (visually cok benzer olabilecek, cunku
+                                # surekli buyuyen bir olayda ardisik kareler
+                                # dogal olarak birbirine yakindir) ornekle
+                                # KIRLETMEZ - aksi halde GERCEK baslangic
+                                # karesi, "son secilen kareye (bu ara
+                                # ornege) neredeyse ayni" gerekcesiyle
+                                # yanlislikla dedup ile ELENEBILIRDI (onceki
+                                # gorevde duzeltilen "sessiz kayip" hatasinin
+                                # baska bir varyanti). Bu kareler zaten
+                                # kendi aralarinda `curr_gray`ye karsi HER
+                                # SEFERINDE dedup kontrolunden geciyor -
+                                # yalnizca PAYLASILAN referans DEGISMIYOR.
+                                pending_best = None
+                                selected_this_frame = True
+                            if diag is not None:
+                                diag.record(
+                                    _diag_row(
+                                        fid=frame_id,
+                                        ts=timestamp_sec,
+                                        net_score=net_change_score,
+                                        raw_ratio=change_ratio,
+                                        noise_floor=adaptive_noise_floor,
+                                        early_exceeded=True,
+                                        main_exceeded=is_suspicious,
+                                        early_confirmed=confirmed_early_now,
+                                        density=pre_density_state,
+                                        vote_passed=temporal_vote_passed,
+                                        interval_sec=self.early_change_selection_interval_sec,
+                                        interval_elapsed=True,
+                                        gap_ms=_ms(timestamp_sec) - _ms(prior_approach_evidence_ts),
+                                        dedup_checked=True,
+                                        dedup_is_dup=approach_is_dup,
+                                        selected=not approach_is_dup,
+                                        selection_reason=(
+                                            _SELECTION_REASON_EARLY_CHANGE if not approach_is_dup else None
+                                        ),
+                                        rejection_reason=(
+                                            _REJECTION_NEAR_DUPLICATE if approach_is_dup else None
+                                        ),
+                                    )
+                                )
+
                         # Zincir onaya ULASMADAN tamamen sonduyse (pencerede
                         # artik hicbir "supheli-erken" karar kalmadiysa),
                         # pending adayi GUVENLI sekilde temizle - aksi halde

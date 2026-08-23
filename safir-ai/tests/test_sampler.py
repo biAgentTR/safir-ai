@@ -1409,3 +1409,57 @@ def test_diagnostic_never_assigns_evidence_id_to_rejected_frames(tmp_path: Path)
     for row in rejected_rows:
         assert row["evidence_id"] is None
         assert row["vlm_payload_label"] is None
+
+
+# =============================================================================
+# Kanita dayali minimal iyilestirme: "olay baslangicina YAKLASAN saniyelerden
+# VLM'e daha fazla kare gitsin, kota EKLENMEDEN". Onceden, bir zincir henuz
+# onaylanmamisken (`pending_early_candidate` bekliyorken) yalnizca zincirin
+# ILK karesi evidence'a girerdi; onay tamamlanana kadar gecen ARADAKI
+# saniyelerde (surdurulen ama hicbir zaman min_count'a ulasmayan bir sinyal
+# icin - ör. tekrarlayan kisa hareketler) hicbir ek kare eklenmezdi.
+# =============================================================================
+
+
+def test_approach_window_produces_multiple_early_change_frames_without_a_cap(tmp_path: Path) -> None:
+    """18) Ana esik gecilmeden ONCE, uzun bir 'yaklasma' penceresi boyunca
+    tekrarlayan supheli-erken sinyaller VARSA, tek bir onset karesiyle
+    sinirli KALINMAMALI - `early_change_selection_interval_sec` araligiyla
+    BIRDEN FAZLA temsili kare eklenmeli (sabit bir ust sinir/kota olmadan)."""
+    path = tmp_path / "approach_window.mp4"
+    frames = []
+    total = 280
+    # Kucuk bir "nokta", her 3 karede bir farkli bir konuma sicrar - ana
+    # esigi hicbir zaman gecmeyen ama SURDURULEN (periyodik) supheli-erken
+    # bir sinyal uretir (gercek dunyada ör. bir kisinin yasakli bolgeye
+    # tekrar tekrar yaklasip uzaklasmasi gibi).
+    positions = [(10, 10), (30, 10), (50, 10), (70, 10), (90, 10), (30, 40), (50, 40), (70, 40)]
+    for i in range(total):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if i >= 40:
+            x, y = positions[((i - 40) // 3) % len(positions)]
+            cv2.rectangle(frame, (x, y), (x + 8, y + 8), (95, 95, 95), -1)
+        if 250 <= i < 260:
+            cv2.rectangle(frame, (5, 5), (120, 90), (255, 255, 255), -1)  # ana esigi kesin gecen gercek olay
+        frames.append(frame)
+    _write_video(path, frames)
+
+    sampler = _density_sampler(tmp_path, max_temporal_gap_sec=50.0)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    early_frames = [f for f in evidence if f.selection_reason == "early_change"]
+    assert len(early_frames) >= 3, (
+        "Uzun bir yaklasma penceresinde surdurulen ama hic onaylanmayan bir "
+        "sinyal, YALNIZCA tek bir onset karesiyle SINIRLI KALMAMALI."
+    )
+    # Kronolojik sira ve benzersiz evidence_id/frame_index/timestamp_sec
+    # tutarliligi (izlenebilirlik) korunmali.
+    timestamps = [f.timestamp_sec for f in evidence]
+    assert timestamps == sorted(timestamps)
+    evidence_ids = [f.evidence_id for f in evidence]
+    assert len(evidence_ids) == len(set(evidence_ids))
+    for f in evidence:
+        assert f.evidence_id == f"ev{f.frame_id}"
+    # Ana esigi gecen kareler HALA kosulsuz/sinirsiz secilmeye devam etmeli
+    # (bu mekanizma onlarin yerine GECMEZ, onlara EK yapar).
+    assert any(f.selection_reason == "threshold_exceeded" for f in evidence)
