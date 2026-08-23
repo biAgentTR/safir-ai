@@ -199,7 +199,18 @@ sampler:
   # HALA ARTMAKTAYSA "supheli" sayilir (TEK seferlik bir sicrama/adim
   # DEGIL, SURDURULEN bir buyume) - bkz. kod yorumu.
   long_baseline_change_enabled: true  # false ile bu yol tamamen devre disi (eski davranisla BIREBIR ayni)
-  long_baseline_interval_sec: 0.5     # uzun-baz referansin yenilenme araligi (saniye)
+  long_baseline_interval_sec: 0.5     # hizli kanal: uzun-baz referansin yenilenme araligi (saniye)
+
+  # IKINCI KANAL (kanita dayali ek iyilestirme): hizli kanal (0.5s) tek
+  # basina COK yavas gelisen olaylari (ör. kademeli baslayan bir yangin,
+  # dumanin cok yavas yayilmasi) yakalamaya yetmeyebilir - dogrudan olculdu:
+  # 5x daha yavas buyuyen sentetik bir "duman" senaryosunda, yalnizca hizli
+  # kanalla HICBIR early_change uretilmiyordu; 3.0s'lik bu ikinci kanal
+  # eklendiginde ayni olay baslangictan (~1.7s gecikmeyle) yakalandi. AYNI
+  # `is_early_suspicious`i besler (VEYA mantigiyla) - hizli kanalin veya
+  # `threshold_exceeded` (kosulsuz secim) yolunun YERINE GECMEZ, TAMAMEN
+  # BAGIMSIZ EK bir guvenlik agidir.
+  long_baseline_slow_interval_sec: 3.0  # yavas kanal: ikinci, daha uzun bazli referansin yenilenme araligi (saniye)
 
   # NOT (tanilama/diagnostic): Varsayilan KAPALI - secim davranisini/
   # performansini DEGISTIRMEZ. Acildiginda her ornek kare icin tam karar

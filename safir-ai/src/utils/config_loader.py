@@ -192,8 +192,15 @@ class SamplerConfig(BaseModel):
     `False` ile bu yol tamamen devre disi kalir (yalnizca ardisik-ornek
     karsilastirmasi kullanilir)."""
     long_baseline_interval_sec: float = 0.5
-    """Uzun-baz referans karenin yenilenme araligi (saniye). `0`dan buyuk
-    olmalidir."""
+    """Uzun-baz (hizli kanal) referans karenin yenilenme araligi (saniye).
+    `0`dan buyuk olmalidir. Orta hizli/dusuk kontrastli baslangiclari
+    yakalar."""
+    long_baseline_slow_interval_sec: float = 3.0
+    """Ikinci, DAHA UZUN bir uzun-baz referansin yenilenme araligi
+    (saniye); `long_baseline_interval_sec`den BUYUK olmalidir. Hizli kanal
+    tek basina COK yavas gelisen olaylari (ör. kademeli baslayan bir
+    yangin) yakalamaya yetmeyebilir - bu ikinci kanal, AYNI `is_early_
+    suspicious`i besleyen, TAMAMEN BAGIMSIZ ek bir guvenlik agidir."""
 
     # --- Tanilama (diagnostic) modu: varsayilan KAPALI, sampler secim
     # davranisini/performansini HICBIR sekilde degistirmez. Acildiginda HER

@@ -155,6 +155,8 @@ _DIAGNOSTIC_FIELDNAMES: Tuple[str, ...] = (
     "vlm_payload_label",
     "long_baseline_net_score",
     "long_baseline_early_suspicious",
+    "long_baseline_slow_net_score",
+    "long_baseline_slow_early_suspicious",
 )
 
 
@@ -433,6 +435,7 @@ class AdaptiveFrameSampler:
         single_frame_change_max_area_ratio: float = 0.35,
         long_baseline_change_enabled: bool = True,
         long_baseline_interval_sec: float = 0.5,
+        long_baseline_slow_interval_sec: float = 3.0,
         diagnostic_enabled: bool = False,
         diagnostic_output_dir: str = "outputs/diagnostics",
         diagnostic_output_format: str = "jsonl",
@@ -556,8 +559,22 @@ class AdaptiveFrameSampler:
                 telafi eder. `False` ile bu yol tamamen devre disi kalir
                 (yalnizca ardisik-ornek karsilastirmasi kullanilir - eski,
                 bu mekanizma eklenmeden ONCEKI davranisla BIREBIR AYNI).
-            long_baseline_interval_sec: Uzun-baz referans karenin yenilenme
-                araligi (saniye); `0`dan buyuk olmalidir.
+            long_baseline_interval_sec: Uzun-baz (hizli kanal) referans
+                karenin yenilenme araligi (saniye); `0`dan buyuk olmalidir.
+                Orta hizli/dusuk kontrastli baslangiclari (ör. dumanin ilk
+                gorulme ani) yakalar.
+            long_baseline_slow_interval_sec: Ikinci, DAHA UZUN bir uzun-baz
+                referansin yenilenme araligi (saniye); `long_baseline_
+                interval_sec`den BUYUK olmalidir. `long_baseline_interval_
+                sec` (hizli kanal) tek basina cok YAVAS gelisen olaylari
+                (ör. kademeli baslayan bir yangin) yakalamaya YETMEYEBILIR -
+                cunku o araligin kendisi de bu kadar yavas bir surecte
+                yeterli birikimli fark GORMEYEBILIR. Bu IKINCI, daha uzun
+                bazli kanal, AYNI `is_early_suspicious`i (asagida, VEYA
+                mantigiyla) besler ve yalnizca cok yavas surecler icin ek
+                bir guvenlik agidir - hizli kanalin veya ardisik-ornek
+                karsilastirmasinin YERINE GECMEZ, TAMAMEN BAGIMSIZ ve EK
+                bir sinyaldir (bkz. `long_baseline_interval_sec`).
             diagnostic_enabled: `True` ise `process_video`, HER ornek kare
                 icin tam karar izini (skorlar, esikler, durum, secim/red
                 nedeni) `diagnostic_output_dir`e yazar (bkz.
@@ -673,6 +690,12 @@ class AdaptiveFrameSampler:
             raise ValueError(
                 f"long_baseline_interval_sec 0'dan buyuk olmalidir, verilen: {long_baseline_interval_sec}"
             )
+        if long_baseline_slow_interval_sec <= long_baseline_interval_sec:
+            raise ValueError(
+                "long_baseline_slow_interval_sec "
+                f"({long_baseline_slow_interval_sec}) long_baseline_interval_sec'den "
+                f"({long_baseline_interval_sec}) BUYUK olmalidir."
+            )
 
         self.min_change_threshold = min_change_threshold
         self.blur_kernel_size = blur_kernel_size
@@ -694,6 +717,7 @@ class AdaptiveFrameSampler:
         self.single_frame_change_max_area_ratio = single_frame_change_max_area_ratio
         self.long_baseline_change_enabled = long_baseline_change_enabled
         self.long_baseline_interval_sec = long_baseline_interval_sec
+        self.long_baseline_slow_interval_sec = long_baseline_slow_interval_sec
         self.diagnostic_enabled = diagnostic_enabled
         self.diagnostic_output_dir = Path(diagnostic_output_dir)
         self.diagnostic_output_format = diagnostic_output_format
@@ -705,6 +729,11 @@ class AdaptiveFrameSampler:
         # baslar; periyodik olarak yenilenir (bkz. `process_video`).
         self.long_baseline_gray: np.ndarray | None = None
         self.long_baseline_noise_floor_history: List[float] = []
+        # Ikinci, DAHA UZUN bazli kanal (bkz. `long_baseline_slow_interval_sec`
+        # docstring'i) - cok yavas gelisen olaylar icin, BIRINCI kanalla
+        # AYNI desen, TAMAMEN BAGIMSIZ kendi durumu.
+        self.long_baseline_gray_slow: np.ndarray | None = None
+        self.long_baseline_noise_floor_history_slow: List[float] = []
         self.last_run_stats: Optional[SamplerRunStats] = None
         self._recent_threshold_decisions: Deque[bool] = deque(maxlen=temporal_vote_window)
         # Erken-degisim onayi icin sabit boyutlu pencere (bkz.
@@ -940,6 +969,11 @@ class AdaptiveFrameSampler:
         # Bir onceki ornegin uzun-baz net skoru (bkz. asagisi - "hala
         # GELISMEKTE mi" testi icin).
         long_baseline_prev_net_score: float = 0.0
+        # Ikinci, DAHA UZUN bazli kanal icin AYNI desen (bkz.
+        # `long_baseline_slow_interval_sec`) - cok yavas gelisen olaylar
+        # icin, BIRINCI kanaldan TAMAMEN BAGIMSIZ.
+        long_baseline_slow_timestamp: Optional[float] = None
+        long_baseline_slow_prev_net_score: float = 0.0
 
         evidence_frames: List[EvidenceFrame] = []
         frame_id = 0
@@ -1013,6 +1047,8 @@ class AdaptiveFrameSampler:
             rejection_reason: Optional[str],
             long_baseline_net_score: Optional[float] = None,
             long_baseline_early_suspicious: Optional[bool] = None,
+            long_baseline_slow_net_score: Optional[float] = None,
+            long_baseline_slow_early_suspicious: Optional[bool] = None,
         ) -> Dict[str, Any]:
             """Bir tanilama satirinin TUM alanlarini, cagiran taraftan gelen
             kare-ozel degerlerle + o anki (kapanis-uzeninden okunan, DEGISTIRMEYEN)
@@ -1058,6 +1094,8 @@ class AdaptiveFrameSampler:
                 "rejection_reason": rejection_reason,
                 "long_baseline_net_score": long_baseline_net_score,
                 "long_baseline_early_suspicious": long_baseline_early_suspicious,
+                "long_baseline_slow_net_score": long_baseline_slow_net_score,
+                "long_baseline_slow_early_suspicious": long_baseline_slow_early_suspicious,
             }
 
         def _discard_pending_early_if_same_frame(flushed_frame_id: int) -> None:
@@ -1182,6 +1220,46 @@ class AdaptiveFrameSampler:
                                 # onceki (ESKI referansa gore hesaplanmis, farkli
                                 # olcekteki) skorla KARSILASTIRILAMAZ.
                                 long_baseline_prev_net_score = 0.0
+
+                    # Ikinci, DAHA UZUN bazli kanal (bkz. `long_baseline_slow_
+                    # interval_sec` docstring'i): yukaridaki (hizli, ör. 0.5s)
+                    # kanal orta hizli/dusuk kontrastli baslangiclari yakalar,
+                    # ama COK yavas gelisen bir olayda (ör. kademeli baslayan
+                    # bir yangin) o kisa araligin KENDISI de yeterli birikimli
+                    # fark GORMEYEBILIR. BIRINCI kanalla BIREBIR AYNI desen -
+                    # TAMAMEN BAGIMSIZ durum, KENDI gurultu tabani, KENDI
+                    # "hala artmakta mi" korumasi.
+                    long_slow_net_score: Optional[float] = None
+                    long_slow_is_early_suspicious = False
+                    if self.long_baseline_change_enabled:
+                        if self.long_baseline_gray_slow is None:
+                            self.long_baseline_gray_slow = curr_gray
+                            long_baseline_slow_timestamp = timestamp_sec
+                        else:
+                            long_slow_diff = cv2.absdiff(curr_gray, self.long_baseline_gray_slow)
+                            _, long_slow_thresh = cv2.threshold(long_slow_diff, 25, 255, cv2.THRESH_BINARY)
+                            long_slow_raw_ratio = np.sum(long_slow_thresh > 0) / float(long_slow_thresh.size)
+                            long_slow_noise_floor = (
+                                np.median(self.long_baseline_noise_floor_history_slow)
+                                if self.long_baseline_noise_floor_history_slow
+                                else 0.0
+                            )
+                            long_slow_net_score = max(0.0, long_slow_raw_ratio - long_slow_noise_floor)
+                            long_slow_is_early_suspicious = (
+                                long_slow_net_score >= (self.early_change_score_ratio * self.min_change_threshold)
+                                and long_slow_net_score > long_baseline_slow_prev_net_score
+                            )
+                            long_baseline_slow_prev_net_score = long_slow_net_score
+                            if (
+                                long_baseline_slow_timestamp is None
+                                or timestamp_sec - long_baseline_slow_timestamp >= self.long_baseline_slow_interval_sec
+                            ):
+                                self.long_baseline_noise_floor_history_slow.append(long_slow_raw_ratio)
+                                if len(self.long_baseline_noise_floor_history_slow) > self.history_window:
+                                    self.long_baseline_noise_floor_history_slow.pop(0)
+                                self.long_baseline_gray_slow = curr_gray
+                                long_baseline_slow_timestamp = timestamp_sec
+                                long_baseline_slow_prev_net_score = 0.0
 
                     # Temporal voting: mevcut esik sonucunu (degismedi) girdi olarak
                     # kullanip, izole/tek karelik supheli kareleri (kamera titremesi,
@@ -1314,6 +1392,7 @@ class AdaptiveFrameSampler:
                         is_early_suspicious = (
                             net_change_score >= (self.early_change_score_ratio * self.min_change_threshold)
                             or long_is_early_suspicious
+                            or long_slow_is_early_suspicious
                         )
 
                         selected_this_frame = False
@@ -1532,6 +1611,8 @@ class AdaptiveFrameSampler:
                                     rejection_reason=None,
                                     long_baseline_net_score=long_net_score,
                                     long_baseline_early_suspicious=long_is_early_suspicious,
+                                    long_baseline_slow_net_score=long_slow_net_score,
+                                    long_baseline_slow_early_suspicious=long_slow_is_early_suspicious,
                                 )
 
                         confirmed_early_now = self._confirm_early_change(is_early_suspicious)
@@ -1879,6 +1960,8 @@ class AdaptiveFrameSampler:
                                         rejection_reason=None,
                                         long_baseline_net_score=long_net_score,
                                         long_baseline_early_suspicious=long_is_early_suspicious,
+                                        long_baseline_slow_net_score=long_slow_net_score,
+                                        long_baseline_slow_early_suspicious=long_slow_is_early_suspicious,
                                     )
                             elif diag is not None and not (
                                 pending_early_candidate is not None
@@ -1931,6 +2014,8 @@ class AdaptiveFrameSampler:
                                         rejection_reason=_REJECTION_NOT_BEST_COVERAGE_CANDIDATE,
                                         long_baseline_net_score=long_net_score,
                                         long_baseline_early_suspicious=long_is_early_suspicious,
+                                        long_baseline_slow_net_score=long_slow_net_score,
+                                        long_baseline_slow_early_suspicious=long_slow_is_early_suspicious,
                                     )
                                 )
 
@@ -2308,6 +2393,7 @@ def sampler_from_config(
         single_frame_change_max_area_ratio=config.single_frame_change_max_area_ratio,
         long_baseline_change_enabled=config.long_baseline_change_enabled,
         long_baseline_interval_sec=config.long_baseline_interval_sec,
+        long_baseline_slow_interval_sec=config.long_baseline_slow_interval_sec,
         diagnostic_enabled=config.diagnostic_enabled,
         diagnostic_output_dir=config.diagnostic_output_dir,
         diagnostic_output_format=config.diagnostic_output_format,

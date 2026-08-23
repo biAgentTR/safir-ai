@@ -1712,3 +1712,76 @@ def test_short_and_long_baseline_both_still_correctly_confirmed(tmp_path: Path) 
         **_high_sample_fps_config(tmp_path, evidence_output_dir=str(tmp_path / "e_long"))
     ).process_video(long_path, sample_fps=30)
     assert any(f.selection_reason == "early_change" for f in long_evidence), "Uzun, kademeli olay hala yakalanmali."
+
+
+# =============================================================================
+# Ikinci (yavas) uzun-baz kanali: hizli uzun-baz kanali (0.5s varsayilan) TEK
+# BASINA COK yavas gelisen olaylari (ör. kademeli baslayan bir yangin)
+# yakalamaya yetmeyebilir - o kisa araligin KENDISI de yeterli birikimli fark
+# GORMEYEBILIR. `long_baseline_slow_interval_sec` (varsayilan 3.0s) bunun
+# icin EK, BAGIMSIZ bir guvenlik agidir.
+# =============================================================================
+
+
+def _very_slow_gradual_video(path: Path, total_frames: int = 1400, ramp_start: int = 100) -> None:
+    """`_low_contrast_gradual_video`den ~5x DAHA YAVAS buyuyen, dusuk
+    kontrastli bir yama - tek-kanalli (yalnizca hizli, 0.5s) uzun-baz
+    mekanizmasinin TEK BASINA yakalayamayacagi kadar yavas bir sureci
+    temsil eder (bkz. test asagida)."""
+    frames = []
+    for i in range(total_frames):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if i >= ramp_start:
+            size = 6 + min(i - ramp_start, 1000) * 0.2
+            cv2.rectangle(frame, (10, 10), (10 + int(size), 10 + int(size)), (65, 65, 65), -1)
+        frames.append(frame)
+    _write_video(path, frames)
+
+
+def test_very_slow_onset_needs_the_second_slower_baseline_channel(tmp_path: Path) -> None:
+    """26) `_very_slow_gradual_video`, tek-kanalli (yalnizca hizli, 0.5s)
+    uzun-baz mekanizmasinin (bkz. kok neden arastirmasi - dogrulandi:
+    yalnizca hizli kanalla bu video HICBIR early_change uretmiyordu)
+    yakalayamayacagi kadar yavas gelisen bir olayi temsil eder. Mevcut
+    iki-kanalli (hizli + yavas, varsayilan ayarlar) mekanizma bu olayi
+    baslangictan yakalamali."""
+    path = tmp_path / "very_slow_gradual.mp4"
+    _very_slow_gradual_video(path)
+
+    evidence = AdaptiveFrameSampler(
+        **_high_sample_fps_config(tmp_path, evidence_output_dir=str(tmp_path / "e_with_slow"))
+    ).process_video(path, sample_fps=30)
+    early = [f for f in evidence if f.selection_reason == "early_change"]
+    assert early, "Iki-kanalli (hizli+yavas) mekanizma ile cok yavas gelisen olay early_change olarak yakalanmali."
+    # Baslangictan (ramp_start=100 -> t=4.0s) makul bir sure icinde
+    # yakalanmali - guclendikten COK SONRA degil.
+    assert early[0].timestamp_sec < 8.0
+
+
+def test_short_sudden_events_are_unaffected_by_the_slow_baseline_channels(tmp_path: Path) -> None:
+    """27) Ani/kisa suren olaylar (ör. tek native karelik bir olay), yavas
+    uzun-baz kanallari ACIKKEN de KOSULSUZ/GECIKMESIZ yakalanmaya devam
+    etmeli - bu kanallar yalnizca `is_early_suspicious`i (esik-alti aday)
+    besler, `threshold_exceeded` yoluna (kosulsuz secim) dokunmaz."""
+    path = tmp_path / "single_native_frame_with_slow_channels.mp4"
+    frames = []
+    total = 150
+    crit_frame = 75
+    for i in range(total):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if i == crit_frame:
+            cv2.rectangle(frame, (5, 5), (120, 90), (255, 255, 255), -1)
+        frames.append(frame)
+    h, w = frames[0].shape[:2]
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(path), fourcc, 30.0, (w, h))
+    for f in frames:
+        writer.write(f)
+    writer.release()
+
+    sampler = AdaptiveFrameSampler(**_high_sample_fps_config(tmp_path))
+    evidence = sampler.process_video(path, sample_fps=30)
+    assert any(f.selection_reason == "threshold_exceeded" and f.frame_id == crit_frame for f in evidence), (
+        "Ani/kisa olay, yavas uzun-baz kanallari ACIKKEN de aninda "
+        "yakalanmaya devam etmeli."
+    )
