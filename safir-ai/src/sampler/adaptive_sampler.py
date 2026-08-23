@@ -403,6 +403,22 @@ class _PendingSelectionCandidate:
     timestamp_sec: float
     net_change_score: float
     motion_bbox: Optional[Tuple[int, int, int, int]]
+    # ONEMLI (kok neden - dedup, yavas baslayan bir olayin GERCEK ilk
+    # karesini yanlislikla silmesin): `True` ise bu aday, kisa-baz
+    # (ardisik-ornek) skoru DEGIL, uzun-baz kanallarindan (hizli/yavas)
+    # biri sayesinde supheli-erken sayildi (bkz. `long_baseline_change_
+    # enabled`). Byle bir aday, TANIM GEREGI, DAHA UZUN bir zaman
+    # araligina gore olculmus GERCEK birikimli farki temsil eder - ama
+    # `_is_near_duplicate` SADECE ardisik-ornek TARZI (kisa, ham piksel-
+    # fark) bir karsilastirma yapar; bu iki olcek UYUMSUZDUR. Sonuc: dusuk
+    # kontrastli/yavas gelisen bir olayin GERCEK ilk anı, sirf az once
+    # flush edilmis bir coverage karesine (saniyenin cok kucuk bir kesri
+    # once) piksel duzeyinde "neredeyse ayni" gorundugu icin yanlislikla
+    # "duplicate" sayilip SILINEBILIRDI - bu, uzun-baz mekanizmasinin
+    # yakaladigi TAM DA o ilk ani yok ederdi. Bu yuzden onset-onay
+    # flush'unda (bkz. `process_video`), `via_long_baseline=True` olan
+    # bir aday icin dedup kontrolu ATLANIR (bkz. asagisi).
+    via_long_baseline: bool = False
 
 
 class AdaptiveFrameSampler:
@@ -1298,8 +1314,11 @@ class AdaptiveFrameSampler:
                         # dogru konuma) eklenir - boylece zincirin GERCEK
                         # baslangici, dogrudan esige sicrayan olaylarda da
                         # korunur (bkz. gorev notu #6).
+                        # `via_long_baseline` icin bkz. onset-onay flush'undaki
+                        # AYNI gerekce (kok neden duzeltmesi).
                         pending_early_is_dup = (
                             pending_early_candidate is not None
+                            and not pending_early_candidate.via_long_baseline
                             and self._is_near_duplicate(pending_early_candidate.gray, last_selected_gray)
                         )
                         if pending_early_candidate is not None and not pending_early_is_dup:
@@ -1473,8 +1492,14 @@ class AdaptiveFrameSampler:
                             # flush ederiz - boylece hangi yol onu "tetiklerse
                             # tetiklesin" GERCEK baslangic karesi asla kaybolmaz.
                             if pending_early_candidate is not None:
-                                pending_early_is_dup = self._is_near_duplicate(
-                                    pending_early_candidate.gray, last_selected_gray
+                                # `via_long_baseline` icin bkz. onset-onay
+                                # flush'undaki AYNI gerekce (kok neden
+                                # duzeltmesi).
+                                pending_early_is_dup = (
+                                    not pending_early_candidate.via_long_baseline
+                                    and self._is_near_duplicate(
+                                        pending_early_candidate.gray, last_selected_gray
+                                    )
                                 )
                                 if not pending_early_is_dup:
                                     _insert_chronologically(
@@ -1584,6 +1609,7 @@ class AdaptiveFrameSampler:
                                 timestamp_sec=timestamp_sec,
                                 net_change_score=net_change_score,
                                 motion_bbox=motion_bbox,
+                                via_long_baseline=long_is_early_suspicious or long_slow_is_early_suspicious,
                             )
                             if diag is not None:
                                 pending_early_diag = _diag_row(
@@ -1769,8 +1795,25 @@ class AdaptiveFrameSampler:
                                 timestamp_sec=timestamp_sec,
                                 net_change_score=net_change_score,
                                 motion_bbox=motion_bbox,
+                                via_long_baseline=long_is_early_suspicious or long_slow_is_early_suspicious,
                             )
-                            onset_is_dup = self._is_near_duplicate(onset_source.gray, last_selected_gray)
+                            # ONEMLI (kok neden duzeltmesi - bkz.
+                            # `_PendingSelectionCandidate.via_long_baseline`
+                            # docstring'i): bu aday uzun-baz kanallarindan
+                            # biri SAYESINDE supheli-erken sayildiysa, dedup
+                            # kontrolu ATLANIR - `_is_near_duplicate` yalnizca
+                            # KISA-baz (ardisik-ornek) tarzi ham piksel farki
+                            # olctugu icin, dusuk kontrastli/yavas gelisen bir
+                            # olayin GERCEK ilk anini (az once flush edilmis
+                            # bir coverage karesine, saniyenin kucuk bir
+                            # kesri once oldugu icin piksel duzeyinde
+                            # "neredeyse ayni" gorunerek) yanlislikla
+                            # SILEBILIRDI - tam da uzun-baz mekanizmasinin
+                            # yakalamasi gereken ani.
+                            onset_is_dup = (
+                                not onset_source.via_long_baseline
+                                and self._is_near_duplicate(onset_source.gray, last_selected_gray)
+                            )
                             if not onset_is_dup:
                                 _insert_chronologically(
                                     evidence_frames,

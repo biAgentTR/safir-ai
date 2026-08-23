@@ -1843,3 +1843,29 @@ def test_max_temporal_gap_guarantee_is_unconditional_even_when_cooldown_outlasts
         f"max_temporal_gap_sec ({sampler.max_temporal_gap_sec}) garantisi, "
         f"cooldown daha uzun surse bile ihlal edilmemeli. Gaps: {gaps}"
     )
+
+
+def test_dedup_does_not_erase_a_slow_onset_that_starts_right_after_a_coverage_flush(tmp_path: Path) -> None:
+    """29) KOK NEDEN REGRESYONU: yavas/dusuk kontrastli bir olay, `max_
+    temporal_gap_sec`in HEMEN ARDINDAN (bir coverage karesi az once flush
+    edildikten kisa bir sure sonra) baslarsa, uzun-baz kanallarindan biri
+    sayesinde supheli-erken sayilan GERCEK ilk kare - o coverage karesine
+    piksel duzeyinde 'neredeyse ayni' gorundugu icin - dedup tarafindan
+    YANLISLIKLA silinmemeli. `_PendingSelectionCandidate.via_long_baseline`
+    bu adaylar icin dedup kontrolunu atlamali."""
+    path = tmp_path / "onset_right_after_coverage.mp4"
+    _low_contrast_gradual_video(path, total_frames=400, ramp_start=100)
+
+    evidence = AdaptiveFrameSampler(
+        **_high_sample_fps_config(tmp_path)
+    ).process_video(path, sample_fps=30)
+
+    early = [f for f in evidence if f.selection_reason == "early_change"]
+    assert early, "Yavas baslayan olay early_change olarak yakalanmali."
+    # Ramp_start=100 -> t=4.0s; gercek baslangic bu noktaya COK yakin
+    # yakalanmali (dedup tarafindan gec bir kareye itilmemeli).
+    assert early[0].timestamp_sec < 4.5, (
+        f"Gercek baslangic karesi dedup tarafindan silinip DAHA GEC bir "
+        f"kareye itilmis gorunuyor: ilk early_change={early[0].timestamp_sec}s "
+        f"(ramp t=4.0s civarinda baslamaliydi)."
+    )
