@@ -34,26 +34,24 @@ system:
 # -----------------------------------------------------------------------------
 sampler:
   # --- AdaptiveFrameSampler tarafindan aktif olarak kullanilan parametreler ---
-  # KANITA DAYALI DEGISIKLIK (0.001 -> 0.0005): kullanicidan gelen ek geri
-  # bildirim - "bazen cok uzun araliklarda frame alamiyorum VE kritik kisa
-  # anlari da alamiyorum" - AYNI ANDA GORULUYOR; bu ikilinin birlikte
-  # gorulmesi, `min_change_threshold`in (dolayisiyla ondan TURETILEN TUM
-  # oranli esiklerin: `early_change_score_ratio`, `dedup_similarity_ratio`,
-  # `single_frame_change_noise_floor_ratio`) GERCEK sahne hareketini bile
-  # bastiracak kadar yuksek olabilecegine isaret eder - esik asilamadigi
-  # icin ne coverage'in "bir sey secildi" referansi degisir (uzun bosluk
-  # HISSI) ne de gercek kisa bir hareket net_change_score'u yeterince
-  # yukseltebilir. Esik yariya indirildi (0.001 -> 0.0005); TUM oranli alt-
-  # esikler (`early_change_score_ratio`, `dedup_similarity_ratio`,
-  # `single_frame_change_noise_floor_ratio` * taban) OTOMATIK olarak AYNI
-  # ORANDA duser - ayrica DOKUNULMEDI. Yan etki: false-positive (onemsiz
-  # titreme/kompresyon artefaktinin evidence sayilmasi) riski bir miktar
-  # ARTAR - operator panelindeki `min_change_threshold_override` slider'i
-  # ile sahne bazinda GERI yukseltilebilir (bkz. `sampler_from_config`).
-  # ELDE GERCEK DIAGNOSTIC VERI/VIDEO YOKTU; bu tahmine dayali, TERSINE
-  # CEVRILEBILIR bir ilk adimdir - gercek footage/diagnostic log elde
-  # edildiginde KESIN kok nedene gore yeniden kalibre edilmelidir.
-  min_change_threshold: 0.0005       # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani (yuksek hassasiyet)
+  # KANITA DAYALI DEGISIKLIK (0.001 -> 0.0005 -> 0.00025): kullanicidan
+  # gelen ek geri bildirim - "bazen cok uzun araliklarda frame alamiyorum
+  # VE kritik kisa anlari da alamiyorum" - AYNI ANDA GORULUYOR; bu ikilinin
+  # birlikte gorulmesi, `min_change_threshold`in (dolayisiyla ondan
+  # TURETILEN TUM oranli esiklerin: `early_change_score_ratio`,
+  # `dedup_similarity_ratio`, `single_frame_change_noise_floor_ratio`)
+  # GERCEK sahne hareketini bile bastiracak kadar yuksek olabilecegine
+  # isaret eder. Ilk turda yariya indirildi (0.001 -> 0.0005); kullanici
+  # "daha da hassas olabilir" diyerek AYNI yonde devam istedi, bu yuzden
+  # BIR KEZ DAHA yariya indirildi (0.0005 -> 0.00025). TUM oranli alt-
+  # esikler yine OTOMATIK olarak ayni oranda duser - ayrica dokunulmadi.
+  # ONEMLI (birikimli risk uyarisi): esik artik ILK degerin 1/4'u - false-
+  # positive (onemsiz titreme/kompresyon artefaktinin evidence sayilmasi)
+  # riski KUMULATIF olarak buyudu; bu noktadan sonraki HER EK dusus icin
+  # gercek diagnostic veri/video ONERILIR (kor tahmin yerine). Operator
+  # panelindeki `min_change_threshold_override` slider'i ile sahne
+  # bazinda GERI yukseltilebilir (bkz. `sampler_from_config`).
+  min_change_threshold: 0.00025      # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani (yuksek hassasiyet)
   blur_kernel_size: [21, 21]         # Gauss bulaniklastirma cekirdek boyutu (tek sayilar)
   # KANITA DAYALI DEGISIKLIK (30 -> 60): `sample_fps` 5'ten 10'a
   # cikarildiginda (asagisi), `history_window` SABIT KALDIGI icin adaptif
