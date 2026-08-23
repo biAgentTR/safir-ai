@@ -54,7 +54,15 @@ sampler:
   # ILERLEMEK, "hicbir sey kacirilmasin" ugruna "her sey evidence sayilsin"a
   # cok yaklasabilir). Operator panelindeki `min_change_threshold_override`
   # slider'i ile sahne bazinda GERI yukseltilebilir (bkz. `sampler_from_config`).
-  min_change_threshold: 0.00015      # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani (yuksek hassasiyet)
+  # KANITA DAYALI DEGISIKLIK (0.00015 -> 0.0001): "5 saniye boyunca hic
+  # cikti alinmiyor" geri bildirimi - bu, ASIL olarak `max_temporal_gap_
+  # sec`in kendisiyle (asagida 7.0 -> 4.0) DUZELTILECEK bir sikayettir
+  # (coverage guvenlik agi zaten en fazla `max_temporal_gap_sec` kadar
+  # sessizlige izin veriyordu - "5 saniye" bunun ICINDE, bir hata degil).
+  # Yine de piksel esigi de biraz daha dusuruldu ki gercek ama zayif bir
+  # sinyal, coverage'in "hicbir sey secilmedi" bekleme suresini SIFIRLAYAN
+  # bir esik/erken-degisim/single-frame karesi olarak DAHA SIK yakalansin.
+  min_change_threshold: 0.0001       # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani (yuksek hassasiyet)
   blur_kernel_size: [21, 21]         # Gauss bulaniklastirma cekirdek boyutu (tek sayilar)
   # KANITA DAYALI DEGISIKLIK (30 -> 60): `sample_fps` 5'ten 10'a
   # cikarildiginda (asagisi), `history_window` SABIT KALDIGI icin adaptif
@@ -115,7 +123,11 @@ sampler:
   # gap_sec` sirasini hala korur (constructor bu sirayi dogrular).
   # KANITA DAYALI DEGISIKLIK (10.0 -> 7.0): "daha sik frame" talebiyle
   # devam - sakin bolge araligi bir kademe daha kisaltildi.
-  max_temporal_gap_sec: 7.0          # Son evidence karesinden bu yana izin verilen azami sessizlik suresi (saniye)
+  # KANITA DAYALI DEGISIKLIK (7.0 -> 4.0): kullanicidan gelen "bazen 5
+  # saniye boyunca hic cikti almiyoruz, en kritik anlari kacirmayalim"
+  # geri bildirimi - bu, DOGRUDAN bu degerle sinirli. 4.0, sessiz/sakin
+  # bolgelerde bile en fazla 4 saniyelik bir bosluk garantiler.
+  max_temporal_gap_sec: 4.0          # Son evidence karesinden bu yana izin verilen azami sessizlik suresi (saniye)
 
   # NOT (yogunluk-uyarlamali secim): Kaynak/analiz FPS'i (sample_fps) HER
   # ZAMAN sabittir - adaptif olan yalnizca VLM'e gonderilecek karelerin secim
@@ -135,7 +147,10 @@ sampler:
   # bu tek deger HEM onay-oncesi HEM onay-sonrasi erken-durumda VLM'e giden
   # kare yogunlugunu artirir.
   # KANITA DAYALI DEGISIKLIK (2.0 -> 1.5): "daha sik frame" talebiyle devam.
-  early_change_selection_interval_sec: 1.5  # Erken-degisimde azami secim araligi (sakin moddan daha sik)
+  # KANITA DAYALI DEGISIKLIK (1.5 -> 1.0): "en kritik anlari kacirmayalim"
+  # talebiyle devam - erken-degisim durumundaki azami secim araligi
+  # kisaltildi (bkz. `max_temporal_gap_sec` yorumu, ayni gerekce).
+  early_change_selection_interval_sec: 1.0  # Erken-degisimde azami secim araligi (sakin moddan daha sik)
   early_change_cooldown_sec: 4.0     # Erken-degisim sinyali kesildikten sonra sakin moda donmeden once beklenen sure
 
   # KANITA DAYALI DEGISIKLIK (1.0 -> 0.5): ana esik gecildikten sonraki EN
@@ -146,7 +161,10 @@ sampler:
   # etkiler - eklenen kareler halihazirda VAR OLAN "significant_change"
   # kategorisine girer, yeni bir kategori EKLENMEZ.
   # KANITA DAYALI DEGISIKLIK (0.5 -> 0.3): "daha sik frame" talebiyle devam.
-  significant_change_selection_interval_sec: 0.3  # Guclu-degisim hysteresis penceresinde azami secim araligi (en sik)
+  # KANITA DAYALI DEGISIKLIK (0.3 -> 0.2): "en kritik anlari kacirmayalim"
+  # talebiyle devam - ana esik sonrasi hysteresis penceresindeki EN SIK
+  # secim araligi daha da kisaltildi.
+  significant_change_selection_interval_sec: 0.2  # Guclu-degisim hysteresis penceresinde azami secim araligi (en sik)
   strong_change_cooldown_sec: 4.0    # Ana esik gecildikten sonra "guclu degisim" durumunun korunacagi sure
 
   # NOT (duplicate onleme): Yalnizca coverage/early_change/significant_change
@@ -159,7 +177,10 @@ sampler:
   # da toplam evidence/VLM kare sayisini artiran DIGER bir kanal. threshold_
   # exceeded kareler zaten bu kontrolden HICBIR ZAMAN gecmiyor - etkilenmez.
   # KANITA DAYALI DEGISIKLIK (0.35 -> 0.25): "daha sik frame" talebiyle devam.
-  dedup_similarity_ratio: 0.25       # Son secilen kareye gore fark orani bu_oran*min_change_threshold'dan dusukse "duplicate"
+  # KANITA DAYALI DEGISIKLIK (0.25 -> 0.2): daha COK kare degerlendirme
+  # talebiyle devam - dedup sinirini biraz daha daraltir (daha az agresif
+  # eleme).
+  dedup_similarity_ratio: 0.2        # Son secilen kareye gore fark orani bu_oran*min_change_threshold'dan dusukse "duplicate"
 
   # NOT (tek-kareli guclu/lokal degisim): early_change_min_count'un cok-kareli
   # onayindan BAGIMSIZ, ayri bir yol - ana esigin ALTINDA ama TEK bir karede
