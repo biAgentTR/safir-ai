@@ -325,6 +325,19 @@ def serialize_rag_security(
 
     if rag_telemetry is None:
         rag_summary = "RAG sorgusu yapilmadi (keyword yok)"
+    elif rag_telemetry.retrieval_status == "reranker_unavailable":
+        # Mevcut GUVENLIK davranisi (degistirilmedi): reranker basarisiz olursa
+        # embedding top-k SESSIZCE final sonuc gibi SUNULMAZ (final_count=0,
+        # bkz. `EmbeddingRAGService.query`). Burada yalnizca bu durumun
+        # operator/trace icin ACIKCA GORUNUR olmasi saglanir - candidate_count
+        # gercek FAISS aday sayisini gostererek "retrieval calisti ama rerank
+        # basarisiz oldu" ile "retrieval hic sonuc bulamadi" AYRISTIRILIR.
+        rag_summary = (
+            f"RAG retrieval yapildi ancak reranker kullanilamadi "
+            f"({rag_telemetry.candidate_count} aday bulundu, reranker basarisiz oldugu icin "
+            "hicbiri dogrulanmadi — GUVENLIK GEREGI 0 sonuc donduruldu, embedding siralamasi "
+            "SESSIZCE final sonuc olarak sunulmadi)"
+        )
     elif getattr(rag_telemetry, "corpus_source", None) == "fallback_placeholder":
         rag_summary = (
             f"RAG: {rag_telemetry.final_count}/{rag_telemetry.candidate_count} sonuc "

@@ -81,14 +81,33 @@ class EventSummary(BaseModel):
 class RagContext(BaseModel):
     """Modul 4 spesifikasyonundaki ortak sema: FAISS RAG'dan gelen tek bir mevzuat sonucu.
 
-    `SafirReport.relevant_regulations` (duz metin listesi) ile ayni veriyi,
-    kural basligi/skor gibi yapilandirilmis alanlarla birlikte sunmak isteyen
-    tuketiciler icin kullanilir (bkz. `EmbeddingRAGService.search_laws`).
+    `SafirReport.relevant_regulations` (duz metin listesi, RuleEngine-turevli
+    kisa basliklar) ile ayni veriyi, kural basligi/skor gibi yapilandirilmis
+    alanlarla birlikte sunmak isteyen tuketiciler icin kullanilir (bkz.
+    `EmbeddingRAGService.search_laws`).
+
+    2026-08-24 (RAG entegrasyon dogrulama turu - traceability gap kapatildi):
+    Onceden bu sema TANIMLIYDI ama HICBIR YERDE POPULATE EDILMIYORDU - operator,
+    canli pipeline SSE trace'i disinda (kalici DEGIL, yalnizca o anki run icin),
+    "bu karar hangi mevzuat maddesine dayaniyor?" sorusunu rapor UZERINDEN
+    CEVAPLAYAMIYORDU. `SafirReport.semantic_rag_sources` alani artik bunu
+    (chunk_id/document_id/article_number/source_url ile birlikte) KALICI
+    olarak tasir - bkz. `main.py::build_report`. Bu, risk_score/risk_level
+    hesaplamasini ETKILEMEZ (semantik RAG zaten karar mekanizmasina HIC
+    girmiyordu, bkz. `context_builder.py` modul dokustringi) - yalnizca
+    ZATEN var olan bilginin kalici hale getirilmesidir.
     """
 
     rule_title: str = Field(description="Mevzuat/kural maddesinin kisa basligi (orn. 'ISG Yonetmeligi Madde 12').")
     content: str = Field(description="Maddenin tam metni.")
-    score: float = Field(description="FAISS benzerlik skoru.")
+    score: float = Field(description="FAISS benzerlik (embedding) skoru.")
+    chunk_id: Optional[str] = Field(default=None, description="Kaynak chunk'in kimligi (persisted KB index'teki).")
+    document_id: Optional[str] = Field(default=None, description="Kaynak mevzuat dokumaninin kimligi.")
+    article_number: Optional[str] = Field(default=None, description="Madde/ek numarasi (orn. 'I.3.1').")
+    source_url: Optional[str] = Field(default=None, description="Resmi mevzuat kaynak URL'si (varsa).")
+    rerank_score: Optional[float] = Field(
+        default=None, description="LLM-as-judge rerank skoru (reranker devre disiysa/basarisizsa None)."
+    )
 
 
 class EvidenceFrameOut(BaseModel):
@@ -201,7 +220,21 @@ class SafirReport(BaseModel):
         default_factory=list, description="Her Olay Grubunun zirve karesi (goruntu + metadata)."
     )
     relevant_regulations: List[str] = Field(
-        default_factory=list, description="FAISS RAG'dan getirilen ilgili ISG mevzuat maddeleri."
+        default_factory=list,
+        description="RuleEngine-dogrulanmis (deterministik) mevzuat basliklari - risk kararina baglidir.",
+    )
+    semantic_rag_sources: List[RagContext] = Field(
+        default_factory=list,
+        description=(
+            "Bu analizde semantik RAG sorgusunun (VLM keyword'lerinden kurulan, bkz. "
+            "`main.py::_build_semantic_query`) persisted KB index'inden GERCEKTEN sectigi "
+            "kaynaklar - chunk_id/document_id/article_number/source_url ile birlikte. "
+            "`relevant_regulations`den BAGIMSIZDIR, risk_score/risk_level'i ETKILEMEZ "
+            "(bkz. RagContext docstring'i); yalnizca 'bu karar/gozlem hangi mevzuat "
+            "maddesine dayaniyor?' sorusunun KALICI, iz-surulebilir cevabidir. Esik-uzeri "
+            "sonuc bulunamadiysa VEYA reranker basarisiz olduysa (bkz. `rag_security` trace "
+            "stage'i) BOS LISTE - GECERLI bir sonuctur, uydurulmus bir kaynak EKLENMEZ."
+        ),
     )
     escalation_tier: Optional[str] = Field(
         default=None, description="Otomatik eskalasyon kademesi: monitor | notify | alarm."

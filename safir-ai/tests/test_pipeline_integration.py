@@ -26,14 +26,27 @@ import cv2
 import numpy as np
 import pytest
 
+from src.event_analysis.schemas import TemporalEvent
 from src.main import SafirPipeline
 from src.utils.config_loader import SafirConfig
+from src.vlm.base_vlm import VLMResponse
 
 
 @dataclass
 class _FakeRetrievedDocument:
     text: str
     score: float = 1.0
+    # RAG entegrasyon dogrulama turu (2026-08-24): provenance alanlari - `getattr(...,
+    # None)` KASITLI kullanilan yerlerde (context_builder.py, tools.py, main.py::build_report)
+    # bu alanlar OLMADAN da (varsayilan None) hicbir yer PATLAMAMALI; burada VAR OLMALARI,
+    # provenance'in gercekten uctan uca tasindigini test edebilmek icindir.
+    embedding_score: Optional[float] = None
+    rerank_score: Optional[float] = None
+    chunk_id: Optional[str] = None
+    document_id: Optional[str] = None
+    document_title: Optional[str] = None
+    article_number: Optional[str] = None
+    source_url: Optional[str] = None
 
 
 class _FakeRagService:
@@ -890,3 +903,126 @@ def test_multiple_real_vlm_events_with_distinct_start_end_times_all_survive_to_r
     payload = report.model_dump(mode="json")
     assert len(payload["events"]) == 2
     assert set(payload["detected_event_names"]) == {"personelin_alanı_terk_etmesi", "kovada_alev_baslangici"}
+
+
+# ---------------------------------------------------------------------------
+# RAG entegrasyon dogrulama turu (2026-08-24): semantik RAG'in secilen chunk'inin
+# (metin + provenance), GERCEK `stage_context`/`build_report` kodundan gecerek
+# hem Agent'in aldigi mesaja hem NIHAI, KALICI rapora ulastigini uctan uca dogrular.
+# ---------------------------------------------------------------------------
+
+
+def test_semantic_rag_chunk_reaches_agent_prompt_and_report_provenance(
+    pipeline: SafirPipeline,
+) -> None:
+    """HEDEF 1/3/4: RAG query -> selected chunk -> Agent context -> rapor provenance zincirini mock ile uctan uca dogrular."""
+    distinctive_chunk = _FakeRetrievedDocument(
+        text="FORKLIFT-UNIQUE-MARKER-XYZ: is ekipmani kullaniminda risk mevcuttur.",
+        score=0.77,
+        embedding_score=0.77,
+        chunk_id="test_dok__madde_1",
+        document_id="test_dok",
+        document_title="Test ISG Yonetmeligi",
+        article_number="1",
+        source_url="https://example.org/test-yonetmelik",
+    )
+    fake_rag_service = pipeline._rag_service  # type: ignore[assignment]
+    fake_rag_service.query = lambda question, top_k=None: (  # noqa: E731 - test-only stub
+        fake_rag_service.queries.append(question),
+        [distinctive_chunk],
+    )[1]
+
+    # Agent'in GERCEKTEN aldigi mesajlari yakalamak icin mock LLM'in invoke'unu sarmalar
+    # (davranisi DEGISTIRMEZ, yalnizca gozlemler).
+    captured_message_batches: List = []
+    original_invoke = pipeline._agent._llm.invoke
+
+    def _capturing_invoke(messages):
+        captured_message_batches.append(list(messages))
+        return original_invoke(messages)
+
+    pipeline._agent._llm.invoke = _capturing_invoke
+
+    temporal_event = TemporalEvent(
+        event_id="te-1",
+        event_name="forklift_yakinlik",
+        event_type="arac_yaya_yakinligi",
+        description="Forklift yaya yakininda calisiyor.",
+        start_timestamp=1.0,
+        end_timestamp=1.0,
+        duration=0.0,
+        confidence=0.8,
+        occurrence_count=1,
+        matched_keywords=["forklift", "yaya"],
+        source_model="test-vlm",
+        related_events=[],
+    )
+    vlm_response = VLMResponse(
+        description="Forklift yaya yakininda calisiyor.", model_name="test-vlm", frame_count=1, latency_ms=1.0
+    )
+
+    prompt_block, context = pipeline.stage_context(
+        vlm_response, "Risk durumu nedir?", latest_timestamp=1.0, rule_matches=[], temporal_events=[temporal_event]
+    )
+
+    # A) RAG GERCEKTEN sorgulandi (matched_keywords sayesinde semantic_query bos degildi).
+    assert fake_rag_service.queries, "semantik RAG sorgusu hic yapilmamis (matched_keywords eksik mi?)"
+
+    # B) chunk metni GERCEKTEN ContextBuilder'in urettigi, Agent'e giden prompt_block'ta.
+    assert "FORKLIFT-UNIQUE-MARKER-XYZ" in prompt_block
+    assert context.semantically_related_chunks[0].chunk_id == "test_dok__madde_1"
+
+    decision = pipeline.stage_decide(prompt_block)
+
+    # C) Agent GERCEKTEN bu metni iceren mesajlarla cagrildi (LangGraph -> LLM sinirinda).
+    assert captured_message_batches, "Agent hic cagrilmamis"
+    full_text = " ".join(str(m.content) for batch in captured_message_batches for m in batch)
+    assert "FORKLIFT-UNIQUE-MARKER-XYZ" in full_text
+
+    decision = pipeline.stage_finalize_risk(decision, [])
+    report = pipeline.build_report(
+        video_source="test-video",
+        sampler=_NullSampler(),
+        evidence_frames=[],
+        vlm_response=vlm_response,
+        context=context,
+        decision=decision,
+        escalation=_NullEscalation(),
+        temporal_events=[temporal_event],
+        rule_matches=[],
+        latest_timestamp=1.0,
+    )
+
+    # D) provenance (chunk_id/document_id/article_number/source_url) rapora KALICI olarak tasindi.
+    assert report.semantic_rag_sources, "semantic_rag_sources bos - provenance rapora ulasmadi"
+    source = report.semantic_rag_sources[0]
+    assert source.chunk_id == "test_dok__madde_1"
+    assert source.document_id == "test_dok"
+    assert source.article_number == "1"
+    assert source.source_url == "https://example.org/test-yonetmelik"
+    assert "FORKLIFT-UNIQUE-MARKER-XYZ" in source.content
+
+
+class _NullSampler:
+    """`sampler.last_run_stats`e erisen `build_report` icin minimal sahte - bu testte sampler'in KENDISI test EDILMIYOR."""
+
+    class _Stats:
+        total_frames_scanned = 0
+        sampled_frames_evaluated = 0
+        evidence_frame_count = 0
+        eliminated_frame_count = 0
+        eliminated_ratio_pct = 0.0
+        elapsed_sec = 0.0
+
+    last_run_stats = _Stats()
+
+
+class _NullEscalation:
+    """`escalation.tier/auto_dispatched/alert_id`e erisen `build_report` icin minimal sahte."""
+
+    class _Tier:
+        value = "monitor"
+
+    tier = _Tier()
+    auto_dispatched = False
+    alert_id = None

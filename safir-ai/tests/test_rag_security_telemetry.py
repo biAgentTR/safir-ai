@@ -107,6 +107,29 @@ def test_serialize_rag_security_flags_fallback_placeholder_corpus_loudly() -> No
     assert "PLACEHOLDER" in summary
 
 
+def test_serialize_rag_security_reranker_unavailable_is_reported_clearly_without_silently_returning_topk() -> None:
+    """HEDEF (2026-08-24): reranker basarisiz olduğunda (429/400/vb.) trace'te ACIKCA gorunmeli.
+
+    Guvenlik davranisi DEGISMEDI: `EmbeddingRAGService.query()` zaten bu
+    durumda `final_count=0` doner (embedding top-k SESSIZCE final sonuc
+    yapilmaz, bkz. `test_rag_pipeline.py::test_reranker_failure_returns_empty_not_embedding_topk`).
+    Bu test yalnizca, operator/trace'in bu durumu "0 sonuc = alakasiz sorgu"
+    ile KARISTIRMADIGINI, ACIKCA "reranker basarisiz oldu" diye belirttigini dogrular.
+    """
+    telemetry = _sample_rag_telemetry(zero_result=True)
+    telemetry.retrieval_status = "reranker_unavailable"
+    telemetry.candidate_count = 20  # embedding asamasi GERCEKTEN aday bulmustu
+    payload = {"rag_telemetry": telemetry, "guard_results": []}
+
+    summary, data, _frames, _status, _error = serialize_rag_security(payload, "job1")
+
+    assert data["rag"]["retrieval_status"] == "reranker_unavailable"
+    assert data["rag"]["final_count"] == 0
+    assert data["rag"]["candidate_count"] == 20  # "hic aday yoktu" ile "reranker aday'lari dogrulayamadi" AYRISTIRILIR
+    assert "reranker kullanılamadı" in summary.lower() or "reranker basarisiz" in summary.lower()
+    assert "20" in summary  # aday sayisi ozette de gorunur olmali
+
+
 def test_serialize_rag_security_persisted_index_corpus_is_not_flagged() -> None:
     telemetry = _sample_rag_telemetry()
     telemetry.corpus_source = "persisted_index"

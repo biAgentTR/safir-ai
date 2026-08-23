@@ -62,7 +62,7 @@ from src.memory.event_store import EventStore
 from src.sampler.adaptive_sampler import EvidenceFrame, sampler_from_config
 from src.security.prompt_injection_guard import build_prompt_injection_guard
 
-from src.schemas.report import EventSummary, EvidenceFrameOut, SafirReport, SamplerStats, TimelineEntry
+from src.schemas.report import EventSummary, EvidenceFrameOut, RagContext, SafirReport, SamplerStats, TimelineEntry
 from src.utils.config_loader import SafirConfig, load_config
 from src.vlm.base_vlm import VLMResponse
 from src.vlm.factory import get_llm_client, get_vlm_client
@@ -1274,6 +1274,26 @@ class SafirPipeline:
             ],
             evidence_frames=_select_report_evidence_frames(vlm_response, evidence_frames),
             relevant_regulations=context.relevant_regulations,
+            # `getattr(..., None)` KASITLI: test/mock RAG servisleri (yalnizca `text`/`score`
+            # tasiyan duck-typed sahteler) icin de GUVENLI CALISIR - bkz. ayni gerekce
+            # `context_builder.py::_format_semantic_chunks` ve `tools.py::RetrieverTool.run`da.
+            semantic_rag_sources=[
+                RagContext(
+                    rule_title=(
+                        getattr(chunk, "document_title", None)
+                        or getattr(chunk, "document_id", None)
+                        or "(bilinmeyen kaynak)"
+                    ),
+                    content=chunk.text,
+                    score=getattr(chunk, "embedding_score", None) or getattr(chunk, "score", 0.0),
+                    chunk_id=getattr(chunk, "chunk_id", None),
+                    document_id=getattr(chunk, "document_id", None),
+                    article_number=getattr(chunk, "article_number", None),
+                    source_url=getattr(chunk, "source_url", None),
+                    rerank_score=getattr(chunk, "rerank_score", None),
+                )
+                for chunk in context.semantically_related_chunks
+            ],
             sampler_stats=(
                 SamplerStats(
                     total_frames_scanned=sampler.last_run_stats.total_frames_scanned,
