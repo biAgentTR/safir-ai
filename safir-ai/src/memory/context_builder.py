@@ -81,10 +81,9 @@ class EnrichedContext:
         Returns:
             Ajanin sistem/kullanici istemine dogrudan eklenebilecek metin.
         """
-        recent = "\n".join(
-            f"- [{event.get('timestamp'):.1f}s] {event.get('description')}"
-            for event in self.recent_events
-        ) or "(gecmis olay bulunamadi)"
+        recent = "\n".join(self._format_recent_event(event) for event in self.recent_events) or (
+            "(gecmis olay bulunamadi)"
+        )
 
         regulations = "\n".join(f"- {reg}" for reg in self.relevant_regulations) or (
             "Mevzuat eslestirilemedi: bu olay/gozlem icin guvenilir, dogrulanmis bir ISG "
@@ -102,6 +101,30 @@ class EnrichedContext:
             f"## Ilgili Operasyonel Mevzuat (RuleEngine-dogrulanmis)\n{regulations}\n\n"
             f"## Semantik Olarak Ilgili Kaynaklar (deterministik DEGIL)\n{semantic_block}"
         )
+
+    @staticmethod
+    def _format_recent_event(event: Dict[str, Any]) -> str:
+        """Bir `EventStore.query_recent(...)` satirini tek satirlik baglam metnine cevirir.
+
+        Onceden yalnizca `timestamp`/`description` kullanilirdi; `EventStore`
+        artik her satirda `risk_level`/`event_type`i de tasidigi halde (bkz.
+        `EventStore._row_to_dict`) bu bilgi burada SESSIZCE atiliyordu -
+        Ajan'in "yakin gecmis olaylar" baglami, o olaylarin risk seviyesini
+        HICBIR ZAMAN gormuyordu. `.get(...)` ile GUVENLI: eksik/eski
+        (migration-oncesi) satirlarda alan yoksa o parca metne eklenmez,
+        hicbir deger UYDURULMAZ.
+        """
+        timestamp = event.get("timestamp")
+        description = event.get("description")
+        suffix_parts = []
+        risk_level = event.get("risk_level")
+        if risk_level:
+            suffix_parts.append(f"risk={risk_level}")
+        event_type = event.get("event_type")
+        if event_type:
+            suffix_parts.append(f"tur={event_type}")
+        suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
+        return f"- [{timestamp:.1f}s] {description}{suffix}"
 
     def _format_semantic_chunks(self) -> str:
         """`semantically_related_chunks`i, acik bir uyari/disclaimer ile birlikte metne cevirir."""

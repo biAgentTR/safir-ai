@@ -88,6 +88,37 @@ def test_build_with_regulations_omitted_defaults_to_no_match() -> None:
     assert "Mevzuat eslestirilemedi" in context.to_prompt_block()
 
 
+def test_recent_events_surface_risk_level_and_event_type_when_present() -> None:
+    """`EventStore.query_recent(...)`in tasidigi risk_level/event_type artik prompt baglaminda GORUNUR (onceden sessizce atiliyordu)."""
+    builder = ContextBuilder(
+        _FakeEventStore(
+            recent_events=[
+                {"timestamp": 12.5, "description": "Personel baretsiz calisiyor.", "risk_level": "orta", "event_type": "kkd_ihlali"},
+            ]
+        )
+    )
+
+    context = builder.build(vlm_description="obs", user_prompt="p", timestamp=20.0)
+    prompt = context.to_prompt_block()
+
+    assert "Personel baretsiz calisiyor." in prompt
+    assert "risk=orta" in prompt
+    assert "tur=kkd_ihlali" in prompt
+
+
+def test_recent_events_without_risk_level_or_event_type_do_not_fabricate_them() -> None:
+    """Eski (migration-oncesi) satirlarda `risk_level`/`event_type` yoksa/None ise hicbir deger UYDURULMAZ."""
+    builder = ContextBuilder(
+        _FakeEventStore(recent_events=[{"timestamp": 5.0, "description": "Eski kayit."}])
+    )
+
+    prompt = builder.build(vlm_description="obs", user_prompt="p", timestamp=10.0).to_prompt_block()
+
+    assert "Eski kayit." in prompt
+    assert "risk=" not in prompt
+    assert "tur=" not in prompt
+
+
 def test_no_guard_means_behavior_is_completely_unchanged() -> None:
     """`guard=None` (varsayilan) - metinler OLDUGU GIBI kalir, davranis mevcutla birebir aynidir."""
     builder = ContextBuilder(_FakeEventStore())
