@@ -21,7 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, Optional, Protocol
+from typing import Dict, Optional, Protocol, runtime_checkable
 
 from src.utils.config_loader import EscalationConfig
 
@@ -75,17 +75,58 @@ class AlarmSink(Protocol):
         ...
 
 
+@runtime_checkable
+class AlertStore(Protocol):
+    """`src.memory.event_store.EventStore`in `alerts` tablosuyla ayni imzaya sahip herhangi bir nesne icin duck-typing sozlesmesi.
+
+    `EventStoreLike` (bkz. `src/event_analysis/event_history.py`) ile ayni
+    gerekceyle: `FieldAlarmDispatcher`in gercek SQLite'a bagimli olmadan
+    testte calisabilmesi icin.
+    """
+
+    def record_alert(
+        self,
+        alert_id: str,
+        risk_score: int,
+        risk_level: str,
+        recommended_action: str,
+        summary: str,
+        auto: bool,
+        created_at: str,
+    ) -> None:
+        """Bkz. `EventStore.record_alert`."""
+        ...
+
+    def get_alert(self, alert_id: str) -> Optional[Dict[str, object]]:
+        """Bkz. `EventStore.get_alert`."""
+        ...
+
+    def acknowledge_alert(self, alert_id: str, operator_note: str = "") -> bool:
+        """Bkz. `EventStore.acknowledge_alert`."""
+        ...
+
+
 class FieldAlarmDispatcher:
     """Saha alarmlarini kaydeden/loglayan varsayilan `AlarmSink` (mock saha entegrasyonu).
 
     Gercek bir dagitimda `dispatch` SMS/anons/SCADA'ya baglanir; bu iskelette
     alarmi loglar, bellek-ici bir kayit defterinde tutar (operatorun sonradan
     onaylamasi/geri almasi icin) ve bir `alert_id` dondurur.
+
+    Kalicilik (audit P0 duzeltmesi): `store` verilirse (bkz. `AlertStore`),
+    her `dispatch`/`acknowledge` bellek-ici kaydin YANI SIRA kalici olarak da
+    (SQLite) yazilir - surec yeniden baslasa bile alarmlar VE operatorun
+    onceki onaylari kaybolmaz. `store=None` (varsayilan) ile davranis eskisiyle
+    BIREBIR AYNI kalir (yalnizca bellek-ici, mevcut testler etkilenmez).
+    Kalicilik best-effort'tur: yazma basarisiz olursa alarmin kendisi (bellek-
+    ici kayit + dispatch) yine de tamamlanir - persistence hatasi kritik
+    alarm yolunu KESMEZ.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, store: Optional[AlertStore] = None) -> None:
         self._alerts: Dict[str, AlertRecord] = {}
         self._lock = threading.Lock()
+        self._store = store
 
     def dispatch(
         self, *, risk_score: int, risk_level: str, recommended_action: str, summary: str, auto: bool
@@ -103,6 +144,19 @@ class FieldAlarmDispatcher:
         )
         with self._lock:
             self._alerts[alert_id] = record
+        if self._store is not None:
+            try:
+                self._store.record_alert(
+                    alert_id=alert_id,
+                    risk_score=risk_score,
+                    risk_level=risk_level,
+                    recommended_action=recommended_action,
+                    summary=summary,
+                    auto=auto,
+                    created_at=record.created_at,
+                )
+            except Exception:  # noqa: BLE001 - kalicilik best-effort'tur, alarmin kendisini KESMEZ
+                logger.exception("Alarm kalici depoya yazilamadi (alert_id=%s); bellek-ici kayit korunuyor.", alert_id)
         logger.warning(
             "SAHA ALARMI %s TETIKLENDI: alert_id=%s risk=%d(%s) aksiyon=%s",
             "OTOMATIK" if auto else "MANUEL",
@@ -116,15 +170,42 @@ class FieldAlarmDispatcher:
     def acknowledge(self, alert_id: str, operator_note: str = "") -> AlertRecord:
         """Operatorun bir alarmi denetledigini/geri aldigini isaretler (Human-on-the-Loop).
 
+        `alert_id` bellek-ici kayit defterinde yoksa (orn. surec bu alarmi
+        dispatch ETTIKTEN SONRA yeniden baslatildiysa), `store` verilmisse
+        kalici depodan geri yuklenir; boylece restart sonrasi da eski bir
+        alarm onaylanabilir.
+
         Raises:
-            KeyError: `alert_id` kayit defterinde yoksa.
+            KeyError: `alert_id` ne bellek-ici kayitta ne de (varsa) kalici depoda bulunursa.
         """
         with self._lock:
             record = self._alerts.get(alert_id)
-            if record is None:
+            if record is not None:
+                record.acknowledged = True
+                record.operator_note = operator_note
+            elif self._store is not None:
+                persisted = self._store.get_alert(alert_id)
+                if persisted is None:
+                    raise KeyError(f"Alarm bulunamadi: {alert_id}")
+                record = AlertRecord(
+                    alert_id=persisted["alert_id"],
+                    risk_score=persisted["risk_score"],
+                    risk_level=persisted["risk_level"],
+                    recommended_action=persisted["recommended_action"],
+                    summary=persisted["summary"],
+                    auto=persisted["auto"],
+                    created_at=persisted["created_at"],
+                    acknowledged=True,
+                    operator_note=operator_note,
+                )
+                self._alerts[alert_id] = record
+            else:
                 raise KeyError(f"Alarm bulunamadi: {alert_id}")
-            record.acknowledged = True
-            record.operator_note = operator_note
+        if self._store is not None:
+            try:
+                self._store.acknowledge_alert(alert_id, operator_note)
+            except Exception:  # noqa: BLE001 - kalicilik best-effort'tur, onay islemini KESMEZ
+                logger.exception("Alarm onayi kalici depoya yazilamadi (alert_id=%s).", alert_id)
         logger.info("Saha alarmi operator tarafindan onaylandi: alert_id=%s not=%s", alert_id, operator_note or "(yok)")
         return record
 

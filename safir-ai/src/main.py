@@ -40,7 +40,7 @@ from src.observability.trace_serializer import MAX_FRAMES_PER_JOB, PipelineTrace
 from src.agent.langgraph_agent import SafirAgent
 from src.agent.tools import RetrieverTool
 from src.assistant.ask_service import AskService, JobNotFound
-from src.decision.escalation import EscalationPolicy
+from src.decision.escalation import EscalationPolicy, FieldAlarmDispatcher
 from src.event_analysis.event_builder import EventBuilder
 from src.event_analysis.event_engine import EventEngine
 from src.event_analysis.event_history import EventHistory
@@ -742,8 +742,13 @@ class SafirPipeline:
 
         # 06 - Otomatik Eskalasyon (Human-on-the-Loop): risk skoruna gore aksiyon
         # kademesini KENDISI belirler ve yuksek/kritik durumda saha alarmini
-        # operator onayi beklemeden OTOMATIK tetikler.
-        self._escalation = EscalationPolicy(config.escalation)
+        # operator onayi beklemeden OTOMATIK tetikler. `FieldAlarmDispatcher`e
+        # zaten mevcut olan `self._event_store` (SQLite) verilir - alarmlar
+        # artik surec yeniden baslasa bile kaybolmaz (audit P0 duzeltmesi,
+        # bkz. `FieldAlarmDispatcher`/`EventStore.record_alert` docstring'i).
+        self._escalation = EscalationPolicy(
+            config.escalation, sink=FieldAlarmDispatcher(store=self._event_store)
+        )
 
         # Pipeline cagrilari arasinda SIFIRLANMAYAN, zaman bazli budanan
         # buffer (bkz. `_prune_stale_events`). `relation_window_sec`in 3
