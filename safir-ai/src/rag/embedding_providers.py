@@ -41,6 +41,18 @@ artan (exponential backoff) bir bekleme uygulanir - yalnizca GERCEKTEN
 _RATE_LIMIT_BACKOFF_BASE_SEC = 20.0
 """Ilk 429 sonrasi bekleme suresi (saniye); her tekrarda ikiye katlanir."""
 
+_INTER_BATCH_DELAY_SEC = 3.0
+"""BASARILI her batch cagrisi arasinda beklenecek sabit sure (saniye).
+
+429'a REAKTIF olan yukaridaki backoff'tan farkli olarak bu, rate limit'e
+HIC CARPMADAN once RPM (dakika basi istek) yukunu azaltmak icin PROAKTIF
+bir onlemdir - Gemini embedding API'sinin ucretsiz katmaninin RPM kotasi
+dusuk oldugunda (748 chunk / 100'luk batch = 8 istek bile arka arkaya
+gonderilirse kotayi asabilir), bu araya giren bekleme sorunu BASTAN
+onler. `build_index_from_chunks()` gibi tek-seferlik, toplu islemler
+disinda (tekil `embed_query` cagrilarinda) etkisi yoktur - yalnizca
+`_embed()`in KENDI ic dongusunde, birden fazla batch varsa uygulanir."""
+
 
 def _is_rate_limit_error(exc: Exception) -> bool:
     """Verilen istisnanin Gemini API'sinin 429 (RESOURCE_EXHAUSTED) hatasi olup olmadigini kontrol eder."""
@@ -149,10 +161,13 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
 
         client = self._get_client()
         vectors: List[List[float]] = []
-        for start in range(0, len(texts), self._batch_size):
+        batch_starts = list(range(0, len(texts), self._batch_size))
+        for i, start in enumerate(batch_starts):
             batch = texts[start : start + self._batch_size]
             response = self._embed_batch_with_rate_limit_retry(client, types, batch, task_type)
             vectors.extend(embedding.values for embedding in response.embeddings)
+            if i < len(batch_starts) - 1:
+                time.sleep(_INTER_BATCH_DELAY_SEC)
 
         array = np.asarray(vectors, dtype="float32")
         return _l2_normalize(array)

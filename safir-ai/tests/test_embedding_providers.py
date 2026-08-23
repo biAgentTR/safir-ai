@@ -105,6 +105,8 @@ def test_embed_query_uses_retrieval_query_task_type(monkeypatch) -> None:
 def test_embed_documents_uses_retrieval_document_task_type_and_batches(monkeypatch) -> None:
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
     fake_client = _install_fake_genai(monkeypatch, dimension=8)
+    sleep_calls = []
+    monkeypatch.setattr("src.rag.embedding_providers.time.sleep", lambda s: sleep_calls.append(s))
 
     provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8, batch_size=2)
     texts = ["madde 1", "madde 2", "madde 3"]
@@ -114,6 +116,8 @@ def test_embed_documents_uses_retrieval_document_task_type_and_batches(monkeypat
     # batch_size=2 -> 3 metin 2 istekte gitmeli (2 + 1)
     assert len(fake_client.models.calls) == 2
     assert fake_client.models.calls[0]["config"].task_type == "RETRIEVAL_DOCUMENT"
+    # RPM yukunu azaltmak icin batch'ler arasinda (ama SONUNCUDAN SONRA DEGIL) beklenmeli.
+    assert sleep_calls == [3.0]
 
 
 def test_embed_documents_returns_normalized_vectors(monkeypatch) -> None:
