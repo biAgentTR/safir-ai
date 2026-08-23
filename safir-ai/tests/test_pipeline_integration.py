@@ -6,7 +6,7 @@ Gercek `SafirPipeline.__init__`/`run()` kodunu, mock VLM/LLM (`app.use_mock_vlm`
 `TemporalReasoner` -> `RuleEngine` -> `EventBuilder` -> `EventHistory.record_batch`
 zincirinin `SafirPipeline.run()` icinde GERCEKTEN cagrildigini dogrular.
 
-Tek istisna: `src/memory/embedding_rag_service.py::EmbeddingRAGService`, gercek
+Tek istisna: `src/rag/embedding_rag_service.py::EmbeddingRAGService`, gercek
 bir `sentence-transformers` modeli indirmeyi gerektirdigi icin (agir + ag
 bagimliligi, GPU'dan bagimsiz ama bu testin kapsami disinda) `src.main`
 icindeki referansi, `RegulationRetriever`/`ContextBuilder` ile ayni

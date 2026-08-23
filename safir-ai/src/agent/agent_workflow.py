@@ -25,7 +25,7 @@ if __name__ == "__main__":
     import datetime
     import logging
 
-    from src.memory.embedding_rag_service import DEFAULT_ISG_REGULATIONS
+    from src.rag.embedding_rag_service import DEFAULT_ISG_REGULATIONS
     from src.sampler.schema import EvidenceFrame
     from src.schemas.report import SafirReport
     from src.utils.config_loader import load_config

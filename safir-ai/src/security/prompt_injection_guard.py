@@ -6,7 +6,7 @@ RuleEngine kararini degistirmez, regulation match uretmez, RAG retrieval
 kararinin yerine gecmez. Tek gorevi: DETECT -> CLASSIFY -> QUARANTINE/PASS.
 
 Iki saglayici: `GeminiPromptInjectionGuard` (mevcut Gemini istemci deseni,
-bkz. `src/memory/reranker.py`/`embedding_providers.py`: lazy `genai.Client`,
+bkz. `src/rag/reranker.py`/`embedding_providers.py`: lazy `genai.Client`,
 SADECE yapilandirilmis JSON isteyen prompt) ve `GroqPromptInjectionGuard`
 (Groq'un OpenAI-uyumlu ucu, AYRI bir `GROQ_API_KEY`/kota - Gemini'nin
 embedding/VLM/reranker kotasindan BAGIMSIZ). Ikisi de AYNI prompt/JSON

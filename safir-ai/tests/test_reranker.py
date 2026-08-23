@@ -1,4 +1,4 @@
-"""`src/memory/reranker.py` (GeminiReranker + GroqReranker) icin agsiz birim testleri.
+"""`src/rag/reranker.py` (GeminiReranker + GroqReranker) icin agsiz birim testleri.
 
 `google.genai`/`openai` gercekten cagrilmaz - istemcilerin `generate_content`/
 `chat.completions.create` metotlari monkeypatch ile sahte, deterministik
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from src.memory.reranker import GeminiReranker, GroqReranker, RerankerUnavailableError
+from src.rag.reranker import GeminiReranker, GroqReranker, RerankerUnavailableError
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 

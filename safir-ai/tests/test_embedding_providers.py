@@ -1,4 +1,4 @@
-"""`src/memory/embedding_providers.py` icin agsiz birim testleri.
+"""`src/rag/embedding_providers.py` icin agsiz birim testleri.
 
 `google.genai` gercekten cagrilmaz - `genai.Client`/`types.EmbedContentConfig`
 monkeypatch ile sahte, deterministik nesnelerle degistirilir.
@@ -12,7 +12,7 @@ import types
 import numpy as np
 import pytest
 
-from src.memory.embedding_providers import (
+from src.rag.embedding_providers import (
     ConfigurationError,
     GeminiEmbeddingProvider,
     build_embedding_provider,
@@ -163,7 +163,7 @@ def test_rate_limit_429_is_retried_with_backoff_and_eventually_succeeds(monkeypa
     fake_client = _install_fake_genai(monkeypatch)
     fake_client.models = _FlakyThenOkModels(dimension=8, fail_times=2)
     sleep_calls = []
-    monkeypatch.setattr("src.memory.embedding_providers.time.sleep", lambda s: sleep_calls.append(s))
+    monkeypatch.setattr("src.rag.embedding_providers.time.sleep", lambda s: sleep_calls.append(s))
 
     provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8)
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
@@ -179,7 +179,7 @@ def test_rate_limit_429_is_retried_with_backoff_and_eventually_succeeds(monkeypa
 def test_rate_limit_429_gives_up_after_max_retries(monkeypatch) -> None:
     fake_client = _install_fake_genai(monkeypatch)
     fake_client.models = _FlakyThenOkModels(dimension=8, fail_times=999)
-    monkeypatch.setattr("src.memory.embedding_providers.time.sleep", lambda s: None)
+    monkeypatch.setattr("src.rag.embedding_providers.time.sleep", lambda s: None)
 
     provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8)
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
@@ -196,7 +196,7 @@ def test_non_rate_limit_error_is_not_retried(monkeypatch) -> None:
     fake_client = _install_fake_genai(monkeypatch)
     fake_client.models = _AuthErrorModels(dimension=8)
     sleep_calls = []
-    monkeypatch.setattr("src.memory.embedding_providers.time.sleep", lambda s: sleep_calls.append(s))
+    monkeypatch.setattr("src.rag.embedding_providers.time.sleep", lambda s: sleep_calls.append(s))
 
     provider = GeminiEmbeddingProvider(model_name="gemini-embedding-001", output_dimensionality=8)
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")

@@ -20,7 +20,7 @@ import json
 from dataclasses import dataclass
 
 from src.main import _RagSecurityAggregate, _accumulate_rag_security_from_trace
-from src.memory.embedding_rag_service import RagQueryTelemetry, RagResultTelemetry
+from src.rag.embedding_rag_service import RagQueryTelemetry, RagResultTelemetry
 from src.observability.trace_serializer import STAGE_ORDER, FORBIDDEN_KEYS, serialize_rag_security
 from src.security.prompt_injection_guard import GuardResult
 

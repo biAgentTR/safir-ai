@@ -13,7 +13,7 @@ OTOMATIK cagirmaz (bkz. `embedding_rag_service.py::seed_default_regulations`,
 persisted index'i YUKLER.
 
 Kullanim:
-    python -m src.memory.build_knowledge_index
+    python -m src.rag.build_knowledge_index
 
 GEMINI_API_KEY ortam degiskeni tanimli olmalidir (748 dokuman embed etmek
 gercek API cagrisi ve maliyet gerektirir - bu YALNIZCA bilinçli, tek seferlik
@@ -26,8 +26,8 @@ import logging
 import sys
 import time
 
-from src.memory.embedding_providers import ConfigurationError
-from src.memory.embedding_rag_service import (
+from src.rag.embedding_providers import ConfigurationError
+from src.rag.embedding_rag_service import (
     EmbeddingRAGService,
     _KB_CHUNKS_DIR,
     _KB_INDEX_DIR,

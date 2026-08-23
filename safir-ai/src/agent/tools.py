@@ -16,7 +16,7 @@ from typing import Any, List, Optional
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from src.memory.embedding_rag_service import EmbeddingRAGService
+from src.rag.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
 
 logger = logging.getLogger(__name__)

@@ -21,7 +21,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
 from src.agent.tools import build_tool_registry
-from src.memory.embedding_rag_service import EmbeddingRAGService
+from src.rag.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
 from src.prompts import AGENT_SYSTEM_PROMPT, build_agent_user_prompt
 from src.prompts.agent_prompts import AGENT_OUTPUT_SCHEMA_HINT

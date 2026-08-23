@@ -40,7 +40,7 @@ def main() -> int:
         print("[SKIPPED] GEMINI_API_KEY is not set (embedding icin gerekli)")
         return 0
 
-    from src.memory.embedding_rag_service import EmbeddingRAGService, _INDEX_FILE
+    from src.rag.embedding_rag_service import EmbeddingRAGService, _INDEX_FILE
     from src.utils.config_loader import load_config
 
     config = load_config()
@@ -58,7 +58,7 @@ def main() -> int:
 
     if not _INDEX_FILE.exists():
         print(f"[BILGI] Persisted index yok ({_INDEX_FILE}); simdi 748 chunk GERCEK Gemini API ile embed edilecek.")
-        print("        (Bu, yalnizca bir kez calisir; sonrasi icin 'python -m src.memory.build_knowledge_index' tercih edin.)")
+        print("        (Bu, yalnizca bir kez calisir; sonrasi icin 'python -m src.rag.build_knowledge_index' tercih edin.)")
         count = service.build_index_from_chunks()
         print(f"[OK] {count} chunk embed edildi.\n")
     else:

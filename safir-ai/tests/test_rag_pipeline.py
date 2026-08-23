@@ -15,9 +15,9 @@ import hashlib
 import numpy as np
 import pytest
 
-from src.memory import embedding_rag_service as rag_module
-from src.memory.embedding_rag_service import EmbeddingRAGService, _load_kb_chunk_records
-from src.memory.reranker import RerankerUnavailableError
+from src.rag import embedding_rag_service as rag_module
+from src.rag.embedding_rag_service import EmbeddingRAGService, _load_kb_chunk_records
+from src.rag.reranker import RerankerUnavailableError
 from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig, RerankerConfig
 
 

@@ -3,7 +3,7 @@
 Kategori kaynagi
 -----------------
 `_KEYWORD_RULES` anahtarlari `EventType` degerleridir; ilk 8 kategori
-`src/memory/embedding_rag_service.py::DEFAULT_ISG_REGULATIONS` icindeki 8
+`src/rag/embedding_rag_service.py::DEFAULT_ISG_REGULATIONS` icindeki 8
 mevzuat maddesiyle birebir hizalanmistir (bkz. `schemas.EVENT_TYPE_REGULATION_MAP`).
 `YETKISIZ_ERISIM` ve `GENEL_GOZLEM` mevcut mevzuat setinde karsiligi olmayan,
 operasyonel amacli iki ozel kategoridir (bkz. `EventType` docstring'i).

@@ -60,8 +60,8 @@ from typing import Any, Dict, List, Optional
 import faiss
 import numpy as np
 
-from src.memory.embedding_providers import ConfigurationError, EmbeddingProvider, build_embedding_provider
-from src.memory.reranker import GeminiReranker, GroqReranker, Reranker, RerankerUnavailableError
+from src.rag.embedding_providers import ConfigurationError, EmbeddingProvider, build_embedding_provider
+from src.rag.reranker import GeminiReranker, GroqReranker, Reranker, RerankerUnavailableError
 from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig, RerankerConfig
 
 logger = logging.getLogger(__name__)
@@ -437,7 +437,7 @@ class EmbeddingRAGService:
              eslesen) bir persisted index varsa, hicbir API cagrisi yapmadan
              YUKLENIR (bkz. `_try_load_persisted_index`).
           2. Yoksa/guncel degilse: acik bir uyari loglanir ("python -m
-             src.memory.build_knowledge_index calistirin") ve GERIYE-DONUK
+             src.rag.build_knowledge_index calistirin") ve GERIYE-DONUK
              UYUMLULUK icin yalnizca `DEFAULT_ISG_REGULATIONS` (8 kisa
              placeholder madde) embed edilir - 748 chunk'in TAMAMI HER
              pipeline baslangicinda YENIDEN embed EDILMEZ (bkz. gorev
@@ -452,7 +452,7 @@ class EmbeddingRAGService:
 
         logger.warning(
             "EmbeddingRAGService: %s altinda GUNCEL bir persisted KB index'i bulunamadi. "
-            "Gercek 748 mevzuat chunk'ini kullanmak icin 'python -m src.memory.build_knowledge_index' "
+            "Gercek 748 mevzuat chunk'ini kullanmak icin 'python -m src.rag.build_knowledge_index' "
             "calistirin. Su an icin GERIYE-DONUK UYUMLULUK amacli %d placeholder ISG maddesine dusuluyor.",
             _KB_INDEX_DIR,
             len(DEFAULT_ISG_REGULATIONS),
@@ -495,7 +495,7 @@ class EmbeddingRAGService:
         if meta.get("kb_hash") != current_hash:
             logger.warning(
                 "Persisted KB index guncel chunk'larla uyusmuyor (kb_hash farkli); "
-                "'python -m src.memory.build_knowledge_index' ile yeniden olusturun."
+                "'python -m src.rag.build_knowledge_index' ile yeniden olusturun."
             )
             return False
 
@@ -730,7 +730,7 @@ class EmbeddingRAGService:
             logger.warning(
                 "RAG retrieval: query=%r corpus_source=fallback_placeholder - sonuclar GERCEK mevzuat "
                 "corpus'undan DEGIL, 8 maddelik placeholder listeden geliyor ('python -m "
-                "src.memory.build_knowledge_index' hic calistirilmamis/GUNCEL DEGIL).",
+                "src.rag.build_knowledge_index' hic calistirilmamis/GUNCEL DEGIL).",
                 question,
             )
         logger.info(
@@ -790,7 +790,7 @@ FAISSRagService = EmbeddingRAGService
 
 if __name__ == "__main__":
     # Modul 3'un bagimsiz calistirilabilirlik testi:
-    #   python -m src.memory.embedding_rag_service
+    #   python -m src.rag.embedding_rag_service
     from src.utils.config_loader import load_config
 
     logging.basicConfig(level=logging.INFO)

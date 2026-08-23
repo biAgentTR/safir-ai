@@ -15,8 +15,8 @@ import time
 import numpy as np
 import pytest
 
-from src.memory import embedding_rag_service as rag_module
-from src.memory.embedding_rag_service import (
+from src.rag import embedding_rag_service as rag_module
+from src.rag.embedding_rag_service import (
     DEFAULT_ISG_REGULATIONS,
     EmbeddingRAGService,
     FAISSRagService,
@@ -246,7 +246,7 @@ def test_seed_default_regulations_is_idempotent(rag_service) -> None:
     tekrar cagirma ayni sayida dokumani KORUR (idempotent).
 
     Bu test, bu repo checkout'unda HENUZ bir persisted index olusturulmadigini
-    varsayar (`python -m src.memory.build_knowledge_index` calistirilmadi -
+    varsayar (`python -m src.rag.build_knowledge_index` calistirilmadi -
     gercek API anahtari gerektirir); persisted index varsa bu varsayim GECERSIZ
     olur ve test guncellenmelidir.
     """

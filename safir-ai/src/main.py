@@ -57,7 +57,7 @@ from src.memory.analysis_store import AnalysisStore
 from src.memory.context_builder import ContextBuilder
 from src.memory.conversation_store import ConversationStore
 from src.memory import document_extraction
-from src.memory.embedding_rag_service import EmbeddingRAGService
+from src.rag.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
 from src.sampler.adaptive_sampler import EvidenceFrame, sampler_from_config
 from src.security.prompt_injection_guard import build_prompt_injection_guard

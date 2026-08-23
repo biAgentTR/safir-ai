@@ -3,7 +3,7 @@ resmi ISG mevzuatini madde-bazli (ve gerekli dokumanlarda EK alt-madde-bazli)
 chunk'lara ayirip `data/knowledge_base/chunks/<id>.json` altina yazar.
 
 ONEMLI (kapsam): Bu script YALNIZCA hazirlik/chunking adimidir. Embedding
-UeRETMEZ, FAISS'e YAZMAZ, `src/memory/embedding_rag_service.py`'yi cagirmaz/
+UeRETMEZ, FAISS'e YAZMAZ, `src/rag/embedding_rag_service.py`'yi cagirmaz/
 degistirmez - EmbeddingRAGService/DEFAULT_ISG_REGULATIONS hala oldugu gibi
 duruyor. Cikti, ileride bir ingestion adiminin girdisi olacak sekilde
 tasarlanmistir.

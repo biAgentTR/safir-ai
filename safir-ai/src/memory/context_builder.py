@@ -46,7 +46,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-from src.memory.embedding_rag_service import RetrievedDocument
+from src.rag.embedding_rag_service import RetrievedDocument
 from src.memory.event_store import EventStore
 from src.security.prompt_injection_guard import GuardResult, PromptInjectionGuard, sanitize_untrusted_text
 

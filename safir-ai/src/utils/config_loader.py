@@ -340,7 +340,7 @@ class EmbeddingConfig(BaseModel):
 
     2026-08-22 guncellemesi: eskiden yerel/CPU `sentence-transformers`
     kullanilirdi; artik TEK saglayici Gemini Embedding API'dir (bkz.
-    `src/memory/embedding_providers.py::GeminiEmbeddingProvider`).
+    `src/rag/embedding_providers.py::GeminiEmbeddingProvider`).
     """
 
     provider: str = "gemini"            # su an yalnizca "gemini" destekleniyor
@@ -364,7 +364,7 @@ class RerankerConfig(BaseModel):
 
     `provider="gemini"` ise embedding ile AYNI Gemini API anahtarini kullanir;
     `provider="groq"` ise Groq'un OpenAI-uyumlu ucunu (AYRI kota/anahtar)
-    kullanir - bkz. `src/memory/reranker.py` (`GeminiReranker`/`GroqReranker`).
+    kullanir - bkz. `src/rag/reranker.py` (`GeminiReranker`/`GroqReranker`).
     """
 
     enabled: bool = False

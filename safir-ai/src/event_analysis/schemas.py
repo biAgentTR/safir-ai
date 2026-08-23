@@ -84,7 +84,7 @@ class EventEngineInput(BaseModel):
 class EventType(str, Enum):
     """Event Engine'in tanidigi olay kategorileri.
 
-    Ilk 8 deger, `src/memory/embedding_rag_service.py::DEFAULT_ISG_REGULATIONS`
+    Ilk 8 deger, `src/rag/embedding_rag_service.py::DEFAULT_ISG_REGULATIONS`
     icindeki 8 mevzuat maddesiyle birebir hizalanmistir (bkz.
     `EVENT_TYPE_REGULATION_MAP`); T010 Rule Engine bu eslesmeyi dogrudan
     kullanabilir. `YETKISIZ_ERISIM` ve `GENEL_GOZLEM` mevcut mevzuat setinde
@@ -145,7 +145,7 @@ EVENT_TYPE_REGULATION_MAP: Dict[EventType, Optional[str]] = {
 }
 """`EventType` -> ilgili mevzuat maddesinin kisa referans etiketi.
 
-Etiketler `src/memory/embedding_rag_service.py::DEFAULT_ISG_REGULATIONS`
+Etiketler `src/rag/embedding_rag_service.py::DEFAULT_ISG_REGULATIONS`
 icindeki tam metinlerin basliklarina karsilik gelir (o dosyaya bagimlilik
 eklememek icin metin burada tekrarlanmaz, yalnizca referans etiketi
 tutulur). `None` degeri, o kategorinin mevcut mevzuat setinde karsiligi
