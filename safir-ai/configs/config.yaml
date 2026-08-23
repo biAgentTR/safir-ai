@@ -94,7 +94,13 @@ sampler:
   # agi. Kumeleme DEGILDIR, pre/peak/post rolu getirmez (bkz.
   # EvidenceFrame.selection_reason="temporal_coverage"). Bu, EN SEYREK secim
   # araligidir (sakin bolge) - erken/guclu degisimde daha sik secilir.
-  max_temporal_gap_sec: 15.0         # Son evidence karesinden bu yana izin verilen azami sessizlik suresi (saniye)
+  # KANITA DAYALI DEGISIKLIK (15.0 -> 10.0): evidence kare sayisini artirma
+  # talebi - sakin bolgedeki "en seyrek" araligi kisaltmak, VLM'e giden
+  # temsili kare yogunlugunu (kumeleme/esik mantigina DOKUNMADAN) genel
+  # olarak artirir; ayni zamanda "uzun bosluk" HISSINI de azaltir. `10.0`,
+  # asagidaki `early_change_selection_interval_sec` (2.0) <= `max_temporal_
+  # gap_sec` sirasini hala korur (constructor bu sirayi dogrular).
+  max_temporal_gap_sec: 10.0         # Son evidence karesinden bu yana izin verilen azami sessizlik suresi (saniye)
 
   # NOT (yogunluk-uyarlamali secim): Kaynak/analiz FPS'i (sample_fps) HER
   # ZAMAN sabittir - adaptif olan yalnizca VLM'e gonderilecek karelerin secim
@@ -107,16 +113,35 @@ sampler:
   early_change_score_ratio: 0.4      # net_change_score >= bu_oran * min_change_threshold ise "supheli-erken"
   early_change_window: 3             # Erken-degisim onayinda dikkate alinan son karar sayisi (sabit boyut)
   early_change_min_count: 2          # Onay icin gereken min "supheli-erken" karar sayisi (tek sicramayi eler)
-  early_change_selection_interval_sec: 3.0  # Erken-degisimde azami secim araligi (sakin moddan daha sik)
+  # KANITA DAYALI DEGISIKLIK (3.0 -> 2.0): erken-degisim (onaylanmis, henuz
+  # ana esigi gecmemis) durumdayken uygulanan azami secim araligi
+  # kisaltildi - bir onceki turda eklenen "yaklasma penceresi" ek-kare
+  # mekanizmasi da AYNI degeri kullaniyor (bkz. adaptive_sampler.py), yani
+  # bu tek deger HEM onay-oncesi HEM onay-sonrasi erken-durumda VLM'e giden
+  # kare yogunlugunu artirir.
+  early_change_selection_interval_sec: 2.0  # Erken-degisimde azami secim araligi (sakin moddan daha sik)
   early_change_cooldown_sec: 4.0     # Erken-degisim sinyali kesildikten sonra sakin moda donmeden once beklenen sure
 
-  significant_change_selection_interval_sec: 1.0  # Guclu-degisim hysteresis penceresinde azami secim araligi (en sik)
+  # KANITA DAYALI DEGISIKLIK (1.0 -> 0.5): ana esik gecildikten sonraki EN
+  # SIK secim araligi kisaltildi - guclu/dogrulanmis bir olayin GELISEN
+  # asamalarindan (esik-alti kalan ama hysteresis penceresindeki) daha COK
+  # temsili kare yakalanir. `threshold_exceeded` kareler zaten kosulsuz/
+  # sinirsiz secildigi icin bu deger yalnizca ARADAKI esik-alti kareleri
+  # etkiler - eklenen kareler halihazirda VAR OLAN "significant_change"
+  # kategorisine girer, yeni bir kategori EKLENMEZ.
+  significant_change_selection_interval_sec: 0.5  # Guclu-degisim hysteresis penceresinde azami secim araligi (en sik)
   strong_change_cooldown_sec: 4.0    # Ana esik gecildikten sonra "guclu degisim" durumunun korunacagi sure
 
   # NOT (duplicate onleme): Yalnizca coverage/early_change/significant_change
   # (esik-alti) secimlerine uygulanir; threshold_exceeded kareler ASLA
   # bu kontrolle elenmez.
-  dedup_similarity_ratio: 0.5        # Son secilen kareye gore fark orani bu_oran*min_change_threshold'dan dusukse "duplicate"
+  # KANITA DAYALI DEGISIKLIK (0.5 -> 0.35): esik-alti secimlerde "neredeyse
+  # ayni" sayilip elenme sinirini daraltir (0.35*min_change_threshold, daha
+  # KUCUK bir fark payi) - daha az agresif dedup, GORSEL OLARAK BIRBIRINE
+  # yakin ama yine de farkli olan ardisik kareler artik daha az elenir; bu
+  # da toplam evidence/VLM kare sayisini artiran DIGER bir kanal. threshold_
+  # exceeded kareler zaten bu kontrolden HICBIR ZAMAN gecmiyor - etkilenmez.
+  dedup_similarity_ratio: 0.35       # Son secilen kareye gore fark orani bu_oran*min_change_threshold'dan dusukse "duplicate"
 
   # NOT (tek-kareli guclu/lokal degisim): early_change_min_count'un cok-kareli
   # onayindan BAGIMSIZ, ayri bir yol - ana esigin ALTINDA ama TEK bir karede
