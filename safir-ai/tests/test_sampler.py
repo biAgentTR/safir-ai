@@ -1164,3 +1164,248 @@ def test_pending_early_candidate_state_is_a_single_object_not_a_growing_collecti
     assert len(sampler._recent_threshold_decisions) <= sampler.temporal_vote_window
     assert not hasattr(sampler, "_pending_early_candidates")  # coğul/liste bir alan YOK
     assert not hasattr(sampler, "_early_candidate_history")
+
+
+# =============================================================================
+# Kok neden testleri: "olay baslangici bazen kaciyor" / "VLM'e giden evidence
+# frame sayisi yetersiz kaliyor" / "VLM ciktisindaki bir kare kimligi sampler
+# ciktisinda bulunmuyor" (bkz. gorev raporu). `is_single_frame_strong`
+# (tek-kareli guclu/lokal degisim), ana esik gibi `early_cooldown_until`i ileri
+# atarak SAKIN -> ERKEN gecisini kendi basina tetikleyebilir; bu gecisin
+# ADANMIS "onset flush" blogu `selected_this_frame=True` oldugu icin
+# ATLANDIGINDAN, o an bekleyen `pending_early_candidate` (zincirin GERCEK,
+# daha ESKI baslangic karesi) `pre_density_state` bir DAHA ASLA `CALM`
+# olmayacagi icin BASKA HICBIR YOLLA flush EDILEMEZ ve sessizce dusebilirdi.
+# Asagidaki testler, bu kok nedeni (fix'ten ONCE basarisiz olacak sekilde) ve
+# fix sonrasi dogru davranisi dogrular.
+# =============================================================================
+
+
+def test_onset_candidate_survives_later_single_frame_change_in_same_window(tmp_path: Path) -> None:
+    """10) Zincirin GERCEK ilk isareti (pending_early_candidate), ayni pencerede
+    DAHA SONRA gelen bagimsiz bir tek-kareli guclu/lokal degisim (single_frame_change)
+    SAKIN->ERKEN gecisini "calsa" bile evidence'tan KAYBOLMAMALI.
+
+    Senaryo: t~1.2s'de zayif-ama-supheli-erken bir baslangic karesi (30) belirir
+    ve SABIT kalir (tek bir izole diff-olayi). Hemen ardindan (32), TAMAMEN
+    AYRI, kucuk/lokal ama GUCLU bir tek-kare degisimi (single_frame_change
+    kriterlerini karsilayan, ana esigi GECMEYEN) gorunur - bu, erken-degisim
+    cooldown'unu kendi basina uzatip SAKIN->ERKEN gecisini tetikler. Daha
+    sonra (t~8s) ana esigi acikca gecen ayri bir olay gelir; bu ikisi
+    arasinda baska hicbir esik-gecen kare yoktur, dolayisiyla pending
+    aday'i "kurtarabilecek" tek yol bizim eklegimiz flush'tir.
+    """
+    frames = []
+    total = 300
+    for i in range(total):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if i >= 30:
+            cv2.rectangle(frame, (10, 10), (22, 22), (90, 90, 90), -1)  # true onset (weak, sub-single-frame)
+        if i == 32:
+            cv2.rectangle(frame, (100, 70), (111, 83), (255, 255, 255), -1)  # unrelated strong local flash
+        if i == 200:
+            cv2.rectangle(frame, (40, 40), (55, 57), (200, 200, 200), -1)  # later real event (main threshold)
+        frames.append(frame)
+    path = tmp_path / "onset_stolen_by_single_frame.mp4"
+    _write_video(path, frames)
+
+    sampler = _density_sampler(
+        tmp_path,
+        min_change_threshold=0.02,
+        early_change_score_ratio=0.4,
+        early_change_window=3,
+        early_change_min_count=2,
+        early_change_cooldown_sec=2.0,
+        max_temporal_gap_sec=5.0,
+    )
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    frame_ids = [f.frame_id for f in evidence]
+    assert 30 in frame_ids, (
+        "Gercek ilk baslangic karesi (frame_id=30), sonraki bagimsiz bir "
+        "single_frame_change tarafindan 'calinan' SAKIN->ERKEN gecisi "
+        "yuzunden sessizce kaybolmamali."
+    )
+    onset = next(f for f in evidence if f.frame_id == 30)
+    assert onset.selection_reason == "early_change"
+    # Kronolojik sira ve zaman damgasi tutarliligi (frame_index/timestamp_sec
+    # ile birebir) hala korunmali.
+    timestamps = [f.timestamp_sec for f in evidence]
+    assert timestamps == sorted(timestamps)
+    assert onset.timestamp_sec == pytest.approx(30 / 25.0, abs=1e-6)
+
+
+def test_short_isolated_event_still_produces_onset_evidence(tmp_path: Path) -> None:
+    """11) Kisa/tek seferlik bir olay (ör. izmarit atma), ana esigi hic gecmese
+    bile en az bir evidence karesi uretmeli - 'az kare secildigi' icin
+    tamamen atlanmamali."""
+    path = tmp_path / "short_event.mp4"
+    _isolated_appearance_video(path, total_frames=90, appear_at=40, size=14, pos=(10, 10))
+
+    sampler = _density_sampler(tmp_path, max_temporal_gap_sec=50.0)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    assert evidence, "Kisa olay bile hicbir evidence uretmeden tamamen kaybolmamali."
+
+
+def test_long_evolving_event_produces_more_evidence_than_short_event(tmp_path: Path) -> None:
+    """12) Uzun/gelisen bir olay, KISA bir olaydan DAHA FAZLA evidence karesi
+    uretmeli - sabit 3/5 kare gibi bir ust kota YOKTUR, kare sayisi olayin
+    suresi/degisimiyle olceklenir."""
+    short_path = tmp_path / "short_for_scaling.mp4"
+    _write_growing_patch_video(short_path, total_frames=70, ramp_start=30, ramp_end=40, growth_per_frame=2)
+
+    long_path = tmp_path / "long_for_scaling.mp4"
+    _write_growing_patch_video(
+        long_path, total_frames=400, ramp_start=30, ramp_end=350, growth_per_frame=2, strong_burst=(200, 350)
+    )
+
+    short_evidence = _density_sampler(tmp_path, max_temporal_gap_sec=5.0).process_video(short_path, sample_fps=25)
+    long_evidence = _density_sampler(tmp_path, max_temporal_gap_sec=5.0).process_video(long_path, sample_fps=25)
+
+    assert len(long_evidence) > len(short_evidence)
+
+
+def test_new_change_during_cooldown_still_gets_its_own_evidence(tmp_path: Path) -> None:
+    """13) Guclu-degisim hysteresis/cooldown penceresi surerken ortaya cikan
+    YENI bir degisim de kendi evidence karesini almali - cooldown, yeni
+    sinyalleri BASTIRMAMALI, yalnizca secim sikligini kontrol etmelidir."""
+    path = tmp_path / "change_during_cooldown.mp4"
+    frames = []
+    for i in range(150):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        if 20 <= i < 24:
+            cv2.rectangle(frame, (5, 5), (120, 90), (255, 255, 255), -1)  # ana esigi kesin gecen ilk patlama
+        if 30 <= i < 34:
+            cv2.rectangle(frame, (5, 5), (120, 90), (200, 200, 200), -1)  # cooldown penceresi icinde YENI degisim
+        frames.append(frame)
+    _write_video(path, frames)
+
+    sampler = _density_sampler(
+        tmp_path, max_temporal_gap_sec=5.0, strong_change_cooldown_sec=2.0, early_change_cooldown_sec=2.0
+    )
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    first_ts = min(f.timestamp_sec for f in evidence if f.selection_reason == "threshold_exceeded")
+    later_frames = [f for f in evidence if f.timestamp_sec > first_ts + 0.1]
+    assert later_frames, "Cooldown penceresi icindeki yeni degisim de en az bir evidence uretmeli."
+
+
+def test_noisy_scene_does_not_bury_the_real_onset(tmp_path: Path) -> None:
+    """14) Gurultulu (izole tek-kare sicramalari iceren) bir sahnede bile,
+    GERCEK (surdurulen) baslangic sinyali evidence'a girmeli."""
+    path = tmp_path / "noisy_with_real_onset.mp4"
+    frames = []
+    total = 200
+    for i in range(total):
+        frame = np.full((96, 128, 3), 30, dtype=np.uint8)
+        # Ardisik olmayan izole gurultu sicramalari (tek kare, hemen kaybolur).
+        if i in (10, 45, 80, 115):
+            cv2.rectangle(frame, (90, 5), (100, 15), (150, 150, 150), -1)
+        # Gercek, surdurulen baslangic sinyali (buyuyen yama).
+        if i >= 60:
+            size = 6 + min(i - 60, 20) * 2
+            cv2.rectangle(frame, (10, 10), (10 + size, 10 + size), (110, 110, 110), -1)
+        frames.append(frame)
+    _write_video(path, frames)
+
+    sampler = _density_sampler(tmp_path, max_temporal_gap_sec=50.0)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    assert any(f.selection_reason == "early_change" for f in evidence), (
+        "Izole gurultu sicramalari arasinda kaybolan gercek baslangic sinyali "
+        "hala en az bir early_change karesi uretmeli."
+    )
+
+
+def test_evidence_ids_are_unique_and_traceable_to_frame_index_and_timestamp(tmp_path: Path) -> None:
+    """15) Her evidence_id benzersiz olmali ve GERCEK frame_id/timestamp_sec ile eslesmeli
+    (duplicate/gecersiz kimlik uretilmemeli)."""
+    path = tmp_path / "traceability.mp4"
+    _write_growing_patch_video(
+        path, total_frames=300, ramp_start=50, ramp_end=130, growth_per_frame=2, strong_burst=(150, 160)
+    )
+
+    sampler = _density_sampler(tmp_path, max_temporal_gap_sec=5.0)
+    evidence = sampler.process_video(path, sample_fps=25)
+
+    evidence_ids = [f.evidence_id for f in evidence]
+    assert len(evidence_ids) == len(set(evidence_ids)), "Duplicate evidence_id uretilmemeli."
+    for f in evidence:
+        assert f.evidence_id == f"ev{f.frame_id}", (
+            "evidence_id, HER ZAMAN kendi gercek frame_id'sinden turetilmeli "
+            "(uydurma/kararsiz bir kimlik degil)."
+        )
+        assert f.timestamp_sec == round(f.frame_id / 25.0, 2)
+
+
+def test_diagnostic_evidence_id_and_payload_label_match_real_vlm_payload(tmp_path: Path) -> None:
+    """16) Diagnostic kayittaki `evidence_id`/`vlm_payload_label`, VLM'e GERCEKTEN
+    gonderilecek payload etiketiyle birebir ayni olmali (uctan uca izlenebilirlik)."""
+    from src.sampler.payload_builder import VLMPayloadBuilder
+
+    path = tmp_path / "diag_traceability.mp4"
+    _write_growing_patch_video(path, total_frames=200, ramp_start=30, ramp_end=90, growth_per_frame=2)
+
+    diag_dir = tmp_path / "diag"
+    sampler = _density_sampler(
+        tmp_path,
+        max_temporal_gap_sec=5.0,
+        diagnostic_enabled=True,
+        diagnostic_output_dir=str(diag_dir),
+        diagnostic_output_format="jsonl",
+    )
+    evidence = sampler.process_video(path, sample_fps=25)
+    assert evidence
+
+    real_content = VLMPayloadBuilder.build_content_blocks(evidence, prompt="test")
+    real_labels = {block["text"] for block in real_content if block["type"] == "text"} - {"test"}
+
+    diag_files = sorted(diag_dir.glob("*.jsonl"))
+    assert diag_files, "diagnostic_enabled=True iken bir JSONL dosyasi uretilmeli."
+    import json
+
+    rows = [json.loads(line) for line in diag_files[-1].read_text(encoding="utf-8").splitlines()]
+    selected_rows = [r for r in rows if r["selected"]]
+    assert selected_rows, "En az bir secilen (selected=True) tanilama satiri olmali."
+
+    seen_evidence_ids = set()
+    for row in selected_rows:
+        assert row["evidence_id"] == f"ev{row['frame_index']}"
+        assert row["vlm_payload_label"] in real_labels, (
+            "Diagnostic'teki vlm_payload_label, VLMPayloadBuilder'in GERCEKTEN "
+            "uretecegi etiketle birebir ayni olmali - iki ayri kaynaktan "
+            "sapmis bir etiket kabul edilemez."
+        )
+        assert row["evidence_id"] not in seen_evidence_ids, "Diagnostic'te duplicate evidence_id olmamali."
+        seen_evidence_ids.add(row["evidence_id"])
+
+    # Her GERCEK evidence karesinin diagnostic'te karsiligi olmali (kayip yok).
+    assert seen_evidence_ids == {f.evidence_id for f in evidence}
+
+
+def test_diagnostic_never_assigns_evidence_id_to_rejected_frames(tmp_path: Path) -> None:
+    """17) Sampler'da secilmemis (rejected) bir ornek kareye ASLA bir evidence_id/
+    payload etiketi UYDURULMAMALI - yalnizca gercekten secilen kareler kimlik tasir."""
+    path = tmp_path / "diag_rejected.mp4"
+    _write_growing_patch_video(path, total_frames=200, ramp_start=30, ramp_end=90, growth_per_frame=2)
+
+    diag_dir = tmp_path / "diag_rej"
+    sampler = _density_sampler(
+        tmp_path,
+        max_temporal_gap_sec=5.0,
+        diagnostic_enabled=True,
+        diagnostic_output_dir=str(diag_dir),
+        diagnostic_output_format="jsonl",
+    )
+    sampler.process_video(path, sample_fps=25)
+
+    import json
+
+    diag_files = sorted(diag_dir.glob("*.jsonl"))
+    rows = [json.loads(line) for line in diag_files[-1].read_text(encoding="utf-8").splitlines()]
+    rejected_rows = [r for r in rows if not r["selected"]]
+    assert rejected_rows, "Bu senaryoda reddedilen ornek kareler de olmali."
+    for row in rejected_rows:
+        assert row["evidence_id"] is None
+        assert row["vlm_payload_label"] is None

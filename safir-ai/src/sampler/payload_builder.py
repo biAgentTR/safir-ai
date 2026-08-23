@@ -19,6 +19,43 @@ from src.sampler.schema import EvidenceFrame
 logger = logging.getLogger(__name__)
 
 
+def format_evidence_metadata_label(
+    evidence_id: str,
+    frame_index: int,
+    timestamp_str: str,
+    timestamp_sec: float,
+    change_score: float,
+    selection_reason: str,
+) -> str:
+    """VLM payload'una gomulen `[evidence_id=... | frame_index=... | ...]` metin
+    etiketinin TEK kaynagi (bkz. `VLMPayloadBuilder.build_content_blocks`).
+
+    Sampler tanilama (diagnostic) katmani da (bkz.
+    `src.sampler.adaptive_sampler._DiagnosticRecorder.record`) BU AYNI
+    fonksiyonu kullanir; boylece diagnostic kayittaki `vlm_payload_label`
+    alani, VLM'e GERCEKTEN gonderilen etiketle format olarak ASLA
+    AYRISAMAZ (iki ayri f-string'in zamanla birbirinden sapmasi riskini
+    ortadan kaldirir - uctan uca izlenebilirlik gorev kisiti).
+
+    Args:
+        evidence_id: `EvidenceFrame.evidence_id` (ör. `"ev123"`).
+        frame_index: `EvidenceFrame.frame_id`.
+        timestamp_str: `EvidenceFrame.timestamp_str` veya esdeger okunabilir zaman.
+        timestamp_sec: Saniye cinsinden zaman damgasi.
+        change_score: `EvidenceFrame.change_score`.
+        selection_reason: `EvidenceFrame.selection_reason`.
+
+    Returns:
+        VLM payload'undaki metin blogu ile BIREBIR ayni bicimli etiket.
+    """
+    return (
+        f"[evidence_id={evidence_id} | frame_index={frame_index} | "
+        f"zaman={timestamp_str} ({timestamp_sec:.2f}s) | "
+        f"evidence_skoru={change_score:.4f} | "
+        f"secim_nedeni={selection_reason}]"
+    )
+
+
 class VLMPayloadBuilder:
     """Evidence karelerini VLM icin OpenAI-uyumlu, kronolojik icerik bloklarina cevirir."""
 
@@ -52,11 +89,13 @@ class VLMPayloadBuilder:
         content: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
 
         for ef in evidence_frames:
-            metadata_text = (
-                f"[evidence_id={ef.evidence_id} | frame_index={ef.frame_id} | "
-                f"zaman={ef.timestamp_str} ({ef.timestamp_sec:.2f}s) | "
-                f"evidence_skoru={ef.change_score:.4f} | "
-                f"secim_nedeni={ef.selection_reason}]"
+            metadata_text = format_evidence_metadata_label(
+                evidence_id=ef.evidence_id,
+                frame_index=ef.frame_id,
+                timestamp_str=ef.timestamp_str,
+                timestamp_sec=ef.timestamp_sec,
+                change_score=ef.change_score,
+                selection_reason=ef.selection_reason,
             )
             content.append({"type": "text", "text": metadata_text})
             content.append({"type": "image_url", "image_url": {"url": ef.base64_image}})

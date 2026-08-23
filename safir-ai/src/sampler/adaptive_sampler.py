@@ -79,6 +79,7 @@ from typing import TYPE_CHECKING, Any, Deque, Dict, List, Optional, Set, Tuple
 import cv2
 import numpy as np
 
+from src.sampler.payload_builder import format_evidence_metadata_label
 from src.sampler.schema import EvidenceFrame
 
 _SELECTION_REASON_THRESHOLD = "threshold_exceeded"
@@ -150,6 +151,8 @@ _DIAGNOSTIC_FIELDNAMES: Tuple[str, ...] = (
     "selected",
     "selection_reason",
     "rejection_reason",
+    "evidence_id",
+    "vlm_payload_label",
 )
 
 
@@ -231,6 +234,13 @@ class _DiagnosticRecorder:
 
         Args:
             row: `_DIAGNOSTIC_FIELDNAMES` anahtarlarini iceren satir sozlugu.
+                `evidence_id`/`vlm_payload_label` cagiran tarafindan
+                VERILMEZ - `selected=True` iken burada, `frame_index`/
+                `timestamp_str`/`timestamp_ms`/`net_change_score`/
+                `selection_reason`den TUTARLI sekilde turetilir (bkz.
+                asagisi); boylece TUM secim yollari (esik/coverage/erken/
+                guclu/tek-kare) icin uctan uca izlenebilirlik TEK bir
+                yerden garanti edilir.
         """
         row = {key: _native(value) for key, value in row.items()}
         frame_index = row["frame_index"]
@@ -242,6 +252,41 @@ class _DiagnosticRecorder:
             self.duplicate_record_attempts += 1
         self._recorded_frame_indices.add(frame_index)
         self.total_rows += 1
+
+        # UCTAN UCA IZLENEBILIRLIK (bkz. gorev kisiti "VLM payload'undaki
+        # sira ve etiket, sampler'daki gercek evidence_id/frame_index/
+        # timestamp_ms ile eslessin"): bu kare GERCEKTEN evidence olarak
+        # secildiyse (`selected=True`), diagnostic satirina - `EvidenceFrame`
+        # nesnesine burada erisim OLMASA da - AYNI `evidence_id` formulunu
+        # (`f"ev{frame_index}"`, bkz. `_build_evidence_frame`) ve VLM
+        # payload'una GERCEKTEN gomulecek etiketi (bkz.
+        # `src.sampler.payload_builder.format_evidence_metadata_label` -
+        # `VLMPayloadBuilder.build_content_blocks` ile AYNI fonksiyon, iki
+        # ayri f-string'in zamanla birbirinden sapmasi riski YOKTUR) ekler.
+        # `selected=False` satirlarda ikisi de `None` kalir - sampler'da hic
+        # var olmamis bir kareye asla bir evidence_id/etiket UYDURULMAZ.
+        if row.get("selected"):
+            timestamp_sec = (row["timestamp_ms"] / 1000.0) if row.get("timestamp_ms") is not None else 0.0
+            row["evidence_id"] = f"ev{frame_index}"
+            row["vlm_payload_label"] = format_evidence_metadata_label(
+                evidence_id=row["evidence_id"],
+                frame_index=frame_index,
+                # ONEMLI: `row["timestamp_str"]` BURADA KASITLI OLARAK
+                # KULLANILMAZ - o, tanilama gorunumu icin milisaniye
+                # hassasiyetli `MM:SS.mmm` bicimindedir (bkz.
+                # `_readable_timestamp`), ama GERCEK `EvidenceFrame.
+                # timestamp_str` (bkz. `_build_evidence_frame`) SANIYE
+                # hassasiyetli `MM:SS` bicimindedir. Etiketin VLM'e
+                # GERCEKTEN giden metinle BIREBIR ayni olmasi icin ayni
+                # `MM:SS` formulu burada da UYGULANIR.
+                timestamp_str=f"{int(timestamp_sec) // 60:02d}:{int(timestamp_sec) % 60:02d}",
+                timestamp_sec=timestamp_sec,
+                change_score=row.get("net_change_score") or 0.0,
+                selection_reason=row.get("selection_reason"),
+            )
+        else:
+            row["evidence_id"] = None
+            row["vlm_payload_label"] = None
 
         if row.get("selected"):
             self.selection_reason_counts[row.get("selection_reason") or "unknown"] += 1
@@ -1216,6 +1261,57 @@ class AdaptiveFrameSampler:
                         )
                         if is_single_frame_strong:
                             prior_last_evidence_ts = last_evidence_timestamp
+                            # ONEMLI (kok neden duzeltmesi - "ilk guvenilir baslangic
+                            # adayinin sessizce kaybolmasi"): `is_single_frame_strong`,
+                            # ana esik gibi `early_cooldown_until`i ileri atarak
+                            # SAKIN -> ERKEN gecisini TETIKLEYEBILIR (bkz.
+                            # `_density_state`), ama asagidaki "SAKIN -> ERKEN
+                            # gecisinin TAM O ANI" bloğu bu kare zaten
+                            # `single_frame_change` ile secilecegi (selected_this_frame
+                            # = True) icin `not selected_this_frame` korumasiyla
+                            # ATLANIR. O anda hala bekleyen bir
+                            # `pending_early_candidate` (zincirin GERCEK, daha ESKI
+                            # baslangic karesi) varsa, `pre_density_state` bu kareden
+                            # sonra bir DAHA ASLA `CALM` olmayacagi (cooldown zaten bu
+                            # kareyle uzatildi) icin o aday BASKA HICBIR KOD YOLUYLA
+                            # (yalnizca sonraki bir `threshold_exceeded` kurtarabilir)
+                            # flush edilemez ve sessizce dusurulebilirdi. Esik-gecen
+                            # dalin (yukarida, ~satir 1067) YAPTIGI GIBI, burada da
+                            # mevcut kareyi eklemeden ONCE pending_early_candidate'i
+                            # (kendi eski zaman damgasiyla, dogru kronolojik konuma)
+                            # flush ederiz - boylece hangi yol onu "tetiklerse
+                            # tetiklesin" GERCEK baslangic karesi asla kaybolmaz.
+                            if pending_early_candidate is not None:
+                                pending_early_is_dup = self._is_near_duplicate(
+                                    pending_early_candidate.gray, last_selected_gray
+                                )
+                                if not pending_early_is_dup:
+                                    _insert_chronologically(
+                                        evidence_frames,
+                                        self._build_evidence_frame(
+                                            pending_early_candidate.frame,
+                                            pending_early_candidate.frame_id,
+                                            pending_early_candidate.timestamp_sec,
+                                            pending_early_candidate.net_change_score,
+                                            pending_early_candidate.motion_bbox,
+                                            selection_reason=_SELECTION_REASON_EARLY_CHANGE,
+                                        ),
+                                    )
+                                    last_selected_gray = pending_early_candidate.gray
+                                if diag is not None and pending_early_diag is not None:
+                                    row = dict(pending_early_diag)
+                                    row["selected"] = not pending_early_is_dup
+                                    row["selection_reason"] = (
+                                        _SELECTION_REASON_EARLY_CHANGE if not pending_early_is_dup else None
+                                    )
+                                    row["rejection_reason"] = (
+                                        _REJECTION_NEAR_DUPLICATE if pending_early_is_dup else None
+                                    )
+                                    row["dedup_checked"] = True
+                                    row["dedup_is_duplicate"] = pending_early_is_dup
+                                    diag.record(row)
+                                    pending_early_diag = None
+                                pending_early_candidate = None
                             single_frame_is_dup = self._is_near_duplicate(curr_gray, last_selected_gray)
                             if not single_frame_is_dup:
                                 evidence_frames.append(
