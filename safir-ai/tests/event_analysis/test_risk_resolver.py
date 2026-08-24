@@ -241,3 +241,46 @@ def test_temporal_events_enrich_the_calculation_when_provided() -> None:
     assert with_temporal.feature_sources["likelihood"] == "measured"
     assert without_temporal.feature_sources["likelihood"] == "unavailable_neutral"
     assert with_temporal.final_score != without_temporal.final_score
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-24 kalibrasyon duzeltmesi: safety_floor_applied provenance'a KADAR akiyor
+# ---------------------------------------------------------------------------
+
+
+def test_safety_floor_applied_flag_propagates_through_provenance() -> None:
+    from src.event_analysis.schemas import TemporalEvent
+
+    fire_match = RuleMatch(
+        rule_id="YG-03",
+        rule_description="Yangin Guvenligi Talimati",
+        event_type="yangin_duman",
+        severity="kritik",
+        source_event_id="evt_0",
+    )
+    te = TemporalEvent(
+        event_id="evt_0",
+        event_name="yangin_duman",
+        event_type="yangin_duman",
+        description="duman, alev, buyuyen, kontrolsuz",
+        start_timestamp=0.0,
+        end_timestamp=45.0,
+        duration=45.0,
+        confidence=0.9,
+        occurrence_count=3,
+        matched_keywords=["duman", "alev", "buyuyen", "kontrolsuz"],
+        source_model="test-vlm",
+        related_events=[],
+    )
+
+    provenance = resolve_deterministic_risk_with_provenance([fire_match], temporal_events=[te])
+
+    assert provenance.safety_floor_applied is True
+    assert provenance.risk_level == "kritik"
+    assert provenance.risk_score >= 80
+    # LLM'in taslak skoru degistirilse bile taban/final_score AYNI kalir.
+    provenance_with_llm = resolve_deterministic_risk_with_provenance(
+        [fire_match], temporal_events=[te], llm_proposed_score=10
+    )
+    assert provenance_with_llm.risk_score == provenance.risk_score
+    assert provenance_with_llm.safety_floor_applied is True

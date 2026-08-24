@@ -76,6 +76,10 @@ class RiskProvenance:
     regulatory_evidence_ids: List[str] = field(default_factory=list)
     """Bu hesaplamada `regulatory_support` feature'ina katkida bulunan (dogrulanmis,
     source_verified) RAG kaynaklarinin `chunk_id`leri."""
+    safety_floor_applied: bool = False
+    """`risk_model._CRITICAL_HAZARD_FLOOR` bu cagirida devreye girdi mi (bkz.
+    `risk_model.py` "CRITICAL HAZARD SAFETY FLOOR") - TAMAMEN RuleEngine siddeti
+    + gercek `matched_keywords` kanitina dayanir, `llm_proposed_score`den ASLA turemez."""
 
     def explanation(self) -> str:
         """Deterministik, LLM'e SORULMAMIS Turkce gerekce cumlesi uretir.
@@ -162,6 +166,7 @@ def _pick_provenance(
         feature_contributions=breakdown.as_contributions_dict(),
         llm_proposed_score=llm_proposed_score,
         regulatory_evidence_ids=regulatory_evidence_ids,
+        safety_floor_applied=breakdown.safety_floor_applied,
     )
 
 

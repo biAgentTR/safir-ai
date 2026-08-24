@@ -95,6 +95,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 from src.event_analysis.schemas import RuleMatch, TemporalEvent
+from src.rag.deterministic_reranker import turkish_normalize
 
 _SEVERITY_ORDER = ["dusuk", "orta", "yuksek", "kritik"]
 _SEVERITY_RANK = {name: rank for rank, name in enumerate(_SEVERITY_ORDER)}
@@ -116,6 +117,14 @@ _W_EXPOSURE = 0.20
 _W_PROTECTION = 0.20
 _W_RULE_SUPPORT = 0.15
 _W_REGULATORY_SUPPORT = 0.15
+_W_ESCALATION = 0.30
+"""`hazard_escalation` (H) icin agirlik - digerlerinden BILEREK daha buyuk:
+H, RuleEngine'in siddet siniflandirmasindan BAGIMSIZ olarak "bu spesifik
+olay, ayni siddet sinifindaki digerlerinden ne kadar daha ILERLEMIS/AKTIF"
+sorusunu cevaplayan TEK feature'dir (bkz. asagidaki HAZARD ESCALATION
+bolumu) - kok-neden analizinde (2026-08-24 risk kalibrasyon incelemesi)
+tespit edilen, "duman goruldu" ile "kontrolsuz, buyuyen, acik alev" olaylari
+arasinda AYRIM YAPAMAYAN bir bosluğu KAPATIR."""
 
 _BOOST_FACTOR_MAX = (
     (1 + _W_DURATION + _W_RECURRENCE) * (1 + _W_EXPOSURE) * (1 + _W_PROTECTION) * (1 + _W_RULE_SUPPORT + _W_REGULATORY_SUPPORT)
@@ -124,7 +133,17 @@ _RAW_SCORE_MAX = 1.0 * _BOOST_FACTOR_MAX
 """S=1.0, L=1.0 (base_risk=1.0) VE tum boost feature'lari maksimumdayken
 ulasilabilecek `raw_score` - `final_score = 100 * raw_score / _RAW_SCORE_MAX`
 boylece HER ZAMAN [0, 100] araliginda kalir (matematiksel garanti, clip'e
-GUVENMEZ - ama float hassasiyeti icin yine de clip edilir)."""
+GUVENMEZ - ama float hassasiyeti icin yine de clip edilir).
+
+NOT (2026-08-24 kalibrasyon duzeltmesi): `hazard_escalation` (H) BILEREK bu
+denominatore/`boost_factor`e DAHIL EDILMEZ - dahil edilseydi, H'nin (agirlik
+0.30, digerlerinden buyuk) KENDI ulasilamayan tavani, hazard_escalation
+kanit TASIMAYAN (fire-disi) HER olay icin (H daima 0 oldugundan) skoru
+ORANSAL olarak SISTEMATIK DUSURURDU - bu, tam da bu duzeltmenin cozmeye
+calistigi turden bir yeni hatali-dusuk-skor kaynagi yaratirdi. Bunun yerine
+`escalation_factor`, ASAGIDA `final_score` HESAPLANDIKTAN SONRA, ayri bir
+carpimsal katman olarak uygulanir (bkz. `compute_risk_score` - H=0 oldugunda
+bu katman TAM NOTR (1.0) kalir ve mevcut/eski davranisi DEGISTIRMEZ)."""
 
 _DURATION_SATURATION_SEC = 30.0
 """Bu sureden UZUN suren bir olay, duration feature'inda tam (1.0) doyuma ulasir."""
@@ -139,6 +158,77 @@ _LEVEL_THRESHOLDS = [
 ]
 """`final_score < esik` -> seviye (ilk eslesen kazanir, artan sirali). Bkz. modul
 dokustringi: bu esikler formulun S-tavanlariyla TUTARLIDIR (kopya degil, sonuc)."""
+
+# --- HAZARD ESCALATION (H) - 2026-08-24 risk kalibrasyon kok-neden duzeltmesi ---
+#
+# Kok-neden: `protection_gap` YALNIZCA KKD/PPE ihlalinde katki verir; aktif,
+# buyuyen, kontrolsuz bir yangin/tehlike olayina SIFIR katki saglar. Ayrica
+# eskiden HICBIR feature, "duman goruldu" (baslangic) ile "kontrolsuz acik
+# alev, buyuyen yangin" (ilerlemis) arasindaki farki YAKALAMIYORDU - ikisi de
+# ayni RuleEngine `severity="kritik"` sinifina dusuyor VE ayni skor uretiyordu.
+#
+# `hazard_escalation`, VLM'in `TemporalEvent.matched_keywords` alaninda
+# GERCEKTEN raporladigi (uydurulmamis) anahtar kelimelere gore, tehlikenin
+# hangi ILERLEME asamasinda oldugunu 4 kademede (0.25/0.50/0.75/1.00)
+# deterministik olarak siniflandirir. `model_confidence`/`risk_score` ile
+# KARISTIRILMAZ: VLM'in "bu gozlemden ne kadar eminim" degeri `likelihood`
+# feature'ina (L) zaten ayri olarak akar - `hazard_escalation`, VLM'in
+# NE gozlemledigine (gozlem GUVENINE degil) bakar.
+_HAZARD_ESCALATION_TIERS: List[tuple] = [
+    (
+        1.00,
+        {
+            "kontrolsuz", "uncontrolled", "patlama", "explosion", "buyuk yangin",
+            "raging", "yayilan buyuk", "kontrol disi",
+        },
+    ),
+    (
+        0.75,
+        {
+            "buyuyen", "buyuyor", "yayiliyor", "yayilan", "artan", "artiyor",
+            "genisliyor", "siddetlenen", "growing", "spreading", "increasing",
+            "intensifying",
+        },
+    ),
+    (
+        0.50,
+        {"alev", "flame", "flames", "ates", "acik alev", "ignition", "burning", "yaniyor"},
+    ),
+    (
+        0.25,
+        {"duman", "smoke", "sis", "kav", "yanik kokusu"},
+    ),
+]
+"""Azalan sirali (en yuksek kademe ilk) - `_hazard_escalation_feature`, ilk
+(en yuksek) eslesen kademeyi dondurur (additive DEGIL, max - "hem duman hem
+kontrolsuz alev" iki kez sayilip yapay sekilde 1.25 olmasin diye)."""
+
+_CRITICAL_HAZARD_EVENT_TYPES = {"yangin_duman", "dusme_riski", "enerji_kesme_ihlali"}
+"""RuleEngine'in siniflandirdigi, kendisi zaten dogrudan-fiziksel-tehlike
+olan (dolayli/yakinlik-tabanli DEGIL) olay tipleri - bkz. asagidaki SAFETY
+FLOOR bolumu. `arac_yaya_yakinligi`/`agir_yuk_riski` BILEREK DISLANMISTIR:
+bunlar "yakinlik" riskidir, ek eskalasyon kaniti olmadan otomatik-kritik
+tabanina dahil edilmezler."""
+
+_CRITICAL_HAZARD_ESCALATION_THRESHOLD = 1.0
+"""Safety floor'un tetiklenmesi icin gereken MINIMUM `hazard_escalation`
+degeri - yalnizca en UST kademe (H=1.0, "kontrolsuz"/patlama-sinifi kesin
+kanit) TETIKLER. "duman goruldu" (H=0.25) veya "buyuyen/yayilan" (H=0.75)
+TABANI TETIKLEMEZ - boylece 4 asamali eskalasyon merdiveni (smoke_only ->
+small_flame -> growing_fire -> uncontrolled_fire) formul TARAFINDAN, tabana
+CARPILMADAN, KESIN MONOTONIK ayirt edilebilir kalir; taban yalnizca en
+ileri, tartismasiz-kritik asamada devreye girer."""
+
+_CRITICAL_HAZARD_FLOOR = 80.0
+"""RuleEngine'in `severity="kritik"` sinifladigi VE gercek fiziksel-tehlike
+tipinde (`_CRITICAL_HAZARD_EVENT_TYPES`) VE ilerlemis-eskalasyon kaniti olan
+(`hazard_escalation >= _CRITICAL_HAZARD_ESCALATION_THRESHOLD`) bir olay icin
+MATEMATIKSEL taban - carpimsal formul, eksik/notr kalan diger feature'lar
+(orn. RAG kaniti yok, tek-kural destegi) yuzunden boyle bir olayi ORTA
+banda ("yuksek/kritik" sinirinin altina) DUSUREMEZ. Deger BILEREK LLM'in
+onerdigi hicbir sayidan (`llm_proposed_score`) TUREMEZ - yalnizca RuleEngine
+siddet sinifinin KENDI "kritik" bandinin (75-100) icinde, esigin (75)
+belirgin sekilde UZERINDE, deterministik bir politika sabitidir."""
 
 
 def score_to_risk_level(score: float) -> str:
@@ -161,6 +251,7 @@ class RiskFeatures:
     protection_gap: float
     rule_support: float
     regulatory_support: Optional[float]
+    hazard_escalation: float
 
     def as_dict(self) -> Dict[str, Optional[float]]:
         return {
@@ -172,6 +263,7 @@ class RiskFeatures:
             "protection_gap": self.protection_gap,
             "rule_support": self.rule_support,
             "regulatory_support": self.regulatory_support,
+            "hazard_escalation": self.hazard_escalation,
         }
 
 
@@ -192,6 +284,7 @@ class RiskFeatureSources:
     protection_gap: str = "measured"
     rule_support: str = "measured"
     regulatory_support: str = "measured"
+    hazard_escalation: str = "measured"
 
     def as_dict(self) -> Dict[str, str]:
         return {
@@ -203,6 +296,7 @@ class RiskFeatureSources:
             "protection_gap": self.protection_gap,
             "rule_support": self.rule_support,
             "regulatory_support": self.regulatory_support,
+            "hazard_escalation": self.hazard_escalation,
         }
 
 
@@ -217,19 +311,23 @@ class RiskScoreBreakdown:
     exposure_factor: float
     protection_factor: float
     evidence_factor: float
+    escalation_factor: float
     boost_factor: float
     raw_score: float
     final_score: float
     risk_level: str
+    safety_floor_applied: bool = False
+    pre_floor_score: Optional[float] = None
 
     def as_contributions_dict(self) -> Dict[str, float]:
-        """Her carpan bileseninin (`base_risk` ve dort `*_factor`) nihai skora giden agirlikli katkisi - aciklanabilirlik icin."""
+        """Her carpan bileseninin (`base_risk` ve bes `*_factor`) nihai skora giden agirlikli katkisi - aciklanabilirlik icin."""
         return {
             "base_risk": round(self.base_risk, 4),
             "temporal_factor": round(self.temporal_factor, 4),
             "exposure_factor": round(self.exposure_factor, 4),
             "protection_factor": round(self.protection_factor, 4),
             "evidence_factor": round(self.evidence_factor, 4),
+            "escalation_factor": round(self.escalation_factor, 4),
             "boost_factor": round(self.boost_factor, 4),
             "raw_score": round(self.raw_score, 4),
         }
@@ -245,13 +343,19 @@ class RiskScoreBreakdown:
             f"protection_gap={f.protection_gap:.2f}",
             f"rule_support={f.rule_support:.2f}",
             f"regulatory_support={f.regulatory_support:.2f}" if f.regulatory_support is not None else "regulatory_support=notr(0.00, RAG kaniti yok)",
+            f"hazard_escalation={f.hazard_escalation:.2f}",
             "exposure=notr(1.00 carpan, HENUZ OLCULEMIYOR)",
         ]
+        floor_note = (
+            f" [SAFETY FLOOR UYGULANDI: formul-skoru {self.pre_floor_score:.1f} -> taban {self.final_score:.1f}]"
+            if self.safety_floor_applied
+            else ""
+        )
         return (
             f"SAFIR Evidence-Weighted Risk Model (safir_evidence_weighted_v2): "
             f"final_score={self.final_score:.1f}/100 ({self.risk_level}) = "
             f"base_risk({self.base_risk:.3f}) x boost_factor({self.boost_factor:.3f}); "
-            f"feature'lar: {', '.join(parts)}."
+            f"feature'lar: {', '.join(parts)}.{floor_note}"
         )
 
 
@@ -299,6 +403,41 @@ def _likelihood_and_temporal_features(
     duration = _duration_feature(max(te.duration for te in relevant))
     recurrence = _recurrence_feature(max(te.occurrence_count for te in relevant))
     return likelihood, duration, recurrence
+
+
+def _hazard_escalation_feature(
+    temporal_events: Optional[List[TemporalEvent]], contributing_event_ids: List[str]
+) -> float:
+    """Katkida bulunan `TemporalEvent.matched_keywords`den (VLM'in GERCEKTEN
+    raporladigi, uydurulmamis kelimeler) tehlikenin ilerleme/eskalasyon
+    asamasini 4 kademede (0.25/0.50/0.75/1.00) turetir - bkz. modul-seviyesi
+    `_HAZARD_ESCALATION_TIERS` dokustringi.
+
+    `model_confidence`/`likelihood` ile KARISTIRILMAZ: bu feature VLM'in
+    NE gozlemledigine bakar, gozlem GUVENINE degil (o zaten `likelihood`
+    feature'inda ayri tasinir).
+
+    Kanit yoksa (TemporalEvent verilmedi/eslesmedi VEYA matched_keywords
+    bos/eslesmedi) 0.0 doner - "bilinmeyen" hicbir zaman ekstra risk olarak
+    yorumlanmaz (digerleriyle ayni guvenli-varsayilan ilkesi).
+    """
+    if not temporal_events:
+        return 0.0
+    relevant = [te for te in temporal_events if te.event_id in contributing_event_ids]
+    if not relevant:
+        return 0.0
+    normalized_keywords = [turkish_normalize(kw) for te in relevant for kw in (te.matched_keywords or [])]
+    if not normalized_keywords:
+        return 0.0
+    best = 0.0
+    for tier_score, tier_keywords in _HAZARD_ESCALATION_TIERS:
+        if tier_score <= best:
+            continue
+        for keyword in normalized_keywords:
+            if any(marker in keyword for marker in tier_keywords):
+                best = tier_score
+                break
+    return best
 
 
 def _regulatory_support_feature(semantic_rag_sources: Optional[List]) -> Optional[float]:
@@ -353,6 +492,7 @@ def compute_risk_score(
     protection_gap = _protection_gap_feature(contributing_matches)
     rule_support = _rule_support_feature(contributing_rule_ids)
     regulatory_support = _regulatory_support_feature(semantic_rag_sources)
+    hazard_escalation = _hazard_escalation_feature(temporal_events, contributing_event_ids)
     exposure = None  # bkz. modul dokustringi "EXPOSURE (E) - BILINEN SINIRLAMA"
 
     features = RiskFeatures(
@@ -364,12 +504,14 @@ def compute_risk_score(
         protection_gap=protection_gap,
         rule_support=rule_support,
         regulatory_support=regulatory_support,
+        hazard_escalation=hazard_escalation,
     )
     sources = RiskFeatureSources(
         likelihood="measured" if likelihood is not None else "unavailable_neutral",
         duration="measured" if duration is not None else "unavailable_neutral",
         recurrence="measured" if recurrence is not None else "unavailable_neutral",
         regulatory_support="measured" if regulatory_support is not None else "unavailable_neutral",
+        hazard_escalation="measured" if hazard_escalation > 0.0 else "unavailable_neutral",
     )
 
     likelihood_eff = likelihood if likelihood is not None else _L_FLOOR
@@ -386,8 +528,38 @@ def compute_risk_score(
     boost_factor = temporal_factor * exposure_factor * protection_factor * evidence_factor
 
     raw_score = base_risk * boost_factor
-    final_score = max(0.0, min(100.0, 100.0 * raw_score / _RAW_SCORE_MAX))
+    pre_escalation_score = max(0.0, min(100.0, 100.0 * raw_score / _RAW_SCORE_MAX))
+
+    # `escalation_factor` BILEREK `_RAW_SCORE_MAX`e DAHIL DEGIL (bkz. yukaridaki
+    # NOT) - H=0 (fire-disi/kanit yok) oldugunda TAM NOTR (1.0), eski/mevcut
+    # skoru HICBIR SEKILDE degistirmez; H>0 oldugunda skoru SADECE YUKARI carpar.
+    escalation_factor = 1 + _W_ESCALATION * hazard_escalation
+    final_score = max(0.0, min(100.0, pre_escalation_score * escalation_factor))
     level = score_to_risk_level(final_score)
+
+    # --- CRITICAL HAZARD SAFETY FLOOR (2026-08-24 kok-neden duzeltmesi) ---
+    # Formul carpimsal oldugu icin, eksik/notr kalan feature'lar (RAG kaniti
+    # yok, tek-kural destegi vb.) GERCEK, aktif, ilerlemis bir fiziksel
+    # tehlikeyi bile orta/yuksek banda dusurebilir - bu tam olarak raporlanan
+    # 53-puan bug'inin matematiksel kok nedenidir. Taban, TAMAMEN
+    # RuleEngine'in KENDI siddet siniflandirmasi + gercek `matched_keywords`
+    # kanitina dayanir - LLM'in onerdigi HICBIR skoru (`llm_proposed_score`)
+    # KULLANMAZ (gorev tanimi acikca yasakliyor).
+    pre_floor_score = final_score
+    safety_floor_applied = False
+    if (
+        risk_level == "kritik"
+        and hazard_escalation >= _CRITICAL_HAZARD_ESCALATION_THRESHOLD
+        and final_score < _CRITICAL_HAZARD_FLOOR
+        and any(
+            event_type in _CRITICAL_HAZARD_EVENT_TYPES
+            for match in contributing_matches
+            for event_type in match.event_type.split("+")
+        )
+    ):
+        final_score = _CRITICAL_HAZARD_FLOOR
+        safety_floor_applied = True
+        level = score_to_risk_level(final_score)
 
     return RiskScoreBreakdown(
         features=features,
@@ -397,8 +569,11 @@ def compute_risk_score(
         exposure_factor=exposure_factor,
         protection_factor=protection_factor,
         evidence_factor=evidence_factor,
+        escalation_factor=escalation_factor,
         boost_factor=boost_factor,
         raw_score=raw_score,
         final_score=final_score,
         risk_level=level,
+        safety_floor_applied=safety_floor_applied,
+        pre_floor_score=pre_floor_score if safety_floor_applied else None,
     )

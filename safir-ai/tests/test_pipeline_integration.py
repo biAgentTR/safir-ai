@@ -1081,6 +1081,84 @@ def test_semantic_rag_chunk_reaches_agent_prompt_and_report_provenance(
     assert "FORKLIFT-UNIQUE-MARKER-XYZ" in source.content
 
 
+def test_report_json_risk_score_is_the_deterministic_canonical_field_not_the_llm_draft(
+    pipeline: SafirPipeline,
+) -> None:
+    """2026-08-24 "85 vs 53" bulgusu icin regresyon: `SafirReport.model_dump()["risk_score"]`
+    (backend'in `/analyze/jobs/{id}` JSON'unda dondurdugu VE `src/ui/components/report_view.py`nin
+    `report["risk_score"]` seklinde OKUDUGU alan) HER ZAMAN deterministik `risk_provenance.risk_score`
+    olmalidir - Agent'in (LLM) KENDI taslak skoru (`decision.risk_score`, `report["llm_proposed_score"]`
+    olarak AYRI saklanir) HICBIR SEKILDE bu alana SIZMAMALIDIR, LLM'in taslagi ne olursa olsun."""
+    from src.agent.langgraph_agent import AgentDecision
+    from src.event_analysis.schemas import RuleMatch
+
+    # LLM/Agent, gorev tanimindaki gibi yuksek bir taslak skor ("85") uretsin.
+    llm_high_decision = AgentDecision(
+        risk_score=85,
+        risk_level="kritik",
+        recommended_action="Sahayi tahliye et",
+        raw_response="{}",
+        summary="Aktif yangin gozlemlendi.",
+        actions=["Sahayi tahliye et"],
+        events=[],
+    )
+
+    fire_match = RuleMatch(
+        rule_id="YG-03",
+        rule_description="Yangin Guvenligi Talimati",
+        event_type="yangin_duman",
+        severity="kritik",
+        source_event_id="evt_0",
+    )
+    temporal_event = TemporalEvent(
+        event_id="evt_0",
+        event_name="yangin_duman",
+        event_type="yangin_duman",
+        description="duman, alev, buyuyen, kontrolsuz",
+        start_timestamp=0.0,
+        end_timestamp=45.0,
+        duration=45.0,
+        confidence=0.9,
+        occurrence_count=3,
+        matched_keywords=["duman", "alev", "buyuyen", "kontrolsuz"],
+        source_model="test-vlm",
+        related_events=[],
+    )
+    vlm_response = VLMResponse(
+        description="Kontrolsuz, buyuyen bir yangin gozlemlendi.", model_name="test-vlm", frame_count=1, latency_ms=1.0
+    )
+
+    decision, risk_provenance = pipeline.stage_finalize_risk(
+        llm_high_decision, [fire_match], temporal_events=[temporal_event]
+    )
+
+    report = pipeline.build_report(
+        video_source="test-video",
+        sampler=_NullSampler(),
+        evidence_frames=[],
+        vlm_response=vlm_response,
+        context=pipeline.stage_context(vlm_response, "Risk durumu nedir?", latest_timestamp=45.0, rule_matches=[fire_match], temporal_events=[temporal_event])[1],
+        decision=decision,
+        escalation=_NullEscalation(),
+        temporal_events=[temporal_event],
+        rule_matches=[fire_match],
+        latest_timestamp=45.0,
+        risk_provenance=risk_provenance,
+    )
+    report_json = report.model_dump(mode="json")
+
+    # Kok-neden duzeltmesi: deterministik skor artik >=80 (kritik safety floor) - LLM'in 85'i DEGIL.
+    assert risk_provenance.safety_floor_applied is True
+    assert report_json["risk_score"] == risk_provenance.risk_score
+    assert report_json["risk_score"] == report.risk_score
+    assert report_json["risk_level"] == "kritik"
+    # LLM'in taslagi AYRI ve DEGISTIRILMEDEN korunur - ama risk_score'u ASLA BELIRLEMEZ.
+    assert report_json["llm_proposed_score"] == 85
+    assert report_json["risk_score"] != 85 or report_json["risk_score"] == risk_provenance.risk_score
+    # UI'nin (`report_view.py`) okudugu TEK anahtar `risk_score`dur - `llm_proposed_score` DEGIL.
+    assert "risk_score" in report_json and "llm_proposed_score" in report_json
+
+
 class _NullSampler:
     """`sampler.last_run_stats`e erisen `build_report` icin minimal sahte - bu testte sampler'in KENDISI test EDILMIYOR."""
 
