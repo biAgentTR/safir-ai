@@ -154,6 +154,7 @@ def test_metadata_fields_are_preserved_through_query(tmp_path) -> None:
     assert doc.publication_date == "2020-01-01"
     assert doc.relevance_score is None  # reranker devre disi
     assert doc.embedding_score == doc.score
+    assert doc.semantic_score is None  # component skorlari da devre-disiyken UYDURULMAZ
 
 
 def test_legacy_plain_string_documents_have_none_metadata(tmp_path) -> None:
@@ -936,3 +937,104 @@ def test_local_cross_encoder_reranker_is_not_forced_into_the_old_llm_reranker_in
     reranker_module_path = LocalCrossEncoderReranker.__module__
     assert reranker_module_path == "src.rag.local_cross_encoder_reranker"
     assert reranker_module_path != "src.rag.reranker"
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-24 RAG scoring explainability: deterministic relevance component
+# skorlari (semantic/lexical/keyword/metadata/phrase) `RetrievedDocument`
+# uzerinde CANLI koddan (score_candidate) tasiniyor mu?
+# ---------------------------------------------------------------------------
+
+
+def test_relevance_component_scores_are_carried_on_retrieved_document(tmp_path) -> None:
+    """Relevance skorlama AKTIFKEN, `score_candidate()`in urettigi BES bilesen de (yalnizca toplam relevance_score DEGIL) `RetrievedDocument` uzerinde GERCEKTEN tasinmali."""
+    from src.rag.deterministic_reranker import RelevanceWeights, score_candidate
+
+    service = _make_service(tmp_path, candidate_k=5, top_k=5, enable_relevance=True, score_threshold=0.0)
+    service._add_structured_documents(
+        [
+            {
+                "chunk_id": "doc_a__madde_1",
+                "document_id": "doc_a",
+                "document_title": "Yangin Yonetmeligi",
+                "article_number": "1",
+                "text": "yangin ve duman tespiti halinde tahliye prosedurleri",
+            }
+        ]
+    )
+
+    results = service.query("yangin duman")
+    assert len(results) == 1
+    doc = results[0]
+
+    # Component skorlarinin HICBIRI None DEGIL (relevance skorlama aktif oldugu icin).
+    assert doc.semantic_score is not None
+    assert doc.lexical_score is not None
+    assert doc.keyword_score is not None
+    assert doc.metadata_score is not None
+    assert doc.phrase_score is not None
+
+    # Bagimsiz olarak AYNI fonksiyonu (score_candidate) DOGRUDAN cagirip KARSILASTIR -
+    # RetrievedDocument'taki degerler UYDURULMAMIS, GERCEKTEN AYNI hesaplamadan gelmis olmali.
+    expected = score_candidate(
+        query="yangin duman",
+        chunk_text=doc.text,
+        embedding_score=doc.embedding_score,
+        document_title=doc.document_title,
+        article_number=doc.article_number,
+        keywords=None,
+        weights=RelevanceWeights(),
+    )
+    assert doc.semantic_score == expected.semantic_score
+    assert doc.lexical_score == expected.lexical_score
+    assert doc.keyword_score == expected.keyword_score
+    assert doc.metadata_score == expected.metadata_score
+    assert doc.phrase_score == expected.phrase_score
+    assert doc.relevance_score == expected.relevance_score
+
+
+def test_relevance_component_weights_match_the_service_configured_weights(tmp_path) -> None:
+    """`EmbeddingRAGService.relevance_weights` (explainability icin acilan property), servisin `score_candidate()`e GERCEKTEN gecirdigi agirliklarla AYNI olmali - varsayilan DEGERLERI uydurmaz."""
+    from src.utils.config_loader import RelevanceWeightsConfig, RerankerConfig
+
+    custom_weights = RelevanceWeightsConfig(semantic=0.5, lexical=0.2, keyword=0.2, metadata=0.05, phrase=0.05)
+    embedding_config = EmbeddingConfig(provider="local", model_name="fake-model", output_dimensionality=16)
+    faiss_config = FaissMemoryConfig(index_path=str(tmp_path / "index.faiss"), embedding_model="fake-model", top_k=5, candidate_k=5)
+    reranker_config = RerankerConfig(enabled=True, score_threshold=0.0, top_k=5, weights=custom_weights)
+
+    service = EmbeddingRAGService(embedding_config, faiss_config, reranker_config)
+
+    assert service.relevance_weights.semantic == 0.5
+    assert service.relevance_weights.lexical == 0.2
+    assert service.relevance_weights.keyword == 0.2
+    assert service.relevance_weights.metadata == 0.05
+    assert service.relevance_weights.phrase == 0.05
+
+
+def test_relevance_score_equals_sum_of_component_contributions(tmp_path) -> None:
+    """`relevance_score`, TASINAN bes bilesenin (agirlik x skor) toplamiyla TUTARLI olmali - UI'nin gosterecegi breakdown, gercek toplamla EslesMELI."""
+    service = _make_service(tmp_path, candidate_k=5, top_k=5, enable_relevance=True, score_threshold=0.0)
+    service._add_structured_documents(
+        [
+            {
+                "chunk_id": "doc_a__madde_1",
+                "document_id": "doc_a",
+                "document_title": "Yangin Yonetmeligi",
+                "article_number": "1",
+                "text": "yangin ve duman tespiti halinde tahliye prosedurleri",
+            }
+        ]
+    )
+
+    results = service.query("yangin duman")
+    doc = results[0]
+    weights = service.relevance_weights
+
+    reconstructed = (
+        doc.semantic_score * weights.semantic
+        + doc.lexical_score * weights.lexical
+        + doc.keyword_score * weights.keyword
+        + doc.metadata_score * weights.metadata
+        + doc.phrase_score * weights.phrase
+    )
+    assert reconstructed == pytest.approx(doc.relevance_score, abs=1e-9)

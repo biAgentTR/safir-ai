@@ -276,6 +276,18 @@ class RetrievedDocument:
     text: str
     embedding_score: float
     relevance_score: Optional[float] = None
+    semantic_score: Optional[float] = None
+    """`deterministic_reranker.RelevanceBreakdown.semantic_score` - `relevance_score`e
+    giden bes bilesenden biri (bkz. `deterministic_reranker.py` modul dokustringi).
+    Relevance skorlama devre disiysa/hesaplanmadiysa `None` (UYDURULMAZ)."""
+    lexical_score: Optional[float] = None
+    """`RelevanceBreakdown.lexical_score` - ayni gerekce."""
+    keyword_score: Optional[float] = None
+    """`RelevanceBreakdown.keyword_score` - ayni gerekce."""
+    metadata_score: Optional[float] = None
+    """`RelevanceBreakdown.metadata_score` - ayni gerekce."""
+    phrase_score: Optional[float] = None
+    """`RelevanceBreakdown.phrase_score` - ayni gerekce."""
     cross_encoder_score: Optional[float] = None
     """LOKAL Cross-Encoder'in (varsa, bkz. `local_cross_encoder_reranker.py`)
     (query, chunk) cift skoru - `embedding_score`/`relevance_score`den AYRI,
@@ -531,6 +543,13 @@ class EmbeddingRAGService:
     def document_count(self) -> int:
         """FAISS indeksine su ana kadar eklenmis dokuman sayisini dondurur."""
         return len(self._documents)
+
+    @property
+    def relevance_weights(self) -> RelevanceWeights:
+        """Bu servisin `score_candidate()`e GERCEKTEN gecirdigi (config'ten okunmus, HARD-CODE
+        DEGIL) `RelevanceWeights` - explainability/UI katmaninin, formulun agirliklarini KENDI
+        varsayimindan DEGIL, calisan koddan okuyabilmesi icin (bkz. gorev tanimi 8. bolum)."""
+        return self._relevance_weights
 
     @property
     def corpus_source(self) -> str:
@@ -831,6 +850,11 @@ class EmbeddingRAGService:
                     weights=self._relevance_weights,
                 )
                 doc.relevance_score = breakdown.relevance_score
+                doc.semantic_score = breakdown.semantic_score
+                doc.lexical_score = breakdown.lexical_score
+                doc.keyword_score = breakdown.keyword_score
+                doc.metadata_score = breakdown.metadata_score
+                doc.phrase_score = breakdown.phrase_score
                 if threshold is not None and breakdown.relevance_score < threshold:
                     doc.relevance_status = "rejected"
                     doc.relevance_reason = f"{breakdown.reason()} | threshold={threshold:.3f} (ALTINDA)"

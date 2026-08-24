@@ -1306,6 +1306,21 @@ class SafirPipeline:
             )
         rag_telemetry = self._last_stage_rag_telemetry
         cross_encoder_status = getattr(rag_telemetry, "cross_encoder_status", None) if rag_telemetry is not None else None
+        relevance_threshold = getattr(rag_telemetry, "threshold", None) if rag_telemetry is not None else None
+        # RAG explainability (gorev tanimi 8. bolum): agirliklar KODDAN okunur - bu cagrida
+        # semantik RAG sorgusu GERCEKTEN yapildiysa (rag_telemetry mevcut), servisin KENDI
+        # `RelevanceWeights`inden (config'ten okunmus, HARD-CODE DEGIL) tasinir.
+        relevance_weights = (
+            {
+                "semantic": self._rag_service.relevance_weights.semantic,
+                "lexical": self._rag_service.relevance_weights.lexical,
+                "keyword": self._rag_service.relevance_weights.keyword,
+                "metadata": self._rag_service.relevance_weights.metadata,
+                "phrase": self._rag_service.relevance_weights.phrase,
+            }
+            if rag_telemetry is not None and hasattr(self._rag_service, "relevance_weights")
+            else None
+        )
 
         current_call_events = _select_current_call_events(temporal_events, latest_timestamp, detected_events)
         detected_event_names = sorted({te.event_name for te in current_call_events})
@@ -1366,6 +1381,11 @@ class SafirPipeline:
                 article_number=getattr(chunk, "article_number", None),
                 source_url=getattr(chunk, "source_url", None),
                 relevance_score=getattr(chunk, "relevance_score", None),
+                semantic_score=getattr(chunk, "semantic_score", None),
+                lexical_score=getattr(chunk, "lexical_score", None),
+                keyword_score=getattr(chunk, "keyword_score", None),
+                metadata_score=getattr(chunk, "metadata_score", None),
+                phrase_score=getattr(chunk, "phrase_score", None),
                 relevance_status=getattr(chunk, "relevance_status", None),
                 relevance_reason=getattr(chunk, "relevance_reason", None),
                 cross_encoder_score=getattr(chunk, "cross_encoder_score", None),
@@ -1397,6 +1417,8 @@ class SafirPipeline:
             risk_feature_contributions=risk_provenance.feature_contributions,
             llm_proposed_score=risk_provenance.llm_proposed_score,
             cross_encoder_status=cross_encoder_status,
+            relevance_weights=relevance_weights,
+            relevance_threshold=relevance_threshold,
             recommended_action=decision.recommended_action,
             actions=decision.actions,
             onset_timestamp_str=getattr(decision, "onset_timestamp", None)

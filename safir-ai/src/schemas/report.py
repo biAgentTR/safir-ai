@@ -122,6 +122,27 @@ class RagContext(BaseModel):
             "relevance skorlama devre disiysa `None`."
         ),
     )
+    semantic_score: Optional[float] = Field(
+        default=None,
+        description=(
+            "`relevance_score`e giden bes bilesenden biri (bkz. "
+            "`deterministic_reranker.RelevanceBreakdown.semantic_score`) - E5/FAISS "
+            "benzerliginin [0,1] araligina kirpilmis hali. Relevance skorlama devre "
+            "disiysa/hesaplanmadiysa `None` (UYDURULMAZ)."
+        ),
+    )
+    lexical_score: Optional[float] = Field(
+        default=None, description="`RelevanceBreakdown.lexical_score` - sorgu/chunk token orusumu. `None` = hesaplanmadi."
+    )
+    keyword_score: Optional[float] = Field(
+        default=None, description="`RelevanceBreakdown.keyword_score` - VLM matched_keywords orusumu. `None` = hesaplanmadi."
+    )
+    metadata_score: Optional[float] = Field(
+        default=None, description="`RelevanceBreakdown.metadata_score` - baslik/madde numarasi eslesmesi. `None` = hesaplanmadi."
+    )
+    phrase_score: Optional[float] = Field(
+        default=None, description="`RelevanceBreakdown.phrase_score` - tam ifade eslesmesi. `None` = hesaplanmadi."
+    )
     relevance_status: Optional[str] = Field(
         default=None,
         description=(
@@ -340,6 +361,26 @@ class SafirReport(BaseModel):
             "sorgusu hic yapilmadi (matched_keywords yoktu). UI, `cross_encoder_score` alani `None` "
             "GORUNDUGUNDE bunu SESSIZCE '-' olarak degil, bu alana gore ('kullanilamadi'/'devre disi') "
             "ACIKCA gostermelidir - bkz. `src/rag/embedding_rag_service.py::RagQueryTelemetry.cross_encoder_status`."
+        ),
+    )
+    relevance_threshold: Optional[float] = Field(
+        default=None,
+        description=(
+            "Bu analizde deterministic relevance/evidence gate'in KULLANDIGI esik degeri (bkz. "
+            "`RagQueryTelemetry.threshold`, `configs/config.yaml -> memory.reranker.score_threshold`den "
+            "okunur, HARD-CODE DEGIL). `relevance_score < relevance_threshold` olan adaylar "
+            "REJECTED sayilir. Bu cagrida hic semantik RAG sorgusu yapilmadiysa `None`."
+        ),
+    )
+    relevance_weights: Optional[Dict[str, float]] = Field(
+        default=None,
+        description=(
+            "Bu analizde `deterministic_reranker.score_candidate()`e GERCEKTEN gecirilen "
+            "agirliklar (bkz. `EmbeddingRAGService.relevance_weights`, `configs/config.yaml -> "
+            "memory.reranker.weights`den okunur, HARD-CODE DEGIL): "
+            "{'semantic','lexical','keyword','metadata','phrase'} -> agirlik. UI'nin 'Deterministic "
+            "Relevance' aciklamasi/formulu bunu KENDI varsayimindan degil BURADAN okumalidir. "
+            "Bu cagrida hic semantik RAG sorgusu yapilmadiysa `None`."
         ),
     )
     escalation_tier: Optional[str] = Field(

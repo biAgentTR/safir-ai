@@ -242,18 +242,38 @@ class AgentRagPanel:
                     ce_status_caption = "Cross-Encoder durumu bu analiz için bilinmiyor (eski bir rapor formatı olabilir)."
                 st.caption(
                     "Her satır, `EmbeddingRAGService.query()`'nin GERÇEKTEN döndürdüğü bir kanıttır - "
-                    "**Embedding Skoru** (E5/FAISS benzerliği), **Deterministic Relevance** "
-                    "(ağırlıklı-toplam skor) ve **Cross-Encoder Relevance** (lokal cross-encoder "
-                    "sıralama sinyali) KASITLI AYRI kolonlardır; hiçbiri risk/confidence/probability "
-                    f"değildir, birbirinin yerine geçmez. {ce_status_caption}"
+                    "**Embedding Skoru** (sorgu ile dokümanın semantic similarity değeri), "
+                    "**Deterministic Relevance** (semantic + lexical + keyword + metadata + phrase "
+                    "bileşenlerinden hesaplanan evidence relevance skoru) ve **Cross-Encoder Relevance** "
+                    "(kabul edilen adayların sorgu + doküman birlikte değerlendirilerek yeniden "
+                    "sıralanmasından elde edilen lokal model skoru) KASITLI AYRI kolonlardır; hiçbiri "
+                    f"risk skoru/risk confidence/probability/agent confidence değildir. {ce_status_caption}"
                 )
+
+                weights = report.get("relevance_weights")
+                if weights:
+                    st.caption(
+                        "**Deterministic Relevance Formülü** (çalışan koddan okunur, `configs/config.yaml -> "
+                        "memory.reranker.weights`): "
+                        f"Semantic × {weights.get('semantic')}  +  Lexical × {weights.get('lexical')}  +  "
+                        f"Keyword × {weights.get('keyword')}  +  Metadata × {weights.get('metadata')}  +  "
+                        f"Phrase × {weights.get('phrase')}"
+                    )
+                threshold = report.get("relevance_threshold")
+
                 for src in sources:
                     embedding_score = src.get("embedding_score")
                     if embedding_score is None:
                         embedding_score = src.get("score")
                     relevance_score = src.get("relevance_score")
                     cross_encoder_score = src.get("cross_encoder_score")
-                    relevance_status = src.get("relevance_status") or ("kabul edildi" if relevance_score is not None else "-")
+                    raw_status = src.get("relevance_status")
+                    if raw_status == "accepted":
+                        selected_label = "ACCEPTED → CROSS-ENCODER" if cross_encoder_score is not None else "ACCEPTED (Deterministic Gate)"
+                    elif raw_status == "rejected":
+                        selected_label = "REJECTED BY DETERMINISTIC GATE"
+                    else:
+                        selected_label = raw_status or "-"
                     with st.container(border=True):
                         cols = st.columns(6 if show_cross_encoder_column else 5)
                         cols[0].markdown(f"**Kaynak**\n\n{src.get('rule_title') or '-'}")
@@ -264,15 +284,41 @@ class AgentRagPanel:
                             if cross_encoder_score is not None:
                                 ce_cell = f"{cross_encoder_score:.3f}"
                             elif cross_encoder_status == "unavailable":
-                                ce_cell = "kullanılamadı ⚠️"
+                                ce_cell = "Kullanılamadı"
                             else:
                                 ce_cell = "-"
                             cols[4].markdown(f"**Cross-Encoder Relevance**\n\n{ce_cell}")
-                            cols[5].markdown(f"**Seçildi**\n\n{relevance_status}")
+                            cols[5].markdown(f"**Seçildi**\n\n{selected_label}")
                         else:
-                            cols[4].markdown(f"**Seçildi**\n\n{relevance_status}")
+                            cols[4].markdown(f"**Seçildi**\n\n{selected_label}")
                         if src.get("source_url"):
                             st.caption(f"Kaynak URL: {src['source_url']}")
+
+                        with st.expander("🔬 Skor Detayı (Breakdown)"):
+                            st.markdown(f"**Embedding Score**\n\n{embedding_score:.3f}" if embedding_score is not None else "**Embedding Score**\n\n-")
+                            st.markdown(f"**Deterministic Relevance**\n\n{relevance_score:.3f}" if relevance_score is not None else "**Deterministic Relevance**\n\nyok (devre dışı)")
+                            component_rows = [
+                                ("Semantic", src.get("semantic_score"), weights.get("semantic") if weights else None),
+                                ("Lexical", src.get("lexical_score"), weights.get("lexical") if weights else None),
+                                ("Keyword", src.get("keyword_score"), weights.get("keyword") if weights else None),
+                                ("Metadata", src.get("metadata_score"), weights.get("metadata") if weights else None),
+                                ("Phrase", src.get("phrase_score"), weights.get("phrase") if weights else None),
+                            ]
+                            if any(score is not None for _, score, _ in component_rows):
+                                st.markdown("**Breakdown**")
+                                for name, score, weight in component_rows:
+                                    if score is None or weight is None:
+                                        st.markdown(f"- {name}: yok (hesaplanmadı)")
+                                    else:
+                                        st.markdown(f"- {name}: {score:.3f} × {weight} = {score * weight:.3f}")
+                            else:
+                                st.caption("Bu kaynak için component skorları taşınmadı (relevance skorlama devre dışıydı).")
+                            if threshold is not None:
+                                st.markdown(f"**Threshold**\n\n{threshold:.3f}")
+                            st.markdown(f"**Status**\n\n{selected_label}")
+                            if show_cross_encoder_column:
+                                ce_detail = f"{cross_encoder_score:.3f}" if cross_encoder_score is not None else ("Kullanılamadı" if cross_encoder_status == "unavailable" else "-")
+                                st.markdown(f"**Cross-Encoder Relevance**\n\n{ce_detail}")
 
 
 class TimelineEscalationPanel:

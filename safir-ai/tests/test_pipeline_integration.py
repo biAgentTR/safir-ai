@@ -1189,6 +1189,86 @@ def test_cross_encoder_score_survives_retrieved_document_to_rag_context_to_repor
     assert dumped["semantic_rag_sources"][0]["cross_encoder_score"] == 0.93
 
 
+def test_relevance_component_scores_survive_retrieved_document_to_rag_context_to_report(
+    pipeline: SafirPipeline,
+) -> None:
+    """2026-08-24 (RAG scoring explainability): `RetrievedDocument`in bes deterministic relevance bileseni (semantic/lexical/keyword/metadata/phrase), GERCEK `RetrievedDocument` sinifiyla, `main.py::build_report`in `RagContext`e ve `SafirReport.semantic_rag_sources`e KAYIPSIZ tasidigini dogrular."""
+    from src.rag.embedding_rag_service import RetrievedDocument
+
+    scored_chunk = RetrievedDocument(
+        text="Component skorlariyla donen gercek chunk metni.",
+        embedding_score=0.85,
+        relevance_score=0.834,
+        semantic_score=0.91,
+        lexical_score=0.72,
+        keyword_score=0.80,
+        metadata_score=0.40,
+        phrase_score=0.80,
+        chunk_id="comp_dok__madde_5",
+        document_id="comp_dok",
+        document_title="Component Test Yonetmeligi",
+        article_number="5",
+        source_url="https://example.org/component-yonetmelik",
+        relevance_status="accepted",
+        source_verified=True,
+    )
+
+    fake_rag_service = pipeline._rag_service  # type: ignore[assignment]
+    fake_rag_service.query = lambda question, top_k=None, keywords=None: [scored_chunk]  # noqa: E731
+
+    temporal_event = TemporalEvent(
+        event_id="te-comp-1",
+        event_name="yangin_duman",
+        event_type="yangin_duman",
+        description="duman gorulmeye basladi",
+        start_timestamp=1.0,
+        end_timestamp=1.0,
+        duration=0.0,
+        confidence=0.8,
+        occurrence_count=1,
+        matched_keywords=["duman"],
+        source_model="test-vlm",
+        related_events=[],
+    )
+    vlm_response = VLMResponse(
+        description="Duman gorulmeye basladi.", model_name="test-vlm", frame_count=1, latency_ms=1.0
+    )
+
+    prompt_block, context = pipeline.stage_context(
+        vlm_response, "Risk durumu nedir?", latest_timestamp=1.0, rule_matches=[], temporal_events=[temporal_event]
+    )
+    decision = pipeline.stage_decide(prompt_block)
+    decision, _risk_provenance = pipeline.stage_finalize_risk(decision, [], temporal_events=[temporal_event])
+    report = pipeline.build_report(
+        video_source="test-video",
+        sampler=_NullSampler(),
+        evidence_frames=[],
+        vlm_response=vlm_response,
+        context=context,
+        decision=decision,
+        escalation=_NullEscalation(),
+        temporal_events=[temporal_event],
+        rule_matches=[],
+        latest_timestamp=1.0,
+    )
+
+    assert report.semantic_rag_sources, "semantic_rag_sources bos - RAG provenance rapora ulasmadi"
+    source = report.semantic_rag_sources[0]
+    assert source.semantic_score == 0.91
+    assert source.lexical_score == 0.72
+    assert source.keyword_score == 0.80
+    assert source.metadata_score == 0.40
+    assert source.phrase_score == 0.80
+
+    dumped = report.model_dump(mode="json")
+    dumped_source = dumped["semantic_rag_sources"][0]
+    assert dumped_source["semantic_score"] == 0.91
+    assert dumped_source["lexical_score"] == 0.72
+    assert dumped_source["keyword_score"] == 0.80
+    assert dumped_source["metadata_score"] == 0.40
+    assert dumped_source["phrase_score"] == 0.80
+
+
 def test_report_cross_encoder_status_surfaces_unavailable_instead_of_silent_none(
     pipeline: SafirPipeline,
 ) -> None:
