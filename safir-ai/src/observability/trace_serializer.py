@@ -281,6 +281,7 @@ def serialize_rag_security(
     """
     rag_telemetry = payload.get("rag_telemetry")
     guard_results = payload.get("guard_results") or []
+    relevance_weights = payload.get("relevance_weights")
 
     rag_data: Optional[Dict[str, Any]] = None
     if rag_telemetry is not None:
@@ -303,9 +304,26 @@ def serialize_rag_security(
             # ACIKCA belirtir (bkz. `deterministic_reranker.py`).
             "reranker": "deterministic",
             "relevance_method": "weighted_hybrid",
+            # 2026-08-24 (explainability - desktop Vue UI'nin GERCEKTEN okudugu
+            # canli trace payload'u): agirliklar + Cross-Encoder durumu bu
+            # sorgunun GENELINE ait (tek deger, satir basina DEGIL) - koddan
+            # (config'ten okunmus `RelevanceWeights`) tasinir, UYDURULMAZ.
+            "relevance_weights": (
+                {
+                    "semantic": relevance_weights.semantic,
+                    "lexical": relevance_weights.lexical,
+                    "keyword": relevance_weights.keyword,
+                    "metadata": relevance_weights.metadata,
+                    "phrase": relevance_weights.phrase,
+                }
+                if relevance_weights is not None
+                else None
+            ),
+            "cross_encoder_status": getattr(rag_telemetry, "cross_encoder_status", "disabled"),
             "results": [
                 {
                     "rank": getattr(r, "rank", None),
+                    "final_rank": getattr(r, "final_rank", None),
                     "chunk_id": getattr(r, "chunk_id", None),
                     "document_id": r.document_id,
                     "document_title": r.document_title,
@@ -313,6 +331,12 @@ def serialize_rag_security(
                     "source_url": r.source_url,
                     "embedding_score": r.embedding_score,
                     "relevance_score": r.relevance_score,
+                    "semantic_score": getattr(r, "semantic_score", None),
+                    "lexical_score": getattr(r, "lexical_score", None),
+                    "keyword_score": getattr(r, "keyword_score", None),
+                    "metadata_score": getattr(r, "metadata_score", None),
+                    "phrase_score": getattr(r, "phrase_score", None),
+                    "cross_encoder_score": getattr(r, "cross_encoder_score", None),
                     "relevance_status": getattr(r, "relevance_status", None),
                     "relevance_reason": getattr(r, "relevance_reason", None),
                     "selected": r.selected,

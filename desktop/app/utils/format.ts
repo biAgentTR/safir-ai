@@ -71,7 +71,7 @@ export const STAGE_META: { stage: TraceStage; label: string; blurb: string }[] =
   { stage: 'events', label: 'Olay Analizi', blurb: 'Tespit / zamansal / kural' },
   { stage: 'agent_context', label: 'Bağlam ve RAG', blurb: 'Ajan bağlamı oluşturma' },
   { stage: 'rag_security', label: 'RAG ve Güvenlik Telemetrisi', blurb: 'Semantik retrieval + Prompt Injection Guard' },
-  { stage: 'decision', label: 'Ajan Kararı', blurb: 'Risk ve önerilen aksiyon' },
+  { stage: 'decision', label: 'Ajan Önerisi', blurb: 'Taslak değerlendirme — resmi risk skoru DEĞİLDİR' },
   { stage: 'escalation', label: 'Risk Yükseltme', blurb: 'Otomatik tetikleme politikası' },
   { stage: 'report', label: 'Nihai Rapor', blurb: 'Yapılandırılmış çıktı' },
 ]

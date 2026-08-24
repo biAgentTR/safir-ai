@@ -305,3 +305,80 @@ def test_accumulate_rag_security_handles_legacy_trace_without_rag_security_stage
     assert agg.total_events_detected == 1
     assert agg.rag_query_count == 0
     assert agg.guard_checks == 0
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-24 (desktop Vue UI fix): serialize_rag_security ARTIK component
+# skorlarini/cross_encoder alanlarini/relevance_weights'i de emit ediyor -
+# bunlar eskiden yalnizca `RagResultTelemetry`de duruyordu, canli trace
+# payload'una (desktop app'in GERCEKTEN okudugu yer) HIC ULASMIYORDU.
+# ---------------------------------------------------------------------------
+
+
+def test_serialize_rag_security_emits_component_scores_and_cross_encoder_fields() -> None:
+    """Frontend'in (desktop Vue app) `StageCard.vue`de okudugu component skorlari, cross_encoder alanlari ve relevance_weights, trace payload'unda GERCEKTEN bulunmali - `rerank_score` gibi eski/var olmayan bir alan DEGIL."""
+    from src.rag.deterministic_reranker import RelevanceWeights
+
+    result = RagResultTelemetry(
+        document_id="bykhy",
+        document_title="BYKHY",
+        article_number="7",
+        source_url="https://example.gov.tr/bykhy",
+        embedding_score=0.87,
+        relevance_score=0.65,
+        semantic_score=0.87,
+        lexical_score=0.40,
+        keyword_score=0.50,
+        metadata_score=0.0,
+        phrase_score=0.0,
+        cross_encoder_score=0.91,
+        selected=True,
+        rank=1,
+        final_rank=1,
+        relevance_status="accepted",
+        relevance_reason="test",
+        text="Madde 7 metni.",
+    )
+    telemetry = RagQueryTelemetry(
+        query="yangin duman alev",
+        candidate_count=20,
+        final_count=1,
+        zero_result=False,
+        retrieval_status="relevance_scored",
+        threshold=0.10,
+        embedding_latency_ms=10.0,
+        rerank_latency_ms=20.0,
+        total_latency_ms=30.0,
+        avg_embedding_score=0.87,
+        avg_relevance_score=0.65,
+        cross_encoder_status="used",
+        results=[result],
+    )
+    payload = {
+        "rag_telemetry": telemetry,
+        "guard_results": [],
+        "relevance_weights": RelevanceWeights(semantic=0.60, lexical=0.15, keyword=0.15, metadata=0.05, phrase=0.05),
+    }
+
+    _summary, data, _frames, _status, _error = serialize_rag_security(payload, "job1")
+
+    assert data["rag"]["cross_encoder_status"] == "used"
+    assert data["rag"]["relevance_weights"] == {"semantic": 0.60, "lexical": 0.15, "keyword": 0.15, "metadata": 0.05, "phrase": 0.05}
+    row = data["rag"]["results"][0]
+    assert row["semantic_score"] == 0.87
+    assert row["lexical_score"] == 0.40
+    assert row["keyword_score"] == 0.50
+    assert row["metadata_score"] == 0.0
+    assert row["phrase_score"] == 0.0
+    assert row["cross_encoder_score"] == 0.91
+    assert row["final_rank"] == 1
+    assert "rerank_score" not in row  # eski/olmeyen alan adi ASLA emit edilmez
+
+
+def test_serialize_rag_security_without_relevance_weights_leaves_it_none_not_fabricated() -> None:
+    """`relevance_weights` payload'da yoksa (orn. eski/duck-typed cagiran) `None` kalir - UYDURULMUS bir varsayilan agirlik seti EKLENMEZ."""
+    payload = {"rag_telemetry": _sample_rag_telemetry(), "guard_results": []}
+    _summary, data, _frames, _status, _error = serialize_rag_security(payload, "job1")
+
+    assert data["rag"]["relevance_weights"] is None
+    assert data["rag"]["cross_encoder_status"] == "disabled"

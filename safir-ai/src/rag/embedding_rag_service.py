@@ -356,6 +356,11 @@ def _result_telemetry(doc: "RetrievedDocument", selected: bool) -> "RagResultTel
         source_url=doc.source_url,
         embedding_score=round(doc.embedding_score, 4),
         relevance_score=round(doc.relevance_score, 4) if doc.relevance_score is not None else None,
+        semantic_score=round(doc.semantic_score, 4) if doc.semantic_score is not None else None,
+        lexical_score=round(doc.lexical_score, 4) if doc.lexical_score is not None else None,
+        keyword_score=round(doc.keyword_score, 4) if doc.keyword_score is not None else None,
+        metadata_score=round(doc.metadata_score, 4) if doc.metadata_score is not None else None,
+        phrase_score=round(doc.phrase_score, 4) if doc.phrase_score is not None else None,
         cross_encoder_score=round(doc.cross_encoder_score, 4) if doc.cross_encoder_score is not None else None,
         selected=selected,
         rank=doc.retrieval_rank,
@@ -401,6 +406,13 @@ class RagResultTelemetry:
     """'accepted' | 'rejected' (bkz. `RetrievedDocument.relevance_status`)."""
     relevance_reason: Optional[str] = None
     """`relevance_status`un gerekcesi (bkz. `RetrievedDocument.relevance_reason`)."""
+    semantic_score: Optional[float] = None
+    """`relevance_score`e giden bes bilesenden biri (bkz. `RetrievedDocument.semantic_score`) -
+    explainability (2026-08-24) icin trace telemetrisine de tasinir."""
+    lexical_score: Optional[float] = None
+    keyword_score: Optional[float] = None
+    metadata_score: Optional[float] = None
+    phrase_score: Optional[float] = None
     text: str = ""
     """Chunk'in GERCEK metni (bkz. sinif dokustringi - onceki surumde YOKTU)."""
 

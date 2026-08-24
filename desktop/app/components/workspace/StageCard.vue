@@ -265,30 +265,55 @@ function ms(v: number | null): string {
               <MetricCell label="Rerank Gecikme" :value="ms(ragSecurity.rag.rerank_latency_ms)" />
               <MetricCell label="Eşik" :value="ragSecurity.rag.threshold != null ? ragSecurity.rag.threshold : 'N/A'" />
             </div>
+
+            <!-- Deterministic relevance formülü — koddan okunan gerçek ağırlıklar (uydurulmadı). -->
+            <div v-if="ragSecurity.rag.relevance_weights" class="rounded-md border border-edge bg-surface-2/60 px-3 py-2 mb-3 text-xs text-slate-400">
+              <span class="text-slate-300 font-medium">Deterministic Relevance Formülü</span> (çalışan koddan okunur):
+              Semantic × {{ ragSecurity.rag.relevance_weights.semantic }} + Lexical × {{ ragSecurity.rag.relevance_weights.lexical }}
+              + Keyword × {{ ragSecurity.rag.relevance_weights.keyword }} + Metadata × {{ ragSecurity.rag.relevance_weights.metadata }}
+              + Phrase × {{ ragSecurity.rag.relevance_weights.phrase }}
+            </div>
+            <div class="text-xs text-slate-500 mb-3">
+              Cross-Encoder durumu:
+              <span v-if="ragSecurity.rag.cross_encoder_status === 'used'" class="text-risk-low">çalıştı — aşağıdaki Cross-Encoder Skoru gerçek model çıktısıdır.</span>
+              <span v-else-if="ragSecurity.rag.cross_encoder_status === 'unavailable'" class="text-risk-mid">kullanılamadı (model ağırlığı yüklenemedi) — sıralama Deterministic Relevance'a düştü, harici bir API'ye düşülmedi.</span>
+              <span v-else-if="ragSecurity.rag.cross_encoder_status === 'disabled'" class="text-slate-500">devre dışı.</span>
+              <span v-else class="text-slate-600">bu sorgu için bilinmiyor.</span>
+            </div>
+
             <div v-if="ragSecurity.rag.zero_result" class="text-sm text-slate-500 mb-2">
               Eşik üzerinde hiçbir sonuç bulunamadı (0 sonuç geçerli bir sonuçtur).
             </div>
-            <div v-if="ragSecurity.rag.results.length" class="overflow-x-auto">
-              <table class="w-full text-xs">
-                <thead>
-                  <tr class="text-left text-[10px] uppercase tracking-wide text-slate-500 border-b border-edge">
-                    <th class="py-1.5 pr-3">Doküman</th>
-                    <th class="py-1.5 pr-3">Madde</th>
-                    <th class="py-1.5 pr-3">Embedding Skoru</th>
-                    <th class="py-1.5 pr-3">Rerank Skoru</th>
-                    <th class="py-1.5 pr-3">Seçildi</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(r, i) in ragSecurity.rag.results" :key="i" class="border-b border-edge/60" :class="r.selected ? '' : 'opacity-50'">
-                    <td class="py-1.5 pr-3 text-slate-200">{{ r.document_title ?? r.document_id ?? '—' }}</td>
-                    <td class="py-1.5 pr-3 text-slate-400">{{ r.article_number ?? '—' }}</td>
-                    <td class="py-1.5 pr-3 font-mono text-slate-300">{{ r.embedding_score.toFixed(3) }}</td>
-                    <td class="py-1.5 pr-3 font-mono text-slate-300">{{ r.rerank_score != null ? r.rerank_score.toFixed(3) : '—' }}</td>
-                    <td class="py-1.5 pr-3" :class="r.selected ? 'text-risk-low' : 'text-slate-600'">{{ r.selected ? 'evet' : 'hayır' }}</td>
-                  </tr>
-                </tbody>
-              </table>
+            <div v-if="ragSecurity.rag.results.length" class="space-y-2">
+              <details
+                v-for="(r, i) in ragSecurity.rag.results"
+                :key="i"
+                class="rounded-md border border-edge bg-surface-2/40"
+                :class="r.selected ? '' : 'opacity-60'"
+              >
+                <summary class="cursor-pointer px-3 py-2 grid grid-cols-6 gap-2 text-xs items-center">
+                  <span class="col-span-2 text-slate-200 truncate">{{ r.document_title ?? r.document_id ?? '—' }} <span class="text-slate-500">· {{ r.article_number ?? '—' }}</span></span>
+                  <span class="font-mono text-slate-300">Emb {{ r.embedding_score.toFixed(3) }}</span>
+                  <span class="font-mono text-slate-300">Rel {{ r.relevance_score != null ? r.relevance_score.toFixed(3) : '—' }}</span>
+                  <span class="font-mono text-slate-300">
+                    CE {{ r.cross_encoder_score != null ? r.cross_encoder_score.toFixed(3) : (ragSecurity.rag.cross_encoder_status === 'unavailable' ? 'kullanılamadı' : '—') }}
+                  </span>
+                  <span :class="r.selected ? 'text-risk-low' : 'text-slate-600'">
+                    {{ r.selected ? (r.cross_encoder_score != null ? 'ACCEPTED → CROSS-ENCODER' : 'ACCEPTED') : 'REJECTED BY DETERMINISTIC GATE' }}
+                  </span>
+                </summary>
+                <div class="px-3 pb-3 pt-1 space-y-2 border-t border-edge/60">
+                  <div v-if="r.semantic_score != null && ragSecurity.rag.relevance_weights" class="text-[11px] font-mono text-slate-400 space-y-0.5">
+                    <div>Semantic&nbsp;&nbsp;{{ r.semantic_score.toFixed(3) }} × {{ ragSecurity.rag.relevance_weights.semantic }} = {{ (r.semantic_score * ragSecurity.rag.relevance_weights.semantic).toFixed(3) }}</div>
+                    <div>Lexical&nbsp;&nbsp;&nbsp;{{ r.lexical_score?.toFixed(3) }} × {{ ragSecurity.rag.relevance_weights.lexical }} = {{ ((r.lexical_score ?? 0) * ragSecurity.rag.relevance_weights.lexical).toFixed(3) }}</div>
+                    <div>Keyword&nbsp;&nbsp;{{ r.keyword_score?.toFixed(3) }} × {{ ragSecurity.rag.relevance_weights.keyword }} = {{ ((r.keyword_score ?? 0) * ragSecurity.rag.relevance_weights.keyword).toFixed(3) }}</div>
+                    <div>Metadata&nbsp;{{ r.metadata_score?.toFixed(3) }} × {{ ragSecurity.rag.relevance_weights.metadata }} = {{ ((r.metadata_score ?? 0) * ragSecurity.rag.relevance_weights.metadata).toFixed(3) }}</div>
+                    <div>Phrase&nbsp;&nbsp;&nbsp;&nbsp;{{ r.phrase_score?.toFixed(3) }} × {{ ragSecurity.rag.relevance_weights.phrase }} = {{ ((r.phrase_score ?? 0) * ragSecurity.rag.relevance_weights.phrase).toFixed(3) }}</div>
+                  </div>
+                  <p v-else class="text-[11px] text-slate-600">Bu kaynak için bileşen skorları taşınmadı (relevance skorlama devre dışıydı).</p>
+                  <div v-if="r.text" class="text-xs text-slate-300 bg-surface-2 border border-edge rounded-md p-2 max-h-40 overflow-auto whitespace-pre-wrap">{{ r.text }}</div>
+                </div>
+              </details>
             </div>
           </template>
         </div>
@@ -330,20 +355,28 @@ function ms(v: number | null): string {
         </div>
       </div>
 
-      <!-- ============ DECISION ============ -->
+      <!-- ============ DECISION (Agent'in TASLAK önerisi — resmi risk_score DEĞİL) ============ -->
       <div v-else-if="decision" class="space-y-5">
+        <div class="rounded-md border border-accent/30 bg-accent/10 px-3 py-2 text-xs text-slate-300">
+          🤖 Bu, Agent'ın (LLM) ürettiği <span class="font-medium">taslak öneridir</span> (backend'de
+          <code class="text-slate-200">llm_proposed_score</code> olarak saklanır) — SAFİR'in
+          <span class="font-medium">resmi, deterministik risk kararı DEĞİLDİR</span>. Nihai
+          <code class="text-slate-200">risk_score</code>/<code class="text-slate-200">risk_level</code>,
+          bu değerden BAĞIMSIZ olarak "Nihai Rapor" aşamasında deterministik risk motoru tarafından
+          hesaplanır (bkz. Rapor sekmesindeki resmi Risk Skoru).
+        </div>
         <div class="flex items-end gap-6">
           <div>
-            <div class="field-label">Risk</div>
+            <div class="field-label">Model Önerisi (taslak, resmi değil)</div>
             <template v-if="decision.risk_status === 'unknown' || decision.risk_score == null">
               <div class="text-3xl font-bold text-slate-400">Belirsiz</div>
               <div class="text-sm uppercase tracking-wide text-slate-400">MANUEL İNCELEME GEREKLİ</div>
             </template>
             <template v-else>
-              <div class="text-3xl font-bold" :class="RISK_TEXT[riskTone(decision.risk_level)]">
+              <div class="text-3xl font-bold text-slate-300">
                 {{ decision.risk_score }}<span class="text-lg text-slate-500"> / 100</span>
               </div>
-              <div class="text-sm uppercase tracking-wide" :class="RISK_TEXT[riskTone(decision.risk_level)]">{{ trUpper(decision.risk_level) }}</div>
+              <div class="text-sm uppercase tracking-wide text-slate-400">{{ trUpper(decision.risk_level) }} (Agent önerisi)</div>
             </template>
           </div>
         </div>

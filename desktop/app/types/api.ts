@@ -251,15 +251,47 @@ export interface ContextStageData {
   length: number
 }
 
-/** rag_security stage: src/observability/trace_serializer.py serialize_rag_security. */
+/**
+ * rag_security stage: src/observability/trace_serializer.py serialize_rag_security.
+ *
+ * `embedding_score` (E5/FAISS semantic similarity), `relevance_score`
+ * (deterministic weighted-hybrid: semantic+lexical+keyword+metadata+phrase)
+ * and `cross_encoder_score` (local Cross-Encoder re-ranking signal, only
+ * present when the query-level `cross_encoder_status` is `'used'`) are
+ * DELIBERATELY separate fields — never merge them, never label any of them
+ * "risk"/"confidence"/"probability". The old `rerank_score` field name from
+ * the removed Gemini/Groq LLM-as-judge reranker no longer exists backend-side.
+ */
 export interface RagResultTelemetry {
+  rank: number | null
+  final_rank: number | null
+  chunk_id: string | null
   document_id: string | null
   document_title: string | null
   article_number: string | null
   source_url: string | null
   embedding_score: number
-  rerank_score: number | null
+  relevance_score: number | null
+  /** Five components `relevance_score` is computed from (bkz. deterministic_reranker.py). `null` = relevance scoring was disabled/not computed for this candidate — never fabricated. */
+  semantic_score: number | null
+  lexical_score: number | null
+  keyword_score: number | null
+  metadata_score: number | null
+  phrase_score: number | null
+  /** Local Cross-Encoder relevance signal — a ranking signal only, not a risk/confidence value. `null` when the query's cross_encoder_status is not 'used'. */
+  cross_encoder_score: number | null
+  relevance_status: 'accepted' | 'rejected' | null
+  relevance_reason: string | null
   selected: boolean
+  text: string
+}
+
+export interface RelevanceWeights {
+  semantic: number
+  lexical: number
+  keyword: number
+  metadata: number
+  phrase: number
 }
 
 /**
@@ -271,13 +303,17 @@ export interface RagTelemetry {
   candidate_count: number
   final_count: number
   zero_result: boolean
-  retrieval_status: 'reranked' | 'embedding_only' | 'reranker_unavailable' | 'empty_index' | string
+  retrieval_status: 'relevance_scored' | 'embedding_only' | 'insufficient_evidence' | 'empty_index' | string
   threshold: number | null
   embedding_latency_ms: number
   rerank_latency_ms: number | null
   total_latency_ms: number
   avg_embedding_score: number | null
-  avg_rerank_score: number | null
+  avg_relevance_score: number | null
+  /** Weights `deterministic_reranker.score_candidate()` actually used for this query (read from config, not hardcoded). `null` if unavailable. */
+  relevance_weights: RelevanceWeights | null
+  /** 'used' | 'unavailable' | 'disabled' — whether the local Cross-Encoder ran for this query. See RagResultTelemetry docstring. */
+  cross_encoder_status: 'used' | 'unavailable' | 'disabled' | string
   results: RagResultTelemetry[]
 }
 

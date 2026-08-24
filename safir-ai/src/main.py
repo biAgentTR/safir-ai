@@ -944,6 +944,11 @@ class SafirPipeline:
             {
                 "rag_telemetry": self._last_stage_rag_telemetry,
                 "guard_results": context.guard_results,
+                "relevance_weights": (
+                    self._rag_service.relevance_weights
+                    if self._last_stage_rag_telemetry is not None and hasattr(self._rag_service, "relevance_weights")
+                    else None
+                ),
             },
         )
 
