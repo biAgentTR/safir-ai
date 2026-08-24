@@ -284,3 +284,209 @@ def test_safety_floor_applied_flag_propagates_through_provenance() -> None:
     )
     assert provenance_with_llm.risk_score == provenance.risk_score
     assert provenance_with_llm.safety_floor_applied is True
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-24 SON PRODUCTION RUNTIME AUDIT - kok-neden bulgusu: RuleEngine,
+# `event_type=None` (siniflandirilamamis) bir TemporalEvent icin HICBIR
+# RuleMatch URETMEZ (bkz. `rule_engine.py::_safe_event_type`, KASITLI -
+# "bir kategoriye ZORLAMA YAPILMAZ"). Bu, o olayin GERCEK kanitinin
+# (matched_keywords/duration/confidence - orn. bir yanginin DAHA SIDDETLI,
+# ilerlemis asamasi) risk hesaplamasindan TAMAMEN KAYBOLMASINA yol
+# aciyordu - VLM verisi ULASIYORDU ama risk_model'e GECIRILMIYORDU. Duzeltme:
+# `_pick_provenance`, `related_events` (TemporalReasoner'in ZATEN kurdugu,
+# simetrik, tip-bagimsiz baglanti) uzerinden BOYLE bir olayin event_id'sini
+# de `contributing_event_ids`e ekler - HANGI RuleMatch/severity'nin
+# kazandigini DEGISTIRMEDEN, yalnizca feature hesaplamasini zenginlestirir.
+# ---------------------------------------------------------------------------
+
+
+def test_related_but_unclassified_temporal_event_still_contributes_its_evidence() -> None:
+    """Bir yanginin erken (siniflandirilmis) asamasina `related_events` ile bagli, DAHA SONRAKI (siniflandirilmamis) ilerlemis asamasinin matched_keywords/duration/confidence'i risk hesabina ULASMALI - kaybolmamali."""
+    from src.event_analysis.schemas import TemporalEvent
+
+    classified_match = RuleMatch(
+        rule_id="YG-03",
+        rule_description="Yangin Guvenligi Talimati",
+        event_type="yangin_duman",
+        severity="kritik",
+        source_event_id="evt_0",
+    )
+    early_stage = TemporalEvent(
+        event_id="evt_0",
+        event_name="duman_baslangici",
+        event_type="yangin_duman",
+        description="duman gorulmeye basladi",
+        start_timestamp=30.0,
+        end_timestamp=32.0,
+        duration=2.0,
+        confidence=0.8,
+        occurrence_count=1,
+        matched_keywords=["duman"],
+        source_model="test-vlm",
+        related_events=["evt_1"],
+    )
+    # DAHA SONRAKI, DAHA SIDDETLI asama - VLM'in serbest event_name'i bilinen
+    # hicbir kategoriye oturmadigi icin `event_type=None` (RuleEngine bunun
+    # icin HICBIR RuleMatch URETMEYECEK) - ama TemporalReasoner ZATEN bunu
+    # `related_events` ile erken asamaya BAGLAMIS durumda.
+    escalated_stage = TemporalEvent(
+        event_id="evt_1",
+        event_name="kontrolsuz_yangin_ilerlemesi",
+        event_type=None,
+        description="kontrolsuz acik alev ve buyuyen duman devam ediyor",
+        start_timestamp=32.0,
+        end_timestamp=45.0,
+        duration=13.0,
+        confidence=0.95,
+        occurrence_count=1,
+        matched_keywords=["alev", "buyuyen", "kontrolsuz", "acik alev"],
+        source_model="test-vlm",
+        related_events=["evt_0"],
+    )
+
+    provenance = resolve_deterministic_risk_with_provenance(
+        [classified_match], temporal_events=[early_stage, escalated_stage]
+    )
+
+    # escalated_stage'in event_id'si (evt_1), event_type'i None oldugu icin
+    # KENDI RuleMatch'ini uretmedi, ama related_events baglantisi UZERINDEN
+    # yine de contributing kumesine girmis olmali.
+    assert "evt_1" in provenance.contributing_event_ids
+    # Bu olmadan hazard_escalation en fazla 0.25 ("duman" tek basina) kalirdi;
+    # escalated_stage'in "kontrolsuz" kanitiyla artik 1.0'a ulasmali.
+    assert provenance.features["hazard_escalation"] == 1.0
+    assert provenance.safety_floor_applied is True
+    assert provenance.risk_level == "kritik"
+    assert provenance.risk_score >= 80
+
+
+def test_unclassified_temporal_event_with_no_related_classified_event_does_not_contribute() -> None:
+    """Hicbir siniflandirilmis olaya `related_events` ile BAGLI OLMAYAN, kendi basina siniflandirilamamis bir TemporalEvent, contributing kumesine ASLA sizmamali (kontrolsuz genisleme YOK)."""
+    from src.event_analysis.schemas import TemporalEvent
+
+    classified_match = RuleMatch(
+        rule_id="YG-03",
+        rule_description="Yangin Guvenligi Talimati",
+        event_type="yangin_duman",
+        severity="kritik",
+        source_event_id="evt_0",
+    )
+    fire_event = TemporalEvent(
+        event_id="evt_0",
+        event_name="duman_baslangici",
+        event_type="yangin_duman",
+        description="duman",
+        start_timestamp=0.0,
+        end_timestamp=2.0,
+        duration=2.0,
+        confidence=0.8,
+        occurrence_count=1,
+        matched_keywords=["duman"],
+        source_model="test-vlm",
+        related_events=[],  # ILISKISIZ
+    )
+    unrelated_unclassified = TemporalEvent(
+        event_id="evt_99",
+        event_name="alakasiz_gozlem",
+        event_type=None,
+        description="tamamen alakasiz, gec bir gozlem",
+        start_timestamp=500.0,
+        end_timestamp=505.0,
+        duration=5.0,
+        confidence=0.99,
+        occurrence_count=1,
+        matched_keywords=["kontrolsuz"],  # yuksek H tasisa BILE, iliskisiz oldugu icin GIRMEMELI
+        source_model="test-vlm",
+        related_events=[],
+    )
+
+    provenance = resolve_deterministic_risk_with_provenance(
+        [classified_match], temporal_events=[fire_event, unrelated_unclassified]
+    )
+
+    assert "evt_99" not in provenance.contributing_event_ids
+    assert provenance.features["hazard_escalation"] == 0.25  # yalnizca fire_event'in "duman"i
+
+
+def test_real_escalating_fire_scenario_end_to_end_through_event_engine_and_rule_engine() -> None:
+    """Item 7 (SON PRODUCTION RUNTIME AUDIT): duman->alev->buyuyen->kontrolsuz yangin senaryosu, SENTETIK RuleMatch/TemporalEvent DEGIL, GERCEK `EventEngine`/`TemporalReasoner`/`RuleEngine` zincirinden gecirilir.
+
+    VLM'in EVENTS_JSON'unun GERCEKCI sekilde, evrilen yangin icin FARKLI
+    `event_name`ler (ama TUTARLI `canonical_event_type`) urettigi varsayilir -
+    bu, `_group_by_type_and_proximity`nin (T020, event_name-tabanli gruplama)
+    boyle bir olayi 4 AYRI TemporalEvent'e boldugu, GERCEK bir senaryodur.
+    """
+    from src.event_analysis.event_engine import EventEngine
+    from src.event_analysis.rule_engine import RuleEngine
+    from src.event_analysis.schemas import EventEngineInput
+    from src.event_analysis.temporal_reasoner import TemporalReasoner
+
+    structured_events = [
+        {
+            "event_name": "duman_baslangici",
+            "canonical_event_type": "yangin_duman",
+            "description": "00:30 civarinda duman gorulmeye basladi",
+            "start_time": 30.0,
+            "end_time": 32.0,
+            "confidence": 0.8,
+            "keywords": ["duman"],
+        },
+        {
+            "event_name": "alev_baslangici",
+            "canonical_event_type": "yangin_duman",
+            "description": "00:32 civarinda alev olustu",
+            "start_time": 32.0,
+            "end_time": 35.0,
+            "confidence": 0.85,
+            "keywords": ["alev"],
+        },
+        {
+            "event_name": "buyuyen_yangin",
+            "canonical_event_type": "yangin_duman",
+            "description": "alev buyuyor, yayiliyor",
+            "start_time": 35.0,
+            "end_time": 42.0,
+            "confidence": 0.9,
+            "keywords": ["buyuyen", "yayiliyor"],
+        },
+        {
+            "event_name": "kontrolsuz_yangin",
+            "canonical_event_type": "yangin_duman",
+            "description": "video sonuna kadar kontrolsuz acik alev devam ediyor",
+            "start_time": 42.0,
+            "end_time": 45.0,
+            "confidence": 0.95,
+            "keywords": ["kontrolsuz", "acik alev"],
+        },
+    ]
+
+    engine_input = EventEngineInput(
+        vlm_description="Sahnede yangin gozlemlendi: duman, alev, buyuyen ve kontrolsuz yangin.",
+        timestamp=45.0,
+        source_model="test-vlm",
+        structured_events=structured_events,
+    )
+
+    detected = EventEngine().detect(engine_input)
+    assert len(detected) == 4  # her asama ayri bir DetectedEvent
+
+    temporal_events = TemporalReasoner().reason(detected)
+    assert len(temporal_events) == 4  # T020: event_name farkli oldugu icin AYRI TemporalEvent'ler
+
+    rule_matches = RuleEngine().evaluate(temporal_events)
+    assert len(rule_matches) == 4  # her biri canonical_event_type='yangin_duman' TASIDIGI icin RuleMatch uretti
+
+    provenance = resolve_deterministic_risk_with_provenance(rule_matches, temporal_events=temporal_events)
+
+    assert provenance.risk_level == "kritik"
+    assert provenance.risk_score >= 80
+    assert provenance.safety_floor_applied is True
+    assert provenance.features["hazard_escalation"] == 1.0
+    assert set(provenance.contributing_event_ids) == {te.event_id for te in temporal_events}
+    # LLM'in taslak skoru (llm_proposed_score) BAGIMSIZ kalir, sonucu DEGISTIRMEZ.
+    provenance_llm_85 = resolve_deterministic_risk_with_provenance(
+        rule_matches, temporal_events=temporal_events, llm_proposed_score=85
+    )
+    assert provenance_llm_85.risk_score == provenance.risk_score
+    assert provenance_llm_85.llm_proposed_score == 85

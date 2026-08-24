@@ -1,20 +1,21 @@
-"""SAFIR RAG (LOKAL embedding + FAISS + opsiyonel Gemini/Groq rerank) icin GERCEK smoke test.
+"""SAFIR RAG (LOKAL E5 embedding + FAISS + deterministik relevance + opsiyonel LOKAL Cross-Encoder) icin GERCEK smoke test.
 
-Embedding artik TAMAMEN LOKAL'dir (`sentence-transformers`, CPU, API anahtari
-GEREKMEZ). Reranker OPSIYONELDIR; config'teki `memory.reranker.provider`e gore
-Gemini VEYA Groq (`memory.reranker.api_key_env`) kullanabilir - gerekli ortam
-degiskeni TANIMLI DEGILSE, bu script bunu ACIKCA belirtip mock'a SESSIZCE
-DUSMEDEN cikar.
+2026-08-24 (RAG+RISK PRODUCTION KAPANIS turu, terminology audit duzeltmesi):
+bu script ONCEDEN eski Gemini/Groq LLM-as-judge reranker donemine aitti ve
+artik var olmayan `doc.rerank_score` alanina (bkz. `RetrievedDocument` -
+GERCEK alanlar `embedding_score`/`relevance_score`/`cross_encoder_score`dir)
+referans veriyordu - hicbir zaman calismadan `[SKIPPED]` basip cikiyordu
+(reranker.provider artik "gemini"/"groq" OLAMAZ, bkz. `RerankerConfig`
+dokustringi). HICBIR AG/LLM/API CAGRISI icermez - hem deterministik relevance
+hem (varsa) lokal Cross-Encoder TAMAMEN CPU'da calisir.
 
 Kullanim:
-    export GROQ_API_KEY=...   # reranker.provider="groq" ise gerekir (varsayilan)
     python scripts/rag_smoke_test.py
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -36,20 +37,22 @@ def main() -> int:
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
     from src.rag.embedding_rag_service import EmbeddingRAGService, _INDEX_FILE
+    from src.rag.local_cross_encoder_reranker import DEFAULT_LOCAL_CROSS_ENCODER_MODEL, LocalCrossEncoderReranker
     from src.utils.config_loader import load_config
 
     config = load_config()
     if not config.memory.reranker.enabled:
-        print("[SKIPPED] memory.reranker devre disi - config.yaml'i kontrol edin.")
-        return 0
-    if config.memory.reranker.provider not in ("gemini", "groq"):
-        print(f"[SKIPPED] memory.reranker.provider desteklenmiyor: '{config.memory.reranker.provider}'.")
-        return 0
-    if not os.environ.get(config.memory.reranker.api_key_env, "").strip():
-        print(f"[SKIPPED] {config.memory.reranker.api_key_env} is not set (reranker icin gerekli)")
-        return 0
+        print("[BILGI] memory.reranker devre disi - yalnizca embedding_score siralamasi kullanilacak.")
 
-    service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss, config.memory.reranker)
+    # Production'daki AYNI varsayilan: LOKAL Cross-Encoder (bkz. `src/main.py::SafirPipeline.__init__`).
+    # HICBIR AG cagrisi API ANAHTARI GEREKTIRMEZ - model agirligi lazy yuklenir; bu ortamda
+    # yuklenemezse (paket/internet yok) `query()` KONTROLLU sekilde deterministic relevance'a duser.
+    service = EmbeddingRAGService(
+        config.memory.embedding,
+        config.memory.faiss,
+        config.memory.reranker,
+        cross_encoder=LocalCrossEncoderReranker(DEFAULT_LOCAL_CROSS_ENCODER_MODEL),
+    )
 
     if not _INDEX_FILE.exists():
         print(f"[BILGI] Persisted index yok ({_INDEX_FILE}); simdi 748 chunk LOKAL modelle embed edilecek.")
@@ -61,33 +64,36 @@ def main() -> int:
         print(f"[OK] Persisted index yuklendi ({service.document_count()} dokuman).\n")
 
     print("=" * 72)
-    print(f"GERCEK RAG SMOKE TEST (lokal embedding + {config.memory.reranker.provider} rerank, GERCEK API)")
+    print("GERCEK RAG SMOKE TEST (lokal E5 embedding + deterministik relevance + lokal Cross-Encoder)")
     print("=" * 72)
 
     for query in _QUERIES:
         candidate_k = min(config.memory.faiss.candidate_k, service.document_count())
         results = service.query(query)
+        telemetry = service.get_last_query_telemetry()
 
         print(f"\nQUERY: {query!r}")
         print(f"CANDIDATES: {candidate_k}")
-        print(f"RERANKED: {candidate_k}")
         print(f"FINAL: {len(results)}")
+        print(f"CROSS_ENCODER_STATUS: {telemetry.cross_encoder_status if telemetry else 'n/a'}")
 
         if not results:
             print("  (esik-uzeri sonuc yok - GECERLI bir sonuc, rastgele top-k UYDURULMADI)")
             continue
 
         for i, doc in enumerate(results, start=1):
-            score = doc.rerank_score if doc.rerank_score is not None else doc.embedding_score
-            print(f"\n{i}. score={score:.2f}")
+            print(f"\n{i}. embedding_score={doc.embedding_score:.3f}", end="")
+            print(f" relevance_score={doc.relevance_score:.3f}" if doc.relevance_score is not None else " relevance_score=yok", end="")
+            print(f" cross_encoder_score={doc.cross_encoder_score:.3f}" if doc.cross_encoder_score is not None else " cross_encoder_score=yok")
             print(f"   document={doc.document_title or doc.document_id or '(bilinmeyen kaynak)'}")
             print(f"   article={doc.article_number or '-'}")
             print(f"   source={doc.source_url or '-'}")
 
     print("\n" + "=" * 72)
-    print("Not: sonuclarin semantik kalitesi burada IDDIA EDILMEMEKTEDIR - bu")
-    print("script yalnizca lokal embedding + gercek rerank API'sinin uctan uca")
-    print("CALISTIGINI dogrular. API anahtarlari hicbir yerde YAZDIRILMADI.")
+    print("Not: sonuclarin semantik kalitesi burada IDDIA EDILMEMEKTEDIR - bu script")
+    print("yalnizca lokal embedding + deterministik relevance + (varsa) lokal")
+    print("Cross-Encoder'in uctan uca CALISTIGINI dogrular. Hicbir API anahtari")
+    print("gerekmez, hicbir agdan/harici serviste veri okunmaz/yazilmaz.")
     return 0
 
 

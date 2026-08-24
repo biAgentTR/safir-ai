@@ -138,6 +138,37 @@ def _pick_provenance(
             if event_id not in contributing_event_ids:
                 contributing_event_ids.append(event_id)
 
+    # 2026-08-24 (runtime data-flow audit): bir TemporalEvent'in KENDI
+    # `event_type`i yoksa (VLM'in serbest `event_name`i bilinen hicbir
+    # kategoriye oturmuyor - bkz. `rule_engine.py::_safe_event_type`
+    # docstring'i, "bir kategoriye ZORLAMA YAPILMAZ"), RuleEngine o olay
+    # icin HICBIR RuleMatch URETMEZ - bu KASITLI ve DOGRUdur (fabrikasyon
+    # ONLENIR). AMA bu, ayni olayin (orn. bir yanginin ilerleyen, DAHA
+    # siddetli asamasi) GERCEK kanitinin (matched_keywords/duration/
+    # confidence) `hazard_escalation`/temporal feature'lara TAMAMEN
+    # KAYBOLMASINA yol aciyordu - RuleEngine "bu olayi siniflandirmiyorum"
+    # dedi diye, TemporalReasoner'in ZATEN kurdugu (`related_events`,
+    # simetrik, tip-bagimsiz zaman-yakinligi baglantisi) iliski de
+    # YOK SAYILIYORDU. Duzeltme: TAM OLARAK contributing (zaten siddeti
+    # BELLI) bir olaya `related_events` ile baglı VE kendi event_type'i
+    # None olan (siniflandirilmamis) TemporalEvent'lerin event_id'leri de
+    # feature hesaplamasina (SADECE feature'lara - hangi RuleMatch/severity
+    # kazandigini DEGISTIRMEZ) dahil edilir. Boylece "duman baslangici"
+    # (siniflandirilmis, kritik) + "kontrolsuz ilerleme" (siniflandirilmamis
+    # ama ZATEN iliskili) ayni olayin GERCEK kanit butunlugunu korur.
+    if temporal_events:
+        by_id = {te.event_id: te for te in temporal_events}
+        for event_id in list(contributing_event_ids):
+            source_event = by_id.get(event_id)
+            if source_event is None:
+                continue
+            for related_id in source_event.related_events:
+                related_event = by_id.get(related_id)
+                if related_event is None or related_event.event_type is not None:
+                    continue
+                if related_id not in contributing_event_ids:
+                    contributing_event_ids.append(related_id)
+
     breakdown: RiskScoreBreakdown = compute_risk_score(
         risk_level=risk_level,
         contributing_matches=contributing,

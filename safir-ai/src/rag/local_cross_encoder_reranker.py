@@ -143,5 +143,16 @@ class LocalCrossEncoderReranker(CrossEncoderReranker):
             return []
         model = self._get_model()
         pairs = [(query, text) for text in texts]
-        scores = model.predict(pairs)
+        try:
+            scores = model.predict(pairs)
+        except Exception as exc:  # noqa: BLE001 - `CrossEncoder(...)` CoNSTRUCTORU basarili olsa bile
+            # bazi `sentence-transformers` surumlerinde GERCEK model agirligi ilk
+            # `predict()` cagrisina kadar (lazy alt-modul yuklemesi) INDIRILMEZ - bu
+            # yuzden ag/model hatasi BURADA da olusabilir (yalnizca constructor'da
+            # DEGIL). `CrossEncoderUnavailableError`e AYNI sekilde cevrilir - cagiran
+            # (`EmbeddingRAGService.query()`) ikisini de TEK bir kontrollu degradasyon
+            # yolundan (harici bir API'ye SESSIZCE DUSMEDEN) ele alir.
+            raise CrossEncoderUnavailableError(
+                f"Lokal Cross-Encoder modeli '{self._model_name}' ile skorlama basarisiz: {exc}"
+            ) from exc
         return [float(s) for s in scores]

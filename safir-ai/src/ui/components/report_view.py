@@ -160,6 +160,17 @@ class AgentRagPanel:
             st.subheader("📝 Operator Ozeti (Ajan)")
             st.write(summary)
 
+        llm_proposed_score = report.get("llm_proposed_score")
+        if llm_proposed_score is not None:
+            st.info(
+                f"🤖 **Model Önerisi (llm_proposed_score): {llm_proposed_score}/100** — bu, Agent'ın "
+                f"KENDİ taslak değerlendirmesidir, RESMİ DEĞİLDİR ve final risk kararını BELİRLEMEZ. "
+                f"Sistemin resmi kararı yukarıdaki **Risk Skoru: {report['risk_score']}/100** "
+                f"({report['risk_level'].upper()}) alanıdır - deterministik risk motoru tarafından "
+                f"(RuleEngine şiddeti + temporal kanıt + hazard escalation + doğrulanmış RAG mevzuat "
+                f"desteği) hesaplanmıştır ve Agent'ın önerisinden BAĞIMSIZDIR."
+            )
+
         st.subheader("🧠 VLM Gorsel Anlama Ciktisi (Turkce)")
         st.write(report["natural_language_summary"])
 
