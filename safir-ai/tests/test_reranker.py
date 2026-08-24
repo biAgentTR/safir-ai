@@ -221,6 +221,32 @@ def test_groq_api_failure_raises_unavailable_not_silently() -> None:
         reranker.rerank("sorgu", ["a", "b"])
 
 
+def test_groq_429_rate_limit_raises_unavailable_not_silent_fallback() -> None:
+    """HEDEF 11: gercekte gozlenen '429 Too Many Requests' hatasi, SESSIZCE embedding top-k'ye DUSMEZ - `RerankerUnavailableError` firlatir."""
+
+    class _RateLimitError(Exception):
+        def __init__(self) -> None:
+            super().__init__("429 Too Many Requests: rate limit exceeded")
+
+    reranker = GroqReranker(model_name="openai/gpt-oss-20b")
+    reranker._client = _FakeGroqClient(raise_error=False)
+    reranker._client.chat.completions._raise_error = True
+    reranker._client.chat.completions.create = lambda **kwargs: (_ for _ in ()).throw(_RateLimitError())
+
+    with pytest.raises(RerankerUnavailableError, match="429"):
+        reranker.rerank("sorgu", ["a", "b"])
+
+
+def test_groq_400_json_validate_failed_raises_unavailable_not_silent_fallback() -> None:
+    """HEDEF 12: gercekte gozlenen '400 json_validate_failed' hatasi (model semaya uymayan JSON dondurdu) - `RerankerUnavailableError` firlatir, embedding top-k'ye DUSULMEZ."""
+    # Modelin dondurdugu metin JSON DEGIL (gercek gozlemde: model aciklama METNI eklemis,
+    # JSON semasina uymamis) - `_parse_rerank_response` bunu ACIKCA reddeder.
+    reranker = _groq_reranker_with_fake_client(response_text="Uzgunum, bu sorguyu degerlendiremiyorum.")
+
+    with pytest.raises(RerankerUnavailableError):
+        reranker.rerank("sorgu", ["a", "b"])
+
+
 def test_groq_rerank_empty_candidates_returns_empty_list() -> None:
     reranker = _groq_reranker_with_fake_client(response_text=json.dumps({"results": []}))
     assert reranker.rerank("sorgu", []) == []

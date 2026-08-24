@@ -172,6 +172,58 @@ def test_below_threshold_results_are_excluded(tmp_path) -> None:
     assert results[0].rerank_score == pytest.approx(0.9)
 
 
+def test_relevance_status_and_reason_are_stamped_deterministically_on_every_candidate(tmp_path) -> None:
+    """HEDEF 15/7/15: 'neden secildi/elendi?' sorusu, AYRI bir yapi uretmeden dogrudan RetrievedDocument uzerinde cevaplanabilmeli; ayni girdi ile karar HER ZAMAN AYNI (deterministik)."""
+    reranker = _FakeReranker(score_by_substring={"ALAKALI": 0.9, "ALAKASIZ": 0.02}, default_score=0.5)
+    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=reranker, score_threshold=0.10)
+    service.add_documents(["Bu metin ALAKALI bir mevzuat.", "Bu metin ALAKASIZ bir konu."])
+
+    telemetry_accepted_reasons = []
+    telemetry_rejected_reasons = []
+    for _ in range(3):  # ayni sorgu 3 kez - karar HER SEFERINDE ayni olmali
+        results = service.query("sorgu")
+        telemetry = service.get_last_query_telemetry()
+        assert len(results) == 1
+        assert results[0].relevance_status == "accepted"
+        assert "threshold" in results[0].relevance_reason
+        rejected = [r for r in telemetry.results if r.relevance_status == "rejected"]
+        assert len(rejected) == 1
+        assert "threshold" in rejected[0].relevance_reason
+        telemetry_accepted_reasons.append(results[0].relevance_reason)
+        telemetry_rejected_reasons.append(rejected[0].relevance_reason)
+
+    assert len(set(telemetry_accepted_reasons)) == 1  # 3 cagri, TEK bir gerekce metni -> deterministik
+    assert len(set(telemetry_rejected_reasons)) == 1
+
+
+def test_embedding_score_is_not_relabeled_as_confidence(tmp_path) -> None:
+    """HEDEF 13: `embedding_score`, kalibre edilmis bir olasilik/confidence DEGIL, FAISS cosine benzerligidir - hicbir alan/telemetri onu 'confidence' olarak ADLANDIRMAZ."""
+    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=None)
+    service.add_documents(["bir mevzuat metni"])
+
+    results = service.query("sorgu")
+    telemetry = service.get_last_query_telemetry()
+
+    assert hasattr(results[0], "embedding_score")
+    assert not hasattr(results[0], "confidence")
+    assert not hasattr(telemetry.results[0], "confidence")
+    import dataclasses
+
+    assert "confidence" not in {f.name for f in dataclasses.fields(results[0])}
+
+
+def test_rerank_score_is_llm_as_judge_relevance_not_calibrated_probability(tmp_path) -> None:
+    """HEDEF 6/14: rerank_score, `reranker.py::_build_rerank_prompt`in ISTEDIGI serbest LLM-yargisi skorudur (0.0-1.0 araligina KISITLANMIS, ama kalibre edilmis bir olasilik OLDUGU IDDIA EDILMEZ)."""
+    from src.rag.reranker import _build_rerank_prompt, _parse_rerank_response
+
+    prompt = _build_rerank_prompt("sorgu", ["aday 0", "aday 1"])
+    assert "0.0 (hic alakasiz) ile 1.0 (tam alakali) arasinda" in prompt
+    assert "puanlamaktir" in prompt  # kalibre edilmis "probability" degil, LLM'in KENDI yargisi istenir
+
+    parsed = _parse_rerank_response('{"results": [{"index": 0, "score": 0.9}, {"index": 1, "score": 0.3}]}', 2)
+    assert parsed == [(0, 0.9), (1, 0.3)]
+
+
 def test_all_below_threshold_returns_empty_list_not_random_topk(tmp_path) -> None:
     reranker = _FakeReranker(default_score=0.01)
     service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=reranker, score_threshold=0.10)
@@ -533,10 +585,98 @@ def test_real_persisted_chunk_text_and_provenance_reach_context_builder_prompt(m
     )
     prompt_block = context.to_prompt_block()
 
-    # Agent'in GORDUGU nihai metinde hem GERCEK chunk metni hem provenance (baslik+madde) var mi.
-    assert real_chunk["text"][:200] in prompt_block
-    assert real_chunk["document_title"] in prompt_block
-    assert f"Madde {real_chunk['article_number']}" in prompt_block
-    # chunk_id, ContextBuilder'in ISLENMIS `EnrichedContext` nesnesinde HALA GERI OKUNABILIR
-    # (agent'in ham metninde gorunmez ama trace/telemetri icin objede korunur - bkz. main.py::stage_context).
+    # Agent'in GORDUGU nihai metinde GERCEK chunk metni + TAM provenance (RAG PIPELINE
+    # RECONSTRUCTION, gorev tanimi 12. bolum: "[RAG EVIDENCE N]" bloklari, kirpilmamis
+    # metin, chunk_id/source_url dahil - artik yalnizca ilk 200 karakter DEGIL, TAMAMI).
+    assert real_chunk["text"] in prompt_block
+    assert "[RAG EVIDENCE 1]" in prompt_block
+    assert f"document: {real_chunk['document_title']}" in prompt_block
+    assert f"article: {real_chunk['article_number']}" in prompt_block
+    assert f"chunk_id: {real_chunk['chunk_id']}" in prompt_block
+    assert f"source_url: {real_chunk['source_url']}" in prompt_block
     assert context.semantically_related_chunks[0].chunk_id == real_chunk["chunk_id"]
+
+
+# ---------------------------------------------------------------------------
+# RAG PIPELINE RECONSTRUCTION (2026-08-24): GERCEK persisted index + GERCEK lokal
+# E5 embedding modeliyle calisan semantik retrieval testleri (gorev tanimi 15.
+# bolum, madde 1-5). Bu testler GERCEK model agirliklarinin (ilk kullanimda
+# HuggingFace Hub'dan) yuklenebilmesini gerektirir - agsiz/izole sandbox'larda
+# (orn. bu repo'nun CI'i, huggingface.co'ya erisimi olmayan bir ortam) TEMIZ
+# bir sekilde SKIP edilir; ag erisimi olan bir ortamda GERCEK semantik kaliteyi
+# dogrular (bkz. modul dokustringindeki "Gercek API'lere karsi..." notu - bu
+# artik lokal bir model oldugu icin 'API' degil ama ayni ilke gecerlidir).
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _real_local_rag_service(tmp_path):
+    """GERCEK persisted index + GERCEK `LocalEmbeddingProvider` ile kurulmus servis; model yuklenemezse SKIP eder."""
+    if not rag_module._INDEX_FILE.exists():
+        pytest.skip("data/knowledge_base/index/ bu checkout'ta yok.")
+
+    embedding_config = EmbeddingConfig(provider="local", model_name="intfloat/multilingual-e5-small", output_dimensionality=384)
+    faiss_config = FaissMemoryConfig(
+        index_path=str(rag_module._INDEX_FILE),
+        embedding_model="intfloat/multilingual-e5-small",
+        top_k=5,
+        candidate_k=20,
+    )
+    service = EmbeddingRAGService(embedding_config, faiss_config, RerankerConfig(enabled=False))
+    try:
+        service.seed_default_regulations()
+        service.query("baglanti testi")  # gercek model YUKLEME denemesi burada olur
+    except Exception as exc:  # noqa: BLE001 - agsiz sandbox'ta model indirilemez, TEMIZ skip
+        pytest.skip(f"Gercek lokal embedding modeli yuklenemedi (ag erisimi yok?): {exc}")
+    return service
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "forklift yaya güvenliği",
+        "elektrik kilitleme etiketleme",
+        "kimyasal madde etiketleme",
+        "kapalı alan girişi",
+    ],
+)
+def test_real_semantic_queries_against_real_corpus_return_relevant_documents(
+    _real_local_rag_service, query: str
+) -> None:
+    """HEDEF 15/1-4: gercek 748 chunk corpus'unda, gercek lokal E5 embedding ile bu 4 sorgu GERCEKTEN sonuc doner."""
+    results = _real_local_rag_service.query(query)
+    telemetry = _real_local_rag_service.get_last_query_telemetry()
+
+    assert telemetry.corpus_source == "persisted_index"
+    assert telemetry.candidate_count > 0
+    assert results, f"{query!r} icin hic sonuc donmedi (candidate_count={telemetry.candidate_count})"
+    for doc in results:
+        assert doc.document_id is not None
+        assert doc.relevance_status == "accepted"
+        assert doc.retrieval_rank is not None
+        assert doc.source_verified is True
+
+
+def test_real_semantic_query_completely_outside_corpus_scope_does_not_fabricate_relevance(
+    _real_local_rag_service,
+) -> None:
+    """HEDEF 15/5 (corpus disi mevzuat): FAISS her zaman "en az kotu" adaylari dondurur (cosine benzerligi hicbir zaman "sonuc yok" demez);
+
+    bu test, corpus'la ILGISIZ bir sorgunun candidate_count > 0 uretse bile
+    (bu, retrieval'in TEK BASINA "corpus disi" durumu ELEYEMEDIGINI kanitlar -
+    reranker/relevance_threshold'un NEDEN gerekli oldugunu gosterir) skorlarin
+    ISG mevzuatiyla eslesen sorgulardan (yukaridaki 4 test) ACIKCA daha dusuk
+    oldugunu dogrular - "ayni yuksek guvenle" sunulmadigini kanitlar.
+    """
+    off_topic_results = _real_local_rag_service.query("Roma imparatorluğu tarihi ve gladyatör dövüşleri")
+    off_topic_telemetry = _real_local_rag_service.get_last_query_telemetry()
+
+    on_topic_results = _real_local_rag_service.query("forklift yaya güvenliği")
+    on_topic_telemetry = _real_local_rag_service.get_last_query_telemetry()
+
+    assert off_topic_telemetry.candidate_count > 0  # FAISS HER ZAMAN bir seyler dondurur
+    if off_topic_results and on_topic_results:
+        assert off_topic_telemetry.avg_embedding_score < on_topic_telemetry.avg_embedding_score, (
+            "corpus-disi sorgunun ortalama embedding skoru, corpus-ici bir sorgudan DUSUK olmali "
+            "- degilse relevance_threshold/reranker GERCEKTEN ayirt edici degildir."
+        )

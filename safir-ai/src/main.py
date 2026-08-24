@@ -239,6 +239,85 @@ def _build_semantic_query(matched_keywords: List[str], vlm_description: str, max
     return ". ".join(parts)
 
 
+_CITATION_PATTERNS = [
+    # "<Isim> Yonetmeligi/Kanunu/Tuzugu Madde <no>" (orn. "Is Ekipmanlari Yonetmeligi Madde 12").
+    re.compile(
+        r"([A-ZÇĞİÖŞÜ][\wÇĞİÖŞÜçğıöşü\s]{2,60}?(?:Yönetmeliği|Kanunu|Tüzüğü))\s+Madde\s+([IVXLCM\d]+(?:\.\d+)*)"
+    ),
+    # "<Isim> Talimati <KOD>" (orn. "Yangin Guvenligi Talimati YG-03").
+    re.compile(r"([A-ZÇĞİÖŞÜ][\wÇĞİÖŞÜçğıöşü\s]{2,50}?Talimat[ıi])\s+([A-ZÇĞİÖŞÜ]{1,6}-\d+)"),
+]
+"""Ajanin SERBEST METIN ciktisinda (summary/actions) gecebilecek, mevzuat-atfi
+GIBI GORUNEN kaliplari yakalayan, KASITLI DAR regex'ler (bkz.
+`_extract_potential_citations`/`_unverified_citations`, gorev tanimi 10. bolum).
+Bu, TAM bir NLP atif-cikarma sistemi DEGILDIR - yalnizca gorev tanimindaki somut
+ornekle (orn. 'Yangin Guvenligi Talimati YG-03') AYNI kaliptaki, kolayca
+UYDURULABILECEK referanslari YAKALAMAK icin yeterince spesifiktir; eslesmeyen
+serbest metin SESSIZCE gecilir (yanlis-pozitif UYDURULMAZ)."""
+
+
+def _extract_potential_citations(text: str) -> List[Tuple[str, str, str]]:
+    """Serbest metinden mevzuat-atfi GIBI GORUNEN kaliplari cikarir.
+
+    Returns:
+        `(tam_eslesme_metni, dokuman_adi, madde_veya_kod)` uclulerinin listesi.
+    """
+    matches: List[Tuple[str, str, str]] = []
+    for pattern in _CITATION_PATTERNS:
+        for m in pattern.finditer(text):
+            matches.append((m.group(0), m.group(1).strip(), m.group(2).strip()))
+    return matches
+
+
+def _unverified_citations(text: str, semantic_rag_sources: List) -> List[str]:
+    """Ajanin serbest metninde gecen mevzuat-benzeri atiflardan, GERCEKTEN RETRIEVED EVIDENCE
+
+    ile eslesmeyenleri dondurur (gorev tanimi 10. bolum: "corpus lookup -> bulunamadi ->
+    source_verified=false"). Eslesme, dokuman adinin (kucuk harfe cevrilmis, bosluklar
+    sadelestirilmis) evidence'in `rule_title`iyle KISMEN ortusmesi + (varsa) madde/kod
+    numarasinin BIREBIR ayni olmasi uzerinden yapilir - deterministik, LLM'e SORULMAZ.
+
+    Args:
+        text: Ajanin serbest metni (orn. `decision.summary` + tum `decision.actions`).
+        semantic_rag_sources: Bu cagrida GERCEKTEN retrieved olan `RagContext` listesi
+            (bkz. `build_report`) - yalnizca BUNLARA gore dogrulama yapilir (corpus'un
+            TAMAMINA degil, bu sorgunun GERCEKTEN getirdigi kanitlara gore).
+
+    Returns:
+        Dogrulanamamis (evidence'ta karsiligi bulunamayan) atiflarin TAM metni
+        (orijinal, kirpilmamis) - tekrarsiz, ilk-gorulme sirali.
+    """
+    if not text:
+        return []
+
+    def _normalize(s: str) -> str:
+        return " ".join(s.lower().split())
+
+    evidence_titles = [_normalize(getattr(s, "rule_title", "") or "") for s in semantic_rag_sources]
+    evidence_articles = {
+        (_normalize(getattr(s, "rule_title", "") or ""), _normalize(getattr(s, "article_number", "") or ""))
+        for s in semantic_rag_sources
+    }
+
+    unverified: List[str] = []
+    seen: set = set()
+    for full_match, doc_name, article_or_code in _extract_potential_citations(text):
+        if full_match in seen:
+            continue
+        seen.add(full_match)
+        norm_doc = _normalize(doc_name)
+        norm_article = _normalize(article_or_code)
+        if not any(norm_doc in t or t in norm_doc for t in evidence_titles):
+            unverified.append(full_match)
+            continue
+        # Dokuman adi (kismen) eslesti - madde/kod numarasi da BIREBIR eslesiyor mu?
+        article_matches = any((norm_doc in t or t in norm_doc) and a == norm_article for (t, a) in evidence_articles)
+        if not article_matches:
+            unverified.append(full_match)
+
+    return unverified
+
+
 _WINDOWS_ABS_PATH_RE = re.compile(r"^[a-zA-Z]:[\\/]")
 
 
@@ -1234,6 +1313,32 @@ class SafirPipeline:
                 "degerlendirmesinden alindi (RuleEngine tarafindan dogrulanmamis)."
             )
 
+        # `getattr(..., None)` KASITLI: test/mock RAG servisleri (yalnizca `text`/`score`
+        # tasiyan duck-typed sahteler) icin de GUVENLI CALISIR - bkz. ayni gerekce
+        # `context_builder.py::_format_semantic_chunks` ve `tools.py::RetrieverTool.run`da.
+        semantic_rag_sources = [
+            RagContext(
+                rule_title=(
+                    getattr(chunk, "document_title", None)
+                    or getattr(chunk, "document_id", None)
+                    or "(bilinmeyen kaynak)"
+                ),
+                content=chunk.text,
+                score=getattr(chunk, "embedding_score", None) or getattr(chunk, "score", 0.0),
+                chunk_id=getattr(chunk, "chunk_id", None),
+                document_id=getattr(chunk, "document_id", None),
+                article_number=getattr(chunk, "article_number", None),
+                source_url=getattr(chunk, "source_url", None),
+                rerank_score=getattr(chunk, "rerank_score", None),
+            )
+            for chunk in context.semantically_related_chunks
+        ]
+        # Source validation (gorev tanimi 10. bolum): Ajanin serbest metninde (summary +
+        # actions) gecen mevzuat-benzeri atiflardan, BU CAGRIDA GERCEKTEN retrieved olan
+        # kanitlarla eslesmeyenleri isaretler - deterministik, regex-tabanli (LLM'e SORULMAZ).
+        agent_free_text = " ".join([decision.summary or ""] + list(decision.actions or []))
+        unverified_references = _unverified_citations(agent_free_text, semantic_rag_sources)
+
         return SafirReport(
             event_id=event_id,
             video_source=video_source,
@@ -1274,26 +1379,8 @@ class SafirPipeline:
             ],
             evidence_frames=_select_report_evidence_frames(vlm_response, evidence_frames),
             relevant_regulations=context.relevant_regulations,
-            # `getattr(..., None)` KASITLI: test/mock RAG servisleri (yalnizca `text`/`score`
-            # tasiyan duck-typed sahteler) icin de GUVENLI CALISIR - bkz. ayni gerekce
-            # `context_builder.py::_format_semantic_chunks` ve `tools.py::RetrieverTool.run`da.
-            semantic_rag_sources=[
-                RagContext(
-                    rule_title=(
-                        getattr(chunk, "document_title", None)
-                        or getattr(chunk, "document_id", None)
-                        or "(bilinmeyen kaynak)"
-                    ),
-                    content=chunk.text,
-                    score=getattr(chunk, "embedding_score", None) or getattr(chunk, "score", 0.0),
-                    chunk_id=getattr(chunk, "chunk_id", None),
-                    document_id=getattr(chunk, "document_id", None),
-                    article_number=getattr(chunk, "article_number", None),
-                    source_url=getattr(chunk, "source_url", None),
-                    rerank_score=getattr(chunk, "rerank_score", None),
-                )
-                for chunk in context.semantically_related_chunks
-            ],
+            semantic_rag_sources=semantic_rag_sources,
+            unverified_references=unverified_references,
             sampler_stats=(
                 SamplerStats(
                     total_frames_scanned=sampler.last_run_stats.total_frames_scanned,

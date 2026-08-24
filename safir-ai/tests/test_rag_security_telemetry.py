@@ -34,6 +34,10 @@ def _sample_rag_telemetry(zero_result: bool = False) -> RagQueryTelemetry:
         embedding_score=0.81,
         rerank_score=0.72,
         selected=not zero_result,
+        rank=1,
+        relevance_status="accepted",
+        relevance_reason="rerank_score (0.720) >= threshold (0.100)",
+        text="Madde 12: Isveren, is sagligi ve guvenligi konusunda gerekli tedbirleri almakla yukumludur.",
     )
     return RagQueryTelemetry(
         query="fire_detected yangın tespit edildi",
@@ -76,8 +80,13 @@ def test_serialize_rag_security_with_full_telemetry() -> None:
     assert data["rag"]["zero_result"] is False
     assert data["rag"]["embedding_latency_ms"] == 45.2
     assert data["rag"]["rerank_latency_ms"] == 310.7
+    assert data["rag"]["query"] == "fire_detected yangın tespit edildi"
     assert data["rag"]["results"][0]["document_id"] == "6331_isg_kanunu"
     assert data["rag"]["results"][0]["rerank_score"] == 0.72
+    assert data["rag"]["results"][0]["rank"] == 1
+    assert data["rag"]["results"][0]["relevance_status"] == "accepted"
+    assert "threshold" in data["rag"]["results"][0]["relevance_reason"]
+    assert "Madde 12" in data["rag"]["results"][0]["text"]
     assert data["security"][0]["source"] == "vlm_description"
     assert data["security"][0]["action"] == "allow"
     assert "RAG" in summary

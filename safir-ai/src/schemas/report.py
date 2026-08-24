@@ -223,6 +223,18 @@ class SafirReport(BaseModel):
         default_factory=list,
         description="RuleEngine-dogrulanmis (deterministik) mevzuat basliklari - risk kararina baglidir.",
     )
+    unverified_references: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Ajanin serbest metninde (summary/actions) gecen, mevzuat-atfi GIBI GORUNEN "
+            "ama bu cagrida GERCEKTEN retrieved olan `semantic_rag_sources`den HICBIRIYLE "
+            "eslesmeyen ifadeler (bkz. `main.py::_unverified_citations`, gorev tanimi 10. "
+            "bolum). Deterministik, regex-tabanli bir kontroldur (LLM'e SORULMAZ); TAM bir "
+            "NLP atif-dogrulamasi DEGILDIR - yalnizca acikca UYDURULMUS gorunen, corpus'ta "
+            "karsiligi bulunamayan referanslari isaretler. Bos liste = ya hicbir mevzuat-"
+            "benzeri ifade gecmedi ya da gecenlerin TAMAMI retrieved evidence'la eslesti."
+        ),
+    )
     semantic_rag_sources: List[RagContext] = Field(
         default_factory=list,
         description=(

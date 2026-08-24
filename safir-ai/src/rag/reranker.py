@@ -21,6 +21,22 @@ siralamasini "final sonuc" gibi DONDURMEZ - `RerankerUnavailableError`
 firlatir; cagiran taraf bunu yakalayip retrieval'i "unavailable" (bos
 sonuc) olarak ele alir. Modelin serbest ACIKLAMA metni ASLA retrieval
 sonucu olarak KULLANILMAZ - yalnizca ayristirilmis {index, score} ciftleri.
+
+KARAR (2026-08-24, RAG PIPELINE RECONSTRUCTION, gorev tanimi 8. bolum -
+"reranker basarisiz olunca embedding_only fallback mi, retrieval_unavailable
+mi?"): SAFIR icin BILINCLI olarak **B) retrieval_unavailable** secildi -
+embedding-only siralamaya (A) SESSIZCE/OTOMATIK DUSULMEZ. Gerekce: bu sistem
+ISG mevzuati gibi HUKUKI/guvenlik-kritik atiflar uretiyor; embedding
+benzerligi (cosine) TEK BASINA bir maddenin sorguya GERCEKTEN alakali
+oldugunun kaniti DEGILDIR (bkz. `embedding_rag_service.py` - embedding_score
+bir "confidence"/olasilik DEGIL, vektor benzerligidir). LLM-as-judge rerank
+BASARISIZ olduysa, bu adaylarin GERCEKTEN dogrulanmis oldugunu iddia etmek
+YANLIS-POZITIF risk tasir (dogrulanmamis bir maddeyi "secilmis kanit" gibi
+sunmak). Bu yuzden reranker basarisiz oldugunda sistem BASARILI gibi
+DAVRANMAZ: final sonuc BOS doner, `retrieval_status="reranker_unavailable"`
+ACIKCA isaretlenir (bkz. `EmbeddingRAGService.query`), her aday
+`relevance_status="unavailable"` damgalanir - "hic aday yoktu" ile "adaylar
+bulundu ama dogrulanamadi" birbirinden AYRISTIRILIR.
 """
 
 from __future__ import annotations

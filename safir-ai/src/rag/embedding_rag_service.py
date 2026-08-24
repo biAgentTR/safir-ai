@@ -246,11 +246,17 @@ def _compute_kb_hash(chunks_dir: Path = _KB_CHUNKS_DIR) -> str:
 
 @dataclass
 class RetrievedDocument:
-    """FAISS(+opsiyonel Gemini rerank)ten geri getirilen tek bir chunk'i, yapilandirilmis kaynak metadata'siyla birlikte tasir.
+    """CANONICAL retrieved-evidence nesnesi: FAISS(+opsiyonel LLM rerank)ten gelen tek bir chunk'i, yapilandirilmis kaynak metadata'si + karar-izlenebilirligi ile birlikte tasir.
 
-    `embedding_score` (FAISS/cosine benzerligi) ile `rerank_score` (Gemini
-    relevance_score, reranker devre disiysa `None`) KASITLI olarak AYRI
-    alanlardir - birbirine KARISTIRILMAZ (bkz. modul dokustringi).
+    `embedding_score` (FAISS/cosine benzerligi) ile `rerank_score` (LLM-as-judge
+    relevance_score, reranker devre disiysa/basarisizsa `None`) KASITLI olarak
+    AYRI alanlardir - birbirine KARISTIRILMAZ (bkz. modul dokustringi).
+
+    2026-08-24 (RAG PIPELINE RECONSTRUCTION): retrieval'dan Agent'e/rapora
+    kadar TEK canonical nesne olarak korunmasi icin `retrieval_rank`/
+    `relevance_status`/`relevance_reason`/`source_verified` eklendi - "neden
+    secildi/elendi?" sorusu artik BU nesnenin uzerinde, ayri bir yapida
+    YENIDEN URETILMEDEN cevaplanabilir.
     """
 
     text: str
@@ -268,6 +274,21 @@ class RetrievedDocument:
     source_url: Optional[str] = None
     institution: Optional[str] = None
     publication_date: Optional[str] = None
+    retrieval_rank: Optional[int] = None
+    """FAISS aday siralamasindaki 1-index'li sira (embedding_score'a gore azalan)."""
+    relevance_status: Optional[str] = None
+    """'accepted' | 'rejected' | 'unavailable' - bu adayin NEDEN final sonuca
+    girip girmedigini gosteren, `query()` icinde atanan deterministik karar
+    (bkz. `_stamp_relevance` / gorev tanimi 7. bolum)."""
+    relevance_reason: Optional[str] = None
+    """`relevance_status`un insan-okunur, hangi skor/esikten geldigini
+    gosteren gerekcesi (orn. 'rerank_score (0.850) >= threshold (0.100)')."""
+    source_verified: bool = True
+    """Bu chunk, persisted KB index'inden (gercek corpus) GERCEKTEN geldigi
+    icin HER ZAMAN `True` - retrieval sonucu, tanimi geregi corpus-kokenlidir
+    (bkz. gorev tanimi 10. bolum: bu, Agent'in SERBEST METIN ciktisindaki
+    olasi UYDURULMUS referanslarla KARISTIRILMAMALIDIR - onlar icin bkz.
+    `SafirReport.unverified_references`)."""
 
     @property
     def score(self) -> float:
@@ -296,16 +317,23 @@ def _result_telemetry(doc: "RetrievedDocument", selected: bool) -> "RagResultTel
         embedding_score=round(doc.embedding_score, 4),
         rerank_score=round(doc.rerank_score, 4) if doc.rerank_score is not None else None,
         selected=selected,
+        rank=doc.retrieval_rank,
+        relevance_status=doc.relevance_status,
+        relevance_reason=doc.relevance_reason,
+        text=doc.text,
     )
 
 
 @dataclass
 class RagResultTelemetry:
-    """Tek bir RAG adayinin/sonucunun DASHBOARD-guvenli (metin ICERMEYEN) telemetri kaydi.
+    """Tek bir RAG adayinin/sonucunun TAM (metin DAHIL) telemetri kaydi.
 
-    `text` KASITLI OLARAK burada YOKTUR - dashboard'a yalnizca yapilandirilmis
-    kaynak metadata'si ve skorlar gider, tam mevzuat metni degil (bkz. RAG +
-    Security Observability gorev tanimi, bolum 3/14).
+    2026-08-24 (RAG PIPELINE RECONSTRUCTION, gorev tanimi 13. bolum): onceki
+    surumde `text` KASITLI disarida birakilmisti (dashboard'a yalnizca
+    metadata/skor gitsin diye); bu turun ACIK talebiyle (operator "bu madde
+    neden secildi?" sorusunu chunk'in GERCEK metnini gormeden cevaplayamaz)
+    `text` da eklendi. Cagiran taraf (trace/dashboard) bunu ARTIK
+    gosterebilir/gizleyebilir - serializer KENDISI veri KAYBETMEZ.
     """
 
     document_id: Optional[str]
@@ -319,6 +347,14 @@ class RagResultTelemetry:
     chunk_id: Optional[str] = None
     """Kaynak chunk'in kimligi (bkz. `RetrievedDocument.chunk_id`) - hangi
     dokumanin HANGI maddesinden/parcasindan geldigini izlenebilir kilar."""
+    rank: Optional[int] = None
+    """FAISS aday siralamasindaki 1-index'li sira (bkz. `RetrievedDocument.retrieval_rank`)."""
+    relevance_status: Optional[str] = None
+    """'accepted' | 'rejected' | 'unavailable' (bkz. `RetrievedDocument.relevance_status`)."""
+    relevance_reason: Optional[str] = None
+    """`relevance_status`un gerekcesi (bkz. `RetrievedDocument.relevance_reason`)."""
+    text: str = ""
+    """Chunk'in GERCEK metni (bkz. sinif dokustringi - onceki surumde YOKTU)."""
 
 
 @dataclass
@@ -678,7 +714,7 @@ class EmbeddingRAGService:
         embedding_latency_ms = (time.perf_counter() - embedding_started) * 1000.0
 
         candidates: List[RetrievedDocument] = []
-        for score, idx in zip(scores[0], indices[0]):
+        for rank, (score, idx) in enumerate(zip(scores[0], indices[0]), start=1):
             if idx == -1:
                 continue
             record = self._documents[idx]
@@ -698,6 +734,7 @@ class EmbeddingRAGService:
                     source_url=record.get("source_url"),
                     institution=record.get("institution"),
                     publication_date=record.get("publication_date"),
+                    retrieval_rank=rank,  # FAISS zaten embedding_score'a gore AZALAN sirada doner
                 )
             )
 
@@ -717,6 +754,14 @@ class EmbeddingRAGService:
                     "(embedding top-k SESSIZCE final sonuc olarak DONDURULMUYOR): %s",
                     exc,
                 )
+                # Gorev tanimi 8. bolum karari: B) retrieval_unavailable - reranker
+                # basarisizsa embedding top-k'ye SESSIZCE fallback YAPILMAZ (bkz. modul
+                # dokustringi + reranker.py). Her aday yine de ACIKCA "unavailable"
+                # damgalanir - "hic aday bulunamadi" ile "adaylar bulundu ama
+                # dogrulanamadi" AYRISTIRILIR (izlenebilirlik icin).
+                for candidate in candidates:
+                    candidate.relevance_status = "unavailable"
+                    candidate.relevance_reason = f"reranker basarisiz oldu ({exc}); alaka DOGRULANAMADI"
                 self._log_retrieval_trace(
                     question, candidates, [], retrieval_status="reranker_unavailable", final_k=final_k
                 )
@@ -740,13 +785,46 @@ class EmbeddingRAGService:
 
             reranked_docs: List[RetrievedDocument] = []
             for idx, rerank_score in ranked:
-                if threshold is not None and rerank_score < threshold:
-                    continue
                 doc = candidates[idx]
                 doc.rerank_score = rerank_score
+                if threshold is not None and rerank_score < threshold:
+                    doc.relevance_status = "rejected"
+                    doc.relevance_reason = f"rerank_score ({rerank_score:.3f}) < threshold ({threshold:.3f})"
+                    continue
+                doc.relevance_status = "accepted"
+                doc.relevance_reason = (
+                    f"rerank_score ({rerank_score:.3f}) >= threshold ({threshold:.3f})"
+                    if threshold is not None
+                    else f"rerank_score ({rerank_score:.3f}) (threshold tanimli degil)"
+                )
                 reranked_docs.append(doc)
             final_docs = reranked_docs
             retrieval_status = "reranked"
+        else:
+            # Reranker DEVRE DISI: adaylar yalnizca embedding skoruna gore siralanir
+            # (FAISS zaten azalan sirada dondurmustu). ONCE `similarity_threshold`
+            # (varsa) BASIT bir relevance gate olarak uygulanir - bu ONCEDEN
+            # dokumante edilmis ama HIC UYGULANMAMIS bir davranistiydi (bkz. gorev
+            # tanimi 7. bolum: "corpus disi" bir sorgu FAISS'ten HER ZAMAN "en az
+            # kotu" adaylari dondurur - bu esik OLMADAN, reranker devre disiyken
+            # tamamen alakasiz bir sorgu bile SESSIZCE "accepted" sayilirdi).
+            similarity_threshold = self._faiss_config.similarity_threshold
+            embedding_only_final: List[RetrievedDocument] = []
+            for doc in candidates:
+                if similarity_threshold is not None and doc.embedding_score < similarity_threshold:
+                    doc.relevance_status = "rejected"
+                    doc.relevance_reason = (
+                        f"embedding_score ({doc.embedding_score:.3f}) < similarity_threshold ({similarity_threshold:.3f})"
+                    )
+                    continue
+                if len(embedding_only_final) < final_k:
+                    doc.relevance_status = "accepted"
+                    doc.relevance_reason = f"embedding top-{final_k} icinde (reranker devre disi)"
+                    embedding_only_final.append(doc)
+                else:
+                    doc.relevance_status = "rejected"
+                    doc.relevance_reason = f"embedding top-{final_k} disinda (reranker devre disi)"
+            final_docs = embedding_only_final
 
         final_docs = final_docs[:final_k]
         self._log_retrieval_trace(question, candidates, final_docs, retrieval_status=retrieval_status, final_k=final_k)

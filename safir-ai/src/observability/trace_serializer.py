@@ -269,11 +269,15 @@ def serialize_rag_security(
 ) -> Tuple[str, Dict[str, Any], Dict[str, bytes], str, Optional[str]]:
     """`rag_security` emit'ini serialize eder: RAG retrieval + Prompt Injection Guard telemetrisi.
 
-    GUVENLIK: ham VLM/kullanici metni, mevzuat chunk METNI veya API anahtari
-    ASLA bu stage'e KONULMAZ - yalnizca yapilandirilmis skor/metadata/latency
-    (bkz. `RagQueryTelemetry`/`GuardResult`). `rag_telemetry`/`guard_results`
-    yoksa (RAG/Guard bu cagrida hic calismadiysa) ilgili alan `None`/bos liste
-    olarak birakilir - UYDURULMUS bir deger KONULMAZ.
+    GUVENLIK: API anahtari/secret ASLA bu stage'e KONULMAZ. `query`/chunk
+    `text` alanlari ONCEDEN kasitli olarak disaridaydi (yalnizca metadata/skor);
+    2026-08-24 RAG PIPELINE RECONSTRUCTION'da (gorev tanimi 13. bolum) operator'un
+    "bu madde neden secildi?" sorusunu trace'ten cevaplayabilmesi icin BILEREK
+    eklendi - `query`, VLM'in ZATEN `events` stage'inde gorunen matched_keywords/
+    aciklamasindan turetilir (yeni bir bilgi sizdirmiyor); chunk `text`i, ZATEN
+    ACIK/resmi mevzuat metnidir (gizli/kisisel veri degil). `rag_telemetry`/
+    `guard_results` yoksa (RAG/Guard bu cagrida hic calismadiysa) ilgili alan
+    `None`/bos liste olarak birakilir - UYDURULMUS bir deger KONULMAZ.
     """
     rag_telemetry = payload.get("rag_telemetry")
     guard_results = payload.get("guard_results") or []
@@ -281,6 +285,7 @@ def serialize_rag_security(
     rag_data: Optional[Dict[str, Any]] = None
     if rag_telemetry is not None:
         rag_data = {
+            "query": rag_telemetry.query,
             "query_length": len(rag_telemetry.query),
             "candidate_count": rag_telemetry.candidate_count,
             "final_count": rag_telemetry.final_count,
@@ -295,6 +300,7 @@ def serialize_rag_security(
             "avg_rerank_score": rag_telemetry.avg_rerank_score,
             "results": [
                 {
+                    "rank": getattr(r, "rank", None),
                     "chunk_id": getattr(r, "chunk_id", None),
                     "document_id": r.document_id,
                     "document_title": r.document_title,
@@ -302,7 +308,10 @@ def serialize_rag_security(
                     "source_url": r.source_url,
                     "embedding_score": r.embedding_score,
                     "rerank_score": r.rerank_score,
+                    "relevance_status": getattr(r, "relevance_status", None),
+                    "relevance_reason": getattr(r, "relevance_reason", None),
                     "selected": r.selected,
+                    "text": getattr(r, "text", ""),
                 }
                 for r in rag_telemetry.results
             ],
