@@ -67,6 +67,42 @@ def _make_service(tmp_path, candidate_k=20, top_k=5, enable_relevance=False, sco
     return EmbeddingRAGService(embedding_config, faiss_config, reranker_config)
 
 
+class _FakeCrossEncoder:
+    """Deterministik, ag/model-yuklemesi GEREKTIRMEYEN sahte Cross-Encoder - yalnizca `score()` sozlesmesini test eder.
+
+    Skoru, `texts[i]`nin uzunlugundan turetir (deterministik, tekrar-uretilebilir) -
+    GERCEK bir cross-encoder modelinin KENDISINI test ETMEZ (bu, `LocalCrossEncoderReranker`
+    seviyesinde AYRI, ag erisimi olan bir ortamda dogrulanmalidir); yalnizca
+    `EmbeddingRAGService.query()`nin Cross-Encoder ADIMINI (yeniden siralama,
+    gate bypass etmeme, provenance) DOGRU cagirip cagirmadigini test eder.
+    """
+
+    def __init__(self):
+        self.call_count = 0
+        self.last_query = None
+        self.last_texts = None
+
+    def score(self, query, texts):
+        self.call_count += 1
+        self.last_query = query
+        self.last_texts = list(texts)
+        return [float(len(t)) for t in texts]
+
+
+def _make_service_with_cross_encoder(
+    tmp_path, cross_encoder, candidate_k=20, top_k=5, enable_relevance=True, score_threshold=0.0
+) -> EmbeddingRAGService:
+    embedding_config = EmbeddingConfig(provider="local", model_name="fake-model", output_dimensionality=16)
+    faiss_config = FaissMemoryConfig(
+        index_path=str(tmp_path / "index.faiss"),
+        embedding_model="fake-model",
+        top_k=top_k,
+        candidate_k=candidate_k,
+    )
+    reranker_config = RerankerConfig(enabled=enable_relevance, score_threshold=score_threshold, top_k=top_k)
+    return EmbeddingRAGService(embedding_config, faiss_config, reranker_config, cross_encoder=cross_encoder)
+
+
 # ---------------------------------------------------------------------------
 # 2. FAISS retrieval: candidate_k + metadata korunumu
 # ---------------------------------------------------------------------------
@@ -663,14 +699,14 @@ def test_real_semantic_query_completely_outside_corpus_scope_does_not_fabricate_
 # ---------------------------------------------------------------------------
 
 
-def test_production_rag_service_has_no_cross_encoder_wired_in() -> None:
-    """CROSS_ENCODER_DECISION = KEEP_DETERMINISTIC_ONLY (bkz. rapor).
+def test_embedding_rag_service_cross_encoder_defaults_to_none_for_isolated_use() -> None:
+    """`EmbeddingRAGService`in KENDI varsayilani (`cross_encoder=None`) NOTRDUR - test/izole kullanimda Cross-Encoder'i ZORLAMAZ.
 
-    `EmbeddingRAGService`, `local_cross_encoder_reranker.py`deki temiz extension
-    point'i (bkz. o modulun dokustringi) KABUL EDER (`cross_encoder` parametresi)
-    ama VARSAYILAN OLARAK `None`dur ve gecilmedigi surece `query()` icinde HICBIR
-    Cross-Encoder cagrisi YAPILMAZ - benchmarkla DOGRULANMAMIS bir Cross-Encoder
-    SESSIZCE devreye ALINMAMIS olmali.
+    Production'da AKTIF olmasi `src/main.py::SafirPipeline`in BILEREK bir
+    `LocalCrossEncoderReranker` GECMESINDEN gelir (bkz.
+    `test_production_pipeline_instantiates_a_local_cross_encoder_by_default`) -
+    servisin KENDISI bunu VARSAYMAZ, boylece `RerankerConfig(enabled=False)`
+    gibi izole/test kurulumlari Cross-Encoder'a ISTEMEDEN BAGLANMAZ.
     """
     import inspect
 
@@ -683,17 +719,18 @@ def test_production_rag_service_has_no_cross_encoder_wired_in() -> None:
     assert service._cross_encoder is None  # noqa: SLF001 - varsayilan devre-disi durumu dogrudan dogrular
 
 
-def test_production_pipeline_never_passes_a_cross_encoder() -> None:
-    """`src/main.py::SafirPipeline`, `EmbeddingRAGService`i kurarken `cross_encoder` argumanini HICBIR ZAMAN GECMEZ (bkz. gorev tanimi 15. bolum: 'benchmark tamamlanmadan production'da aktif edilmemeli')."""
+def test_production_pipeline_instantiates_a_local_cross_encoder_by_default() -> None:
+    """CROSS_ENCODER_STATUS = PRODUCTION (bkz. rapor) - `SafirPipeline.__init__`, `EmbeddingRAGService`i kurarken GERCEK bir `LocalCrossEncoderReranker` GECER (production default'u ARTIK Cross-Encoder AKTIF)."""
     import inspect
 
     import src.main as main_module
 
     source = inspect.getsource(main_module)
-    # `EmbeddingRAGService(` cagrilarinin hicbirinde `cross_encoder=` argumani GECMEMELI.
-    for line in source.splitlines():
-        if "EmbeddingRAGService(" in line or "FAISSRagService(" in line:
-            assert "cross_encoder" not in line
+    assert "cross_encoder=LocalCrossEncoderReranker(" in source
+    assert "from src.rag.local_cross_encoder_reranker import" in source
+    # eski, LLM-as-judge reranker'in interface'ine ZORLA BAGLANMADI - ayri, kendi isimli sinif.
+    assert "GeminiReranker" not in source
+    assert "GroqReranker" not in source
 
 
 def test_old_llm_reranker_is_not_in_the_production_import_chain() -> None:
@@ -712,3 +749,190 @@ def test_old_llm_reranker_is_not_in_the_production_import_chain() -> None:
         # gercek kod cagrisi (docstring/yorum ICINDEKI kavramsal bahisler DEGIL):
         assert "GeminiReranker(" not in source_text
         assert "GroqReranker(" not in source_text
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-24 RAG+RISK PRODUCTION KAPANIS: LOKAL Cross-Encoder gercekten baglandi.
+# ---------------------------------------------------------------------------
+
+
+def _seed_two_docs(service: EmbeddingRAGService) -> None:
+    service._add_structured_documents(
+        [
+            {
+                "chunk_id": "doc_a__madde_1",
+                "document_id": "doc_a",
+                "document_title": "Yangin Yonetmeligi",
+                "level": "madde",
+                "article_number": "1",
+                "article_title": None,
+                "is_annex": False,
+                "page_start": 1,
+                "page_end": 1,
+                "source_url": "https://example.gov.tr/doc_a",
+                "institution": "Test Bakanligi",
+                "publication_date": "2020-01-01",
+                "text": "yangin ve duman tespiti halinde tahliye prosedurleri kisa metin",
+            },
+            {
+                "chunk_id": "doc_b__madde_2",
+                "document_id": "doc_b",
+                "document_title": "Genel ISG Yonetmeligi",
+                "level": "madde",
+                "article_number": "2",
+                "article_title": None,
+                "is_annex": False,
+                "page_start": 1,
+                "page_end": 1,
+                "source_url": "https://example.gov.tr/doc_b",
+                "institution": "Test Bakanligi",
+                "publication_date": "2020-01-01",
+                "text": (
+                    "yangin guvenligi ve duman algilama sistemleri hakkinda cok daha uzun ve detayli "
+                    "aciklamalar iceren, ek onlemleri de kapsayan genisletilmis bir madde metni"
+                ),
+            },
+        ]
+    )
+
+
+def test_cross_encoder_reranks_candidates_that_passed_the_deterministic_gate(tmp_path) -> None:
+    """Cross-Encoder, deterministic relevance gate'ten GECMIS adaylari YENIDEN siralar (bkz. gorev tanimi 4. bolum)."""
+    fake_ce = _FakeCrossEncoder()
+    service = _make_service_with_cross_encoder(tmp_path, fake_ce)
+    _seed_two_docs(service)
+
+    results = service.query("yangin duman")
+
+    assert fake_ce.call_count == 1
+    assert len(results) == 2
+    # sahte CE, UZUN metni daha yuksek puanlar - final sira buna gore degismis olmali.
+    assert results[0].chunk_id == "doc_b__madde_2"
+    assert results[0].cross_encoder_score is not None
+    assert results[0].cross_encoder_score == pytest.approx(float(len(results[0].text)))
+
+
+def test_same_query_and_candidates_produce_deterministic_cross_encoder_ranking(tmp_path) -> None:
+    """Ayni query + ayni aday kumesi -> Cross-Encoder DAHIL, HER ZAMAN ayni final siralama (gorev tanimi 13.4)."""
+    service = _make_service_with_cross_encoder(tmp_path, _FakeCrossEncoder())
+    _seed_two_docs(service)
+
+    first = [d.chunk_id for d in service.query("yangin duman")]
+    second = [d.chunk_id for d in service.query("yangin duman")]
+
+    assert first == second
+
+
+def test_cross_encoder_score_never_becomes_risk_score_or_confidence(tmp_path) -> None:
+    """`cross_encoder_score`, ASLA `risk_score`/`confidence`/`probability` alanina yazilmaz - ayri, kendi alaninda kalir."""
+    service = _make_service_with_cross_encoder(tmp_path, _FakeCrossEncoder())
+    _seed_two_docs(service)
+
+    results = service.query("yangin duman")
+
+    for doc in results:
+        assert not hasattr(doc, "risk_score")
+        assert not hasattr(doc, "confidence")
+        assert not hasattr(doc, "probability")
+        assert not hasattr(doc, "model_confidence")
+    # Field'in KENDI adi acikca "cross_encoder_score" - "confidence"/"probability" DEGIL.
+    assert hasattr(results[0], "cross_encoder_score")
+
+
+def test_cross_encoder_provenance_fields_survive_query(tmp_path) -> None:
+    """document_id/article_number/chunk_id/source_url/source_verified/retrieval_rank/embedding_score/relevance_score/relevance_status/cross_encoder_score/final_rank TUMU korunur (gorev tanimi 6. bolum)."""
+    service = _make_service_with_cross_encoder(tmp_path, _FakeCrossEncoder())
+    _seed_two_docs(service)
+
+    results = service.query("yangin duman")
+
+    for i, doc in enumerate(results, start=1):
+        assert doc.document_id is not None
+        assert doc.article_number is not None
+        assert doc.chunk_id is not None
+        assert doc.source_url is not None
+        assert doc.source_verified is True
+        assert doc.retrieval_rank is not None
+        assert doc.embedding_score is not None
+        assert doc.relevance_score is not None
+        assert doc.relevance_status == "accepted"
+        assert doc.cross_encoder_score is not None
+        assert doc.final_rank == i
+
+
+def test_cross_encoder_cannot_bypass_the_deterministic_relevance_gate(tmp_path) -> None:
+    """Deterministic relevance gate tarafindan REDDEDILMIS (esik-alti) bir aday, Cross-Encoder tarafindan tekrar 'accepted' YAPILAMAZ (gorev tanimi 5. bolum)."""
+
+    class _CrossEncoderThatLovesEverything:
+        """Reddedilen adaya bile EN YUKSEK puani veren dusman bir sahte - gate'i atlatmaya CALISIR."""
+
+        def score(self, query, texts):
+            return [999.0 for _ in texts]
+
+    service = _make_service_with_cross_encoder(
+        tmp_path, _CrossEncoderThatLovesEverything(), enable_relevance=True, score_threshold=0.99
+    )
+    _seed_two_docs(service)
+
+    results = service.query("tamamen alakasiz bir sorgu - forklift bakim kilavuzu XYZ123")
+
+    # threshold=0.99 cok yuksek oldugu icin HICBIR aday gate'i GECEMEZ - Cross-Encoder'in
+    # "999.0" puani, gate'ten GECMEMIS bir adayi ASLA final sonuca SOKAMAZ.
+    assert results == []
+
+
+def test_cross_encoder_unavailable_falls_back_to_deterministic_relevance_not_an_external_api(tmp_path) -> None:
+    """Lokal Cross-Encoder model agirligi yuklenemezse (paket/model yok), KONTROLLU degradasyon olur - harici bir API'ye SESSIZCE DUSULMEZ, pipeline COKMEZ."""
+    from src.rag.local_cross_encoder_reranker import CrossEncoderUnavailableError
+
+    class _BrokenCrossEncoder:
+        def score(self, query, texts):
+            raise CrossEncoderUnavailableError("model agirligi bulunamadi (simulasyon)")
+
+    service = _make_service_with_cross_encoder(tmp_path, _BrokenCrossEncoder())
+    _seed_two_docs(service)
+
+    results = service.query("yangin duman")
+
+    assert len(results) == 2  # deterministic relevance siralamasina GUVENLI DUSTU, COKMEDI
+    assert all(d.cross_encoder_score is None for d in results)
+    telemetry = service.get_last_query_telemetry()
+    assert telemetry.cross_encoder_status == "unavailable"
+
+
+def test_cross_encoder_status_is_disabled_when_no_cross_encoder_given(tmp_path) -> None:
+    service = _make_service(tmp_path, candidate_k=5, top_k=5, enable_relevance=True, score_threshold=0.0)
+    _seed_two_docs(service)
+
+    service.query("yangin duman")
+
+    telemetry = service.get_last_query_telemetry()
+    assert telemetry.cross_encoder_status == "disabled"
+
+
+def test_cross_encoder_status_is_used_when_reranking_actually_runs(tmp_path) -> None:
+    service = _make_service_with_cross_encoder(tmp_path, _FakeCrossEncoder())
+    _seed_two_docs(service)
+
+    service.query("yangin duman")
+
+    telemetry = service.get_last_query_telemetry()
+    assert telemetry.cross_encoder_status == "used"
+
+
+def test_local_cross_encoder_reranker_construction_does_not_load_any_model() -> None:
+    """`LocalCrossEncoderReranker(...)` OLUSTURULMASI (constructor), model agirligi YUKLEMEZ (lazy) - import/instantiation ASLA ag erisimi TETIKLEMEZ."""
+    from src.rag.local_cross_encoder_reranker import LocalCrossEncoderReranker
+
+    reranker = LocalCrossEncoderReranker("some/model-name")
+    assert reranker._model is None  # noqa: SLF001 - lazy-loading garantisini dogrudan dogrular
+
+
+def test_local_cross_encoder_reranker_is_not_forced_into_the_old_llm_reranker_interface() -> None:
+    """`LocalCrossEncoderReranker`, eski `LLMReranker`-ailesi (`reranker.py`) sinif hiyerarsisine BAGLI DEGIL - kendi, ayri, kucuk sozlesmesi var."""
+    from src.rag.local_cross_encoder_reranker import CrossEncoderReranker, LocalCrossEncoderReranker
+
+    assert issubclass(LocalCrossEncoderReranker, CrossEncoderReranker)
+    reranker_module_path = LocalCrossEncoderReranker.__module__
+    assert reranker_module_path == "src.rag.local_cross_encoder_reranker"
+    assert reranker_module_path != "src.rag.reranker"

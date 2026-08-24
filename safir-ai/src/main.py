@@ -54,6 +54,7 @@ from src.memory.context_builder import ContextBuilder
 from src.memory.conversation_store import ConversationStore
 from src.memory import document_extraction
 from src.rag.embedding_rag_service import EmbeddingRAGService
+from src.rag.local_cross_encoder_reranker import DEFAULT_LOCAL_CROSS_ENCODER_MODEL, LocalCrossEncoderReranker
 from src.memory.event_store import EventStore
 from src.sampler.adaptive_sampler import EvidenceFrame, sampler_from_config
 from src.security.prompt_injection_guard import build_prompt_injection_guard
@@ -792,7 +793,21 @@ class SafirPipeline:
         self._default_sample_fps = config.sampler.sample_fps
         self._vlm = get_vlm_client(config.vlm, use_mock=config.app.use_mock_vlm)
         self._event_store = EventStore(config.memory.sqlite)
-        self._rag_service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss, config.memory.reranker)
+        # 2026-08-24 (RAG+RISK PRODUCTION KAPANIS): LOKAL Cross-Encoder, production
+        # default'unda AKTIF - `LocalCrossEncoderReranker` (bkz. o modulun
+        # dokustringi) TAMAMEN yerel calisir (harici API/kota/internet YOK, lazy
+        # model yuklemesi). Sadece deterministic relevance gate'ten GECMIS
+        # ("accepted") adaylari YENIDEN SIRALAR - gate'in KENDISINI BYPASS ETMEZ.
+        # Model agirligi bu ortamda yuklenemezse `EmbeddingRAGService.query()`
+        # KONTROLLU sekilde deterministic relevance siralamasina duser (bkz.
+        # `RagQueryTelemetry.cross_encoder_status`) - hicbir harici API'ye SESSIZCE
+        # dusulmez, pipeline COKMEZ.
+        self._rag_service = EmbeddingRAGService(
+            config.memory.embedding,
+            config.memory.faiss,
+            config.memory.reranker,
+            cross_encoder=LocalCrossEncoderReranker(DEFAULT_LOCAL_CROSS_ENCODER_MODEL),
+        )
         self._rag_service.seed_default_regulations()
         # Prompt Injection Guard (bkz. src/security/prompt_injection_guard.py):
         # `guard.enabled=false` ise `self._guard=None` -> ContextBuilder davranisi
@@ -1349,6 +1364,9 @@ class SafirPipeline:
                 source_url=getattr(chunk, "source_url", None),
                 relevance_score=getattr(chunk, "relevance_score", None),
                 relevance_status=getattr(chunk, "relevance_status", None),
+                relevance_reason=getattr(chunk, "relevance_reason", None),
+                cross_encoder_score=getattr(chunk, "cross_encoder_score", None),
+                final_rank=getattr(chunk, "final_rank", None),
                 source_verified=getattr(chunk, "source_verified", True),
             )
             for chunk in context.semantically_related_chunks

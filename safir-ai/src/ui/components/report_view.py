@@ -211,25 +211,33 @@ class AgentRagPanel:
                     "hiçbir aday relevance eşiğini geçemedi olabilir - bkz. retrieval telemetrisi)."
                 )
             else:
+                any_cross_encoder_score = any(src.get("cross_encoder_score") is not None for src in sources)
                 st.caption(
                     "Her satır, `EmbeddingRAGService.query()`'nin GERÇEKTEN döndürdüğü bir kanıttır - "
-                    "**Embedding Skoru** (E5/FAISS benzerliği) ile **Deterministic Relevance** "
-                    "(ağırlıklı-toplam skor) KASITLI AYRI kolonlardır, birbirinin yerine geçmez. "
-                    "Cross-Encoder şu an production'da devre dışı olduğu için ayrı bir kolon gösterilmiyor."
+                    "**Embedding Skoru** (E5/FAISS benzerliği), **Deterministic Relevance** "
+                    "(ağırlıklı-toplam skor) ve **Cross-Encoder Relevance** (varsa, lokal cross-encoder "
+                    "sıralama sinyali) KASITLI AYRI kolonlardır; hiçbiri risk/confidence/probability "
+                    "değildir, birbirinin yerine geçmez."
+                    + ("" if any_cross_encoder_score else " Bu analizde Cross-Encoder skoru üretilmedi (devre dışı ya da model kullanılamadı - bkz. retrieval telemetrisi).")
                 )
                 for src in sources:
                     embedding_score = src.get("embedding_score")
                     if embedding_score is None:
                         embedding_score = src.get("score")
                     relevance_score = src.get("relevance_score")
+                    cross_encoder_score = src.get("cross_encoder_score")
                     relevance_status = src.get("relevance_status") or ("kabul edildi" if relevance_score is not None else "-")
                     with st.container(border=True):
-                        cols = st.columns(5)
+                        cols = st.columns(6 if any_cross_encoder_score else 5)
                         cols[0].markdown(f"**Kaynak**\n\n{src.get('rule_title') or '-'}")
                         cols[1].markdown(f"**Madde**\n\n{src.get('article_number') or '-'}")
                         cols[2].markdown(f"**Embedding Skoru**\n\n{embedding_score:.3f}" if embedding_score is not None else "**Embedding Skoru**\n\n-")
                         cols[3].markdown(f"**Deterministic Relevance**\n\n{relevance_score:.3f}" if relevance_score is not None else "**Deterministic Relevance**\n\nyok (devre dışı)")
-                        cols[4].markdown(f"**Seçildi**\n\n{relevance_status}")
+                        if any_cross_encoder_score:
+                            cols[4].markdown(f"**Cross-Encoder Relevance**\n\n{cross_encoder_score:.3f}" if cross_encoder_score is not None else "**Cross-Encoder Relevance**\n\nyok")
+                            cols[5].markdown(f"**Seçildi**\n\n{relevance_status}")
+                        else:
+                            cols[4].markdown(f"**Seçildi**\n\n{relevance_status}")
                         if src.get("source_url"):
                             st.caption(f"Kaynak URL: {src['source_url']}")
 

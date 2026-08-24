@@ -163,8 +163,10 @@ class EnrichedContext:
             source_url = getattr(chunk, "source_url", None) or "-"
             embedding_score = getattr(chunk, "embedding_score", None)
             relevance_score = getattr(chunk, "relevance_score", None)
+            cross_encoder_score = getattr(chunk, "cross_encoder_score", None)
             embedding_str = f"{embedding_score:.3f}" if embedding_score is not None else f"{getattr(chunk, 'score', 0.0):.3f}"
             rerank_str = f"{relevance_score:.3f}" if relevance_score is not None else "yok (reranker calismadi/devre disi)"
+            cross_encoder_str = f"{cross_encoder_score:.3f}" if cross_encoder_score is not None else "yok (cross-encoder calismadi/devre disi)"
             text = getattr(chunk, "text", "")
             blocks.append(
                 f"[RAG EVIDENCE {i}]\n"
@@ -173,7 +175,8 @@ class EnrichedContext:
                 f"chunk_id: {chunk_id}\n"
                 f"source_url: {source_url}\n"
                 f"embedding_score: {embedding_str}\n"
-                f"relevance_score: {rerank_str}\n\n"
+                f"relevance_score: {rerank_str}\n"
+                f"cross_encoder_score (siralama sinyali, guven/olasilik DEGIL): {cross_encoder_str}\n\n"
                 f"text:\n{text}\n"
             )
         return "\n".join(blocks)

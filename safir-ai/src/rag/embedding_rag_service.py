@@ -25,6 +25,14 @@ Knowledge base kaynagi (2026-08-23, uc asamali guncelleme)
    relevance skorlamasi (eskiden LLM-as-judge Gemini/Groq) TAMAMEN yerel/
    matematiksel bir algoritmaya (`deterministic_reranker.py`) tasindi - artik
    HICBIR asamada bir LLM/harici API'ye SORULMUYOR (bkz. `query()`).
+5. asama (2026-08-24, RAG+RISK PRODUCTION KAPANIS): deterministic relevance
+   gate'ten GECMIS ("accepted") adaylar, opsiyonel bir UCUNCU asamada LOKAL
+   bir Cross-Encoder ile (bkz. `local_cross_encoder_reranker.py`) YENIDEN
+   siralanir - `src/main.py::SafirPipeline` bunu VARSAYILAN olarak devreye
+   alir (production default'u). Bu asama da HICBIR AG/API cagrisi YAPMAZ;
+   model agirligi yuklenemezse KONTROLLU sekilde (harici bir API'ye
+   DUSMEDEN) deterministic relevance siralamasina geri doner (bkz.
+   `RagQueryTelemetry.cross_encoder_status`).
 
 ONEMLI (davranis degisikligi, 2026-08-23): Persisted index (`data/knowledge_base/index/`)
 GUNCEL degilse/yoksa, `seed_default_regulations()` artik `DEFAULT_ISG_REGULATIONS`
@@ -70,7 +78,7 @@ import numpy as np
 
 from src.rag.deterministic_reranker import RelevanceBreakdown, RelevanceWeights, score_candidate
 from src.rag.embedding_providers import ConfigurationError, EmbeddingProvider, build_embedding_provider
-from src.rag.local_cross_encoder_reranker import CrossEncoderReranker
+from src.rag.local_cross_encoder_reranker import CrossEncoderReranker, CrossEncoderUnavailableError
 from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig, RerankerConfig
 
 logger = logging.getLogger(__name__)
@@ -288,6 +296,12 @@ class RetrievedDocument:
     publication_date: Optional[str] = None
     retrieval_rank: Optional[int] = None
     """FAISS aday siralamasindaki 1-index'li sira (embedding_score'a gore azalan)."""
+    final_rank: Optional[int] = None
+    """NIHAI sonuc kumesindeki (final_docs, threshold+Cross-Encoder SONRASI) 1-index'li
+    sira. Cross-Encoder devredeyse `cross_encoder_score`e gore, degilse
+    `relevance_score`e (o da yoksa `embedding_score`e) gore atanir - hangi
+    siralamanin GERCEKTEN kullanildigini `RagQueryTelemetry.cross_encoder_status`
+    uzerinden izlenebilir kilar (bkz. gorev tanimi 4/6. bolum)."""
     relevance_status: Optional[str] = None
     """'accepted' | 'rejected' - bu adayin NEDEN final sonuca girip girmedigini
     gosteren, `query()` icinde atanan deterministik karar (bkz.
@@ -330,8 +344,10 @@ def _result_telemetry(doc: "RetrievedDocument", selected: bool) -> "RagResultTel
         source_url=doc.source_url,
         embedding_score=round(doc.embedding_score, 4),
         relevance_score=round(doc.relevance_score, 4) if doc.relevance_score is not None else None,
+        cross_encoder_score=round(doc.cross_encoder_score, 4) if doc.cross_encoder_score is not None else None,
         selected=selected,
         rank=doc.retrieval_rank,
+        final_rank=doc.final_rank,
         relevance_status=doc.relevance_status,
         relevance_reason=doc.relevance_reason,
         text=doc.text,
@@ -363,6 +379,12 @@ class RagResultTelemetry:
     dokumanin HANGI maddesinden/parcasindan geldigini izlenebilir kilar."""
     rank: Optional[int] = None
     """FAISS aday siralamasindaki 1-index'li sira (bkz. `RetrievedDocument.retrieval_rank`)."""
+    final_rank: Optional[int] = None
+    """NIHAI (Cross-Encoder SONRASI, devredeyse) sira (bkz. `RetrievedDocument.final_rank`)."""
+    cross_encoder_score: Optional[float] = None
+    """LOKAL Cross-Encoder skoru (bkz. `RetrievedDocument.cross_encoder_score`) - devrede
+    degilse `None`. `risk_score`/`confidence`/`probability` DEGILDIR, yalnizca bir
+    siralama sinyalidir."""
     relevance_status: Optional[str] = None
     """'accepted' | 'rejected' (bkz. `RetrievedDocument.relevance_status`)."""
     relevance_reason: Optional[str] = None
@@ -398,6 +420,16 @@ class RagQueryTelemetry:
     sonuclar GERCEK mevzuat corpus'undan DEGIL, 8 maddelik placeholder
     listeden geliyor - retrieval mekanizmasi calisiyor olsa da bu, RAG'in
     "gercekte" calismadigi anlamina gelir (bkz. gorev tanimi P0)."""
+    cross_encoder_status: str = "disabled"
+    """'used' | 'unavailable' | 'disabled' - bu cagrida LOKAL Cross-Encoder'in
+    GERCEKTEN calisip calismadigi (bkz. `EmbeddingRAGService.__init__`
+    `cross_encoder` parametresi + `local_cross_encoder_reranker.py`).
+    'disabled': cagiran taraf hic Cross-Encoder GECMEDI. 'unavailable': bir
+    Cross-Encoder verildi ama model agirligi yuklenemedi (bkz.
+    `CrossEncoderUnavailableError`) - bu durumda sonuclar deterministik
+    relevance siralamasina SESSIZCE DEGIL, ACIKCA bu alanla isaretlenerek
+    duser (kontrollu degradasyon, harici bir API'ye ASLA dusulmez). 'used':
+    Cross-Encoder GERCEKTEN calisti ve final siralamayi belirledi."""
     results: List[RagResultTelemetry] = field(default_factory=list)
 
 
@@ -421,15 +453,16 @@ class EmbeddingRAGService:
             embedding_config: `configs/config.yaml` icindeki `memory.embedding` blogu.
             faiss_config: `configs/config.yaml` icindeki `memory.faiss` blogu.
             reranker_config: `configs/config.yaml` icindeki `memory.reranker` blogu; `None`/`enabled=False` ise rerank atlanir.
-            cross_encoder: (OPSIYONEL EXTENSION POINT, bkz.
-                `local_cross_encoder_reranker.py` modul dokustringi) `None`
-                (varsayilan) ise Cross-Encoder asamasi TAMAMEN ATLANIR - bu,
-                2026-08-24 RAG finalizasyon turu itibariyle PRODUCTION'IN
-                GERCEK davranisidir (`src/main.py::SafirPipeline.__init__`
-                bu parametreyi HICBIR ZAMAN GECMEZ). Yalnizca gercek bir
-                benchmark (`scripts/rag_benchmark.py`) A/B/C karsilastirmasi
-                anlamli bir iyilesme gosterdiginde, cagiran taraf BILEREK bir
-                `LocalCrossEncoderReranker` orneği GECEREK devreye alinir.
+            cross_encoder: (bkz. `local_cross_encoder_reranker.py` modul
+                dokustringi) `None` ise Cross-Encoder asamasi TAMAMEN ATLANIR
+                (yalnizca deterministic relevance siralamasi kullanilir - test/
+                izole kullanim icin). 2026-08-24 RAG+RISK PRODUCTION KAPANIS
+                turu itibariyle `src/main.py::SafirPipeline.__init__` VARSAYILAN
+                olarak GERCEK bir `LocalCrossEncoderReranker` GECER (production
+                default'u ARTIK Cross-Encoder AKTIF) - model agirligi
+                yuklenemezse `query()` KONTROLLU sekilde deterministic
+                relevance'a duser (bkz. `RagQueryTelemetry.cross_encoder_status`),
+                hicbir harici API'ye SESSIZCE dusulmez.
 
         Raises:
             ConfigurationError: `embedding_config.provider` desteklenmiyorsa
@@ -844,14 +877,34 @@ class EmbeddingRAGService:
 
         # [LOCAL CROSS-ENCODER EXTENSION POINT] (bkz. `local_cross_encoder_reranker.py`
         # modul dokustringi) - `self._cross_encoder` yalnizca cagiran taraf BILEREK bir
-        # `LocalCrossEncoderReranker` GECTIYSE calisir (varsayilan `None` - PRODUCTION'DA
-        # SU AN HER ZAMAN ATLANIR). Deterministic relevance/evidence gate'ten GECMIS
-        # `final_docs` (top-N) uzerinde calisir, final_k'ya kirpilmadan ONCE.
+        # `LocalCrossEncoderReranker` GECTIYSE calisir. Deterministic relevance/evidence
+        # gate'ten GECMIS `final_docs` (top-N, zaten "accepted") uzerinde calisir,
+        # final_k'ya kirpilmadan ONCE - gate'i BYPASS ETMEZ, yalnizca ZATEN kabul
+        # edilmis adaylari YENIDEN SIRALAR (gorev tanimi 5. bolum).
+        cross_encoder_status = "disabled"
         if self._cross_encoder is not None and final_docs:
-            ce_scores = self._cross_encoder.score(question, [d.text for d in final_docs])
-            for doc, ce_score in zip(final_docs, ce_scores):
-                doc.cross_encoder_score = float(ce_score)
-            final_docs = sorted(final_docs, key=lambda d: d.cross_encoder_score, reverse=True)
+            try:
+                ce_scores = self._cross_encoder.score(question, [d.text for d in final_docs])
+                for doc, ce_score in zip(final_docs, ce_scores):
+                    doc.cross_encoder_score = float(ce_score)
+                final_docs = sorted(final_docs, key=lambda d: d.cross_encoder_score, reverse=True)
+                cross_encoder_status = "used"
+            except CrossEncoderUnavailableError:
+                # KONTROLLU DEGRADASYON (gorev tanimi 12. bolum): lokal model
+                # agirligi yuklenemedi (paket eksik/indirilemedi) - HARICI BIR
+                # API'YE ASLA DUSULMEZ, sessizce de degil: durum ACIKCA
+                # telemetriye yazilir, siralama deterministic relevance'ta KALIR.
+                logger.warning(
+                    "Lokal Cross-Encoder kullanilamiyor (model agirligi yuklenemedi); "
+                    "siralama deterministic relevance skoruna gore devam ediyor.",
+                    exc_info=True,
+                )
+                cross_encoder_status = "unavailable"
+        elif self._cross_encoder is not None:
+            cross_encoder_status = "used"  # Cross-Encoder verildi ama sirlanacak aday yoktu (bos final_docs) - hata degil.
+
+        for rank, doc in enumerate(final_docs, start=1):
+            doc.final_rank = rank
 
         scoring_latency_ms = (time.perf_counter() - scoring_started) * 1000.0
         final_docs = final_docs[:final_k]
@@ -871,6 +924,7 @@ class EmbeddingRAGService:
             avg_embedding_score=_avg([c.embedding_score for c in candidates]),
             avg_relevance_score=_avg([d.relevance_score for d in final_docs if d.relevance_score is not None]),
             corpus_source=self._corpus_source,
+            cross_encoder_status=cross_encoder_status,
             results=[_result_telemetry(c, selected=id(c) in final_ids) for c in candidates],
         )
         return final_docs

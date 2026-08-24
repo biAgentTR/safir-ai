@@ -131,6 +131,23 @@ class RagContext(BaseModel):
             "kolonu bunu okur, kendi basina bir esik hesaplamasi YAPMAZ."
         ),
     )
+    relevance_reason: Optional[str] = Field(
+        default=None,
+        description="`relevance_status`un insan-okunur gerekcesi (bkz. `RetrievedDocument.relevance_reason`).",
+    )
+    cross_encoder_score: Optional[float] = Field(
+        default=None,
+        description=(
+            "LOKAL Cross-Encoder'in (bkz. `src/rag/local_cross_encoder_reranker.py`) (query, chunk) "
+            "cift relevance skoru - `embedding_score`/`relevance_score`den AYRI, `risk_score`/"
+            "`confidence`/`probability` OLARAK ADLANDIRILMAZ. Cross-Encoder bu cagrida devreye "
+            "GIRMEDIYSE (model kullanilamadi/devre disi) `None`."
+        ),
+    )
+    final_rank: Optional[int] = Field(
+        default=None,
+        description="Nihai (Cross-Encoder SONRASI, devredeyse) 1-index'li sira (bkz. `RetrievedDocument.final_rank`).",
+    )
     source_verified: bool = Field(
         default=True,
         description=(

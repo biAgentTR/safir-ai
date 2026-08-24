@@ -48,6 +48,24 @@ from typing import List, Sequence
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_LOCAL_CROSS_ENCODER_MODEL = "cross-encoder/mmarco-mMiniLMv2-L12-H384-v1"
+"""Production varsayilan lokal Cross-Encoder modeli (2026-08-24 RAG+RISK
+PRODUCTION KAPANIS turu - bu tur ACIKCA "benchmark yapma, daha once
+arastirilmis adaylardan en makul olani sec" talimatiyla secildi, YENI bir
+benchmark KOSULMADI):
+- mMARCO (100+ dil, Turkce DAHIL) uzerinde egitilmis coklu-dilli bir
+  MiniLM cross-encoder - SAFIR'in Turkce ISG mevzuati/sorgulari icin
+  makul bir varsayilan.
+- ~118M parametre - RTX 4060 Laptop (veya CPU-only) uzerinde, top-N
+  (tipik olarak <=10) aday uzerinde calistirildiginda gereksiz agir
+  DEGILDIR (buyuk `bge-reranker-v2-m3` (~568M) gibi bir alternatife
+  KIYASLA acikca daha hafif).
+- `sentence-transformers.CrossEncoder` ile DOGRUDAN uyumludur (ek bir
+  adaptor/donusum GEREKMEZ).
+Bu, KESIN bir benchmark SONUCU DEGIL - `scripts/rag_benchmark.py --cross-encoder
+<model>` ile gercek A/B/C karsilastirmasi kosulabildiginde bu deger
+YENIDEN DEGERLENDIRILEBILIR/DEGISTIRILEBILIR (bkz. o script'in dokustringi)."""
+
 
 class CrossEncoderUnavailableError(RuntimeError):
     """Lokal Cross-Encoder modeli yuklenemedi (paket eksik/model agirligi bulunamadi).
