@@ -131,10 +131,20 @@ class LocalCrossEncoderReranker(CrossEncoderReranker):
                 "'pip install sentence-transformers' calistirin."
             ) from exc
         try:
-            self._model = CrossEncoder(self._model_name, max_length=self._max_length, device=self._device)
-        except Exception as exc:  # noqa: BLE001 - model agirligi indirilemedi/bozuk - acik hata, sessiz fallback YOK
+            # `local_files_only=True` (2026-08-24 offline runtime kilidi): production
+            # RUNTIME'inin HuggingFace Hub'a internet erisimine BAGIMLI bir indirme
+            # zorunlulugu OLUSTURMAMASI icin - model agirligi ONCEDEN (deployment/
+            # build asamasinda, bu sinifin DISINDA) local cache'e yerlestirilmemisse,
+            # burada SESSIZCE bir indirme DENENMEZ; dogrudan `CrossEncoderUnavailableError`e
+            # duser (Teknofest offline kisiti - bkz. gorev tanimi 6. bolum). Cache'te
+            # VARSA (onceden indirilmis) tamamen yerel/agsiz calisir.
+            self._model = CrossEncoder(
+                self._model_name, max_length=self._max_length, device=self._device, local_files_only=True
+            )
+        except Exception as exc:  # noqa: BLE001 - model agirligi cache'te yok/bozuk - acik hata, sessiz fallback YOK
             raise CrossEncoderUnavailableError(
-                f"Lokal Cross-Encoder modeli '{self._model_name}' yuklenemedi: {exc}"
+                f"Lokal Cross-Encoder modeli '{self._model_name}' yuklenemedi (local cache'te bulunamadi "
+                f"veya bozuk - internetten indirme DENENMEDI, bkz. offline runtime kisiti): {exc}"
             ) from exc
         return self._model
 
