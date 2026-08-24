@@ -1083,6 +1083,96 @@ def test_semantic_rag_chunk_reaches_agent_prompt_and_report_provenance(
     assert "FORKLIFT-UNIQUE-MARKER-XYZ" in source.content
 
 
+def test_cross_encoder_score_survives_retrieved_document_to_rag_context_to_report(
+    pipeline: SafirPipeline,
+) -> None:
+    """2026-08-24 (SON REPOSITORY-WIDE CALISMA, problem 1): `RetrievedDocument.cross_encoder_score`den `SafirReport.semantic_rag_sources[i].cross_encoder_score`e kadar TAM zinciri, GERCEK `RetrievedDocument` sinifiyla (sahte `_FakeRetrievedDocument` DEGIL) dogrular.
+
+    `embedding_rag_service.py::test_cross_encoder_reranks_candidates_...` (bkz.
+    `tests/test_rag_pipeline.py`) zaten FAISS->CE->`RetrievedDocument` segmentini
+    kanitliyor; bu test o segmentin SONUCUNU (CE calistiginda GERCEKTEN dolan
+    `RetrievedDocument.cross_encoder_score`) alip `main.py::build_report`in bunu
+    `RagContext.cross_encoder_score`e KAYIPSIZ tasidigini kanitlar - boylece
+    UI'da `cross_encoder_score` neden `None` gorunuyor sorusu, "backend'de VAR
+    ama tasinmiyor" ihtimalini KESIN olarak eler/dogrular.
+    """
+    from src.rag.embedding_rag_service import RetrievedDocument
+
+    real_ranked_chunk = RetrievedDocument(
+        text="Gercek Cross-Encoder skoru ile donen chunk metni.",
+        embedding_score=0.81,
+        relevance_score=0.55,
+        cross_encoder_score=0.93,  # GERCEK bir CE calisisinda uretilecek turden bir deger.
+        chunk_id="ce_dok__madde_9",
+        document_id="ce_dok",
+        document_title="CE Test Yonetmeligi",
+        article_number="9",
+        source_url="https://example.org/ce-yonetmelik",
+        retrieval_rank=1,
+        final_rank=1,
+        relevance_status="accepted",
+        relevance_reason="test",
+        source_verified=True,
+    )
+
+    fake_rag_service = pipeline._rag_service  # type: ignore[assignment]
+    fake_rag_service.query = lambda question, top_k=None, keywords=None: [real_ranked_chunk]  # noqa: E731
+
+    temporal_event = TemporalEvent(
+        event_id="te-ce-1",
+        event_name="yangin_duman",
+        event_type="yangin_duman",
+        description="duman gorulmeye basladi",
+        start_timestamp=1.0,
+        end_timestamp=1.0,
+        duration=0.0,
+        confidence=0.8,
+        occurrence_count=1,
+        matched_keywords=["duman"],
+        source_model="test-vlm",
+        related_events=[],
+    )
+    vlm_response = VLMResponse(
+        description="Duman gorulmeye basladi.", model_name="test-vlm", frame_count=1, latency_ms=1.0
+    )
+
+    prompt_block, context = pipeline.stage_context(
+        vlm_response, "Risk durumu nedir?", latest_timestamp=1.0, rule_matches=[], temporal_events=[temporal_event]
+    )
+    # A) RetrievedDocument.cross_encoder_score, ContextBuilder'in `semantically_related_chunks`ina KAYIPSIZ ulasti.
+    assert context.semantically_related_chunks[0].cross_encoder_score == 0.93
+
+    decision = pipeline.stage_decide(prompt_block)
+    decision, _risk_provenance = pipeline.stage_finalize_risk(decision, [], temporal_events=[temporal_event])
+    report = pipeline.build_report(
+        video_source="test-video",
+        sampler=_NullSampler(),
+        evidence_frames=[],
+        vlm_response=vlm_response,
+        context=context,
+        decision=decision,
+        escalation=_NullEscalation(),
+        temporal_events=[temporal_event],
+        rule_matches=[],
+        latest_timestamp=1.0,
+    )
+
+    # B) RagContext.cross_encoder_score - `SafirReport.semantic_rag_sources`e KAYIPSIZ ulasti.
+    assert report.semantic_rag_sources, "semantic_rag_sources bos - RAG provenance rapora ulasmadi"
+    source = report.semantic_rag_sources[0]
+    assert source.cross_encoder_score == 0.93
+    assert source.final_rank == 1
+    # C) Bu alan risk_score/embedding_score/relevance_score'dan AYRI kalir - hicbiri BIRBIRINE KARISMAZ.
+    assert source.embedding_score == 0.81
+    assert source.relevance_score == 0.55
+    assert source.cross_encoder_score != source.embedding_score
+    assert source.cross_encoder_score != source.relevance_score
+
+    # D) JSON serialization (API'nin GERCEKTEN dondurdugu sekil) alani KAYBETMEZ.
+    dumped = report.model_dump(mode="json")
+    assert dumped["semantic_rag_sources"][0]["cross_encoder_score"] == 0.93
+
+
 def test_report_json_risk_score_is_the_deterministic_canonical_field_not_the_llm_draft(
     pipeline: SafirPipeline,
 ) -> None:
