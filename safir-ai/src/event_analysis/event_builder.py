@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Dict, List
 
-from src.event_analysis.risk_resolver import resolve_deterministic_risk
+from src.event_analysis.risk_resolver import resolve_deterministic_risk_with_provenance
 from src.event_analysis.schemas import RuleMatch, StructuredEvent, TemporalEvent
 
 logger = logging.getLogger(__name__)
@@ -26,11 +26,12 @@ class EventBuilder:
         """Tek bir `TemporalEvent`i, ona ait `RuleMatch`lerle birlikte `StructuredEvent`e cevirir.
 
         `risk_score`/`risk_level`, VLM/LLM'den DEGIL, bu olaya ait
-        `rule_matches`den `resolve_deterministic_risk` ile deterministik
-        olarak turetilir (bkz. `src/event_analysis/risk_resolver.py`). Hicbir
-        kural eslesmediyse (`rule_matches` bos veya tumu bilinmeyen siddette)
-        `None` kalir - risk UYDURULMAZ; asagi akıştaki `05 LangGraph Ajani`
-        (varsa) bu bosluğu doldurabilir.
+        `rule_matches`den (VE bu `temporal_event`in KENDI confidence/duration/
+        occurrence_count'undan - RISK ENGINE V2, bkz. `risk_model.py`)
+        `resolve_deterministic_risk_with_provenance` ile matematiksel olarak
+        turetilir. Hicbir kural eslesmediyse (`rule_matches` bos veya tumu
+        bilinmeyen siddette) `None` kalir - risk UYDURULMAZ; asagi akıştaki
+        `05 LangGraph Ajani` (varsa) bu bosluğu doldurabilir.
 
         Args:
             temporal_event: `TemporalReasoner.reason(...)` ciktisindan tek bir olay.
@@ -42,7 +43,8 @@ class EventBuilder:
             ve `05 LangGraph Ajani`na dogrudan verilebilecek `StructuredEvent`.
         """
         description = self._compose_description(temporal_event, rule_matches)
-        risk_level, risk_score = resolve_deterministic_risk(rule_matches)
+        risk_provenance = resolve_deterministic_risk_with_provenance(rule_matches, temporal_events=[temporal_event])
+        risk_level, risk_score = risk_provenance.risk_level, risk_provenance.risk_score
 
         return StructuredEvent(
             timestamp=temporal_event.end_timestamp,

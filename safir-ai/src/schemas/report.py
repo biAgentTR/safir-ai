@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -197,6 +197,38 @@ class SafirReport(BaseModel):
         default_factory=list,
         description="Nihai risk_level'i belirleyen (en yuksek siddetli) RuleMatch(ler)in rule_id'leri; "
         "risk_source='rule_engine' degilse bos liste.",
+    )
+    scoring_method: Optional[str] = Field(
+        default=None,
+        description=(
+            "RISK ENGINE V2: nihai skoru ureten matematiksel modelin kimligi (orn. "
+            "'safir_evidence_weighted_v2') - bkz. `src/event_analysis/risk_model.py`. "
+            "risk_source='rule_engine' degilse `None`."
+        ),
+    )
+    risk_features: Optional[Dict[str, Optional[float]]] = Field(
+        default=None,
+        description=(
+            "Nihai skoru ureten sekiz normalize edilmis (0.0-1.0) feature: severity/likelihood/"
+            "exposure/duration/recurrence/protection_gap/rule_support/regulatory_support. "
+            "`None` deger = bu cagirida OLCULEMEDI (notr/guvenli varsayilan kullanildi, UYDURULMADI)."
+        ),
+    )
+    risk_feature_contributions: Optional[Dict[str, float]] = Field(
+        default=None,
+        description=(
+            "Skora giden ara carpim adimlari (base_risk + temporal/exposure/protection/evidence_factor + "
+            "raw_score) - jurinin/operatorun 'bir feature degisince skor NEDEN degisti?' sorusunu "
+            "izleyebilmesi icin (bkz. `risk_model.RiskScoreBreakdown.as_contributions_dict`)."
+        ),
+    )
+    llm_proposed_score: Optional[int] = Field(
+        default=None,
+        description=(
+            "Agent'in (05 LangGraph) KENDI, dogrulanmamis taslak risk_score'u - ASLA final_score/"
+            "risk_score'u BELIRLEMEZ, yalnizca karsilastirma/kalibrasyon icin izlenir "
+            "(bkz. gorev tanimi 8. bolum)."
+        ),
     )
     recommended_action: str = Field(
         description="Saha operatorune yonelik birincil aksiyon onerisi (geriye-uyum: actions[0])."

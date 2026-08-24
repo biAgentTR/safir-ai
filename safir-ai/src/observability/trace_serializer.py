@@ -422,6 +422,16 @@ def serialize_decision_final(
             "rule_severities": provenance.rule_severities,
             "contributing_event_ids": provenance.contributing_event_ids,
             "explanation": provenance.explanation(),
+            # RISK ENGINE V2 (2026-08-24): eski sabit-bucket skorlamanin yerini alan
+            # matematiksel modelin TAM izlenebilirligi - "88 nereden geldi?" sorusu
+            # artik yalnizca HANGI kural degil, HANGI feature'lardan/agirliklardan
+            # geldigini de gosterir (bkz. `risk_model.py`).
+            "scoring_method": provenance.scoring_method,
+            "final_score": provenance.final_score,
+            "feature_values": provenance.features,
+            "feature_contributions": provenance.feature_contributions,
+            "llm_proposed_score": provenance.llm_proposed_score,
+            "regulatory_evidence_ids": provenance.regulatory_evidence_ids,
         }
 
     data = {
@@ -434,10 +444,15 @@ def serialize_decision_final(
     if risk_status == "unknown" or d.risk_score is None:
         summary = "Nihai risk BELIRSIZ (analiz guvenilir sekilde tamamlanamadi)"
     elif provenance_data and provenance_data["risk_source"] == "rule_engine":
+        llm_bit = (
+            f", Agent'in taslak tahmini={provenance_data['llm_proposed_score']} (DIKKATE ALINMADI)"
+            if provenance_data.get("llm_proposed_score") is not None
+            else ""
+        )
         summary = (
-            f"NIHAI (authoritative) risk: {d.risk_level.upper()} ({d.risk_score}/100) "
-            f"- kaynak: RuleEngine [{', '.join(provenance_data['rule_ids'])}] "
-            "(Agent'in kendi taslak tahminini EZER)"
+            f"NIHAI (authoritative) risk: {d.risk_level.upper()} ({d.risk_score}/100, "
+            f"scoring_method={provenance_data.get('scoring_method')}) "
+            f"- kaynak: RuleEngine [{', '.join(provenance_data['rule_ids'])}]{llm_bit}"
         )
     else:
         summary = (

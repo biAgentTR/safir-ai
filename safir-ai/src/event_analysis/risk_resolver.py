@@ -2,51 +2,56 @@
 
 Mimari karar: "VLM (ve 05 LangGraph Agent'taki LLM) risk KARARI vermez, yalnizca
 gozlem/aciklama uretir; nihai risk seviyesi/skoru `RuleEngine`'in (T010)
-urettigi deterministik `RuleMatch.severity` degerlerinden turetilir." Bu
-modul, o turetmeyi TEK bir yerde (hem `EventBuilder`in event-bazli kullanimi
-hem `src/main.py`nin cagri-geneli kullanimi icin) toplar.
+urettigi deterministik `RuleMatch.severity` degerinden VE (RISK ENGINE V2,
+2026-08-24) mevcut TUM diger yapilandirilmis kanittan (event confidence,
+sureklilik, tekrar, PPE/koruma bosluğu, kural gucü, RAG'dan gelen dogrulanmis
+mevzuat destegi) matematiksel olarak turetilir." Bu modul, o turetmeyi TEK bir
+yerde (hem `EventBuilder`in event-bazli kullanimi hem `src/main.py`nin cagri-
+geneli kullanimi icin) toplar - `src/event_analysis/risk_model.py` (agirlikli-
+carpimsal formul, TAM gerekce icin bkz. o modulun dokustringi) TEK skorlama
+implementasyonudur, ikinci bir hesaplama yolu YOKTUR.
+
+RISK ENGINE V2 (2026-08-24) - ONCEKI SURUMDEN FARK: eski `_SEVERITY_MIDPOINT_SCORE`
+sabit-bucket eslemesi (dusuk->12, orta->38, yuksek->63, kritik->88) TAMAMEN
+KALDIRILDI. Skor artik SADECE severity'den turemiyor - `risk_model.compute_risk_score`
+sekiz kanit-tabanli feature kullanir. `resolve_deterministic_risk`/
+`resolve_deterministic_risk_with_provenance` API'leri (GERIYE-UYUMLULUK icin)
+AYNEN KORUNDU; ek (opsiyonel) parametrelerle (temporal_events, semantic_rag_sources,
+llm_proposed_score) cagrildiginda DAHA ZENGIN bir hesaplama yapar - bu parametreler
+verilmezse (eski cagiran kod), eksik feature'lar icin `risk_model.py`nin notr/
+guvenli varsayilanlari kullanilir (crash YOK, "unknown" "safe" ile KARISTIRILMAZ).
 
 `RuleMatch.severity` ve `AgentDecision.risk_level` zaten AYNI kelime
 dagarcigini kullanir ("dusuk"/"orta"/"yuksek"/"kritik", bkz.
 `src/agent/langgraph_agent.py::SafirAgent._resolve_risk_level`); bu yuzden
-seviye eslemesi bire-bir, yeni bir sozluk icat edilmez. Sayisal skor
-(`risk_score`), `configs/config.yaml::agent.risk_thresholds` (low=25,
-medium=50, high=75, critical=100) ile hizali sabit bucket ortalaridir -
-config'e canli bagimlilik eklemeden (bu katman `agent/`e bagimli degildir)
-aynı esiklerle tutarli bir temsili skor uretir.
+seviye eslemesi bire-bir, yeni bir sozluk icat edilmez.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from src.event_analysis.schemas import RuleMatch
+from src.event_analysis.risk_model import RiskScoreBreakdown, compute_risk_score
+from src.event_analysis.schemas import RuleMatch, TemporalEvent
 
 _SEVERITY_ORDER = ["dusuk", "orta", "yuksek", "kritik"]
 _SEVERITY_RANK = {name: rank for rank, name in enumerate(_SEVERITY_ORDER)}
 
-_SEVERITY_MIDPOINT_SCORE = {
-    "dusuk": 12,   # 0-25 bucket ortasi
-    "orta": 38,    # 26-50 bucket ortasi
-    "yuksek": 63,  # 51-75 bucket ortasi
-    "kritik": 88,  # 76-100 bucket ortasi
-}
-"""`configs/config.yaml::agent.risk_thresholds` (25/50/75/100) ile hizali,
-her siddet seviyesi icin temsili 0-100 skor."""
-
 
 @dataclass
 class RiskProvenance:
-    """`resolve_deterministic_risk`in ATLADIGI - HANGI kural(lar)in bu karari
-    urettigini tasiyan, salt-veri (hesaplama yapmayan) izlenebilirlik nesnesi.
+    """`resolve_deterministic_risk`in ATLADIGI - risk kararinin HANGI kanittan VE nasil tureidigini tasiyan izlenebilirlik nesnesi.
 
     Operator/rapor/trace katmaninda "bu risk NEREDEN geldi?" sorusunun
     (bkz. gorev tanimi 3. bolum "Risk Explanation") LLM'e SORULMADAN,
     mevcut structured data'dan deterministik olarak cevaplanmasini saglar.
-    Yeni bir risk hesaplama yontemi DEGILDIR - `resolve_deterministic_risk`
-    ile TAM AYNI siddet-secim mantiginin (bkz. `resolve_deterministic_risk`
-    docstring'i) yalnizca hangi `RuleMatch`(ler)e dayandigini da ifsa eder.
+
+    RISK ENGINE V2 (2026-08-24): `risk_score`/`risk_level` alanlari GERIYE-
+    UYUMLULUK icin KORUNDU (`risk_score` artik `round(final_score)`dir, ESKI
+    sabit-bucket degeri DEGIL). Yeni alanlar (`scoring_method`, `final_score`,
+    `features`, `feature_sources`, `feature_contributions`, `llm_proposed_score`,
+    `regulatory_evidence_ids`), formulun TAMAMINI izlenebilir kilar.
     """
 
     risk_level: Optional[str]
@@ -55,25 +60,60 @@ class RiskProvenance:
     rule_severities: List[str] = field(default_factory=list)
     contributing_event_ids: List[str] = field(default_factory=list)
 
+    scoring_method: str = "safir_evidence_weighted_v2"
+    final_score: Optional[float] = None
+    """Yuvarlanmamis, hassas 0.0-100.0 skor (`risk_score` bunun `round()`una esittir)."""
+    features: Optional[Dict[str, Optional[float]]] = None
+    """`risk_model.RiskFeatures.as_dict()` - severity/likelihood/exposure/duration/
+    recurrence/protection_gap/rule_support/regulatory_support (0.0-1.0, `None`=olculemedi)."""
+    feature_sources: Optional[Dict[str, str]] = None
+    """Her feature icin `"measured"` | `"unavailable_neutral"` (bkz. `risk_model.RiskFeatureSources`)."""
+    feature_contributions: Optional[Dict[str, float]] = None
+    """`risk_model.RiskScoreBreakdown.as_contributions_dict()` - base_risk + her `*_factor` + raw_score."""
+    llm_proposed_score: Optional[int] = None
+    """Agent'in (05 LangGraph) KENDI, dogrulanmamis taslak `risk_score`u - bkz. gorev
+    tanimi 8. bolum. ASLA `final_score`u BELIRLEMEZ; yalnizca KARSILASTIRMA/izleme icindir."""
+    regulatory_evidence_ids: List[str] = field(default_factory=list)
+    """Bu hesaplamada `regulatory_support` feature'ina katkida bulunan (dogrulanmis,
+    source_verified) RAG kaynaklarinin `chunk_id`leri."""
+
     def explanation(self) -> str:
         """Deterministik, LLM'e SORULMAMIS Turkce gerekce cumlesi uretir.
 
-        Sadece bu nesnenin kendi alanlarindan (rule_ids/severities) turer -
-        yeni bir bilgi/tahmin UYDURMAZ.
+        Formul-tabanli hesaplama varsa (`_breakdown` mevcutsa) `risk_model`in
+        KENDI aciklamasini kullanir; yoksa (hicbir kural eslesmedi) sabit
+        bir "belirlenemedi" mesaji doner - yeni bir bilgi/tahmin UYDURMAZ.
         """
         if self.risk_level is None:
             return "Hicbir deterministik kural eslesmedi; risk RuleEngine tarafindan belirlenemedi."
         rule_list = ", ".join(self.rule_ids) if self.rule_ids else "(bilinmeyen kural)"
-        return (
-            f"Risk seviyesi '{self.risk_level}' olarak belirlendi: en yuksek siddetli "
-            f"eslesme(ler) {rule_list} ('{self.risk_level}' siddetinde). Bu karar "
-            "VLM/LLM'in kendi tahmininden BAGIMSIZDIR - yalnizca RuleEngine "
-            "eslesmelerinden deterministik olarak turetilmistir."
+        rule_severity = self.rule_severities[0] if self.rule_severities else "(bilinmeyen)"
+        base = (
+            f"Risk seviyesi '{self.risk_level}' ({self.risk_score}/100) olarak belirlendi: "
+            f"en yuksek siddetli eslesme(ler) {rule_list} (RuleEngine siddeti: '{rule_severity}') "
+            f"'{self.scoring_method}' matematiksel modeliyle degerlendirildi - risk_level, "
+            "yalnizca RuleEngine siddetinden DEGIL, TUM feature'lardan hesaplanan nihai skordan turer."
         )
+        if self.features is not None:
+            feature_bits = ", ".join(
+                f"{name}={value:.2f}" if value is not None else f"{name}=notr(olculemedi)"
+                for name, value in self.features.items()
+            )
+            base += f" Feature'lar: {feature_bits}."
+        base += (
+            " Bu karar VLM/LLM'in kendi tahmininden BAGIMSIZDIR - yalnizca RuleEngine "
+            "eslesmelerinden VE yapilandirilmis kanittan deterministik olarak turetilmistir."
+        )
+        return base
 
 
-def _pick_provenance(rule_matches: List[RuleMatch]) -> RiskProvenance:
-    """`resolve_deterministic_risk`in TEK kaynagi: siddet-secim mantigini BURADA uygular.
+def _pick_provenance(
+    rule_matches: List[RuleMatch],
+    temporal_events: Optional[List[TemporalEvent]] = None,
+    semantic_rag_sources: Optional[List[Any]] = None,
+    llm_proposed_score: Optional[int] = None,
+) -> RiskProvenance:
+    """`resolve_deterministic_risk`in TEK kaynagi: siddet-secim VE matematiksel skorlama BURADA uygulanir.
 
     `resolve_deterministic_risk` ve `resolve_deterministic_risk_with_provenance`
     ikisi de bu fonksiyonu cagirir - iki ayri (birbirinden sapabilecek) risk
@@ -81,11 +121,12 @@ def _pick_provenance(rule_matches: List[RuleMatch]) -> RiskProvenance:
     """
     known = [match for match in rule_matches if match.severity in _SEVERITY_RANK]
     if not known:
-        return RiskProvenance(risk_level=None, risk_score=None)
+        return RiskProvenance(risk_level=None, risk_score=None, llm_proposed_score=llm_proposed_score)
 
     top_rank = max(_SEVERITY_RANK[match.severity] for match in known)
     contributing = [match for match in known if _SEVERITY_RANK[match.severity] == top_rank]
     risk_level = _SEVERITY_ORDER[top_rank]
+    contributing_rule_ids = [match.rule_id for match in contributing]
 
     contributing_event_ids: List[str] = []
     for match in contributing:
@@ -93,43 +134,81 @@ def _pick_provenance(rule_matches: List[RuleMatch]) -> RiskProvenance:
             if event_id not in contributing_event_ids:
                 contributing_event_ids.append(event_id)
 
-    return RiskProvenance(
+    breakdown: RiskScoreBreakdown = compute_risk_score(
         risk_level=risk_level,
-        risk_score=_SEVERITY_MIDPOINT_SCORE[risk_level],
-        rule_ids=[match.rule_id for match in contributing],
+        contributing_matches=contributing,
+        contributing_rule_ids=contributing_rule_ids,
+        contributing_event_ids=contributing_event_ids,
+        temporal_events=temporal_events,
+        semantic_rag_sources=semantic_rag_sources,
+    )
+
+    regulatory_evidence_ids = [
+        getattr(src, "chunk_id", None)
+        for src in (semantic_rag_sources or [])
+        if getattr(src, "source_verified", True) and getattr(src, "chunk_id", None) is not None
+    ]
+
+    return RiskProvenance(
+        risk_level=breakdown.risk_level,
+        risk_score=round(breakdown.final_score),
+        rule_ids=contributing_rule_ids,
         rule_severities=[match.severity for match in contributing],
         contributing_event_ids=contributing_event_ids,
+        scoring_method="safir_evidence_weighted_v2",
+        final_score=breakdown.final_score,
+        features=breakdown.features.as_dict(),
+        feature_sources=breakdown.feature_sources.as_dict(),
+        feature_contributions=breakdown.as_contributions_dict(),
+        llm_proposed_score=llm_proposed_score,
+        regulatory_evidence_ids=regulatory_evidence_ids,
     )
 
 
-def resolve_deterministic_risk_with_provenance(rule_matches: List[RuleMatch]) -> RiskProvenance:
-    """`resolve_deterministic_risk` ile AYNI karari, HANGI kural(lar)a dayandigi bilgisiyle birlikte dondurur.
+def resolve_deterministic_risk_with_provenance(
+    rule_matches: List[RuleMatch],
+    temporal_events: Optional[List[TemporalEvent]] = None,
+    semantic_rag_sources: Optional[List[Any]] = None,
+    llm_proposed_score: Optional[int] = None,
+) -> RiskProvenance:
+    """Bir olay/cagriya ait `RuleMatch` listesinden, TUM mevcut kanitla (varsa), nihai riski matematiksel olarak hesaplar.
 
     Args:
-        rule_matches: Bkz. `resolve_deterministic_risk`.
+        rule_matches: `RuleEngine.evaluate(...)` (tum cagri) veya `EventBuilder`in
+            bir olaya grupladigi (`related_rule_matches`) `RuleMatch` listesi.
+        temporal_events: (Opsiyonel, GERIYE-UYUMLULUK icin YENI) Bu cagriya ait
+            `TemporalEvent`ler - likelihood/duration/recurrence feature'larini
+            besler. Verilmezse bu feature'lar notr (bkz. `risk_model.py`) kalir.
+        semantic_rag_sources: (Opsiyonel, YENI) Bu cagrinin semantik RAG sonuclari
+            (`relevance_score`/`source_verified` tasiyan nesneler) - regulatory_support
+            feature'ini besler. Verilmezse notr kalir.
+        llm_proposed_score: (Opsiyonel, YENI) Agent'in KENDI taslak risk_score'u -
+            YALNIZCA izleme/karsilastirma icin saklanir, hesaplamayi ETKILEMEZ.
 
     Returns:
-        `RiskProvenance` - `risk_level`/`risk_score` `resolve_deterministic_risk`
-        ile BIREBIR AYNIDIR; ek olarak `rule_ids`/`rule_severities`/
-        `contributing_event_ids` tasir.
+        `RiskProvenance` - `risk_level`/`risk_score` formul-tabanli nihai karari
+        tasir; ek olarak `features`/`feature_contributions`/vb. ile TAM izlenebilirlik saglar.
     """
-    return _pick_provenance(rule_matches)
+    return _pick_provenance(rule_matches, temporal_events, semantic_rag_sources, llm_proposed_score)
 
 
 def resolve_deterministic_risk(rule_matches: List[RuleMatch]) -> Tuple[Optional[str], Optional[int]]:
-    """Bir olay/cagriya ait `RuleMatch` listesinden EN YUKSEK siddetli, deterministik risk cikarir.
+    """Bir olay/cagriya ait `RuleMatch` listesinden deterministik risk cikarir (GERIYE-UYUMLU, sade imza).
 
-    Formalizasyon (SAFIR'in nihai risk fonksiyonu, TAM olarak budur - baska
-    bir yerde ikinci bir risk hesaplamasi YOKTUR):
+    RISK ENGINE V2: `risk_score` artik SABIT bir severity-bucket DEGIL,
+    `risk_model.compute_risk_score`in urettigi matematiksel skordur (bu
+    imzada temporal/RAG kaniti verilmedigi icin likelihood/duration/
+    recurrence/regulatory_support notr/guvenli varsayilanlarla hesaplanir -
+    bkz. `risk_model.py` modul dokustringi "EKSIK KANIT"). Zengin (temporal/
+    RAG-farkinda) hesaplama icin `resolve_deterministic_risk_with_provenance`
+    kullanin.
 
-        risk_level = argmax_{m in rule_matches} severity_rank(m.severity)
-        risk_score = SEVERITY_MIDPOINT_SCORE[risk_level]
-
-    Girdi kumesi YALNIZCA `RuleMatch.severity` degerlerinden olusur - VLM
-    confidence, VLM'in kendi risk_score/anomaly-score ipucu, RAG/embedding
-    benzerlik skoru veya LLM'in kendi risk tahmini bu fonksiyona ASLA
-    girmez (bkz. `src/main.py::stage_finalize_risk`, `context_builder.py`
-    modul dokustringi: bu kaynaklar risk_score/risk_level'i ETKILEMEZ).
+    Girdi kumesi YALNIZCA `RuleMatch.severity` (+ varsa `event_type`, rule_id
+    sayisi) degerlerinden olusur - VLM confidence, VLM'in kendi risk_score/
+    anomaly-score ipucu, RAG/embedding benzerlik skoru veya LLM'in kendi risk
+    tahmini bu fonksiyona ASLA girmez (bkz. `src/main.py::stage_finalize_risk`,
+    `context_builder.py` modul dokustringi: bu kaynaklar risk_score/risk_level'i
+    ETKILEMEZ).
 
     Hicbir kural eslesmediyse `(None, None)` doner - risk UYDURULMAZ; cagiran
     taraf bu durumda mevcut (orn. LLM Agent'tan gelen ya da "unknown") degeri
@@ -141,9 +220,9 @@ def resolve_deterministic_risk(rule_matches: List[RuleMatch]) -> Tuple[Optional[
             `RuleMatch` listesi.
 
     Returns:
-        `(risk_level, risk_score)`: en yuksek siddetli eslesmenin
-        `severity`si ve buna karsilik gelen temsili skor. Bilinmeyen/gecersiz
-        `severity` degerleri (`_SEVERITY_RANK` disinda) yok sayilir.
+        `(risk_level, risk_score)`: en yuksek siddetli eslesmenin `severity`si
+        ve formul-tabanli nihai skoru. Bilinmeyen/gecersiz `severity` degerleri
+        (`_SEVERITY_RANK` disinda) yok sayilir.
     """
     provenance = _pick_provenance(rule_matches)
     return provenance.risk_level, provenance.risk_score

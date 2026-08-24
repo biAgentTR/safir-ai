@@ -47,6 +47,7 @@ class _FakeRetrievedDocument:
     document_title: Optional[str] = None
     article_number: Optional[str] = None
     source_url: Optional[str] = None
+    source_verified: bool = True
 
 
 class _FakeRagService:
@@ -351,9 +352,18 @@ def test_run_produces_schema_complete_report_with_escalation(
     T016'dan beri nihai risk, mock LLM'in "orta" (35) kararindan DEGIL,
     deterministik RuleEngine'den gelir (bkz. `stage_finalize_risk`):
     MockVLMClient'in aciklamasi "forklift" icerir -> `arac_yaya_yakinligi`
-    tespit edilir -> OK-07 kurali "yuksek" siddet uretir (score=63) -> bu,
-    LLM'in kararini gezer ve otomatik alarmi tetikler. Ayrica sartname-uyumlu
-    ozet JSON'un beklenen anahtarlari tasidigi dogrulanir.
+    tespit edilir -> OK-07 kurali "yuksek" siddet uretir -> bu, LLM'in
+    kararini gezer.
+
+    RISK ENGINE V2 (2026-08-24): eski sabit-bucket skorlama (yuksek->63,
+    HER ZAMAN ALARM) KALDIRILDI - skor artik `risk_model.py`nin agirlikli-
+    carpimsal formulunden gelir; TEK BASINA (baska korobore edici kanit -
+    uzun sureklilik/tekrar/PPE-ihlali/coklu-kural/RAG-dogrulanmis mevzuat
+    OLMADAN) bir 'yuksek' siddet eslesmesi ARTIK otomatik ALARM tavanina
+    ULASMAZ - bu KASITLI bir davranis degisikligidir (gorev tanimi: "eski
+    12/38/63/88 mantigi... artik YETERLI DEGIL"). Bu test, skorun GERCEKTEN
+    RuleEngine'den (LLM'in "orta" tahmininden DEGIL) turedigini VE en az
+    NOTIFY kademesine ulastigini (sessizce MONITOR'e DUSMEDIGINI) dogrular.
     """
     report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
 
@@ -362,10 +372,12 @@ def test_run_produces_schema_complete_report_with_escalation(
     assert isinstance(report.actions, list) and report.actions
     assert report.recommended_action == report.actions[0]
 
-    # Otomatik eskalasyon (Human-on-the-Loop): RuleEngine-turevli yuksek risk -> alarm.
-    assert report.escalation_tier == "alarm"
-    assert report.auto_dispatched is True
-    assert report.alert_id is not None
+    # RuleEngine-turevli risk, LLM'in "orta" taslak tahminini GEZDI (llm_proposed_score korunur, final_score DEGIL).
+    assert report.risk_source == "rule_engine"
+    assert report.llm_proposed_score is not None
+    assert report.scoring_method == "safir_evidence_weighted_v2"
+    # En az bildirim kademesine ulasmali (MONITOR'e sessizce DUSMEDI).
+    assert report.escalation_tier in ("notify", "alarm")
 
     # Sartname-uyumlu ozet JSON beklenen sekilde olmali.
     sartname = report.to_sartname_json()
@@ -381,13 +393,21 @@ def test_high_risk_auto_dispatches_alarm_in_pipeline(
 
     T016 (risk_resolver): nihai risk_score/risk_level artik LLM Agent'in
     kararindan DEGIL, `RuleEngine`in bu cagriya ait deterministik
-    `RuleMatch`lerinden (`stage_finalize_risk`) turetiliyor. Bu videonun
-    MockVLMClient aciklamasi "forklift" iceriyor -> `arac_yaya_yakinligi`
-    tespit edilir -> OK-07 kurali "yuksek" siddet uretir (score=63); bu,
-    LLM Agent'in (burada kasitli olarak dusuk/celisen bir deger doner)
-    kararini GEZER ve yine de otomatik alarmi tetikler.
+    `RuleMatch`lerinden (`stage_finalize_risk`) turetiliyor.
+
+    RISK ENGINE V2 (2026-08-24): eski sabit-bucket (yuksek->63, HER ZAMAN
+    ALARM) KALDIRILDI - bu videonun TEK BASINA urettigi OK-07/yuksek eslesmesi
+    ARTIK (korobore edici kanit olmadan) ALARM esigine (>=51) ULASMAZ (bkz.
+    `test_run_produces_schema_complete_report_with_escalation`). Bu test,
+    ALARM auto-dispatch MEKANIZMASININ KENDISININ (LLM'in dusuk taslak
+    tahminine RAGMEN) hala dogru calistigini, GERCEKTEN kritik-duzeyde
+    korobore edilmis (COMBO kural + PPE ihlali) bir RuleMatch senaryosuyla
+    dogrular - RuleEngine'in KENDISI (bu testin kapsami DISINDA) monkeypatch
+    edilir, boylece test skorlama formulunun KENDI matematigiyle (uydurulmus
+    bir sayiyla DEGIL) hesaplanan GERCEK final_score'u kullanir.
     """
     from src.agent.langgraph_agent import AgentDecision
+    from src.event_analysis.schemas import RuleMatch
 
     low_decision = AgentDecision(
         risk_score=5,
@@ -400,13 +420,39 @@ def test_high_risk_auto_dispatches_alarm_in_pipeline(
     )
     monkeypatch.setattr(pipeline._agent, "run", lambda _prompt: low_decision)
 
+    def _strong_combo_match(temporal_events):
+        if not temporal_events:
+            return []
+        return [
+            RuleMatch(
+                rule_id="COMBO-01",
+                rule_description="KKD + arac-yaya yakinligi (test-only guclu kanit)",
+                event_type="kkd_ihlali+arac_yaya_yakinligi",
+                severity="kritik",
+                source_event_id=temporal_events[0].event_id,
+            )
+        ]
+
+    monkeypatch.setattr(pipeline._rule_engine, "evaluate", _strong_combo_match)
+
+    # Ek korobore edici kanit: dogrulanmis (source_verified) bir RAG kaynagi -
+    # regulatory_support feature'ini de maksimuma tasiyarak ALARM esigini GERCEKTEN asar
+    # (tek basina COMBO+PPE, bu kisa sentetik videonun dusuk confidence/duration'i
+    # yuzunden esigin biraz ALTINDA kalabiliyordu).
+    verified_doc = _FakeRetrievedDocument(
+        text="dogrulanmis guclu mevzuat kaniti", relevance_score=1.0, source_verified=True, chunk_id="chunk-strong"
+    )
+    monkeypatch.setattr(pipeline._rag_service, "query", lambda *a, **k: [verified_doc])
+
     report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
 
-    # Deterministik rule engine sonucu (OK-07 -> yuksek/63), LLM'in dusuk
-    # kararini gezip nihai raporu belirler.
-    assert report.risk_score == 63
-    assert report.risk_level == "yuksek"
+    # Deterministik rule engine sonucu, LLM'in dusuk kararini GEZIP nihai raporu belirler.
+    assert report.risk_source == "rule_engine"
+    assert report.llm_proposed_score == 5  # LLM'in taslagi IZLENDI ama KULLANILMADI
+    assert report.risk_score is not None and report.risk_score >= 51  # ALARM esigi
     assert report.escalation_tier == "alarm"
+    assert report.auto_dispatched is True
+    assert report.alert_id is not None
     assert report.auto_dispatched is True
     assert report.alert_id is not None
 
@@ -513,24 +559,56 @@ def test_rag_service_failure_does_not_crash_the_pipeline(
     assert report.risk_score is not None
 
 
-def test_regulation_match_presence_does_not_alter_deterministic_risk(
-    pipeline: SafirPipeline, motion_video: str, monkeypatch: pytest.MonkeyPatch
+def test_regulation_match_presence_bounded_effect_on_deterministic_risk(
+    tmp_path: Path, motion_video: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Bir mevzuat eslesmesinin var/yok olmasi, RuleEngine-turevli deterministik
-    risk_score/risk_level'i DEGISTIRMEMELI (RAG/mevzuat, gizli bir ikinci risk
-    motoru DEGILDIR - bkz. risk_resolver.py, bu PR'da degistirilmedi)."""
-    report_with_match = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
-    assert report_with_match.relevant_regulations  # OK-07 eslesmis olmali
+    """RAG, gizli bir IKINCI risk motoru DEGILDIR - RuleEngine-turevli siddet/kural karari HER ZAMAN AYNI kalir.
 
-    # Ayni riski (OK-07 -> yuksek/63) uretecek RuleMatch'i KORU, ama mevzuat
-    # metnini bos dondurecek sekilde retriever'i degistir: risk ayni kalmali.
-    monkeypatch.setattr(pipeline._rag_service, "query", lambda *a, **k: [])
-    report_without_enriched_text = pipeline.run(
-        motion_video, "Sahnede riskli bir durum var mi degerlendir."
+    RISK ENGINE V2 (2026-08-24) davranis degisikligi: gorev tanimi 4H/10.
+    bolum ACIKCA `regulatory_support`u (RAG'in dogrulanmis, source_verified
+    mevzuat kanitinin deterministik relevance_score'unu) formulun SEKIZ
+    feature'indan biri olarak ister ("RAG daha cok evidence confidence/rule
+    support/regulatory support modifier'i olarak kullanilmali") - bu yuzden
+    dogrulanmis RAG kanitinin VARLIGI/YOKLUGU artik nihai SAYISAL skoru KUCUK,
+    SINIRLI (formulun W_REGULATORY_SUPPORT=0.15 agirligiyla) bir miktar
+    ETKILEYEBILIR. Ancak KESINLIKLE DEGISMEYEN: RuleEngine'in KENDI siddet/
+    kural karari (`risk_source`, `contributing_rule_ids`, `rule_severities`) -
+    RAG bunlari ASLA GEZEMEZ/DEGISTIREMEZ.
+
+    NOT: IKI AYRI, taze `SafirPipeline` orneği kullanilir (AYNI orneği iki kez
+    `run()` etmek, EventEngine'in cagrilar-arasi tekrar/recurrence tespitini
+    tetikler - bu, RAG'DAN TAMAMEN BAGIMSIZ, KENDI BASINA GECERLI bir sinyaldir
+    ve karsilastirmayi kirletirdi).
+    """
+
+    def _make_isolated_pipeline(rag_query_result):
+        fake_rag = _FakeRagService()
+        fake_rag.query = lambda question, top_k=None, keywords=None: (fake_rag.queries.append(question), rag_query_result)[1]
+        monkeypatch.setattr("src.main.EmbeddingRAGService", lambda *a, **k: fake_rag)
+        config = _build_test_config(tmp_path / "pipeline_state")
+        return SafirPipeline(config)
+
+    verified_doc = _FakeRetrievedDocument(
+        text="dogrulanmis mevzuat metni", relevance_score=0.9, source_verified=True, chunk_id="chunk-1"
     )
+    pipeline_with_rag = _make_isolated_pipeline([verified_doc])
+    report_with_match = pipeline_with_rag.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+    assert report_with_match.relevant_regulations  # OK-07 eslesmis olmali
+    assert report_with_match.risk_source == "rule_engine"
+    assert report_with_match.risk_features["regulatory_support"] == pytest.approx(0.9)
 
-    assert report_without_enriched_text.risk_score == report_with_match.risk_score
-    assert report_without_enriched_text.risk_level == report_with_match.risk_level
+    pipeline_without_rag = _make_isolated_pipeline([])
+    report_without_rag = pipeline_without_rag.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
+
+    # DEGISMEYEN: RuleEngine'in KENDI karari (hangi kural(lar) kazandi, hangi siddette).
+    assert report_without_rag.risk_source == "rule_engine"
+    assert report_without_rag.contributing_rule_ids == report_with_match.contributing_rule_ids
+    assert report_without_rag.risk_features["regulatory_support"] is None
+
+    # SINIRLI DEGISEBILIR: yalnizca regulatory_support feature'i uzerinden, formulun
+    # W_REGULATORY_SUPPORT agirligi (0.15) ile SINIRLI bir miktar - keyfi/sinirsiz DEGIL.
+    score_diff = report_with_match.risk_score - report_without_rag.risk_score
+    assert 0 < score_diff <= 15  # W_REGULATORY_SUPPORT=0.15 -> teorik tavan etkisi ~15 puan, ve YALNIZCA ARTIRICI yonde
 
 
 def test_pipeline_sends_all_evidence_frames_to_vlm_with_no_positional_role(
@@ -979,7 +1057,7 @@ def test_semantic_rag_chunk_reaches_agent_prompt_and_report_provenance(
     full_text = " ".join(str(m.content) for batch in captured_message_batches for m in batch)
     assert "FORKLIFT-UNIQUE-MARKER-XYZ" in full_text
 
-    decision = pipeline.stage_finalize_risk(decision, [])
+    decision, _risk_provenance = pipeline.stage_finalize_risk(decision, [], temporal_events=[temporal_event])
     report = pipeline.build_report(
         video_source="test-video",
         sampler=_NullSampler(),

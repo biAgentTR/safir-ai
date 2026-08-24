@@ -210,27 +210,40 @@ def test_build_batch_with_no_matching_rule_matches_still_builds_events() -> None
 
 
 def test_build_with_rule_match_sets_deterministic_risk_from_severity() -> None:
-    """VLM/LLM degil, RuleEngine'in siddeti nihai risk_score/risk_level'i belirler."""
+    """VLM/LLM degil, RuleEngine'in siddeti (+ bu olayin KENDI temporal kaniti) nihai risk_score/risk_level'i belirler (RISK ENGINE V2: formul-tabanli, bkz. `risk_model.py`).
+
+    Skor UYDURULMADI - dogrudan `resolve_deterministic_risk_with_provenance`
+    (EventBuilder'in cagirdigi AYNI fonksiyon) ile hesaplanip karsilastirilir.
+    """
+    from src.event_analysis.risk_resolver import resolve_deterministic_risk_with_provenance
+
     event = _temporal_event("evt_0")
     match = _rule_match("ISG-M24", source_event_id="evt_0", severity="orta")
+    expected = resolve_deterministic_risk_with_provenance([match], temporal_events=[event])
 
     structured = EventBuilder().build(event, [match])
 
-    assert structured.risk_level == "orta"
-    assert structured.risk_score == 38
+    assert structured.risk_level == expected.risk_level
+    assert structured.risk_score == expected.risk_score
 
 
 def test_build_with_combination_rule_uses_the_highest_severity() -> None:
+    from src.event_analysis.risk_resolver import resolve_deterministic_risk_with_provenance
+
     event = _temporal_event("evt_0")
     matches = [
         _rule_match("ISG-M24", source_event_id="evt_0", severity="orta"),
         _rule_match("COMBO-01", source_event_id="evt_0", severity="kritik", rule_description="Bilesik ihlal."),
     ]
+    expected = resolve_deterministic_risk_with_provenance(matches, temporal_events=[event])
 
     structured = EventBuilder().build(event, matches)
 
-    assert structured.risk_level == "kritik"
-    assert structured.risk_score == 88
+    assert structured.risk_level == expected.risk_level == "orta"  # RuleEngine siddeti 'kritik', formul-skoru 'orta' bandinda
+    assert structured.risk_score == expected.risk_score
+    # RuleEngine'in KENDI (en yuksek) siddeti hala dogrulanabilir - COMBO-01 kazandi.
+    assert expected.rule_ids == ["COMBO-01"]
+    assert expected.rule_severities == ["kritik"]
 
 
 def test_build_without_any_rule_match_leaves_risk_none_not_fabricated() -> None:

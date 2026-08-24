@@ -45,11 +45,7 @@ from src.event_analysis.event_builder import EventBuilder
 from src.event_analysis.event_engine import EventEngine
 from src.event_analysis.event_history import EventHistory
 from src.event_analysis.regulation_matcher import resolve_regulation_matches
-from src.event_analysis.risk_resolver import (
-    RiskProvenance,
-    resolve_deterministic_risk,
-    resolve_deterministic_risk_with_provenance,
-)
+from src.event_analysis.risk_resolver import RiskProvenance, resolve_deterministic_risk_with_provenance
 from src.event_analysis.rule_engine import RuleEngine
 from src.event_analysis.schemas import DetectedEvent, EventEngineInput, RuleMatch, TemporalEvent
 from src.event_analysis.temporal_reasoner import DEFAULT_RELATION_WINDOW_SEC, TemporalReasoner
@@ -939,8 +935,9 @@ class SafirPipeline:
         decision = self.stage_decide(prompt_block)
         _emit("decision", {"decision": decision})
 
-        decision = self.stage_finalize_risk(decision, rule_matches)
-        risk_provenance = resolve_deterministic_risk_with_provenance(rule_matches)
+        decision, risk_provenance = self.stage_finalize_risk(
+            decision, rule_matches, temporal_events=temporal_events, semantic_rag_sources=context.semantically_related_chunks
+        )
         _emit("decision_final", {"decision": decision, "risk_provenance": risk_provenance})
 
         escalation = self.stage_escalate(decision, vlm_response)
@@ -1186,14 +1183,17 @@ class SafirPipeline:
         """05: LangGraph ajani muhakeme -> `AgentDecision` (risk skoru, ozet, aksiyonlar)."""
         return self._agent.run(prompt_block)
 
-    def stage_finalize_risk(self, decision, rule_matches):
-        """07c: `RuleEngine`in deterministik kararini nihai risk kaynagi olarak uygular.
+    def stage_finalize_risk(self, decision, rule_matches, temporal_events=None, semantic_rag_sources=None):
+        """07c: RISK ENGINE V2 - `RuleEngine`+kanit-tabanli matematiksel modelin (`risk_model.py`) kararini nihai risk kaynagi olarak uygular.
 
         Mimari karar: VLM ve `05 LangGraph Agent`taki LLM risk KARARI vermez,
-        yalnizca gozlem/ozet uretir; nihai `risk_score`/`risk_level`,
-        `RuleEngine.evaluate(...)` ciktisindan (`rule_matches`) deterministik
-        olarak turetilir (bkz. `src/event_analysis/risk_resolver.py`). Bu
-        cagriya ait HICBIR kural eslesmediyse (`rule_matches` bos veya
+        yalnizca gozlem/ozet uretir (bu taslak, `RiskProvenance.llm_proposed_score`
+        olarak izlenir - final skoru ASLA BELIRLEMEZ). Nihai `risk_score`/
+        `risk_level`, `RuleEngine.evaluate(...)` ciktisindan (`rule_matches`)
+        VE mevcut diger yapilandirilmis kanittan (`temporal_events`,
+        `semantic_rag_sources`) `resolve_deterministic_risk_with_provenance`
+        ile matematiksel olarak turetilir (bkz. `src/event_analysis/risk_model.py`).
+        Bu cagriya ait HICBIR kural eslesmediyse (`rule_matches` bos veya
         taninmayan siddette), LLM Agent'in karari (`decision.risk_score`/
         `risk_level`/`risk_status`) DEGISTIRILMEDEN korunur - boylece
         deterministik sinyal yokken sistem sessizce "dusuk risk" UYDURMAZ,
@@ -1213,21 +1213,32 @@ class SafirPipeline:
             decision: `stage_decide(...)` ciktisi (`AgentDecision`).
             rule_matches: `stage_events(...)` ciktisindan bu cagriya ait
                 tum `RuleMatch` listesi (tekli + kombinasyon).
+            temporal_events: (Opsiyonel) bu cagriya ait `TemporalEvent`ler -
+                likelihood/duration/recurrence feature'larini besler.
+            semantic_rag_sources: (Opsiyonel) bu cagrinin semantik RAG
+                sonuclari - regulatory_support feature'ini besler.
 
         Returns:
-            `risk_score`/`risk_level`/`risk_status` alanlari (varsa, ajan
-            basarili muhakeme urettiyse) rule engine sonucuyla guncellenmis
-            ayni `decision` nesnesi.
+            `(decision, risk_provenance)`: `risk_score`/`risk_level`/`risk_status`
+            alanlari (varsa, ajan basarili muhakeme urettiyse) guncellenmis ayni
+            `decision` nesnesi + hesaplamanin TAM izlenebilirligini tasiyan
+            `RiskProvenance` (unknown durumunda `risk_level=None` provenance doner).
         """
         if decision.risk_status == "unknown":
-            return decision
+            return decision, RiskProvenance(risk_level=None, risk_score=None)
 
-        risk_level, risk_score = resolve_deterministic_risk(rule_matches)
-        if risk_level is not None:
-            decision.risk_score = risk_score
-            decision.risk_level = risk_level
+        llm_proposed_score = decision.risk_score
+        risk_provenance = resolve_deterministic_risk_with_provenance(
+            rule_matches,
+            temporal_events=temporal_events,
+            semantic_rag_sources=semantic_rag_sources,
+            llm_proposed_score=llm_proposed_score,
+        )
+        if risk_provenance.risk_level is not None:
+            decision.risk_score = risk_provenance.risk_score
+            decision.risk_level = risk_provenance.risk_level
             decision.risk_status = "assessed"
-        return decision
+        return decision, risk_provenance
 
     def stage_escalate(self, decision, vlm_response: VLMResponse):
         """06: Otomatik eskalasyon -> `EscalationDecision` (yuksek/kritikte alarm otomatik tetiklenir)."""
@@ -1266,12 +1277,18 @@ class SafirPipeline:
         """06-07: Olay kaydi (EventBuilder/History/Store) + nihai `SafirReport` insasi.
 
         `risk_provenance`: verilmezse (orn. Jupyter demo'da `build_report`
-        dogrudan/tek basina cagrilirsa) `rule_matches`den GUVENLI sekilde
-        yeniden hesaplanir - `run()`daki degerle BIREBIR AYNI sonucu verir
-        (bkz. `risk_resolver._pick_provenance`, tek kaynak).
+        dogrudan/tek basina cagrilirsa) `rule_matches`/`temporal_events`/
+        `context.semantically_related_chunks`den GUVENLI sekilde yeniden
+        hesaplanir - `run()`daki degerle BIREBIR AYNI sonucu verir (bkz.
+        `risk_resolver._pick_provenance`, tek kaynak).
         """
         if risk_provenance is None:
-            risk_provenance = resolve_deterministic_risk_with_provenance(rule_matches)
+            risk_provenance = resolve_deterministic_risk_with_provenance(
+                rule_matches,
+                temporal_events=temporal_events,
+                semantic_rag_sources=getattr(context, "semantically_related_chunks", None),
+                llm_proposed_score=getattr(decision, "risk_score", None),
+            )
         current_call_events = _select_current_call_events(temporal_events, latest_timestamp, detected_events)
         detected_event_names = sorted({te.event_name for te in current_call_events})
         detected_event_types = sorted({te.event_type for te in current_call_events if te.event_type})
@@ -1352,6 +1369,10 @@ class SafirPipeline:
             risk_source=risk_source,
             risk_explanation=risk_explanation,
             contributing_rule_ids=risk_provenance.rule_ids,
+            scoring_method=risk_provenance.scoring_method if risk_provenance.rule_ids else None,
+            risk_features=risk_provenance.features,
+            risk_feature_contributions=risk_provenance.feature_contributions,
+            llm_proposed_score=risk_provenance.llm_proposed_score,
             recommended_action=decision.recommended_action,
             actions=decision.actions,
             onset_timestamp_str=getattr(decision, "onset_timestamp", None)
