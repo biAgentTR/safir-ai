@@ -664,9 +664,51 @@ def test_real_semantic_query_completely_outside_corpus_scope_does_not_fabricate_
 
 
 def test_production_rag_service_has_no_cross_encoder_wired_in() -> None:
-    """CROSS_ENCODER_DECISION = KEEP_DETERMINISTIC_ONLY (bkz. rapor) - `embedding_rag_service.py`, benchmarkla DOGRULANMAMIS bir Cross-Encoder'a SESSIZCE baglanmamis olmali."""
-    source = rag_module.__file__
-    text = open(source, encoding="utf-8").read()
-    assert "CrossEncoder" not in text
-    assert "cross_encoder" not in text.lower()
-    assert "sentence_transformers.cross_encoder" not in text.lower()
+    """CROSS_ENCODER_DECISION = KEEP_DETERMINISTIC_ONLY (bkz. rapor).
+
+    `EmbeddingRAGService`, `local_cross_encoder_reranker.py`deki temiz extension
+    point'i (bkz. o modulun dokustringi) KABUL EDER (`cross_encoder` parametresi)
+    ama VARSAYILAN OLARAK `None`dur ve gecilmedigi surece `query()` icinde HICBIR
+    Cross-Encoder cagrisi YAPILMAZ - benchmarkla DOGRULANMAMIS bir Cross-Encoder
+    SESSIZCE devreye ALINMAMIS olmali.
+    """
+    import inspect
+
+    sig = inspect.signature(EmbeddingRAGService.__init__)
+    assert sig.parameters["cross_encoder"].default is None
+
+    embedding_config = EmbeddingConfig(provider="local", model_name="m", output_dimensionality=16)
+    faiss_config = FaissMemoryConfig(index_path="unused", embedding_model="m", top_k=5, candidate_k=20)
+    service = EmbeddingRAGService(embedding_config, faiss_config, RerankerConfig(enabled=False))
+    assert service._cross_encoder is None  # noqa: SLF001 - varsayilan devre-disi durumu dogrudan dogrular
+
+
+def test_production_pipeline_never_passes_a_cross_encoder() -> None:
+    """`src/main.py::SafirPipeline`, `EmbeddingRAGService`i kurarken `cross_encoder` argumanini HICBIR ZAMAN GECMEZ (bkz. gorev tanimi 15. bolum: 'benchmark tamamlanmadan production'da aktif edilmemeli')."""
+    import inspect
+
+    import src.main as main_module
+
+    source = inspect.getsource(main_module)
+    # `EmbeddingRAGService(` cagrilarinin hicbirinde `cross_encoder=` argumani GECMEMELI.
+    for line in source.splitlines():
+        if "EmbeddingRAGService(" in line or "FAISSRagService(" in line:
+            assert "cross_encoder" not in line
+
+
+def test_old_llm_reranker_is_not_in_the_production_import_chain() -> None:
+    """`src/rag/reranker.py` (eski `GeminiReranker`/`GroqReranker`, LLM-as-judge) production path'te (`src/main.py`/`embedding_rag_service.py`) IMPORT EDILMEMIS olmali - yalnizca kendi eski test dosyasindan referans alinabilir."""
+    import inspect
+
+    import src.main as main_module
+
+    main_source = inspect.getsource(main_module)
+    rag_service_source = open(rag_module.__file__, encoding="utf-8").read()
+
+    for source_text in (main_source, rag_service_source):
+        assert "from src.rag.reranker import" not in source_text
+        assert "from src.rag import reranker" not in source_text
+        assert "import src.rag.reranker" not in source_text
+        # gercek kod cagrisi (docstring/yorum ICINDEKI kavramsal bahisler DEGIL):
+        assert "GeminiReranker(" not in source_text
+        assert "GroqReranker(" not in source_text

@@ -100,7 +100,16 @@ class RagContext(BaseModel):
 
     rule_title: str = Field(description="Mevzuat/kural maddesinin kisa basligi (orn. 'ISG Yonetmeligi Madde 12').")
     content: str = Field(description="Maddenin tam metni.")
-    score: float = Field(description="FAISS benzerlik (embedding) skoru.")
+    score: float = Field(description="GERIYE-UYUMLULUK: `embedding_score` ile AYNI deger (bkz. asagida) - eski tuketiciler icin korunur.")
+    embedding_score: Optional[float] = Field(
+        default=None,
+        description=(
+            "E5/FAISS `IndexFlatIP` cosine benzerlik skoru (semantic_score'un HAM girdisi) - "
+            "`relevance_score`/`cross_encoder_score` ile KARISTIRILMAZ (bkz. RAG finalizasyon "
+            "turu gorev tanimi 5. bolum: 'embedding_score = E5/FAISS semantic similarity'). "
+            "`score` alaniyla AYNI degeri tasir, yalnizca ismi kanonik/acik."
+        ),
+    )
     chunk_id: Optional[str] = Field(default=None, description="Kaynak chunk'in kimligi (persisted KB index'teki).")
     document_id: Optional[str] = Field(default=None, description="Kaynak mevzuat dokumaninin kimligi.")
     article_number: Optional[str] = Field(default=None, description="Madde/ek numarasi (orn. 'I.3.1').")
@@ -111,6 +120,15 @@ class RagContext(BaseModel):
             "Deterministik, agirlikli-toplam relevance skoru (bkz. "
             "`src/rag/deterministic_reranker.py::score_candidate`) - LLM'e SORULMAZ; "
             "relevance skorlama devre disiysa `None`."
+        ),
+    )
+    relevance_status: Optional[str] = Field(
+        default=None,
+        description=(
+            "'accepted' | 'rejected' (bkz. `RetrievedDocument.relevance_status`) - bu kaynagin "
+            "threshold/top_k SONRASI nihai sonuc kumesine (Agent'in GORDUGU `semantic_rag_sources`) "
+            "GIRIP GIRMEDIGINI backend'in KENDI canonical karar alanindan tasir; UI 'Seçildi' "
+            "kolonu bunu okur, kendi basina bir esik hesaplamasi YAPMAZ."
         ),
     )
     source_verified: bool = Field(

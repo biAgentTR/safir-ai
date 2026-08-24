@@ -1342,11 +1342,13 @@ class SafirPipeline:
                 ),
                 content=chunk.text,
                 score=getattr(chunk, "embedding_score", None) or getattr(chunk, "score", 0.0),
+                embedding_score=getattr(chunk, "embedding_score", None),
                 chunk_id=getattr(chunk, "chunk_id", None),
                 document_id=getattr(chunk, "document_id", None),
                 article_number=getattr(chunk, "article_number", None),
                 source_url=getattr(chunk, "source_url", None),
                 relevance_score=getattr(chunk, "relevance_score", None),
+                relevance_status=getattr(chunk, "relevance_status", None),
                 source_verified=getattr(chunk, "source_verified", True),
             )
             for chunk in context.semantically_related_chunks

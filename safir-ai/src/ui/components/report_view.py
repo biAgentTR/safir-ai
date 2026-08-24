@@ -201,6 +201,38 @@ class AgentRagPanel:
                 for regulation in regulations:
                     st.markdown(f"- {regulation}")
 
+        st.subheader("🔎 Semantik RAG Kanit Detayı (deterministik değil)")
+        with st.container(border=True):
+            sources = report.get("semantic_rag_sources") or []
+            if not sources:
+                st.caption(
+                    "Bu analiz için eşik-üzeri, doğrulanmış bir semantik RAG kanıtı bulunamadı "
+                    "(persisted index boş/yüklenemedi, sorgu embedding'i başarısız oldu ya da "
+                    "hiçbir aday relevance eşiğini geçemedi olabilir - bkz. retrieval telemetrisi)."
+                )
+            else:
+                st.caption(
+                    "Her satır, `EmbeddingRAGService.query()`'nin GERÇEKTEN döndürdüğü bir kanıttır - "
+                    "**Embedding Skoru** (E5/FAISS benzerliği) ile **Deterministic Relevance** "
+                    "(ağırlıklı-toplam skor) KASITLI AYRI kolonlardır, birbirinin yerine geçmez. "
+                    "Cross-Encoder şu an production'da devre dışı olduğu için ayrı bir kolon gösterilmiyor."
+                )
+                for src in sources:
+                    embedding_score = src.get("embedding_score")
+                    if embedding_score is None:
+                        embedding_score = src.get("score")
+                    relevance_score = src.get("relevance_score")
+                    relevance_status = src.get("relevance_status") or ("kabul edildi" if relevance_score is not None else "-")
+                    with st.container(border=True):
+                        cols = st.columns(5)
+                        cols[0].markdown(f"**Kaynak**\n\n{src.get('rule_title') or '-'}")
+                        cols[1].markdown(f"**Madde**\n\n{src.get('article_number') or '-'}")
+                        cols[2].markdown(f"**Embedding Skoru**\n\n{embedding_score:.3f}" if embedding_score is not None else "**Embedding Skoru**\n\n-")
+                        cols[3].markdown(f"**Deterministic Relevance**\n\n{relevance_score:.3f}" if relevance_score is not None else "**Deterministic Relevance**\n\nyok (devre dışı)")
+                        cols[4].markdown(f"**Seçildi**\n\n{relevance_status}")
+                        if src.get("source_url"):
+                            st.caption(f"Kaynak URL: {src['source_url']}")
+
 
 class TimelineEscalationPanel:
     """Olay zaman cizelgesini + OTOMATIK eskalasyon durumunu ve operator onayini gosterir.

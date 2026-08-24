@@ -70,6 +70,7 @@ import numpy as np
 
 from src.rag.deterministic_reranker import RelevanceBreakdown, RelevanceWeights, score_candidate
 from src.rag.embedding_providers import ConfigurationError, EmbeddingProvider, build_embedding_provider
+from src.rag.local_cross_encoder_reranker import CrossEncoderReranker
 from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig, RerankerConfig
 
 logger = logging.getLogger(__name__)
@@ -267,6 +268,12 @@ class RetrievedDocument:
     text: str
     embedding_score: float
     relevance_score: Optional[float] = None
+    cross_encoder_score: Optional[float] = None
+    """LOKAL Cross-Encoder'in (varsa, bkz. `local_cross_encoder_reranker.py`)
+    (query, chunk) cift skoru - `embedding_score`/`relevance_score`den AYRI,
+    `risk_score`/`confidence`/`probability` OLARAK ADLANDIRILMAZ. Cross-Encoder
+    bu cagrida devreye GIRMEDIYSE (varsayilan - bkz. `EmbeddingRAGService.__init__`
+    `cross_encoder` parametresi) HER ZAMAN `None`."""
     chunk_id: Optional[str] = None
     document_id: Optional[str] = None
     document_title: Optional[str] = None
@@ -406,6 +413,7 @@ class EmbeddingRAGService:
         embedding_config: EmbeddingConfig,
         faiss_config: FaissMemoryConfig,
         reranker_config: Optional[RerankerConfig] = None,
+        cross_encoder: Optional[CrossEncoderReranker] = None,
     ) -> None:
         """EmbeddingRAGService'i konfigurasyondan kurar (HICBIR AG CAGRISI YAPMAZ).
 
@@ -413,6 +421,15 @@ class EmbeddingRAGService:
             embedding_config: `configs/config.yaml` icindeki `memory.embedding` blogu.
             faiss_config: `configs/config.yaml` icindeki `memory.faiss` blogu.
             reranker_config: `configs/config.yaml` icindeki `memory.reranker` blogu; `None`/`enabled=False` ise rerank atlanir.
+            cross_encoder: (OPSIYONEL EXTENSION POINT, bkz.
+                `local_cross_encoder_reranker.py` modul dokustringi) `None`
+                (varsayilan) ise Cross-Encoder asamasi TAMAMEN ATLANIR - bu,
+                2026-08-24 RAG finalizasyon turu itibariyle PRODUCTION'IN
+                GERCEK davranisidir (`src/main.py::SafirPipeline.__init__`
+                bu parametreyi HICBIR ZAMAN GECMEZ). Yalnizca gercek bir
+                benchmark (`scripts/rag_benchmark.py`) A/B/C karsilastirmasi
+                anlamli bir iyilesme gosterdiginde, cagiran taraf BILEREK bir
+                `LocalCrossEncoderReranker` orneği GECEREK devreye alinir.
 
         Raises:
             ConfigurationError: `embedding_config.provider` desteklenmiyorsa
@@ -422,6 +439,7 @@ class EmbeddingRAGService:
         self._embedding_config = embedding_config
         self._faiss_config = faiss_config
         self._reranker_config = reranker_config
+        self._cross_encoder = cross_encoder
 
         self._provider: EmbeddingProvider = build_embedding_provider(
             provider=embedding_config.provider,
@@ -823,6 +841,17 @@ class EmbeddingRAGService:
                     doc.relevance_reason = f"embedding top-{final_k} disinda (relevance skorlama devre disi)"
             final_docs = embedding_only_final
             retrieval_status = "embedding_only"
+
+        # [LOCAL CROSS-ENCODER EXTENSION POINT] (bkz. `local_cross_encoder_reranker.py`
+        # modul dokustringi) - `self._cross_encoder` yalnizca cagiran taraf BILEREK bir
+        # `LocalCrossEncoderReranker` GECTIYSE calisir (varsayilan `None` - PRODUCTION'DA
+        # SU AN HER ZAMAN ATLANIR). Deterministic relevance/evidence gate'ten GECMIS
+        # `final_docs` (top-N) uzerinde calisir, final_k'ya kirpilmadan ONCE.
+        if self._cross_encoder is not None and final_docs:
+            ce_scores = self._cross_encoder.score(question, [d.text for d in final_docs])
+            for doc, ce_score in zip(final_docs, ce_scores):
+                doc.cross_encoder_score = float(ce_score)
+            final_docs = sorted(final_docs, key=lambda d: d.cross_encoder_score, reverse=True)
 
         scoring_latency_ms = (time.perf_counter() - scoring_started) * 1000.0
         final_docs = final_docs[:final_k]

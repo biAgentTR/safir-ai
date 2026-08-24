@@ -557,6 +557,8 @@ def test_rag_service_failure_does_not_crash_the_pipeline(
 
     assert report is not None
     assert report.risk_score is not None
+    # RAG basarisiz oldugunda sahte/uydurulmus bir kanit UYDURULMAZ - bos kalir.
+    assert report.semantic_rag_sources == []
 
 
 def test_regulation_match_presence_bounded_effect_on_deterministic_risk(
