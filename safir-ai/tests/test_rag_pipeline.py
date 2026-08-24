@@ -648,3 +648,25 @@ def test_real_semantic_query_completely_outside_corpus_scope_does_not_fabricate_
             "corpus-disi sorgunun ortalama embedding skoru, corpus-ici bir sorgudan DUSUK olmali "
             "- degilse relevance_threshold/reranker GERCEKTEN ayirt edici degildir."
         )
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-24 RAG retrieval/reranking benchmark incelemesi (bkz. scripts/rag_benchmark.py):
+# canli E5/Cross-Encoder benchmark BU oturumda ag kisiti (huggingface.co
+# erisimi org-policy ile engelli) yuzunden CALISTIRILAMADI - karar bu yuzden
+# BILEREK KEEP_DETERMINISTIC_ONLY (bkz. rapor) - production'a hicbir
+# Cross-Encoder BAGLANMADI. Bu test, o kararin KOD SEVIYESINDE hala gecerli
+# oldugunu (birileri "sadece dene" diye sessizce bir CrossEncoder import'u
+# EKLEMEDIYSE) guvence altina alir - GELECEKTE gercek bir benchmark
+# Cross-Encoder eklemeyi HAKLI CIKARIRSA, bu guard testi o degisiklikle
+# BIRLIKTE BILINCLI olarak guncellenmelidir.
+# ---------------------------------------------------------------------------
+
+
+def test_production_rag_service_has_no_cross_encoder_wired_in() -> None:
+    """CROSS_ENCODER_DECISION = KEEP_DETERMINISTIC_ONLY (bkz. rapor) - `embedding_rag_service.py`, benchmarkla DOGRULANMAMIS bir Cross-Encoder'a SESSIZCE baglanmamis olmali."""
+    source = rag_module.__file__
+    text = open(source, encoding="utf-8").read()
+    assert "CrossEncoder" not in text
+    assert "cross_encoder" not in text.lower()
+    assert "sentence_transformers.cross_encoder" not in text.lower()

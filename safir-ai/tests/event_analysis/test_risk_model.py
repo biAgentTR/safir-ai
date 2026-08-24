@@ -455,3 +455,30 @@ def test_exact_reported_fire_regression_does_not_reproduce_old_53_score() -> Non
     assert breakdown.final_score >= 80.0
     assert breakdown.final_score != pytest.approx(51.4, abs=1.0)
     assert round(breakdown.final_score) != 53
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-24 RAG retrieval/reranking incelemesi: risk_score, RAG relevance_score
+# ile KARISTIRILMAZ (bkz. `compute_risk_score` imzasi - hicbir RAG skoru
+# PARAMETRE OLARAK DAHI KABUL EDILMEZ, yalnizca regulatory_support 0.0-1.0
+# NORMALIZE edilmis TEK bir feature olarak girer, bkz. `_regulatory_support_feature`).
+# ---------------------------------------------------------------------------
+
+
+def test_risk_model_module_never_imports_rag_reranker_modules() -> None:
+    """`risk_model.py`, RAG'in embedding/retrieval/cross-encoder KATMANLARINA bagimli DEGILDIR - yalnizca `semantic_rag_sources`in `relevance_score`/`source_verified` alanlarini (duck-typed) okur.
+
+    `deterministic_reranker.turkish_normalize` import'u ISTISNA: bu, RAG
+    skorlama MANTIGI degil, paylasilan Turkce metin normalizasyon
+    yardimcisidir (bkz. `_hazard_escalation_feature`, RISK ENGINE V2
+    kalibrasyon turu, kasitli cross-module reuse) - risk_model'i RAG'in
+    embedding/FAISS/retrieval servisine BAGLAMAZ.
+    """
+    import src.event_analysis.risk_model as risk_model_module
+
+    source = risk_model_module.__file__
+    text = open(source, encoding="utf-8").read()
+    assert "src.rag.embedding_rag_service" not in text
+    assert "score_candidate" not in text
+    assert "cross_encoder" not in text.lower()
+    assert "CrossEncoder" not in text
