@@ -60,6 +60,11 @@ class _FakeRagService:
 
     def __init__(self) -> None:
         self.queries: List[str] = []
+        self.last_telemetry_cross_encoder_status: Optional[str] = None
+        """Testlerin `stage_context()`in GERCEKTEN `get_last_query_telemetry()`i okuyup
+        `SafirReport.cross_encoder_status`e tasidigini dogrulayabilmesi icin - `None`
+        ise `get_last_query_telemetry()` `None` doner (gercek servisin "hic sorgu
+        yapilmadi" durumuyla AYNI, uydurulmus bir varsayilan DEGIL)."""
 
     def seed_default_regulations(self) -> None:
         return None
@@ -67,6 +72,17 @@ class _FakeRagService:
     def query(self, question: str, top_k: Optional[int] = None, keywords: Optional[List[str]] = None) -> List[_FakeRetrievedDocument]:
         self.queries.append(question)
         return [_FakeRetrievedDocument(text=f"[FAKE-RAG] {question}")]
+
+    def get_last_query_telemetry(self):
+        if self.last_telemetry_cross_encoder_status is None:
+            return None
+        from dataclasses import dataclass as _dataclass
+
+        @_dataclass
+        class _FakeTelemetry:
+            cross_encoder_status: str
+
+        return _FakeTelemetry(cross_encoder_status=self.last_telemetry_cross_encoder_status)
 
 
 def _write_video(path: Path, frames: list) -> None:
@@ -1171,6 +1187,60 @@ def test_cross_encoder_score_survives_retrieved_document_to_rag_context_to_repor
     # D) JSON serialization (API'nin GERCEKTEN dondurdugu sekil) alani KAYBETMEZ.
     dumped = report.model_dump(mode="json")
     assert dumped["semantic_rag_sources"][0]["cross_encoder_score"] == 0.93
+
+
+def test_report_cross_encoder_status_surfaces_unavailable_instead_of_silent_none(
+    pipeline: SafirPipeline,
+) -> None:
+    """2026-08-24 (production fix): Cross-Encoder KULLANILAMADIYSA (model agirligi yuklenemedi),
+
+    `SafirReport.cross_encoder_status` acikca 'unavailable' tasimali - boylece UI, tum
+    `cross_encoder_score`larin `None` olmasini SESSIZ bir '-' olarak DEGIL, ACIK bir
+    "kullanilamadi" durumuyla gosterebilir (bkz. `RagQueryTelemetry.cross_encoder_status`,
+    `EmbeddingRAGService.query()`in KONTROLLU degradasyonu).
+    """
+    fake_rag_service = pipeline._rag_service  # type: ignore[assignment]
+    fake_rag_service.last_telemetry_cross_encoder_status = "unavailable"
+
+    temporal_event = TemporalEvent(
+        event_id="te-ce-status-1",
+        event_name="yangin_duman",
+        event_type="yangin_duman",
+        description="duman gorulmeye basladi",
+        start_timestamp=1.0,
+        end_timestamp=1.0,
+        duration=0.0,
+        confidence=0.8,
+        occurrence_count=1,
+        matched_keywords=["duman"],
+        source_model="test-vlm",
+        related_events=[],
+    )
+    vlm_response = VLMResponse(
+        description="Duman gorulmeye basladi.", model_name="test-vlm", frame_count=1, latency_ms=1.0
+    )
+
+    prompt_block, context = pipeline.stage_context(
+        vlm_response, "Risk durumu nedir?", latest_timestamp=1.0, rule_matches=[], temporal_events=[temporal_event]
+    )
+    decision = pipeline.stage_decide(prompt_block)
+    decision, _risk_provenance = pipeline.stage_finalize_risk(decision, [], temporal_events=[temporal_event])
+    report = pipeline.build_report(
+        video_source="test-video",
+        sampler=_NullSampler(),
+        evidence_frames=[],
+        vlm_response=vlm_response,
+        context=context,
+        decision=decision,
+        escalation=_NullEscalation(),
+        temporal_events=[temporal_event],
+        rule_matches=[],
+        latest_timestamp=1.0,
+    )
+
+    assert report.cross_encoder_status == "unavailable"
+    dumped = report.model_dump(mode="json")
+    assert dumped["cross_encoder_status"] == "unavailable"
 
 
 def test_report_json_risk_score_is_the_deterministic_canonical_field_not_the_llm_draft(

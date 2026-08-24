@@ -222,14 +222,30 @@ class AgentRagPanel:
                     "hiçbir aday relevance eşiğini geçemedi olabilir - bkz. retrieval telemetrisi)."
                 )
             else:
-                any_cross_encoder_score = any(src.get("cross_encoder_score") is not None for src in sources)
+                cross_encoder_status = report.get("cross_encoder_status")
+                # `cross_encoder_status` backend'in `RagQueryTelemetry.cross_encoder_status`inden
+                # GELIR - "bu analizde neden cross_encoder_score None?" sorusunu SESSIZCE "-" ile
+                # DEGIL, ACIK bir nedenle cevaplar (bkz. gorev tanimi: "A) model gercekten
+                # yuklenemiyor / B) score uretiliyor ama UI'a ulasmiyor" ayrimi).
+                show_cross_encoder_column = cross_encoder_status in ("used", "unavailable")
+                if cross_encoder_status == "used":
+                    ce_status_caption = "Cross-Encoder bu analizde ÇALIŞTI - aşağıdaki değerler gerçek model çıktısıdır."
+                elif cross_encoder_status == "unavailable":
+                    ce_status_caption = (
+                        "⚠️ Cross-Encoder bu analizde KULLANILAMADI (model ağırlığı yüklenemedi - "
+                        "ağ erişimi olmayabilir). Sıralama kontrollü şekilde Deterministic Relevance'a "
+                        "düştü; hiçbir harici API'ye sessizce düşülmedi."
+                    )
+                elif cross_encoder_status == "disabled":
+                    ce_status_caption = "Cross-Encoder bu analizde devre dışıydı (production bu adımı hiç çağırmadı)."
+                else:
+                    ce_status_caption = "Cross-Encoder durumu bu analiz için bilinmiyor (eski bir rapor formatı olabilir)."
                 st.caption(
                     "Her satır, `EmbeddingRAGService.query()`'nin GERÇEKTEN döndürdüğü bir kanıttır - "
                     "**Embedding Skoru** (E5/FAISS benzerliği), **Deterministic Relevance** "
-                    "(ağırlıklı-toplam skor) ve **Cross-Encoder Relevance** (varsa, lokal cross-encoder "
+                    "(ağırlıklı-toplam skor) ve **Cross-Encoder Relevance** (lokal cross-encoder "
                     "sıralama sinyali) KASITLI AYRI kolonlardır; hiçbiri risk/confidence/probability "
-                    "değildir, birbirinin yerine geçmez."
-                    + ("" if any_cross_encoder_score else " Bu analizde Cross-Encoder skoru üretilmedi (devre dışı ya da model kullanılamadı - bkz. retrieval telemetrisi).")
+                    f"değildir, birbirinin yerine geçmez. {ce_status_caption}"
                 )
                 for src in sources:
                     embedding_score = src.get("embedding_score")
@@ -239,13 +255,19 @@ class AgentRagPanel:
                     cross_encoder_score = src.get("cross_encoder_score")
                     relevance_status = src.get("relevance_status") or ("kabul edildi" if relevance_score is not None else "-")
                     with st.container(border=True):
-                        cols = st.columns(6 if any_cross_encoder_score else 5)
+                        cols = st.columns(6 if show_cross_encoder_column else 5)
                         cols[0].markdown(f"**Kaynak**\n\n{src.get('rule_title') or '-'}")
                         cols[1].markdown(f"**Madde**\n\n{src.get('article_number') or '-'}")
                         cols[2].markdown(f"**Embedding Skoru**\n\n{embedding_score:.3f}" if embedding_score is not None else "**Embedding Skoru**\n\n-")
                         cols[3].markdown(f"**Deterministic Relevance**\n\n{relevance_score:.3f}" if relevance_score is not None else "**Deterministic Relevance**\n\nyok (devre dışı)")
-                        if any_cross_encoder_score:
-                            cols[4].markdown(f"**Cross-Encoder Relevance**\n\n{cross_encoder_score:.3f}" if cross_encoder_score is not None else "**Cross-Encoder Relevance**\n\nyok")
+                        if show_cross_encoder_column:
+                            if cross_encoder_score is not None:
+                                ce_cell = f"{cross_encoder_score:.3f}"
+                            elif cross_encoder_status == "unavailable":
+                                ce_cell = "kullanılamadı ⚠️"
+                            else:
+                                ce_cell = "-"
+                            cols[4].markdown(f"**Cross-Encoder Relevance**\n\n{ce_cell}")
                             cols[5].markdown(f"**Seçildi**\n\n{relevance_status}")
                         else:
                             cols[4].markdown(f"**Seçildi**\n\n{relevance_status}")

@@ -1304,6 +1304,9 @@ class SafirPipeline:
                 semantic_rag_sources=getattr(context, "semantically_related_chunks", None),
                 llm_proposed_score=getattr(decision, "risk_score", None),
             )
+        rag_telemetry = self._last_stage_rag_telemetry
+        cross_encoder_status = getattr(rag_telemetry, "cross_encoder_status", None) if rag_telemetry is not None else None
+
         current_call_events = _select_current_call_events(temporal_events, latest_timestamp, detected_events)
         detected_event_names = sorted({te.event_name for te in current_call_events})
         detected_event_types = sorted({te.event_type for te in current_call_events if te.event_type})
@@ -1393,6 +1396,7 @@ class SafirPipeline:
             risk_features=risk_provenance.features,
             risk_feature_contributions=risk_provenance.feature_contributions,
             llm_proposed_score=risk_provenance.llm_proposed_score,
+            cross_encoder_status=cross_encoder_status,
             recommended_action=decision.recommended_action,
             actions=decision.actions,
             onset_timestamp_str=getattr(decision, "onset_timestamp", None)

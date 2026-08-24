@@ -329,6 +329,19 @@ class SafirReport(BaseModel):
             "stage'i) BOS LISTE - GECERLI bir sonuctur, uydurulmus bir kaynak EKLENMEZ."
         ),
     )
+    cross_encoder_status: Optional[str] = Field(
+        default=None,
+        description=(
+            "Bu analizin semantik RAG sorgusunda LOKAL Cross-Encoder'in GERCEKTEN calisip "
+            "calismadigi: 'used' (calisti, `semantic_rag_sources[i].cross_encoder_score` dolu) | "
+            "'unavailable' (bir Cross-Encoder verildi ama model agirligi yuklenemedi - kontrollu "
+            "sekilde deterministic relevance siralamasina dusuldu, HARICI BIR API'YE DUSULMEDI) | "
+            "'disabled' (bu cagriya Cross-Encoder hic verilmedi). `None` = bu cagrida semantik RAG "
+            "sorgusu hic yapilmadi (matched_keywords yoktu). UI, `cross_encoder_score` alani `None` "
+            "GORUNDUGUNDE bunu SESSIZCE '-' olarak degil, bu alana gore ('kullanilamadi'/'devre disi') "
+            "ACIKCA gostermelidir - bkz. `src/rag/embedding_rag_service.py::RagQueryTelemetry.cross_encoder_status`."
+        ),
+    )
     escalation_tier: Optional[str] = Field(
         default=None, description="Otomatik eskalasyon kademesi: monitor | notify | alarm."
     )
