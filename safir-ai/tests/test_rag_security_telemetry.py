@@ -32,11 +32,11 @@ def _sample_rag_telemetry(zero_result: bool = False) -> RagQueryTelemetry:
         article_number="12",
         source_url="https://example.gov.tr/6331",
         embedding_score=0.81,
-        rerank_score=0.72,
+        relevance_score=0.72,
         selected=not zero_result,
         rank=1,
         relevance_status="accepted",
-        relevance_reason="rerank_score (0.720) >= threshold (0.100)",
+        relevance_reason="relevance_score (0.720) >= threshold (0.100)",
         text="Madde 12: Isveren, is sagligi ve guvenligi konusunda gerekli tedbirleri almakla yukumludur.",
     )
     return RagQueryTelemetry(
@@ -50,7 +50,7 @@ def _sample_rag_telemetry(zero_result: bool = False) -> RagQueryTelemetry:
         rerank_latency_ms=310.7,
         total_latency_ms=356.0,
         avg_embedding_score=0.75,
-        avg_rerank_score=None if zero_result else 0.72,
+        avg_relevance_score=None if zero_result else 0.72,
         results=[] if zero_result else [result],
     )
 
@@ -82,7 +82,7 @@ def test_serialize_rag_security_with_full_telemetry() -> None:
     assert data["rag"]["rerank_latency_ms"] == 310.7
     assert data["rag"]["query"] == "fire_detected yangın tespit edildi"
     assert data["rag"]["results"][0]["document_id"] == "6331_isg_kanunu"
-    assert data["rag"]["results"][0]["rerank_score"] == 0.72
+    assert data["rag"]["results"][0]["relevance_score"] == 0.72
     assert data["rag"]["results"][0]["rank"] == 1
     assert data["rag"]["results"][0]["relevance_status"] == "accepted"
     assert "threshold" in data["rag"]["results"][0]["relevance_reason"]
@@ -100,7 +100,7 @@ def test_serialize_rag_security_zero_result_is_reported_not_fabricated() -> None
     assert data["rag"]["zero_result"] is True
     assert data["rag"]["final_count"] == 0
     assert data["rag"]["results"] == []
-    assert data["rag"]["avg_rerank_score"] is None
+    assert data["rag"]["avg_relevance_score"] is None
 
 
 def test_serialize_rag_security_flags_fallback_placeholder_corpus_loudly() -> None:
@@ -116,14 +116,20 @@ def test_serialize_rag_security_flags_fallback_placeholder_corpus_loudly() -> No
     assert "PLACEHOLDER" in summary
 
 
-def test_serialize_rag_security_reranker_unavailable_is_reported_clearly_without_silently_returning_topk() -> None:
-    """HEDEF (2026-08-24): reranker basarisiz olduğunda (429/400/vb.) trace'te ACIKCA gorunmeli.
+def test_serialize_rag_security_marks_reranker_as_deterministic_not_llm() -> None:
+    """RAG RERANKER DETERMINIZATION: trace, relevance skorlamasinin ARTIK bir LLM'e SORULMADIGINI ACIKCA belirtmeli."""
+    payload = {"rag_telemetry": _sample_rag_telemetry(), "guard_results": []}
+    _summary, data, _frames, _status, _error = serialize_rag_security(payload, "job1")
 
-    Guvenlik davranisi DEGISMEDI: `EmbeddingRAGService.query()` zaten bu
-    durumda `final_count=0` doner (embedding top-k SESSIZCE final sonuc
-    yapilmaz, bkz. `test_rag_pipeline.py::test_reranker_failure_returns_empty_not_embedding_topk`).
-    Bu test yalnizca, operator/trace'in bu durumu "0 sonuc = alakasiz sorgu"
-    ile KARISTIRMADIGINI, ACIKCA "reranker basarisiz oldu" diye belirttigini dogrular.
+    assert data["rag"]["reranker"] == "deterministic"
+    assert data["rag"]["relevance_method"] == "weighted_hybrid"
+
+
+def test_serialize_rag_security_reranker_unavailable_is_reported_clearly_without_silently_returning_topk() -> None:
+    """GERIYE-UYUMLULUK testi: `reranker_unavailable` degeri artik `EmbeddingRAGService.query()`
+    tarafindan URETILMEZ (RAG RERANKER DETERMINIZATION - relevance skorlama artik bir LLM/API'ye
+    bagli DEGIL), ama GECMIS persisted trace kayitlarinda gorulebilir - serializer bunlari hala
+    ACIKCA (SESSIZCE "0 sonuc = alakasiz sorgu" gibi gostermeden) sunabilmeli.
     """
     telemetry = _sample_rag_telemetry(zero_result=True)
     telemetry.retrieval_status = "reranker_unavailable"
@@ -137,6 +143,21 @@ def test_serialize_rag_security_reranker_unavailable_is_reported_clearly_without
     assert data["rag"]["candidate_count"] == 20  # "hic aday yoktu" ile "reranker aday'lari dogrulayamadi" AYRISTIRILIR
     assert "reranker kullanılamadı" in summary.lower() or "reranker basarisiz" in summary.lower()
     assert "20" in summary  # aday sayisi ozette de gorunur olmali
+
+
+def test_serialize_rag_security_insufficient_evidence_is_distinguished_from_llm_failure() -> None:
+    """HEDEF 8: deterministik relevance skorlama GERCEKTEN calisti ama hicbir aday esigi gecemedi - bu bir LLM/API basarisizligi DEGIL."""
+    telemetry = _sample_rag_telemetry(zero_result=True)
+    telemetry.retrieval_status = "insufficient_evidence"
+    telemetry.candidate_count = 15
+    payload = {"rag_telemetry": telemetry, "guard_results": []}
+
+    summary, data, _frames, _status, _error = serialize_rag_security(payload, "job1")
+
+    assert data["rag"]["retrieval_status"] == "insufficient_evidence"
+    assert "yetersiz kanit" in summary.lower()
+    assert "llm/api hatasi yok" in summary.lower() or "hata yok" in summary.lower()
+    assert "15" in summary
 
 
 def test_serialize_rag_security_persisted_index_corpus_is_not_flagged() -> None:

@@ -92,7 +92,7 @@ def _run_load_verification_and_smoke_test(config) -> bool:
             continue
         any_result = True
         for doc in results:
-            score = f"rerank={doc.rerank_score:.3f}" if doc.rerank_score is not None else f"embedding={doc.embedding_score:.3f}"
+            score = f"relevance={doc.relevance_score:.3f}" if doc.relevance_score is not None else f"embedding={doc.embedding_score:.3f}"
             print(
                 f"  -> chunk_id={doc.chunk_id} document_id={doc.document_id} "
                 f"article={doc.article_number} {score}"

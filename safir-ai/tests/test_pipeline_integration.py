@@ -41,7 +41,7 @@ class _FakeRetrievedDocument:
     # bu alanlar OLMADAN da (varsayilan None) hicbir yer PATLAMAMALI; burada VAR OLMALARI,
     # provenance'in gercekten uctan uca tasindigini test edebilmek icindir.
     embedding_score: Optional[float] = None
-    rerank_score: Optional[float] = None
+    relevance_score: Optional[float] = None
     chunk_id: Optional[str] = None
     document_id: Optional[str] = None
     document_title: Optional[str] = None
@@ -63,7 +63,7 @@ class _FakeRagService:
     def seed_default_regulations(self) -> None:
         return None
 
-    def query(self, question: str, top_k: Optional[int] = None) -> List[_FakeRetrievedDocument]:
+    def query(self, question: str, top_k: Optional[int] = None, keywords: Optional[List[str]] = None) -> List[_FakeRetrievedDocument]:
         self.queries.append(question)
         return [_FakeRetrievedDocument(text=f"[FAKE-RAG] {question}")]
 
@@ -927,7 +927,7 @@ def test_semantic_rag_chunk_reaches_agent_prompt_and_report_provenance(
         source_url="https://example.org/test-yonetmelik",
     )
     fake_rag_service = pipeline._rag_service  # type: ignore[assignment]
-    fake_rag_service.query = lambda question, top_k=None: (  # noqa: E731 - test-only stub
+    fake_rag_service.query = lambda question, top_k=None, keywords=None: (  # noqa: E731 - test-only stub
         fake_rag_service.queries.append(question),
         [distinctive_chunk],
     )[1]

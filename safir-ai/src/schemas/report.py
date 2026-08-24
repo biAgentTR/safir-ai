@@ -105,8 +105,22 @@ class RagContext(BaseModel):
     document_id: Optional[str] = Field(default=None, description="Kaynak mevzuat dokumaninin kimligi.")
     article_number: Optional[str] = Field(default=None, description="Madde/ek numarasi (orn. 'I.3.1').")
     source_url: Optional[str] = Field(default=None, description="Resmi mevzuat kaynak URL'si (varsa).")
-    rerank_score: Optional[float] = Field(
-        default=None, description="LLM-as-judge rerank skoru (reranker devre disiysa/basarisizsa None)."
+    relevance_score: Optional[float] = Field(
+        default=None,
+        description=(
+            "Deterministik, agirlikli-toplam relevance skoru (bkz. "
+            "`src/rag/deterministic_reranker.py::score_candidate`) - LLM'e SORULMAZ; "
+            "relevance skorlama devre disiysa `None`."
+        ),
+    )
+    source_verified: bool = Field(
+        default=True,
+        description=(
+            "Bu kaynagin GERCEKTEN persisted KB index'inden geldigi (bkz. "
+            "`RetrievedDocument.source_verified`) - retrieval sonucu OLDUGU icin HER ZAMAN `True`dur. "
+            "YUKSEK bir `relevance_score`, source_verified=False bir kaynagi ASLA 'dogrulanmis "
+            "mevzuat kaniti' YAPMAZ - bu iki alan BAGIMSIZDIR (bkz. gorev tanimi 15. bolum)."
+        ),
     )
 
 

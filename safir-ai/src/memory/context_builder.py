@@ -162,9 +162,9 @@ class EnrichedContext:
             chunk_id = getattr(chunk, "chunk_id", None) or "-"
             source_url = getattr(chunk, "source_url", None) or "-"
             embedding_score = getattr(chunk, "embedding_score", None)
-            rerank_score = getattr(chunk, "rerank_score", None)
+            relevance_score = getattr(chunk, "relevance_score", None)
             embedding_str = f"{embedding_score:.3f}" if embedding_score is not None else f"{getattr(chunk, 'score', 0.0):.3f}"
-            rerank_str = f"{rerank_score:.3f}" if rerank_score is not None else "yok (reranker calismadi/devre disi)"
+            rerank_str = f"{relevance_score:.3f}" if relevance_score is not None else "yok (reranker calismadi/devre disi)"
             text = getattr(chunk, "text", "")
             blocks.append(
                 f"[RAG EVIDENCE {i}]\n"
@@ -173,7 +173,7 @@ class EnrichedContext:
                 f"chunk_id: {chunk_id}\n"
                 f"source_url: {source_url}\n"
                 f"embedding_score: {embedding_str}\n"
-                f"rerank_score: {rerank_str}\n\n"
+                f"relevance_score: {rerank_str}\n\n"
                 f"text:\n{text}\n"
             )
         return "\n".join(blocks)

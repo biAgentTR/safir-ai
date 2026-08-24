@@ -359,22 +359,38 @@ class FaissMemoryConfig(BaseModel):
     similarity_threshold: Optional[float] = None  # embedding-seviyesi filtre (opsiyonel, genelde None)
 
 
-class RerankerConfig(BaseModel):
-    """LLM-as-judge ikinci-asama siralama ayarlari (`provider`: "gemini" | "groq").
+class RelevanceWeightsConfig(BaseModel):
+    """`src/rag/deterministic_reranker.py::RelevanceWeights` icin config-tabanli agirliklar (HARD-CODE DEGIL)."""
 
-    `provider="gemini"` ise embedding ile AYNI Gemini API anahtarini kullanir;
-    `provider="groq"` ise Groq'un OpenAI-uyumlu ucunu (AYRI kota/anahtar)
-    kullanir - bkz. `src/rag/reranker.py` (`GeminiReranker`/`GroqReranker`).
+    semantic: float = 0.60
+    lexical: float = 0.15
+    keyword: float = 0.15
+    metadata: float = 0.05
+    phrase: float = 0.05
+
+
+class RerankerConfig(BaseModel):
+    """Ikinci-asama retrieval relevance skorlama ayarlari.
+
+    2026-08-24 (RAG RERANKER DETERMINIZATION): production relevance kararı
+    artik bir LLM'e (`provider`/`model_name`/`api_key_env`/`base_url`)
+    SORULMUYOR - `src/rag/deterministic_reranker.py`nin TAMAMEN yerel,
+    agirlikli-toplam algoritmasi kullaniliyor (bkz. `weights`). `provider`/
+    `model_name`/`api_key_env`/`base_url` alanlari GERIYE-DONUK UYUMLULUK
+    icin (ve `src/rag/reranker.py`nin hala bagimsiz test edilebilen
+    `GeminiReranker`/`GroqReranker` siniflari icin) KORUNDU, ancak
+    `EmbeddingRAGService` ARTIK BUNLARI OKUMAZ/KULLANMAZ.
     """
 
     enabled: bool = False
-    provider: str = "gemini"
-    model_name: str = "gemini-3.5-flash-lite"
+    provider: str = "gemini"            # ARTIK KULLANILMIYOR (bkz. sinif dokustringi) - geriye-uyum icin durur
+    model_name: str = "gemini-3.5-flash-lite"  # ARTIK KULLANILMIYOR
     candidate_k: int = 20
     top_k: int = 5
-    score_threshold: float = 0.10       # bu skorun ALTINDAKI sonuclar ELENIR (0 sonuc GECERLIDIR)
-    api_key_env: str = "GEMINI_API_KEY"
-    base_url: Optional[str] = None      # yalnizca provider="groq" icin (verilmezse Groq varsayilani kullanilir)
+    score_threshold: float = 0.10       # bu skorun ALTINDAKI sonuclar ELENIR (0 sonuc GECERLIDIR) - artik deterministik relevance_score'a uygulanir
+    api_key_env: str = "GEMINI_API_KEY"  # ARTIK KULLANILMIYOR
+    base_url: Optional[str] = None      # ARTIK KULLANILMIYOR
+    weights: RelevanceWeightsConfig = Field(default_factory=RelevanceWeightsConfig)
 
 
 class MemoryConfig(BaseModel):

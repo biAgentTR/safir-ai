@@ -61,3 +61,27 @@ def test_free_text_without_any_legislation_like_pattern_produces_no_flags() -> N
 
 def test_empty_text_returns_empty_list() -> None:
     assert _unverified_citations("", semantic_rag_sources=[]) == []
+
+
+def test_high_relevance_score_does_not_imply_source_verified() -> None:
+    """HEDEF 15: `source_verified=False` bir kaynak, YUKSEK bir `relevance_score` alsa bile 'dogrulanmis mevzuat kaniti' olarak isaretlenmemeli - iki alan BAGIMSIZDIR."""
+    unverified_but_high_score = RagContext(
+        rule_title="Şüpheli Kaynak",
+        content="ornek metin",
+        score=0.9,
+        relevance_score=0.95,  # cok yuksek relevance_score
+        source_verified=False,  # ama corpus-kokenli OLDUGU DOGRULANAMADI
+    )
+    verified_but_lower_score = RagContext(
+        rule_title="Gercek Corpus Kaynagi",
+        content="ornek metin",
+        score=0.5,
+        relevance_score=0.3,
+        source_verified=True,
+    )
+
+    assert unverified_but_high_score.relevance_score > verified_but_lower_score.relevance_score
+    assert unverified_but_high_score.source_verified is False
+    assert verified_but_lower_score.source_verified is True
+    # Varsayilan HER ZAMAN True'dur (gercek retrieval sonuclari icin) - False ACIKCA belirtilmeli, asla ima edilmez.
+    assert RagContext(rule_title="x", content="y", score=0.1).source_verified is True

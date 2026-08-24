@@ -140,10 +140,10 @@ class RetrieverTool:
             # `getattr(..., None)` KASITLI: eski/duck-typed (yalnizca text/score
             # tasiyan) sahte RAG nesneleri icin de GUVENLI CALISIR - bkz.
             # `context_builder.py::_format_semantic_chunks` ile ayni gerekce.
-            rerank_score = getattr(doc, "rerank_score", None)
+            relevance_score = getattr(doc, "relevance_score", None)
             embedding_score = getattr(doc, "embedding_score", None)
-            if rerank_score is not None:
-                score_line = f"Rerank score: {rerank_score:.3f}"
+            if relevance_score is not None:
+                score_line = f"Relevance score: {relevance_score:.3f}"
             elif embedding_score is not None:
                 score_line = f"Embedding score: {embedding_score:.3f}"
             else:

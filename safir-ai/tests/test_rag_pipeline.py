@@ -1,11 +1,12 @@
-"""Iki-asamali RAG retrieval (FAISS candidate_k -> Gemini rerank -> score_threshold) icin agsiz birim testleri.
+"""Iki-asamali RAG retrieval (FAISS candidate_k -> deterministik relevance skorlama -> score_threshold) icin birim testleri.
 
-Hem embedding hem rerank sahte/deterministik nesnelerle degistirilir - bu
-dosyadaki hicbir test GERCEK bir API cagrisi yapmaz veya semantik kalite
-IDDIA ETMEZ; yalnizca iki-asamali retrieval'in MEKANIGINI (candidate_k,
-metadata korunumu, threshold filtreleme, reranker hatasi -> bos sonuc)
-dogrular. Gercek API'lere karsi calisan smoke test icin bkz.
-`scripts/rag_smoke_test.py`.
+2026-08-24 (RAG RERANKER DETERMINIZATION): ikinci asama artik bir LLM'e
+SORULMUYOR - `src/rag/deterministic_reranker.py`nin TAMAMEN yerel,
+agirlikli-toplam algoritmasidir; bu dosyadaki testler GERCEK relevance
+skorlamayi (yalnizca embedding'i SAHTE, hash-tabanli bir saglayiciyla)
+calistirir - HICBIR AG/LLM cagrisi yapilmaz. `deterministic_reranker`nin
+saf-fonksiyon seviyesindeki izole testleri icin bkz.
+`tests/test_deterministic_reranker.py`.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ import pytest
 
 from src.rag import embedding_rag_service as rag_module
 from src.rag.embedding_rag_service import EmbeddingRAGService, RetrievedDocument, _load_kb_chunk_records
-from src.rag.reranker import RerankerUnavailableError
 from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig, RerankerConfig, SQLiteMemoryConfig
 
 
@@ -45,36 +45,17 @@ class _FakeEmbeddingProvider:
         return self._vector_for(text)
 
 
-class _FakeReranker:
-    """`substring -> relevance_score` haritasina gore deterministik skor donduren sahte reranker."""
-
-    def __init__(self, score_by_substring=None, default_score: float = 0.5, fail: bool = False):
-        self._score_by_substring = score_by_substring or {}
-        self._default_score = default_score
-        self._fail = fail
-        self.calls = []
-
-    def rerank(self, query, candidates):
-        self.calls.append((query, list(candidates)))
-        if self._fail:
-            raise RerankerUnavailableError("sahte reranker hatasi")
-        scored = []
-        for i, text in enumerate(candidates):
-            score = self._default_score
-            for substring, s in self._score_by_substring.items():
-                if substring in text:
-                    score = s
-                    break
-            scored.append((i, score))
-        return sorted(scored, key=lambda t: t[1], reverse=True)
-
-
 @pytest.fixture(autouse=True)
 def _patch_embedding_provider(monkeypatch):
     monkeypatch.setattr(rag_module, "build_embedding_provider", lambda **kwargs: _FakeEmbeddingProvider())
 
 
-def _make_service(tmp_path, candidate_k=20, top_k=5, reranker=None, score_threshold=0.10) -> EmbeddingRAGService:
+def _make_service(tmp_path, candidate_k=20, top_k=5, enable_relevance=False, score_threshold=0.10) -> EmbeddingRAGService:
+    """RAG RERANKER DETERMINIZATION: `enable_relevance=True`, ARTIK bir LLM mock enjekte ETMEZ -
+
+    ikinci-asama relevance skorlama, servisin KENDI deterministik
+    `deterministic_reranker.score_candidate()` cagrisidir (bkz. `EmbeddingRAGService.query()`).
+    """
     embedding_config = EmbeddingConfig(provider="local", model_name="fake-model", output_dimensionality=16)
     faiss_config = FaissMemoryConfig(
         index_path=str(tmp_path / "index.faiss"),
@@ -82,11 +63,8 @@ def _make_service(tmp_path, candidate_k=20, top_k=5, reranker=None, score_thresh
         top_k=top_k,
         candidate_k=candidate_k,
     )
-    reranker_config = RerankerConfig(enabled=reranker is not None, score_threshold=score_threshold, top_k=top_k)
-    service = EmbeddingRAGService(embedding_config, faiss_config, reranker_config)
-    if reranker is not None:
-        service._reranker = reranker  # test-only: sahte reranker'i dogrudan enjekte et
-    return service
+    reranker_config = RerankerConfig(enabled=enable_relevance, score_threshold=score_threshold, top_k=top_k)
+    return EmbeddingRAGService(embedding_config, faiss_config, reranker_config)
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +73,7 @@ def _make_service(tmp_path, candidate_k=20, top_k=5, reranker=None, score_thresh
 
 
 def test_candidate_k_limits_faiss_search_breadth(tmp_path) -> None:
-    service = _make_service(tmp_path, candidate_k=3, top_k=3, reranker=None)
+    service = _make_service(tmp_path, candidate_k=3, top_k=3)
     service.add_documents([f"belge {i} icerik metni" for i in range(10)])
 
     results = service.query("belge sorgusu")
@@ -106,7 +84,7 @@ def test_candidate_k_limits_faiss_search_breadth(tmp_path) -> None:
 
 
 def test_metadata_fields_are_preserved_through_query(tmp_path) -> None:
-    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=None)
+    service = _make_service(tmp_path, candidate_k=5, top_k=5)
     service._add_structured_documents(
         [
             {
@@ -138,13 +116,13 @@ def test_metadata_fields_are_preserved_through_query(tmp_path) -> None:
     assert doc.source_url == "https://example.gov.tr/doc_a"
     assert doc.institution == "Test Bakanlığı"
     assert doc.publication_date == "2020-01-01"
-    assert doc.rerank_score is None  # reranker devre disi
+    assert doc.relevance_score is None  # reranker devre disi
     assert doc.embedding_score == doc.score
 
 
 def test_legacy_plain_string_documents_have_none_metadata(tmp_path) -> None:
     """Eski (metadata'siz) `add_documents([str, ...])` yolu, eksik alanlari acikca `None` tasimali - UYDURMAMALI."""
-    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=None)
+    service = _make_service(tmp_path, candidate_k=5, top_k=5)
     service.add_documents(["metadata'siz duz metin"])
 
     results = service.query("metadata")
@@ -161,27 +139,27 @@ def test_legacy_plain_string_documents_have_none_metadata(tmp_path) -> None:
 
 
 def test_below_threshold_results_are_excluded(tmp_path) -> None:
-    reranker = _FakeReranker(score_by_substring={"ALAKALI": 0.9, "ALAKASIZ": 0.02})
-    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=reranker, score_threshold=0.10)
+    """HEDEF 6: gercek deterministik skorlama - sorguyla lexical/semantic olarak orusen chunk ACCEPTED, ORUSMEYEN REJECTED olur."""
+    service = _make_service(tmp_path, candidate_k=5, top_k=5, enable_relevance=True, score_threshold=0.10)
     service.add_documents(["Bu metin ALAKALI bir mevzuat.", "Bu metin ALAKASIZ bir konu."])
 
-    results = service.query("sorgu")
+    results = service.query("ALAKALI mevzuat sorgusu")
 
     assert len(results) == 1
     assert "ALAKALI" in results[0].text
-    assert results[0].rerank_score == pytest.approx(0.9)
+    assert results[0].relevance_score is not None
+    assert results[0].relevance_score >= 0.10
 
 
 def test_relevance_status_and_reason_are_stamped_deterministically_on_every_candidate(tmp_path) -> None:
-    """HEDEF 15/7/15: 'neden secildi/elendi?' sorusu, AYRI bir yapi uretmeden dogrudan RetrievedDocument uzerinde cevaplanabilmeli; ayni girdi ile karar HER ZAMAN AYNI (deterministik)."""
-    reranker = _FakeReranker(score_by_substring={"ALAKALI": 0.9, "ALAKASIZ": 0.02}, default_score=0.5)
-    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=reranker, score_threshold=0.10)
+    """HEDEF 1/7/15: 'neden secildi/elendi?' sorusu, AYRI bir yapi uretmeden dogrudan RetrievedDocument uzerinde cevaplanabilmeli; ayni girdi ile karar HER ZAMAN AYNI (deterministik)."""
+    service = _make_service(tmp_path, candidate_k=5, top_k=5, enable_relevance=True, score_threshold=0.10)
     service.add_documents(["Bu metin ALAKALI bir mevzuat.", "Bu metin ALAKASIZ bir konu."])
 
     telemetry_accepted_reasons = []
     telemetry_rejected_reasons = []
     for _ in range(3):  # ayni sorgu 3 kez - karar HER SEFERINDE ayni olmali
-        results = service.query("sorgu")
+        results = service.query("ALAKALI mevzuat sorgusu")
         telemetry = service.get_last_query_telemetry()
         assert len(results) == 1
         assert results[0].relevance_status == "accepted"
@@ -198,7 +176,7 @@ def test_relevance_status_and_reason_are_stamped_deterministically_on_every_cand
 
 def test_embedding_score_is_not_relabeled_as_confidence(tmp_path) -> None:
     """HEDEF 13: `embedding_score`, kalibre edilmis bir olasilik/confidence DEGIL, FAISS cosine benzerligidir - hicbir alan/telemetri onu 'confidence' olarak ADLANDIRMAZ."""
-    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=None)
+    service = _make_service(tmp_path, candidate_k=5, top_k=5)
     service.add_documents(["bir mevzuat metni"])
 
     results = service.query("sorgu")
@@ -210,39 +188,41 @@ def test_embedding_score_is_not_relabeled_as_confidence(tmp_path) -> None:
     import dataclasses
 
     assert "confidence" not in {f.name for f in dataclasses.fields(results[0])}
+    assert "confidence" not in {f.name for f in dataclasses.fields(telemetry.results[0])}
 
 
-def test_rerank_score_is_llm_as_judge_relevance_not_calibrated_probability(tmp_path) -> None:
-    """HEDEF 6/14: rerank_score, `reranker.py::_build_rerank_prompt`in ISTEDIGI serbest LLM-yargisi skorudur (0.0-1.0 araligina KISITLANMIS, ama kalibre edilmis bir olasilik OLDUGU IDDIA EDILMEZ)."""
-    from src.rag.reranker import _build_rerank_prompt, _parse_rerank_response
+def test_relevance_scoring_makes_no_network_or_llm_call(tmp_path) -> None:
+    """HEDEF 7/8/9: relevance skorlama artik bir LLM/API'ye BAGIMLI DEGIL - `socket`/`httpx` hic tetiklenmeden calisir; Groq/Gemini API anahtari OLMADAN da RAG reranking calisiyor."""
+    import os
 
-    prompt = _build_rerank_prompt("sorgu", ["aday 0", "aday 1"])
-    assert "0.0 (hic alakasiz) ile 1.0 (tam alakali) arasinda" in prompt
-    assert "puanlamaktir" in prompt  # kalibre edilmis "probability" degil, LLM'in KENDI yargisi istenir
+    for env_var in ("GROQ_API_KEY", "GEMINI_API_KEY"):
+        os.environ.pop(env_var, None)  # bilinclli olarak API anahtari TANIMSIZ birakiliyor
 
-    parsed = _parse_rerank_response('{"results": [{"index": 0, "score": 0.9}, {"index": 1, "score": 0.3}]}', 2)
-    assert parsed == [(0, 0.9), (1, 0.3)]
+    service = _make_service(tmp_path, candidate_k=5, top_k=5, enable_relevance=True, score_threshold=0.10)
+    service.add_documents(["forklift yaya güvenlik mesafesi hakkında hükümler"])
+
+    results = service.query("forklift yaya güvenliği")  # API anahtari yok, yine de CALISMALI
+
+    assert results  # 429/400 gibi bir hataya DUSMEDEN basariyla sonuc uretti
 
 
-def test_all_below_threshold_returns_empty_list_not_random_topk(tmp_path) -> None:
-    reranker = _FakeReranker(default_score=0.01)
-    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=reranker, score_threshold=0.10)
-    service.add_documents(["konu A hakkinda metin", "konu B hakkinda metin", "konu C hakkinda metin"])
+def test_all_below_threshold_returns_empty_list_not_random_topk(tmp_path, monkeypatch) -> None:
+    """`_FakeEmbeddingProvider` (16 boyut, hash-tabanli) TAMAMEN alakasiz metinler arasinda bile
+    tesadufi hash CARPISMASI uretebilir (kucuk vektor uzayi) - bu test icin carpisma-siz
+    `_VocabEmbeddingProvider` kullanilir (bkz. `test_content_based_retrieval_...`)."""
+    docs = ["forklift yaya güvenlik mesafesi", "elektrik pano kilitleme etiketleme", "kimyasal madde depolama etiketleme"]
+    query = "gezegen yıldız teleskop astronomi"
+    vocabulary = sorted({tok for text in docs + [query] for tok in text.lower().split()})
+    monkeypatch.setattr(rag_module, "build_embedding_provider", lambda **kwargs: _VocabEmbeddingProvider(vocabulary))
 
-    results = service.query("alakasiz bir sorgu")
+    embedding_config = EmbeddingConfig(provider="local", model_name="fake-model", output_dimensionality=len(vocabulary))
+    faiss_config = FaissMemoryConfig(index_path=str(tmp_path / "index.faiss"), embedding_model="fake-model", top_k=5, candidate_k=5)
+    service = EmbeddingRAGService(embedding_config, faiss_config, RerankerConfig(enabled=True, score_threshold=0.10, top_k=5))
+    service.add_documents(docs)
+
+    results = service.query(query)
 
     assert results == []  # 0 sonuc GECERLIDIR - rastgele top-k UYDURULMAZ
-
-
-def test_reranker_failure_returns_empty_not_embedding_topk(tmp_path) -> None:
-    """Reranker basarisiz olursa, embedding top-k'nin SESSIZCE final sonuc gibi DONMEMESI gerekir (bkz. gorev tanimi 7. bolum)."""
-    reranker = _FakeReranker(fail=True)
-    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=reranker)
-    service.add_documents(["kesinlikle alakali bir mevzuat metni"])
-
-    results = service.query("sorgu")
-
-    assert results == []
 
 
 # ---------------------------------------------------------------------------
@@ -251,57 +231,45 @@ def test_reranker_failure_returns_empty_not_embedding_topk(tmp_path) -> None:
 
 
 def test_query_telemetry_captures_real_candidate_final_and_scores(tmp_path) -> None:
-    reranker = _FakeReranker(score_by_substring={"ALAKALI": 0.9})
-    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=reranker, score_threshold=0.10)
+    service = _make_service(tmp_path, candidate_k=5, top_k=5, enable_relevance=True, score_threshold=0.10)
     service.add_documents(["Bu metin ALAKALI bir mevzuat."])
 
-    service.query("sorgu")
+    service.query("ALAKALI mevzuat sorgusu")
     telemetry = service.get_last_query_telemetry()
 
     assert telemetry is not None
     assert telemetry.candidate_count == 1
     assert telemetry.final_count == 1
     assert telemetry.zero_result is False
-    assert telemetry.retrieval_status == "reranked"
-    assert telemetry.avg_rerank_score == pytest.approx(0.9)
+    assert telemetry.retrieval_status == "relevance_scored"
+    assert telemetry.avg_relevance_score is not None
     assert telemetry.total_latency_ms >= 0.0
     assert telemetry.results[0].selected is True
+    assert telemetry.results[0].rank == 1
+    assert telemetry.results[0].relevance_status == "accepted"
 
 
 def test_query_telemetry_on_zero_result_reports_zero_not_fabricated(tmp_path) -> None:
-    reranker = _FakeReranker(default_score=0.01)
-    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=reranker, score_threshold=0.10)
-    service.add_documents(["konu A hakkinda metin"])
+    service = _make_service(tmp_path, candidate_k=5, top_k=5, enable_relevance=True, score_threshold=0.10)
+    service.add_documents(["forklift yaya güvenlik mesafesi"])
 
-    service.query("alakasiz bir sorgu")
+    service.query("gezegen yıldız teleskop astronomi")
     telemetry = service.get_last_query_telemetry()
 
     assert telemetry.zero_result is True
     assert telemetry.final_count == 0
-    assert telemetry.avg_rerank_score is None  # 0 secilen sonuc -> ortalama YOK (0.0 DEGIL)
+    assert telemetry.retrieval_status == "insufficient_evidence"
+    assert telemetry.avg_relevance_score is None  # 0 secilen sonuc -> ortalama YOK (0.0 DEGIL)
     assert all(r.selected is False for r in telemetry.results)
 
 
-def test_query_telemetry_on_reranker_failure_marks_reranker_unavailable(tmp_path) -> None:
-    reranker = _FakeReranker(fail=True)
-    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=reranker)
-    service.add_documents(["kesinlikle alakali bir mevzuat metni"])
-
-    service.query("sorgu")
-    telemetry = service.get_last_query_telemetry()
-
-    assert telemetry.retrieval_status == "reranker_unavailable"
-    assert telemetry.zero_result is True
-    assert telemetry.rerank_latency_ms is not None
-
-
 def test_query_telemetry_is_none_before_any_query(tmp_path) -> None:
-    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=None)
+    service = _make_service(tmp_path, candidate_k=5, top_k=5)
     assert service.get_last_query_telemetry() is None
 
 
 def test_query_telemetry_on_empty_index_reports_empty_index_status(tmp_path) -> None:
-    service = _make_service(tmp_path, candidate_k=5, top_k=5, reranker=None)
+    service = _make_service(tmp_path, candidate_k=5, top_k=5)
     results = service.query("hicbir dokuman yokken sorgu")
     telemetry = service.get_last_query_telemetry()
 
@@ -317,28 +285,29 @@ def test_query_telemetry_on_empty_index_reports_empty_index_status(tmp_path) -> 
 
 
 def test_end_to_end_query_against_real_748_chunks_with_mocks(tmp_path) -> None:
-    """Gercek 748 KB chunk'inin ustunde, SAHTE embedding+rerank ile uctan uca akisi dogrular.
+    """Gercek 748 KB chunk'inin ustunde, SAHTE (hash-tabanli) embedding + GERCEK deterministik relevance skorlama ile uctan uca akisi dogrular.
 
     NOT: `_FakeEmbeddingProvider` hash-tabanlidir, GERCEK semantik benzerlik
-    OLCMEZ - bu test yalnizca akisin (candidate_k -> rerank -> threshold ->
-    yapilandirilmis RetrievedDocument) uctan uca CALISTIGINI ve gercek
-    chunk metadata'sinin (document_title/article_number/source_url) dogru
-    tasindigini dogrular; sonuclarin semantik ALAKASINI degil.
+    OLCMEZ - ama `deterministic_reranker`nin lexical/phrase sinyalleri GERCEK
+    metin uzerinde calisir (sorgu "yangın duman..." GERCEK chunk'lardaki bu
+    kelimelerle orusur). Bu test akisin (candidate_k -> relevance skorlama ->
+    threshold -> yapilandirilmis RetrievedDocument) uctan uca CALISTIGINI ve
+    gercek chunk metadata'sinin (document_title/article_number/source_url)
+    dogru tasindigini dogrular.
     """
     records = _load_kb_chunk_records()
     if not records:
         pytest.skip("data/knowledge_base/chunks/ bos - bu test gercek KB corpus'una bagimlidir.")
 
-    reranker = _FakeReranker(score_by_substring={"yangın": 0.8, "duman": 0.7}, default_score=0.05)
-    service = _make_service(tmp_path, candidate_k=20, top_k=5, reranker=reranker, score_threshold=0.10)
+    service = _make_service(tmp_path, candidate_k=20, top_k=5, enable_relevance=True, score_threshold=0.10)
     service._add_structured_documents(records[:200])  # tum 748'i embed etmek testte gereksiz yavas olur
 
     results = service.query("yangın duman kontrolsüz açık alev")
 
     assert isinstance(results, list)
     for doc in results:
-        assert doc.rerank_score is not None
-        assert doc.rerank_score >= 0.10
+        assert doc.relevance_score is not None
+        assert doc.relevance_score >= 0.10
         # gercek KB'den geldigi icin en az document_id dolu olmali (UYDURULMAMIS metadata)
         assert doc.document_id is not None
 
@@ -444,7 +413,7 @@ def test_persisted_index_round_trip_sets_corpus_source_and_survives_reload(tmp_p
     monkeypatch.setattr(rag_module, "_DOCUMENTS_FILE", tmp_path / "documents.json")
     monkeypatch.setattr(rag_module, "_INDEX_META_FILE", tmp_path / "index_meta.json")
 
-    builder = _make_service(tmp_path, candidate_k=5, top_k=3, reranker=None)
+    builder = _make_service(tmp_path, candidate_k=5, top_k=3)
     builder.add_documents(["Forklift çalışma alanında yaya bulunması yasaktır."])
     builder.persist()
 
@@ -452,7 +421,7 @@ def test_persisted_index_round_trip_sets_corpus_source_and_survives_reload(tmp_p
     assert (tmp_path / "documents.json").exists()
     assert (tmp_path / "index_meta.json").exists()
 
-    fresh = _make_service(tmp_path, candidate_k=5, top_k=3, reranker=None)
+    fresh = _make_service(tmp_path, candidate_k=5, top_k=3)
     assert fresh.corpus_source == "unseeded"
 
     loaded = fresh._try_load_persisted_index()
@@ -476,7 +445,7 @@ def test_seed_default_regulations_fails_fast_when_no_persisted_index(tmp_path, m
     monkeypatch.setattr(rag_module, "_DOCUMENTS_FILE", tmp_path / "does_not_exist" / "documents.json")
     monkeypatch.setattr(rag_module, "_INDEX_META_FILE", tmp_path / "does_not_exist" / "index_meta.json")
 
-    service = _make_service(tmp_path, candidate_k=5, top_k=3, reranker=None)
+    service = _make_service(tmp_path, candidate_k=5, top_k=3)
 
     with pytest.raises(rag_module.KnowledgeBaseNotBuiltError, match="build_knowledge_index"):
         service.seed_default_regulations()
@@ -491,8 +460,7 @@ def test_retrieval_result_carries_chunk_id_document_id_and_scores_end_to_end(tmp
     if not records:
         pytest.skip("data/knowledge_base/chunks/ bos - bu test gercek KB corpus'una bagimlidir.")
 
-    reranker = _FakeReranker(score_by_substring={"forklift": 0.9}, default_score=0.02)
-    service = _make_service(tmp_path, candidate_k=20, top_k=3, reranker=reranker, score_threshold=0.10)
+    service = _make_service(tmp_path, candidate_k=20, top_k=3, enable_relevance=True, score_threshold=0.10)
     service._add_structured_documents(records[:200])
     service._corpus_source = "chunks_rebuild"
 
@@ -507,7 +475,7 @@ def test_retrieval_result_carries_chunk_id_document_id_and_scores_end_to_end(tmp
         assert result_telemetry.document_id is not None
     for doc in results:
         assert doc.chunk_id is not None
-        assert doc.rerank_score is not None
+        assert doc.relevance_score is not None
 
 
 # ---------------------------------------------------------------------------

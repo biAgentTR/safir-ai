@@ -35,7 +35,7 @@ class _RagDoc:
 class _FakeAskRAG:
     """Ask icin sabit iki ISG maddesi (gercek text+score sozlesmesi)."""
 
-    def query(self, question: str, top_k=None):
+    def query(self, question: str, top_k=None, keywords=None):
         return [
             _RagDoc("ISG Yonetmeligi Madde 12: Yuksekte calismada KKD zorunludur.", 0.82),
             _RagDoc("Operasyonel Kural OK-07: Forklift-yaya ayrimi saglanmalidir.", 0.71),
@@ -52,7 +52,7 @@ class _FakePipelineRAG:
     def seed_default_regulations(self):
         return None
 
-    def query(self, question, top_k=None):
+    def query(self, question, top_k=None, keywords=None):
         return [_FakeDoc(f"[FAKE] {question}")]
 
 

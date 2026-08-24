@@ -33,7 +33,7 @@ class _FakeRAG:
     def seed_default_regulations(self) -> None:
         return None
 
-    def query(self, question: str, top_k=None):
+    def query(self, question: str, top_k=None, keywords=None):
         return [_FakeDoc(f"[FAKE] {question}")]
 
 

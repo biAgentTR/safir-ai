@@ -1157,7 +1157,7 @@ class SafirPipeline:
         self._last_stage_rag_telemetry = None
         if semantic_query:
             try:
-                semantically_related_chunks = self._rag_service.query(semantic_query)
+                semantically_related_chunks = self._rag_service.query(semantic_query, keywords=matched_keywords)
                 # `getattr(..., None)` KASITLI: test/mock RAG servisleri (yalnizca
                 # `.query()` tasiyan duck-typed sahteler) icin de GUVENLI CALISIR -
                 # bkz. `context_builder.py::_format_semantic_chunks` ile ayni gerekce.
@@ -1329,7 +1329,8 @@ class SafirPipeline:
                 document_id=getattr(chunk, "document_id", None),
                 article_number=getattr(chunk, "article_number", None),
                 source_url=getattr(chunk, "source_url", None),
-                rerank_score=getattr(chunk, "rerank_score", None),
+                relevance_score=getattr(chunk, "relevance_score", None),
+                source_verified=getattr(chunk, "source_verified", True),
             )
             for chunk in context.semantically_related_chunks
         ]

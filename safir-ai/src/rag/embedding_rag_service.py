@@ -1,4 +1,4 @@
-"""04 - Embedding & RAG Katmani: LOKAL embedding + FAISS + (opsiyonel) LLM rerank tabanli anlamsal bellek.
+"""04 - Embedding & RAG Katmani: LOKAL embedding + FAISS + deterministik relevance skorlama tabanli anlamsal bellek.
 
 Operasyonel kurallari ve ISG mevzuatini TAMAMEN LOKAL (`sentence-transformers`,
 CPU, harici API/kota YOK) bir embedding modeliyle vektorlestirip FAISS
@@ -16,11 +16,15 @@ Knowledge base kaynagi (2026-08-23, uc asamali guncelleme)
    edilmis - bkz. `_load_kb_chunk_records`); iki-asamali retrieval (FAISS
    candidate_k -> LLM rerank -> score_threshold) eklendi; index DISKE KALICI
    olarak yazilmaya basladi (`data/knowledge_base/index/`).
-3. asama (bu dosya, 2026-08-23): Gemini Embedding API TAMAMEN KALDIRILDI -
+3. asama (2026-08-23): Gemini Embedding API TAMAMEN KALDIRILDI -
    embedding artik yeniden (ve KALICI olarak) TAMAMEN LOKAL'dir (bkz.
    `embedding_providers.py::LocalEmbeddingProvider`). GERCEK bir persisted
    index yoksa artik SESSIZCE placeholder'a DUSULMEZ - `seed_default_regulations()`
    ACIK bir hatayla FAIL-FAST eder (bkz. asagida).
+4. asama (bu dosya, 2026-08-24, RAG RERANKER DETERMINIZATION): ikinci-asama
+   relevance skorlamasi (eskiden LLM-as-judge Gemini/Groq) TAMAMEN yerel/
+   matematiksel bir algoritmaya (`deterministic_reranker.py`) tasindi - artik
+   HICBIR asamada bir LLM/harici API'ye SORULMUYOR (bkz. `query()`).
 
 ONEMLI (davranis degisikligi, 2026-08-23): Persisted index (`data/knowledge_base/index/`)
 GUNCEL degilse/yoksa, `seed_default_regulations()` artik `DEFAULT_ISG_REGULATIONS`
@@ -41,7 +45,7 @@ kaybolur) ve BILEREK bu degisikligin kapsami DISINDA birakildi;
 `EVENT_TYPE_REGULATION_MAP`in etiketleri GUNCELLENMEDI - RuleEngine'in
 deterministik event_type->mevzuat eslemesi ayri, gelecekteki bir adimdir.
 
-MIMARI AYRIM (ONEMLI): Bu serviste uretilen `embedding_score`/`rerank_score`
+MIMARI AYRIM (ONEMLI): Bu serviste uretilen `embedding_score`/`relevance_score`
 DEGERLERI, `RuleEngine`in deterministik risk_score/risk_level/escalation
 kararina ASLA girdi OLMAZ (bkz. `src/event_analysis/risk_resolver.py`,
 degistirilmedi). Bu servis yalnizca (A) `RuleEngine._describe_regulation`
@@ -64,8 +68,8 @@ from typing import Any, Dict, List, Optional
 import faiss
 import numpy as np
 
+from src.rag.deterministic_reranker import RelevanceBreakdown, RelevanceWeights, score_candidate
 from src.rag.embedding_providers import ConfigurationError, EmbeddingProvider, build_embedding_provider
-from src.rag.reranker import GeminiReranker, GroqReranker, Reranker, RerankerUnavailableError
 from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig, RerankerConfig
 
 logger = logging.getLogger(__name__)
@@ -246,11 +250,12 @@ def _compute_kb_hash(chunks_dir: Path = _KB_CHUNKS_DIR) -> str:
 
 @dataclass
 class RetrievedDocument:
-    """CANONICAL retrieved-evidence nesnesi: FAISS(+opsiyonel LLM rerank)ten gelen tek bir chunk'i, yapilandirilmis kaynak metadata'si + karar-izlenebilirligi ile birlikte tasir.
+    """CANONICAL retrieved-evidence nesnesi: FAISS(+opsiyonel deterministik relevance skorlama)dan gelen tek bir chunk'i, yapilandirilmis kaynak metadata'si + karar-izlenebilirligi ile birlikte tasir.
 
-    `embedding_score` (FAISS/cosine benzerligi) ile `rerank_score` (LLM-as-judge
-    relevance_score, reranker devre disiysa/basarisizsa `None`) KASITLI olarak
-    AYRI alanlardir - birbirine KARISTIRILMAZ (bkz. modul dokustringi).
+    `embedding_score` (FAISS/cosine benzerligi) ile `relevance_score` (yerel,
+    deterministik agirlikli-toplam skoru - bkz. `deterministic_reranker.py`,
+    skorlama devre disiysa `None`) KASITLI olarak AYRI alanlardir - birbirine
+    KARISTIRILMAZ (bkz. modul dokustringi).
 
     2026-08-24 (RAG PIPELINE RECONSTRUCTION): retrieval'dan Agent'e/rapora
     kadar TEK canonical nesne olarak korunmasi icin `retrieval_rank`/
@@ -261,7 +266,7 @@ class RetrievedDocument:
 
     text: str
     embedding_score: float
-    rerank_score: Optional[float] = None
+    relevance_score: Optional[float] = None
     chunk_id: Optional[str] = None
     document_id: Optional[str] = None
     document_title: Optional[str] = None
@@ -277,12 +282,14 @@ class RetrievedDocument:
     retrieval_rank: Optional[int] = None
     """FAISS aday siralamasindaki 1-index'li sira (embedding_score'a gore azalan)."""
     relevance_status: Optional[str] = None
-    """'accepted' | 'rejected' | 'unavailable' - bu adayin NEDEN final sonuca
-    girip girmedigini gosteren, `query()` icinde atanan deterministik karar
-    (bkz. `_stamp_relevance` / gorev tanimi 7. bolum)."""
+    """'accepted' | 'rejected' - bu adayin NEDEN final sonuca girip girmedigini
+    gosteren, `query()` icinde atanan deterministik karar (bkz.
+    `deterministic_reranker.score_candidate`). ARTIK bir 'unavailable'
+    degeri YOK - relevance skorlama TAMAMEN yerel/matematiksel oldugu icin
+    bir API/LLM basarisizlik modu MUMKUN DEGIL (bkz. gorev tanimi)."""
     relevance_reason: Optional[str] = None
     """`relevance_status`un insan-okunur, hangi skor/esikten geldigini
-    gosteren gerekcesi (orn. 'rerank_score (0.850) >= threshold (0.100)')."""
+    gosteren gerekcesi (orn. 'relevance_score (0.850) >= threshold (0.100)')."""
     source_verified: bool = True
     """Bu chunk, persisted KB index'inden (gercek corpus) GERCEKTEN geldigi
     icin HER ZAMAN `True` - retrieval sonucu, tanimi geregi corpus-kokenlidir
@@ -294,12 +301,12 @@ class RetrievedDocument:
     def score(self) -> float:
         """Geriye-uyumluluk: eski `{text, score}` sozlesmesine bagli cagiran kod icin.
 
-        Rerank yapildiysa `rerank_score`, yapilmadiysa `embedding_score`
+        Rerank yapildiysa `relevance_score`, yapilmadiysa `embedding_score`
         dondurur - "en guvenilir elimizdeki skor" anlaminda, ama bu ikisini
-        BIRBIRINE KARISTIRMAZ (asil kod `embedding_score`/`rerank_score`e
+        BIRBIRINE KARISTIRMAZ (asil kod `embedding_score`/`relevance_score`e
         AYRI AYRI erismelidir).
         """
-        return self.rerank_score if self.rerank_score is not None else self.embedding_score
+        return self.relevance_score if self.relevance_score is not None else self.embedding_score
 
 
 def _avg(values: List[float]) -> Optional[float]:
@@ -315,7 +322,7 @@ def _result_telemetry(doc: "RetrievedDocument", selected: bool) -> "RagResultTel
         article_number=doc.article_number,
         source_url=doc.source_url,
         embedding_score=round(doc.embedding_score, 4),
-        rerank_score=round(doc.rerank_score, 4) if doc.rerank_score is not None else None,
+        relevance_score=round(doc.relevance_score, 4) if doc.relevance_score is not None else None,
         selected=selected,
         rank=doc.retrieval_rank,
         relevance_status=doc.relevance_status,
@@ -341,7 +348,7 @@ class RagResultTelemetry:
     article_number: Optional[str]
     source_url: Optional[str]
     embedding_score: float
-    rerank_score: Optional[float]
+    relevance_score: Optional[float]
     selected: bool
     """Threshold/top_k sonrasi NIHAI sonuc kumesine girdi mi (final_docs icinde mi)."""
     chunk_id: Optional[str] = None
@@ -350,7 +357,7 @@ class RagResultTelemetry:
     rank: Optional[int] = None
     """FAISS aday siralamasindaki 1-index'li sira (bkz. `RetrievedDocument.retrieval_rank`)."""
     relevance_status: Optional[str] = None
-    """'accepted' | 'rejected' | 'unavailable' (bkz. `RetrievedDocument.relevance_status`)."""
+    """'accepted' | 'rejected' (bkz. `RetrievedDocument.relevance_status`)."""
     relevance_reason: Optional[str] = None
     """`relevance_status`un gerekcesi (bkz. `RetrievedDocument.relevance_reason`)."""
     text: str = ""
@@ -371,13 +378,13 @@ class RagQueryTelemetry:
     candidate_count: int
     final_count: int
     zero_result: bool
-    retrieval_status: str  # "reranked" | "embedding_only" | "reranker_unavailable"
+    retrieval_status: str  # "relevance_scored" | "embedding_only" | "insufficient_evidence" | "empty_index"
     threshold: Optional[float]
     embedding_latency_ms: float
     rerank_latency_ms: Optional[float]
     total_latency_ms: float
     avg_embedding_score: Optional[float]
-    avg_rerank_score: Optional[float]
+    avg_relevance_score: Optional[float]
     corpus_source: str = "unseeded"
     """'persisted_index' | 'fallback_placeholder' | 'chunks_rebuild' | 'unseeded'
     (bkz. `EmbeddingRAGService.corpus_source`). 'fallback_placeholder' ise bu
@@ -388,7 +395,7 @@ class RagQueryTelemetry:
 
 
 class EmbeddingRAGService:
-    """ISG mevzuati ve operasyonel kurallari Gemini embedding ile vektorlestirip FAISS'te arayan, Gemini ile yeniden siralayan servis.
+    """ISG mevzuati ve operasyonel kurallari LOKAL embedding ile vektorlestirip FAISS'te arayan, deterministik agirlikli skorlama ile yeniden siralayan servis.
 
     `Dynamic Tool Router` icindeki `retriever_tool` tarafindan mevzuat/kural
     sorgulari icin kullanilir. Bkz. modul dokustringi icin tam mimari.
@@ -424,23 +431,22 @@ class EmbeddingRAGService:
         )
         self._dimension = self._provider.dimension
 
-        self._reranker: Optional[Reranker] = None
-        if reranker_config is not None and reranker_config.enabled:
-            if reranker_config.provider == "gemini":
-                self._reranker = GeminiReranker(
-                    model_name=reranker_config.model_name, api_key_env=reranker_config.api_key_env
-                )
-            elif reranker_config.provider == "groq":
-                self._reranker = GroqReranker(
-                    model_name=reranker_config.model_name,
-                    base_url=reranker_config.base_url or "https://api.groq.com/openai/v1",
-                    api_key_env=reranker_config.api_key_env,
-                )
-            else:
-                raise ConfigurationError(
-                    f"Desteklenmeyen reranker saglayicisi: '{reranker_config.provider}'. "
-                    "Su an 'gemini' veya 'groq' destekleniyor."
-                )
+        # 2026-08-24 (RAG RERANKER DETERMINIZATION): ikinci-asama relevance
+        # skorlamasi ARTIK bir LLM'e (GeminiReranker/GroqReranker) SORULMUYOR -
+        # `deterministic_reranker.score_candidate()` TAMAMEN yerel/matematiksel
+        # calisir (bkz. modul dokustringi). `reranker_config.enabled=False` ise
+        # bu asama TAMAMEN atlanir (embedding_only yol - `_score_and_gate_embedding_only`).
+        self._relevance_weights = (
+            RelevanceWeights(
+                semantic=reranker_config.weights.semantic,
+                lexical=reranker_config.weights.lexical,
+                keyword=reranker_config.weights.keyword,
+                metadata=reranker_config.weights.metadata,
+                phrase=reranker_config.weights.phrase,
+            )
+            if reranker_config is not None
+            else RelevanceWeights()
+        )
 
         self._index = faiss.IndexFlatIP(self._dimension)
         self._documents: List[Dict[str, Any]] = []
@@ -458,11 +464,12 @@ class EmbeddingRAGService:
         `RagQueryTelemetry.corpus_source`, `trace_serializer.serialize_rag_security`)."""
 
         logger.info(
-            "EmbeddingRAGService baslatildi: embedding_provider=%s model=%s dim=%d reranker=%s",
+            "EmbeddingRAGService baslatildi: embedding_provider=%s model=%s dim=%d reranker=%s relevance_method=%s",
             embedding_config.provider,
             embedding_config.model_name,
             self._dimension,
-            reranker_config.model_name if (reranker_config and reranker_config.enabled) else "devre-disi",
+            "deterministic" if (reranker_config and reranker_config.enabled) else "devre-disi",
+            "weighted_hybrid" if (reranker_config and reranker_config.enabled) else "embedding_only",
         )
 
     @property
@@ -658,31 +665,46 @@ class EmbeddingRAGService:
         """
         self._add_structured_documents([{"text": d} for d in documents])
 
-    def query(self, question: str, top_k: Optional[int] = None) -> List[RetrievedDocument]:
-        """Verilen soruya en yakin dokumanlari, iki-asamali retrieval (FAISS candidate_k -> Gemini rerank -> threshold) ile dondurur.
+    def query(
+        self, question: str, top_k: Optional[int] = None, keywords: Optional[List[str]] = None
+    ) -> List[RetrievedDocument]:
+        """Verilen soruya en yakin dokumanlari, iki-asamali retrieval (FAISS candidate_k -> DETERMINISTIK relevance skorlama -> threshold) ile dondurur.
+
+        2026-08-24 (RAG RERANKER DETERMINIZATION): ikinci asama artik bir
+        LLM'e (Gemini/Groq) SORULMUYOR - `deterministic_reranker.score_candidate()`
+        ile TAMAMEN yerel/matematiksel hesaplanir (bkz. o modulun dokustringi).
+        Bu, HICBIR AG CAGRISI/API anahtari/kota GEREKTIRMEZ - 429/400 gibi
+        harici hatalar ARTIK BU ASAMADA MUMKUN DEGILDIR.
 
         Akis:
           1. FAISS'ten `candidate_k` aday cekilir (embedding benzerligi).
-          2. Reranker AKTIFSE: adaylar Gemini (LLM-as-judge) ile YENIDEN siralanir;
-             `score_threshold`in ALTINDA kalan sonuclar ELENIR (bkz.
+          2. Relevance skorlama AKTIFSE: her adayin `relevance_score`u
+             (semantic+lexical+keyword+metadata+phrase agirlikli toplami)
+             hesaplanir; `score_threshold`in ALTINDA kalanlar ELENIR (bkz.
              `RerankerConfig.score_threshold`) - eslesme YOKSA BOS LISTE
-             doner, bu GECERLI bir sonuctur, rastgele/dusuk-alakali
-             sonuc UYDURULMAZ.
-          3. Reranker cagrisi BASARISIZ olursa (`RerankerUnavailableError`):
-             embedding-sirali adaylar SESSIZCE "final sonuc" gibi
-             SUNULMAZ - retrieval "unavailable" sayilir ve BOS LISTE doner.
-          4. Reranker DEVRE DISIYSA: adaylar yalnizca embedding skoruna
-             gore siralanir (`similarity_threshold` varsa uygulanir),
-             ilk `top_k` dondurulur.
+             doner (`retrieval_status="insufficient_evidence"`), bu GECERLI
+             bir sonuctur, rastgele/dusuk-alakali sonuc UYDURULMAZ.
+          3. Relevance skorlama DEVRE DISIYSA: adaylar yalnizca embedding
+             skoruna gore siralanir (`similarity_threshold` varsa uygulanir),
+             ilk `top_k` dondurulur (`retrieval_status="embedding_only"`).
+
+        NOT: gercek bir TEKNIK retrieval hatasi (orn. embedding modeli
+        yuklenemedi/bozuk index) BU METODUN sorumlulugunda DEGILDIR - o
+        durumda istisna oldugu gibi YUKARI firlatilir (cagiran taraf ele
+        alir); bu, relevance skorlamasinin (artik LLM/API'ye bagli OLMAYAN)
+        "basarisizligi" ile KARISTIRILMAZ.
 
         Args:
             question: Dogal dil sorgusu.
-            top_k: NIHAI (rerank/filtre SONRASI) sonuc sayisi; verilmezse
+            top_k: NIHAI (skorlama/filtre SONRASI) sonuc sayisi; verilmezse
                 `faiss_config.top_k`/`reranker_config.top_k` kullanilir.
+            keywords: VLM'in dinamik risk keyword'leri (varsa) - keyword_score
+                sinyaline girdi olur; `None`/bos ise bu sinyal SESSIZCE 0
+                katkı verir (sistem BOZULMAZ).
 
         Returns:
-            En alakali (veya rerank aktifse alaka skoruna gore siralanmis)
-            `RetrievedDocument` listesi; hicbir esik-uzeri sonuc yoksa BOS LISTE.
+            `relevance_score`e gore azalan sirali `RetrievedDocument` listesi;
+            hicbir esik-uzeri sonuc yoksa BOS LISTE.
         """
         query_started = time.perf_counter()
         if self._index.ntotal == 0:
@@ -698,7 +720,7 @@ class EmbeddingRAGService:
                 rerank_latency_ms=None,
                 total_latency_ms=round((time.perf_counter() - query_started) * 1000.0, 1),
                 avg_embedding_score=None,
-                avg_rerank_score=None,
+                avg_relevance_score=None,
                 corpus_source=self._corpus_source,
                 results=[],
             )
@@ -738,76 +760,51 @@ class EmbeddingRAGService:
                 )
             )
 
-        retrieval_status = "embedding_only"
-        final_docs: List[RetrievedDocument] = candidates
-        rerank_latency_ms: Optional[float] = None
         threshold = self._reranker_config.score_threshold if self._reranker_config else None
+        scoring_started = time.perf_counter()
 
-        if self._reranker is not None:
-            rerank_started = time.perf_counter()
-            try:
-                ranked = self._reranker.rerank(question, [c.text for c in candidates])
-            except RerankerUnavailableError as exc:
-                rerank_latency_ms = (time.perf_counter() - rerank_started) * 1000.0
-                logger.error(
-                    "EmbeddingRAGService: reranker basarisiz, retrieval UNAVAILABLE sayiliyor "
-                    "(embedding top-k SESSIZCE final sonuc olarak DONDURULMUYOR): %s",
-                    exc,
-                )
-                # Gorev tanimi 8. bolum karari: B) retrieval_unavailable - reranker
-                # basarisizsa embedding top-k'ye SESSIZCE fallback YAPILMAZ (bkz. modul
-                # dokustringi + reranker.py). Her aday yine de ACIKCA "unavailable"
-                # damgalanir - "hic aday bulunamadi" ile "adaylar bulundu ama
-                # dogrulanamadi" AYRISTIRILIR (izlenebilirlik icin).
-                for candidate in candidates:
-                    candidate.relevance_status = "unavailable"
-                    candidate.relevance_reason = f"reranker basarisiz oldu ({exc}); alaka DOGRULANAMADI"
-                self._log_retrieval_trace(
-                    question, candidates, [], retrieval_status="reranker_unavailable", final_k=final_k
-                )
-                self._last_query_telemetry = RagQueryTelemetry(
+        if self._reranker_config is not None and self._reranker_config.enabled:
+            # Deterministik relevance skorlama - HICBIR AG/LLM CAGRISI YOK
+            # (bkz. `deterministic_reranker.py`). Her adaya (final sonuca
+            # girsin girmesin) `relevance_score`/`relevance_status`/
+            # `relevance_reason` damgalanir - "neden secildi/elendi?"
+            # sorusu HER ZAMAN, AYNI girdide AYNI cevapla yanitlanabilir.
+            for doc in candidates:
+                breakdown = score_candidate(
                     query=question,
-                    candidate_count=len(candidates),
-                    final_count=0,
-                    zero_result=True,
-                    retrieval_status="reranker_unavailable",
-                    threshold=threshold,
-                    embedding_latency_ms=round(embedding_latency_ms, 1),
-                    rerank_latency_ms=round(rerank_latency_ms, 1),
-                    total_latency_ms=round((time.perf_counter() - query_started) * 1000.0, 1),
-                    avg_embedding_score=_avg([c.embedding_score for c in candidates]),
-                    avg_rerank_score=None,
-                    corpus_source=self._corpus_source,
-                    results=[_result_telemetry(c, selected=False) for c in candidates],
+                    chunk_text=doc.text,
+                    embedding_score=doc.embedding_score,
+                    document_title=doc.document_title,
+                    article_number=doc.article_number,
+                    keywords=keywords,
+                    weights=self._relevance_weights,
                 )
-                return []
-            rerank_latency_ms = (time.perf_counter() - rerank_started) * 1000.0
-
-            reranked_docs: List[RetrievedDocument] = []
-            for idx, rerank_score in ranked:
-                doc = candidates[idx]
-                doc.rerank_score = rerank_score
-                if threshold is not None and rerank_score < threshold:
+                doc.relevance_score = breakdown.relevance_score
+                if threshold is not None and breakdown.relevance_score < threshold:
                     doc.relevance_status = "rejected"
-                    doc.relevance_reason = f"rerank_score ({rerank_score:.3f}) < threshold ({threshold:.3f})"
-                    continue
-                doc.relevance_status = "accepted"
-                doc.relevance_reason = (
-                    f"rerank_score ({rerank_score:.3f}) >= threshold ({threshold:.3f})"
-                    if threshold is not None
-                    else f"rerank_score ({rerank_score:.3f}) (threshold tanimli degil)"
-                )
-                reranked_docs.append(doc)
-            final_docs = reranked_docs
-            retrieval_status = "reranked"
+                    doc.relevance_reason = f"{breakdown.reason()} | threshold={threshold:.3f} (ALTINDA)"
+                else:
+                    doc.relevance_status = "accepted"
+                    doc.relevance_reason = (
+                        f"{breakdown.reason()} | threshold={threshold:.3f} (UZERINDE/ESIT)"
+                        if threshold is not None
+                        else f"{breakdown.reason()} | threshold tanimli degil"
+                    )
+
+            final_docs = sorted(
+                (d for d in candidates if d.relevance_status == "accepted"),
+                key=lambda d: d.relevance_score,
+                reverse=True,
+            )
+            retrieval_status = "relevance_scored" if final_docs else "insufficient_evidence"
         else:
-            # Reranker DEVRE DISI: adaylar yalnizca embedding skoruna gore siralanir
-            # (FAISS zaten azalan sirada dondurmustu). ONCE `similarity_threshold`
-            # (varsa) BASIT bir relevance gate olarak uygulanir - bu ONCEDEN
-            # dokumante edilmis ama HIC UYGULANMAMIS bir davranistiydi (bkz. gorev
-            # tanimi 7. bolum: "corpus disi" bir sorgu FAISS'ten HER ZAMAN "en az
-            # kotu" adaylari dondurur - bu esik OLMADAN, reranker devre disiyken
-            # tamamen alakasiz bir sorgu bile SESSIZCE "accepted" sayilirdi).
+            # Relevance skorlama DEVRE DISI: adaylar yalnizca embedding skoruna
+            # gore siralanir (FAISS zaten azalan sirada dondurmustu). ONCE
+            # `similarity_threshold` (varsa) BASIT bir gate olarak uygulanir -
+            # bu ONCEDEN dokumante edilmis ama HIC UYGULANMAMIS bir davranistiydi
+            # ("corpus disi" bir sorgu FAISS'ten HER ZAMAN "en az kotu" adaylari
+            # dondurur - bu esik OLMADAN, skorlama devre disiyken tamamen
+            # alakasiz bir sorgu bile SESSIZCE "accepted" sayilirdi).
             similarity_threshold = self._faiss_config.similarity_threshold
             embedding_only_final: List[RetrievedDocument] = []
             for doc in candidates:
@@ -819,13 +816,15 @@ class EmbeddingRAGService:
                     continue
                 if len(embedding_only_final) < final_k:
                     doc.relevance_status = "accepted"
-                    doc.relevance_reason = f"embedding top-{final_k} icinde (reranker devre disi)"
+                    doc.relevance_reason = f"embedding top-{final_k} icinde (relevance skorlama devre disi)"
                     embedding_only_final.append(doc)
                 else:
                     doc.relevance_status = "rejected"
-                    doc.relevance_reason = f"embedding top-{final_k} disinda (reranker devre disi)"
+                    doc.relevance_reason = f"embedding top-{final_k} disinda (relevance skorlama devre disi)"
             final_docs = embedding_only_final
+            retrieval_status = "embedding_only"
 
+        scoring_latency_ms = (time.perf_counter() - scoring_started) * 1000.0
         final_docs = final_docs[:final_k]
         self._log_retrieval_trace(question, candidates, final_docs, retrieval_status=retrieval_status, final_k=final_k)
 
@@ -836,12 +835,12 @@ class EmbeddingRAGService:
             final_count=len(final_docs),
             zero_result=len(final_docs) == 0,
             retrieval_status=retrieval_status,
-            threshold=threshold if retrieval_status == "reranked" else None,
+            threshold=threshold if retrieval_status in ("relevance_scored", "insufficient_evidence") else None,
             embedding_latency_ms=round(embedding_latency_ms, 1),
-            rerank_latency_ms=round(rerank_latency_ms, 1) if rerank_latency_ms is not None else None,
+            rerank_latency_ms=round(scoring_latency_ms, 1),
             total_latency_ms=round((time.perf_counter() - query_started) * 1000.0, 1),
             avg_embedding_score=_avg([c.embedding_score for c in candidates]),
-            avg_rerank_score=_avg([d.rerank_score for d in final_docs if d.rerank_score is not None]),
+            avg_relevance_score=_avg([d.relevance_score for d in final_docs if d.relevance_score is not None]),
             corpus_source=self._corpus_source,
             results=[_result_telemetry(c, selected=id(c) in final_ids) for c in candidates],
         )
@@ -864,20 +863,19 @@ class EmbeddingRAGService:
                 question,
             )
         logger.info(
-            "RAG retrieval: query=%r corpus_source=%s embedding_model=%s candidate_count=%d reranker_model=%s "
-            "reranked_count=%d final_count=%d threshold=%s retrieval_status=%s "
-            "embedding_scores=%s rerank_scores=%s sources=%s",
+            "RAG retrieval: query=%r corpus_source=%s embedding_model=%s candidate_count=%d "
+            "reranker=deterministic relevance_method=weighted_hybrid "
+            "final_count=%d threshold=%s retrieval_status=%s "
+            "embedding_scores=%s relevance_scores=%s sources=%s",
             question,
             self._corpus_source,
             self._embedding_config.model_name,
             len(candidates),
-            self._reranker_config.model_name if self._reranker is not None else None,
-            len(final_docs) if retrieval_status == "reranked" else 0,
             len(final_docs),
             self._reranker_config.score_threshold if self._reranker_config else None,
             retrieval_status,
             [round(c.embedding_score, 4) for c in candidates],
-            [round(d.rerank_score, 4) for d in final_docs if d.rerank_score is not None],
+            [round(d.relevance_score, 4) for d in final_docs if d.relevance_score is not None],
             [
                 {"chunk_id": d.chunk_id, "document_id": d.document_id, "article_number": d.article_number, "source_url": d.source_url}
                 for d in final_docs

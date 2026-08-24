@@ -297,7 +297,12 @@ def serialize_rag_security(
             "rerank_latency_ms": rag_telemetry.rerank_latency_ms,
             "total_latency_ms": rag_telemetry.total_latency_ms,
             "avg_embedding_score": rag_telemetry.avg_embedding_score,
-            "avg_rerank_score": rag_telemetry.avg_rerank_score,
+            "avg_relevance_score": rag_telemetry.avg_relevance_score,
+            # RAG RERANKER DETERMINIZATION: bu iki alan SABITTIR - relevance
+            # skorlamasinin ARTIK bir LLM'e SORULMADIGINI operator/UI icin
+            # ACIKCA belirtir (bkz. `deterministic_reranker.py`).
+            "reranker": "deterministic",
+            "relevance_method": "weighted_hybrid",
             "results": [
                 {
                     "rank": getattr(r, "rank", None),
@@ -307,7 +312,7 @@ def serialize_rag_security(
                     "article_number": r.article_number,
                     "source_url": r.source_url,
                     "embedding_score": r.embedding_score,
-                    "rerank_score": r.rerank_score,
+                    "relevance_score": r.relevance_score,
                     "relevance_status": getattr(r, "relevance_status", None),
                     "relevance_reason": getattr(r, "relevance_reason", None),
                     "selected": r.selected,
@@ -335,17 +340,26 @@ def serialize_rag_security(
     if rag_telemetry is None:
         rag_summary = "RAG sorgusu yapilmadi (keyword yok)"
     elif rag_telemetry.retrieval_status == "reranker_unavailable":
-        # Mevcut GUVENLIK davranisi (degistirilmedi): reranker basarisiz olursa
-        # embedding top-k SESSIZCE final sonuc gibi SUNULMAZ (final_count=0,
-        # bkz. `EmbeddingRAGService.query`). Burada yalnizca bu durumun
-        # operator/trace icin ACIKCA GORUNUR olmasi saglanir - candidate_count
-        # gercek FAISS aday sayisini gostererek "retrieval calisti ama rerank
-        # basarisiz oldu" ile "retrieval hic sonuc bulamadi" AYRISTIRILIR.
+        # GERIYE-UYUMLULUK: bu deger artik `EmbeddingRAGService.query()`
+        # tarafindan URETILMEZ (relevance skorlama ARTIK bir LLM/API'ye
+        # bagli DEGIL - bkz. `deterministic_reranker.py`, gorev tanimi 8.
+        # bolum) - ama GECMIS (bu degisiklikten ONCEKI) persisted trace
+        # kayitlarinda hala GORULEBILIR; bu dal SADECE o eski kayitlarin
+        # anlamli gosterilmesi icin KORUNUR.
         rag_summary = (
             f"RAG retrieval yapildi ancak reranker kullanilamadi "
             f"({rag_telemetry.candidate_count} aday bulundu, reranker basarisiz oldugu icin "
             "hicbiri dogrulanmadi — GUVENLIK GEREGI 0 sonuc donduruldu, embedding siralamasi "
-            "SESSIZCE final sonuc olarak sunulmadi)"
+            "SESSIZCE final sonuc olarak sunulmadi) [GECMIS KAYIT - artik uretilmiyor]"
+        )
+    elif rag_telemetry.retrieval_status == "insufficient_evidence":
+        # Deterministik relevance skorlama GERCEKTEN calisti (LLM/API
+        # basarisizligi YOK) ama HICBIR aday `score_threshold`u gecemedi -
+        # bu "retrieval calismadi" ile KARISTIRILMAMALI: adaylar bulundu ve
+        # skorlandi, sadece hicbiri yeterince alakali degildi.
+        rag_summary = (
+            f"RAG: yetersiz kanit ({rag_telemetry.candidate_count} aday skorlandi, "
+            f"hicbiri threshold'u gecemedi) - relevance skorlama basariyla calisti, LLM/API hatasi YOK"
         )
     elif getattr(rag_telemetry, "corpus_source", None) == "fallback_placeholder":
         rag_summary = (
