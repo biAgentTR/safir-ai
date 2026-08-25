@@ -84,7 +84,14 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from src.rag.deterministic_reranker import RelevanceBreakdown, RelevanceWeights, score_candidate
-from src.rag.embedding_providers import ConfigurationError, EmbeddingProvider, build_embedding_provider
+from src.rag.embedding_providers import (
+    ConfigurationError,
+    EmbeddingProvider,
+    _DEFAULT_SAFE_TOKEN_BUDGET,
+    _estimate_tokens,
+    build_embedding_provider,
+    split_oversized_text,
+)
 from src.rag.local_cross_encoder_reranker import CrossEncoderReranker, CrossEncoderUnavailableError
 from src.utils.config_loader import EmbeddingConfig, QdrantMemoryConfig, RerankerConfig
 
@@ -241,6 +248,65 @@ def _load_kb_chunk_records(chunks_dir: Path = _KB_CHUNKS_DIR, sources_yaml: Path
             )
 
     return records
+
+
+def _split_oversized_records(
+    records: List[Dict[str, Any]], safe_token_budget: int
+) -> List[Dict[str, Any]]:
+    """Metni `safe_token_budget`i TEK BASINA asan kayitlari, TUM metadata'yi KORUYARAK birden fazla alt-kayida boler.
+
+    2026-08-25 guncellemesi (GUVENLI CHUNK BOLME): `_load_kb_chunk_records()`
+    urettigi 748 kaydin URETIM MANTIGI (chunk stratejisi, `scripts/
+    build_kb_chunks.py`) DEGISTIRILMEZ - bu fonksiyon, embed'lemeden HEMEN
+    ONCE, yalnizca GUVENLI token butcesini (bkz. `embedding_providers.py::
+    _DEFAULT_SAFE_TOKEN_BUDGET`) TEK BASINA asan (nadir) kayitlari `split_
+    oversized_text()` ile semantik/metin sinirlarina (paragraf->cumle->
+    kelime) gore ALT-PARCALARA boler - SESSIZCE KIRPMAZ (bkz. o fonksiyonun
+    dokustringi, veri kaybi YOK).
+
+    `document_id`/`document_title`/`level`/`article_number`/`article_title`/
+    `is_annex`/`page_start`/`page_end`/`source_url`/`institution`/
+    `publication_date` alanlarinin TUMU, olusan HER alt-kayitta AYNEN
+    KORUNUR (ayni maddeden/kaynaktan geldikleri icin) - yalnizca `chunk_id`
+    (`__partN` eki ile benzersizlestirilir) ve `text` (alt-parca) degisir.
+    Bu, bir kaynak kaydin BIRDEN FAZLA nihai (embed'lenmis/Qdrant'a
+    yazilmis) dokumana karsilik gelebilecegi, dolayisiyla `document_count()`
+    ozgun kaynak kayit sayisini (orn. 748) ASABILECEGI anlamina gelir - bu
+    BEKLENEN ve DOGRU bir davranistir.
+
+    Args:
+        records: `_load_kb_chunk_records()` (veya esdegeri) ciktisi.
+        safe_token_budget: Bir kaydin TEK BASINA asmamasi gereken tahmini token sayisi.
+
+    Returns:
+        Butceyi asmayan kayitlar oldugu gibi, asanlar ise alt-parcalara
+        bolunmus olarak GENISLETILMIS kayit listesi (orijinal sira KORUNUR).
+    """
+    expanded: List[Dict[str, Any]] = []
+    for record in records:
+        text = str(record.get("text") or "")
+        pieces = split_oversized_text(text, safe_token_budget)
+        if len(pieces) <= 1:
+            expanded.append(record)
+            continue
+
+        base_chunk_id = record.get("chunk_id") or "chunk"
+        logger.warning(
+            "KB kaydi '%s' (document_id=%s) guvenli token butcesini asiyor (tahmini %d token > %d); "
+            "%d alt-parcaya bolundu (semantik/metin sinirlarina gore, metadata KORUNDU, veri kaybi YOK).",
+            base_chunk_id,
+            record.get("document_id"),
+            _estimate_tokens(text),
+            safe_token_budget,
+            len(pieces),
+        )
+        for part_index, piece in enumerate(pieces, start=1):
+            sub_record = dict(record)
+            sub_record["chunk_id"] = f"{base_chunk_id}__part{part_index}"
+            sub_record["text"] = piece
+            expanded.append(sub_record)
+
+    return expanded
 
 
 def _compute_kb_hash(chunks_dir: Path = _KB_CHUNKS_DIR) -> str:
@@ -751,10 +817,16 @@ class EmbeddingRAGService:
         Bu metod idempotency GUARD'INI ATLAR (mevcut dokumanlarin ustune
         EKLER/GUNCELLER) - yalnizca `scripts`/`build_knowledge_index.py` gibi
         BILEREK taze bir `EmbeddingRAGService` orneginde cagrilmasi
-        beklenir.
+        beklenir. KB chunk URETIM MANTIGI (748 kaynak kayit,
+        `scripts/build_kb_chunks.py`) DEGISMEZ; `_add_structured_documents`
+        icinde, embed'lemeden ONCE, GUVENLI token butcesini TEK BASINA asan
+        (nadir) kayitlar semantik/metin sinirlarina gore alt-parcalara
+        bolunur (bkz. `_split_oversized_records`) - bu yuzden donen
+        deger/`document_count()`, kaynak 748 kayit sayisini ASABILIR; bu
+        BEKLENEN bir davranistir.
 
         Returns:
-            Eklenen dokuman (chunk) sayisi.
+            Qdrant'a GERCEKTEN yazilan (bolme SONRASI) nihai dokuman sayisi.
 
         Raises:
             RuntimeError: `data/knowledge_base/chunks/` altinda hicbir chunk bulunamazsa.
@@ -766,9 +838,9 @@ class EmbeddingRAGService:
                 "'python scripts/build_kb_chunks.py' calistirip chunk'lari uretin."
             )
         self._ensure_collection_exists()
-        self._add_structured_documents(records)
+        added = self._add_structured_documents(records)
         self._corpus_source = "chunks_rebuild"
-        return len(records)
+        return added
 
     def _ensure_collection_exists(self) -> None:
         """Ana Qdrant koleksiyonunu (yoksa) `self._dimension`/`cosine` ile olusturur (idempotent)."""
@@ -787,12 +859,25 @@ class EmbeddingRAGService:
         """
         return str(uuid.uuid5(uuid.NAMESPACE_URL, f"safir-kb:{document_id}:{chunk_id}:{index}"))
 
-    def _add_structured_documents(self, records: List[Dict[str, Any]]) -> None:
-        """Yapilandirilmis kayitlari (metadata + text) embed edip Qdrant koleksiyonuna upsert eder."""
+    def _add_structured_documents(self, records: List[Dict[str, Any]]) -> int:
+        """Yapilandirilmis kayitlari (metadata + text) embed edip Qdrant koleksiyonuna upsert eder.
+
+        Embed'lemeden ONCE, GUVENLI token butcesini TEK BASINA asan
+        (nadir) kayitlar semantik/metin sinirlarina gore alt-parcalara
+        bolunur (bkz. `_split_oversized_records`) - metadata/source/
+        document/chunk iliskileri KORUNUR, hicbir metin SESSIZCE
+        KIRPILMAZ. Bu yuzden Qdrant'a yazilan nihai nokta sayisi,
+        `records`in ozgun uzunlugunu ASABILIR.
+
+        Returns:
+            Qdrant'a GERCEKTEN yazilan (bolme SONRASI) nihai kayit sayisi.
+        """
         if not records:
-            return
+            return 0
         self._ensure_collection_exists()
-        texts = [str(r.get("text") or "") for r in records]
+        safe_token_budget = getattr(self._provider, "safe_token_budget", _DEFAULT_SAFE_TOKEN_BUDGET)
+        expanded_records = _split_oversized_records(records, safe_token_budget)
+        texts = [str(r.get("text") or "") for r in expanded_records]
         vectors = self._provider.embed_documents(texts)
         points = [
             PointStruct(
@@ -800,10 +885,16 @@ class EmbeddingRAGService:
                 vector=vectors[i].tolist(),
                 payload=r,
             )
-            for i, r in enumerate(records)
+            for i, r in enumerate(expanded_records)
         ]
         self._qdrant.upsert(collection_name=self._collection_name, points=points)
-        logger.info("EmbeddingRAGService: %d dokuman indekslendi (toplam=%d)", len(records), self.document_count())
+        logger.info(
+            "EmbeddingRAGService: %d kaynak kayit -> %d dokuman indekslendi (toplam=%d)",
+            len(records),
+            len(expanded_records),
+            self.document_count(),
+        )
+        return len(expanded_records)
 
     def add_document(self, text: str) -> None:
         """Bir kural/mevzuat metnini (metadata'siz, DUZ METIN) anlamsal bellege ekler.

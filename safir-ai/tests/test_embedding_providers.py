@@ -20,6 +20,7 @@ from src.rag.embedding_providers import (
     _estimate_tokens,
     _MAX_CONTEXT_TOKENS,
     build_embedding_provider,
+    split_oversized_text,
 )
 
 
@@ -371,3 +372,132 @@ def test_max_batch_tokens_is_configurable_via_build_embedding_provider(monkeypat
 
     # 10 tokenlik kucuk butce ile 20 kisa metin, kesinlikle birden fazla batch'e bolunmus olmali.
     assert len(clients[0].embeddings.create_calls) > 1
+
+
+# ---------------------------------------------------------------------------
+# `split_oversized_text` - tek bir dokumani, semantik/metin sinirlarina gore,
+# VERI KAYBI OLMADAN guvenli parcalara bolen fonksiyon (bkz. gorev tanimi:
+# "Sessiz truncation yapma", "semantik/metin sinirlarina gore bol").
+# ---------------------------------------------------------------------------
+
+
+def test_split_oversized_text_is_noop_when_within_budget() -> None:
+    text = "Kisa bir madde metni."
+    assert split_oversized_text(text, safe_token_budget=1000) == [text]
+
+
+def test_split_oversized_text_no_piece_exceeds_budget() -> None:
+    text = "Bu bir cumledir. " * 500  # tekrarlanan cumleler - gercekci uzun madde metnine benzer
+    budget = 200
+
+    pieces = split_oversized_text(text, safe_token_budget=budget)
+
+    assert len(pieces) > 1
+    for piece in pieces:
+        assert _estimate_tokens(piece) <= budget
+
+
+def test_split_oversized_text_preserves_all_characters_no_data_loss() -> None:
+    """Parcalarin sirali birlestirilmesi ORIJINAL metni BIREBIR yeniden uretmeli - hicbir karakter kaybolmaz/kirpilmaz."""
+    text = "Madde 1.\n\nBirinci fikra. Ikinci cumle! Ucuncu mu?\n\nMadde 2, ek liste; virgullu, ifadeler, burada."
+    pieces = split_oversized_text(text, safe_token_budget=10)
+
+    assert len(pieces) > 1
+    assert "".join(pieces) == text
+
+
+def test_split_oversized_text_prefers_paragraph_boundaries_when_they_fit() -> None:
+    """Her paragraf TEK BASINA butceye SIGIYORSA (ama ikisi birlikte SIGMIYORSA), bolme TAM paragraf sinirinda olmali - cumle/kelime ortasinda KESILMEMELI."""
+    paragraph_a = "Birinci paragraf burada baslar ve devam eder ve biraz daha uzar."
+    paragraph_b = "Ikinci paragraf tamamen farkli bir konudan bahseder ve o da uzar."
+    text = f"{paragraph_a}\n\n{paragraph_b}"
+    # Her paragraf ~22-23 tahmini token; ikisi birlikte ~45 - butce (25) TEK
+    # paragrafa sigar ama IKISINE BIRDEN sigmaz -> paragraf sinirinda bolme beklenir.
+    budget = 25
+
+    pieces = split_oversized_text(text, safe_token_budget=budget)
+
+    assert "".join(pieces) == text
+    assert len(pieces) == 2
+    assert pieces[0] == paragraph_a + "\n\n"
+    assert pieces[1] == paragraph_b
+
+
+def test_split_oversized_text_handles_pathological_no_separator_text_without_dropping_data() -> None:
+    """Bosluksuz, ayiricisiz tek bir uzun dizi bile VERI KAYBI olmadan (yalnizca sert karakter kesimiyle) bolunmeli."""
+    text = "x" * 5000
+    pieces = split_oversized_text(text, safe_token_budget=100)
+
+    assert len(pieces) > 1
+    assert "".join(pieces) == text
+    for piece in pieces:
+        assert _estimate_tokens(piece) <= 100
+
+
+def test_split_oversized_text_raises_nothing_and_never_truncates_real_oversized_chunk() -> None:
+    """Gercek KB corpus'unda tespit edilen tipte (cok uzun, tek bir 'GECICI MADDE' metni) bir dokuman icin: sessiz kirpilma YOK, tum icerik korunur."""
+    long_legal_text = (
+        "GEÇİCİ MADDE 1 - Bu Yönetmeliğin yayımı tarihinden önce yapı ruhsatı verilen yapılar ile "
+        "ilgili hükümler saklıdır. " * 400
+    )
+    budget = 500
+
+    pieces = split_oversized_text(long_legal_text, safe_token_budget=budget)
+
+    assert len(pieces) > 1
+    assert "".join(pieces) == long_legal_text
+    assert sum(_estimate_tokens(p) for p in pieces) >= _estimate_tokens(long_legal_text)
+    for piece in pieces:
+        assert _estimate_tokens(piece) <= budget
+
+
+# ---------------------------------------------------------------------------
+# `_split_oversized_records` - `split_oversized_text`i KB kayit semasina
+# (metadata/chunk_id/document_id iliskileri) uygulayan katman - bkz.
+# `src/rag/embedding_rag_service.py`.
+# ---------------------------------------------------------------------------
+
+
+def test_split_oversized_records_preserves_metadata_and_expands_chunk_id() -> None:
+    from src.rag.embedding_rag_service import _split_oversized_records
+
+    oversized_text = "Uzun bir madde metni cumlesi. " * 400
+    record = {
+        "chunk_id": "test_doc__madde_5",
+        "document_id": "test_doc",
+        "document_title": "Test Yönetmeliği",
+        "level": "madde",
+        "article_number": "5",
+        "article_title": None,
+        "is_annex": False,
+        "page_start": 3,
+        "page_end": 4,
+        "source_url": "https://example.gov.tr/test_doc",
+        "institution": "Test Bakanlığı",
+        "publication_date": "2020-01-01",
+        "text": oversized_text,
+    }
+
+    expanded = _split_oversized_records([record], safe_token_budget=200)
+
+    assert len(expanded) > 1
+    # TUM metadata alanlari (text/chunk_id HARIC) HER alt-kayitta AYNEN korunmali.
+    for sub in expanded:
+        assert sub["document_id"] == "test_doc"
+        assert sub["document_title"] == "Test Yönetmeliği"
+        assert sub["article_number"] == "5"
+        assert sub["source_url"] == "https://example.gov.tr/test_doc"
+        assert sub["institution"] == "Test Bakanlığı"
+        assert sub["publication_date"] == "2020-01-01"
+        assert sub["chunk_id"].startswith("test_doc__madde_5__part")
+    # Parcalarin metni birlestirilince ORIJINAL metne esit olmali (veri kaybi yok).
+    assert "".join(sub["text"] for sub in expanded) == oversized_text
+
+
+def test_split_oversized_records_leaves_normal_sized_records_untouched() -> None:
+    from src.rag.embedding_rag_service import _split_oversized_records
+
+    record = {"chunk_id": "small__1", "document_id": "small", "text": "Kisa bir metin."}
+    expanded = _split_oversized_records([record], safe_token_budget=1000)
+
+    assert expanded == [record]

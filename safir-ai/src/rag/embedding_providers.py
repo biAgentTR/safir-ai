@@ -184,6 +184,103 @@ def _build_safe_batches(
     return batches
 
 
+_SEMANTIC_SPLIT_SEPARATORS = ["\n\n", "\n", ". ", "! ", "? ", "; ", ", ", " "]
+"""Metni bolmek icin denenen ayiricilar, EN KABA (paragraf) -> EN INCE
+(kelime) siraya gore. Her seviye, bir SONRAKI ince seviyeye SADECE o
+seviyedeki tek bir parca hala butceyi asiyorsa GECER - boylece bolme
+HER ZAMAN mumkun olan EN KABA (en anlamli) sinirda yapilir."""
+
+
+def _split_text_into_pieces(text: str, safe_token_budget: int) -> List[str]:
+    """`text`i, semantik/metin sinirlarina (paragraf->satir->cumle->cumlecik->kelime) gore, HER parca butceyi asmayacak sekilde INCE parcalara boler.
+
+    VERI KAYBI YOKTUR: parcalarin sirali birlestirilmesi (`"".join`) ORIJINAL
+    metni BIREBIR yeniden uretir - hicbir karakter atilmaz/kirpilmaz, yalnizca
+    birden fazla parcaya BOLUNUR. Kullanilabilir bir ayirici bulunamazsa
+    (bosluksuz, tek bir uzun karakter dizisi - pratikte neredeyse hic
+    gorulmez) SERT bir karakter kesimi yapilir; bu da bir "kirpilma" DEGILDIR
+    - TUM karakterler ardisik parcalara dagitilir, hicbiri kaybolmaz.
+
+    Args:
+        text: Bolunecek metin.
+        safe_token_budget: Her parcanin asmamasi gereken tahmini token sayisi.
+
+    Returns:
+        Sirali, birlestirildiginde `text`e esit olan parca listesi.
+    """
+    if not text:
+        return []
+    if _estimate_tokens(text) <= safe_token_budget:
+        return [text]
+
+    for separator in _SEMANTIC_SPLIT_SEPARATORS:
+        if separator not in text:
+            continue
+        raw_pieces = text.split(separator)
+        # Ayiriciyi (bosluk/noktalama) KAYBETMEMEK icin son parca haric
+        # hepsine geri eklenir - boylece "".join(pieces) == text KORUNUR.
+        pieces = [p + separator for p in raw_pieces[:-1]] + [raw_pieces[-1]]
+        pieces = [p for p in pieces if p]
+        if len(pieces) <= 1:
+            continue
+        result: List[str] = []
+        for piece in pieces:
+            result.extend(_split_text_into_pieces(piece, safe_token_budget))
+        return result
+
+    # Hicbir ayirici bulunamadi (tek, bosluksuz uzun dizi) - SERT karakter
+    # kesimi (veri KAYBI YOK, yalnizca birden fazla ardisik parcaya bolunur).
+    safe_chars = max(1, int(safe_token_budget * _CHARS_PER_TOKEN_ESTIMATE))
+    return [text[i : i + safe_chars] for i in range(0, len(text), safe_chars)]
+
+
+def _repack_pieces(pieces: List[str], safe_token_budget: int) -> List[str]:
+    """Ardisik INCE parcalari, her biri butceyi ASMAYACAK sekilde ac gozlu (greedy) olarak yeniden birlestirir.
+
+    `_split_text_into_pieces` genelde gerekenden COK DAHA INCE parcalar
+    uretir (orn. her cumle ayri); bu, birbirini izleyen parcalari (SIRA
+    DEGISTIRMEDEN) mumkun oldugunca BUYUK, ama yine de guvenli, parcalara
+    geri birlestirir - boylece anlamsiz derecede kucuk chunk'lar OLUSMAZ.
+    """
+    packed: List[str] = []
+    current = ""
+    current_tokens = 0
+    for piece in pieces:
+        piece_tokens = _estimate_tokens(piece)
+        if current and current_tokens + piece_tokens > safe_token_budget:
+            packed.append(current)
+            current = ""
+            current_tokens = 0
+        current += piece
+        current_tokens += piece_tokens
+    if current:
+        packed.append(current)
+    return packed
+
+
+def split_oversized_text(text: str, safe_token_budget: int) -> List[str]:
+    """`text`i, guvenli token butcesini asiyorsa, semantik/metin sinirlarina saygili GUVENLI parcalara boler.
+
+    Butceyi ASMIYORSA tek elemanli `[text]` doner (no-op). Asiyorsa,
+    `_split_text_into_pieces` ile en KABA anlamli sinirda (once paragraf,
+    gerekirse cumle/cumlecik/kelime) ince parcalara bolunur, ardindan
+    `_repack_pieces` ile ardisik parcalar mumkun oldugunca BUYUK (ama
+    guvenli) gruplara GERI birlestirilir. VERI KAYBI YOKTUR - donen
+    parcalarin sirali birlestirilmesi ORIJINAL metni BIREBIR yeniden uretir.
+
+    Args:
+        text: Bolunecek dokuman metni.
+        safe_token_budget: Her parcanin asmamasi gereken tahmini token sayisi.
+
+    Returns:
+        Sirali metin parcalari listesi (`len == 1` ise bolme gerekmedi).
+    """
+    if _estimate_tokens(text) <= safe_token_budget:
+        return [text]
+    fine_pieces = _split_text_into_pieces(text, safe_token_budget)
+    return _repack_pieces(fine_pieces, safe_token_budget)
+
+
 class EvrenEmbeddingProvider(EmbeddingProvider):
     """EVREN'in OpenAI-uyumlu `/v1/embeddings` ucu uzerinden CALISAN embedding saglayicisi.
 
@@ -231,6 +328,17 @@ class EvrenEmbeddingProvider(EmbeddingProvider):
     @property
     def dimension(self) -> int:
         return self._configured_dimension or 1024
+
+    @property
+    def safe_token_budget(self) -> int:
+        """`embed_documents()`in hedefledigi, istek basina azami TAHMINI token butcesi.
+
+        Cagiran taraf (bkz. `embedding_rag_service.py::_split_oversized_records`)
+        bu degeri, embed'lemeden ONCE hangi kayitlarin tek basina bu butceyi
+        astigini (ve dolayisiyla bolunmesi gerektigini) belirlemek icin okur -
+        boylece iki katman (RAG servisi + provider) AYNI esigi kullanir.
+        """
+        return self._safe_token_budget
 
     def _get_client(self):
         """`openai` istemcisini (lazy) kurar; API anahtari eksikse acik `ConfigurationError` firlatir."""
