@@ -1,45 +1,49 @@
-"""04 - Embedding & RAG Katmani: LOKAL embedding + FAISS + deterministik relevance skorlama tabanli anlamsal bellek.
+"""04 - Embedding & RAG Katmani: EVREN embedding + Qdrant + deterministik relevance skorlama tabanli anlamsal bellek.
 
-Operasyonel kurallari ve ISG mevzuatini TAMAMEN LOKAL (`sentence-transformers`,
-CPU, harici API/kota YOK) bir embedding modeliyle vektorlestirip FAISS
-uzerinde saklayan/arayan servistir. LangGraph ajaninin `retriever_tool` araci
-ve `RuleEngine._describe_regulation()` bu servis uzerinden calisir.
+Operasyonel kurallari ve ISG mevzuatini EVREN'in (TEKNOFEST yarisma cikarim
+servisi) OpenAI-uyumlu embedding ucuyla (`bge-m3-embed`, bkz.
+`embedding_providers.py::EvrenEmbeddingProvider`) vektorlestirip, takima
+tahsis edilmis izole bir Qdrant orneğinde saklayan/arayan servistir.
+LangGraph ajaninin `retriever_tool` araci ve `RuleEngine._describe_regulation()`
+bu servis uzerinden calisir.
 
-Knowledge base kaynagi (2026-08-23, uc asamali guncelleme)
+Knowledge base kaynagi (2026-08-23 -> 2026-08-25, tarihce)
 --------------------------------------------------------------
 1. asama: `seed_default_regulations()` `data/knowledge_base/chunks/*.json`
    altindaki GERCEK, resmi mevzuat metinlerinden turetilmis madde-bazli
    chunk'lari (bkz. `scripts/build_kb_chunks.py`) yukledi.
-2. asama: Embedding saglayicisi `sentence-transformers`den Gemini Embedding
-   API'ye tasindi; `RetrievedDocument` yapilandirilmis metadata (document_title,
-   article_number, source_url, ...) tasimaya basladi (`sources.yaml` ile join
-   edilmis - bkz. `_load_kb_chunk_records`); iki-asamali retrieval (FAISS
-   candidate_k -> LLM rerank -> score_threshold) eklendi; index DISKE KALICI
-   olarak yazilmaya basladi (`data/knowledge_base/index/`).
-3. asama (2026-08-23): Gemini Embedding API TAMAMEN KALDIRILDI -
-   embedding artik yeniden (ve KALICI olarak) TAMAMEN LOKAL'dir (bkz.
-   `embedding_providers.py::LocalEmbeddingProvider`). GERCEK bir persisted
-   index yoksa artik SESSIZCE placeholder'a DUSULMEZ - `seed_default_regulations()`
-   ACIK bir hatayla FAIL-FAST eder (bkz. asagida).
-4. asama (bu dosya, 2026-08-24, RAG RERANKER DETERMINIZATION): ikinci-asama
-   relevance skorlamasi (eskiden LLM-as-judge Gemini/Groq) TAMAMEN yerel/
-   matematiksel bir algoritmaya (`deterministic_reranker.py`) tasindi - artik
-   HICBIR asamada bir LLM/harici API'ye SORULMUYOR (bkz. `query()`).
+2-3. asama: embedding saglayicisi once Gemini Embedding API'ye, sonra TAMAMEN
+   LOKAL `sentence-transformers`e tasindi; `RetrievedDocument` yapilandirilmis
+   metadata (document_title, article_number, source_url, ...) tasimaya basladi
+   (`sources.yaml` ile join edilmis - bkz. `_load_kb_chunk_records`); iki-
+   asamali retrieval (candidate_k -> rerank -> score_threshold) eklendi.
+4. asama (2026-08-24, RAG RERANKER DETERMINIZATION): ikinci-asama relevance
+   skorlamasi (eskiden LLM-as-judge Gemini/Groq) TAMAMEN yerel/matematiksel
+   bir algoritmaya (`deterministic_reranker.py`) tasindi.
 5. asama (2026-08-24, RAG+RISK PRODUCTION KAPANIS): deterministic relevance
-   gate'ten GECMIS ("accepted") adaylar, opsiyonel bir UCUNCU asamada LOKAL
-   bir Cross-Encoder ile (bkz. `local_cross_encoder_reranker.py`) YENIDEN
-   siralanir - `src/main.py::SafirPipeline` bunu VARSAYILAN olarak devreye
-   alir (production default'u). Bu asama da HICBIR AG/API cagrisi YAPMAZ;
-   model agirligi yuklenemezse KONTROLLU sekilde (harici bir API'ye
-   DUSMEDEN) deterministic relevance siralamasina geri doner (bkz.
-   `RagQueryTelemetry.cross_encoder_status`).
+   gate'ten GECMIS ("accepted") adaylar, opsiyonel bir UCUNCU asamada
+   (`self._cross_encoder`) YENIDEN siralanir.
+6. asama (bu dosya, 2026-08-25, EVREN MIGRASYONU): LOKAL embedding
+   (`sentence-transformers`) VE FAISS TAMAMEN KALDIRILDI - embedding artik
+   `EvrenEmbeddingProvider` (EVREN `/v1/embeddings`, `bge-m3-embed`, 1024
+   boyut), vektor deposu artik EVREN'e tahsis edilmis izole Qdrant orneği
+   (bkz. `_build_qdrant_client`, `QdrantMemoryConfig`). Ucuncu asama
+   (`self._cross_encoder`) artik VARSAYILAN olarak `LocalCrossEncoderReranker`
+   DEGIL, EVREN'in LLM ucunu "LLM-as-judge" kullanan `EvrenReranker` (bkz.
+   `src/rag/reranker.py`) - `LocalCrossEncoderReranker` sinifi KALDIRILMADI
+   (standalone/benchmark icin durur) ama production'da ARTIK VARSAYILAN
+   DEGIL (bkz. `src/main.py::SafirPipeline.__init__`). Deterministik
+   relevance gate (`deterministic_reranker.py`) VE bu ucuncu-asama extension
+   point'inin KENDI ARAYUZU (`CrossEncoderReranker.score()`) DEGISMEDI -
+   yalnizca hangi implementasyonun VARSAYILAN olarak baglandigi degisti.
 
-ONEMLI (davranis degisikligi, 2026-08-23): Persisted index (`data/knowledge_base/index/`)
-GUNCEL degilse/yoksa, `seed_default_regulations()` artik `DEFAULT_ISG_REGULATIONS`
-(8 ornek madde) placeholder'ina SESSIZCE DUSMEZ - acikca `KnowledgeBaseNotBuiltError`
-firlatir. `DEFAULT_ISG_REGULATIONS` sabiti yalnizca DIGER modullerin (orn.
-`src/agent/agent_workflow.py`nin mock ornekleri) DOGRUDAN, bu servisten
-BAGIMSIZ kullanimi icin KALIR - bu servisin otomatik fallback'i DEGILDIR.
+ONEMLI (davranis degisikligi, 2026-08-23, HALA GECERLI): Qdrant koleksiyonu
+GUNCEL degilse/yoksa (bkz. `_try_load_qdrant_collection`), `seed_default_regulations()`
+`DEFAULT_ISG_REGULATIONS` (8 ornek madde) placeholder'ina SESSIZCE DUSMEZ -
+acikca `KnowledgeBaseNotBuiltError` firlatir. `DEFAULT_ISG_REGULATIONS` sabiti
+yalnizca DIGER modullerin (orn. `src/agent/agent_workflow.py`nin mock
+ornekleri) DOGRUDAN, bu servisten BAGIMSIZ kullanimi icin KALIR - bu
+servisin otomatik fallback'i DEGILDIR.
 
 ONEMLI (bilinen, KASITLI sinirlama): `RuleEngine._describe_regulation()`,
 sorguladigi sabit kisa etiketin (orn. "ISG Yonetmeligi Madde 12" -
@@ -67,19 +71,22 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import faiss
 import numpy as np
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, PointStruct, VectorParams
 
 from src.rag.deterministic_reranker import RelevanceBreakdown, RelevanceWeights, score_candidate
 from src.rag.embedding_providers import ConfigurationError, EmbeddingProvider, build_embedding_provider
 from src.rag.local_cross_encoder_reranker import CrossEncoderReranker, CrossEncoderUnavailableError
-from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig, RerankerConfig
+from src.utils.config_loader import EmbeddingConfig, QdrantMemoryConfig, RerankerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +116,7 @@ acik bir hatayla FAIL-FAST eder)."""
 
 
 class KnowledgeBaseNotBuiltError(RuntimeError):
-    """Gercek, persisted bir KB FAISS index'i bulunamadi/guncel degil ve SESSIZCE placeholder'a DUSULMEDI.
+    """Gercek, doldurulmus bir KB Qdrant koleksiyonu bulunamadi/guncel degil ve SESSIZCE placeholder'a DUSULMEDI.
 
     `seed_default_regulations()` tarafindan firlatilir - operator/gelistirici
     `python -m src.rag.build_knowledge_index` calistirmadan sistemi
@@ -119,16 +126,19 @@ class KnowledgeBaseNotBuiltError(RuntimeError):
 _KB_ROOT = Path(__file__).resolve().parents[2] / "data" / "knowledge_base"
 _KB_CHUNKS_DIR = _KB_ROOT / "chunks"
 _KB_SOURCES_YAML = _KB_ROOT / "metadata" / "sources.yaml"
-_KB_INDEX_DIR = _KB_ROOT / "index"
-_INDEX_FILE = _KB_INDEX_DIR / "faiss.index"
-_DOCUMENTS_FILE = _KB_INDEX_DIR / "documents.json"
-_INDEX_META_FILE = _KB_INDEX_DIR / "index_meta.json"
+
+_QDRANT_META_POINT_ID = 1
+"""Meta-koleksiyondaki (bkz. `_meta_collection_name`) TEK noktanin sabit ID'si -
+model/dimension/kb_hash manifest'i bu noktanin payload'unda tutulur (eski
+`index_meta.json`in Qdrant karsiligi); asil koleksiyonun ICINE KARISTIRILMAZ
+(arama/count sonuclarini KIRLETMEMESI icin AYRI bir koleksiyonda tutulur)."""
 
 _INDEX_NORMALIZATION = "l2"
 """Manifest'te persist edilen normalization semasi (bkz. `embedding_providers.py::_l2_normalize`) -
 hem indeksleme hem sorgu vektorleri AYNI (L2) normalizasyondan gecer."""
-_INDEX_METRIC = "cosine_via_inner_product"
-"""FAISS `IndexFlatIP` (inner product) L2-normalize vektorler uzerinde cosine benzerligiyle ES DEGERDIR."""
+_INDEX_METRIC = "cosine"
+"""Qdrant `Distance.COSINE` - L2-normalize vektorler uzerinde eski FAISS `IndexFlatIP`
+(inner product) ile MATEMATIKSEL OLARAK ES DEGER siralama sonucu uretir."""
 
 _LEVEL_LABELS = {
     "madde": "MADDE",
@@ -439,7 +449,7 @@ class RagQueryTelemetry:
     avg_embedding_score: Optional[float]
     avg_relevance_score: Optional[float]
     corpus_source: str = "unseeded"
-    """'persisted_index' | 'fallback_placeholder' | 'chunks_rebuild' | 'unseeded'
+    """'qdrant_collection' | 'fallback_placeholder' | 'chunks_rebuild' | 'unseeded'
     (bkz. `EmbeddingRAGService.corpus_source`). 'fallback_placeholder' ise bu
     sonuclar GERCEK mevzuat corpus'undan DEGIL, 8 maddelik placeholder
     listeden geliyor - retrieval mekanizmasi calisiyor olsa da bu, RAG'in
@@ -457,8 +467,49 @@ class RagQueryTelemetry:
     results: List[RagResultTelemetry] = field(default_factory=list)
 
 
+def _build_qdrant_client(qdrant_config: QdrantMemoryConfig) -> QdrantClient:
+    """`QdrantMemoryConfig`den bir `QdrantClient` kurar (HICBIR AG CAGRISI YAPMAZ - istemci lazy baglanir).
+
+    `url=":memory:"` ise tamamen bellek-ici, agsiz bir Qdrant orneği
+    kullanilir (test/offline kullanim - GERCEK Qdrant istemci KODU calisir,
+    yalnizca ag baglantisi yoktur; her `QdrantClient(location=":memory:")`
+    cagrisi BAGIMSIZ/izole bir orneği baslatir - istemciler arasi durum
+    PAYLASILMAZ). `url`, `http(s)://` ile BASLAMAYAN bir deger ise (orn.
+    `tmp_path` altinda bir klasor) YEREL DISK-tabanli bir Qdrant orneği
+    kullanilir (birden fazla `QdrantClient` cagrisi arasinda DURUM
+    PAYLASILIR - persist/reload round-trip testleri icin). Aksi halde EVREN
+    dokumantasyonu SS 11'in ZORUNLU kildigi gibi `port=443` ACIKCA belirtilir
+    (aksi halde istemci kendi varsayilanina yonelip "Connection refused"
+    verir) ve takim koduna ozel yol on-eki (`prefix`) ile REST protokolu
+    (gRPC KULLANILMAZ) uzerinden baglanilir.
+    """
+    if qdrant_config.url == ":memory:":
+        return QdrantClient(location=":memory:")
+    if not qdrant_config.url.startswith(("http://", "https://")):
+        return QdrantClient(path=qdrant_config.url)
+
+    api_key = os.environ.get(qdrant_config.api_key_env, "").strip()
+    if not api_key:
+        raise ConfigurationError(
+            f"Qdrant icin '{qdrant_config.api_key_env}' ortam degiskeni tanimli degil."
+        )
+    prefix = os.environ.get(qdrant_config.prefix_env, "").strip()
+    if not prefix:
+        raise ConfigurationError(
+            f"Qdrant icin '{qdrant_config.prefix_env}' ortam degiskeni (takim kodu) tanimli degil."
+        )
+    return QdrantClient(
+        url=qdrant_config.url,
+        port=443,  # ZORUNLU (bkz. dokustring) - yoksa istemci kendi varsayilanina duser
+        prefix=prefix,
+        api_key=api_key,
+        prefer_grpc=False,  # yalnizca 443 acik; gRPC bu yol on-eki yonlendirmesini desteklemez
+        timeout=600,
+    )
+
+
 class EmbeddingRAGService:
-    """ISG mevzuati ve operasyonel kurallari LOKAL embedding ile vektorlestirip FAISS'te arayan, deterministik agirlikli skorlama ile yeniden siralayan servis.
+    """ISG mevzuati ve operasyonel kurallari EVREN embedding ile vektorlestirip Qdrant'ta arayan, deterministik agirlikli skorlama ile yeniden siralayan servis.
 
     `Dynamic Tool Router` icindeki `retriever_tool` tarafindan mevzuat/kural
     sorgulari icin kullanilir. Bkz. modul dokustringi icin tam mimari.
@@ -467,7 +518,7 @@ class EmbeddingRAGService:
     def __init__(
         self,
         embedding_config: EmbeddingConfig,
-        faiss_config: FaissMemoryConfig,
+        qdrant_config: QdrantMemoryConfig,
         reranker_config: Optional[RerankerConfig] = None,
         cross_encoder: Optional[CrossEncoderReranker] = None,
     ) -> None:
@@ -475,26 +526,25 @@ class EmbeddingRAGService:
 
         Args:
             embedding_config: `configs/config.yaml` icindeki `memory.embedding` blogu.
-            faiss_config: `configs/config.yaml` icindeki `memory.faiss` blogu.
+            qdrant_config: `configs/config.yaml` icindeki `memory.qdrant` blogu.
             reranker_config: `configs/config.yaml` icindeki `memory.reranker` blogu; `None`/`enabled=False` ise rerank atlanir.
             cross_encoder: (bkz. `local_cross_encoder_reranker.py` modul
-                dokustringi) `None` ise Cross-Encoder asamasi TAMAMEN ATLANIR
-                (yalnizca deterministic relevance siralamasi kullanilir - test/
-                izole kullanim icin). 2026-08-24 RAG+RISK PRODUCTION KAPANIS
-                turu itibariyle `src/main.py::SafirPipeline.__init__` VARSAYILAN
-                olarak GERCEK bir `LocalCrossEncoderReranker` GECER (production
-                default'u ARTIK Cross-Encoder AKTIF) - model agirligi
-                yuklenemezse `query()` KONTROLLU sekilde deterministic
-                relevance'a duser (bkz. `RagQueryTelemetry.cross_encoder_status`),
-                hicbir harici API'ye SESSIZCE dusulmez.
+                dokustringi + `src/rag/reranker.py::EvrenReranker`) `None`
+                ise ucuncu-asama YENIDEN siralama TAMAMEN ATLANIR (yalnizca
+                deterministic relevance siralamasi kullanilir - test/izole
+                kullanim icin). 2026-08-25 EVREN MIGRASYONU itibariyle
+                `src/main.py::SafirPipeline.__init__` VARSAYILAN olarak
+                GERCEK bir `EvrenReranker` GECER - EVREN cagrisi basarisiz
+                olursa `query()` KONTROLLU sekilde deterministic relevance'a
+                duser (bkz. `RagQueryTelemetry.cross_encoder_status`).
 
         Raises:
-            ConfigurationError: `embedding_config.provider` desteklenmiyorsa
-                veya `output_dimensionality` eksikse. API ANAHTARI eksikligi
-                BURADA degil, ilk gercek embed/rerank cagrisinda firlatilir.
+            ConfigurationError: `embedding_config.provider` desteklenmiyorsa,
+                `output_dimensionality`/`base_url`/`api_key_env` eksikse veya
+                Qdrant baglanti bilgisi (API anahtari/takim kodu) eksikse.
         """
         self._embedding_config = embedding_config
-        self._faiss_config = faiss_config
+        self._qdrant_config = qdrant_config
         self._reranker_config = reranker_config
         self._cross_encoder = cross_encoder
 
@@ -502,15 +552,16 @@ class EmbeddingRAGService:
             provider=embedding_config.provider,
             model_name=embedding_config.model_name,
             output_dimensionality=embedding_config.output_dimensionality,
-            device=embedding_config.device,
+            base_url=embedding_config.base_url,
+            api_key_env=embedding_config.api_key_env,
         )
         self._dimension = self._provider.dimension
 
         # 2026-08-24 (RAG RERANKER DETERMINIZATION): ikinci-asama relevance
-        # skorlamasi ARTIK bir LLM'e (GeminiReranker/GroqReranker) SORULMUYOR -
-        # `deterministic_reranker.score_candidate()` TAMAMEN yerel/matematiksel
-        # calisir (bkz. modul dokustringi). `reranker_config.enabled=False` ise
-        # bu asama TAMAMEN atlanir (embedding_only yol - `_score_and_gate_embedding_only`).
+        # skorlamasi bir LLM'e SORULMUYOR - `deterministic_reranker.score_candidate()`
+        # TAMAMEN yerel/matematiksel calisir (bkz. modul dokustringi).
+        # `reranker_config.enabled=False` ise bu asama TAMAMEN atlanir
+        # (embedding_only yol - `_score_and_gate_embedding_only`).
         self._relevance_weights = (
             RelevanceWeights(
                 semantic=reranker_config.weights.semantic,
@@ -523,26 +574,28 @@ class EmbeddingRAGService:
             else RelevanceWeights()
         )
 
-        self._index = faiss.IndexFlatIP(self._dimension)
-        self._documents: List[Dict[str, Any]] = []
+        self._qdrant = _build_qdrant_client(qdrant_config)
+        self._collection_name = qdrant_config.collection_name
+        self._meta_collection_name = f"{qdrant_config.collection_name}__meta"
         self._last_query_telemetry: Optional[RagQueryTelemetry] = None
         self._corpus_source: str = "unseeded"
         """RAG'in P0 aciklanabilirlik bulgusu: "chunks/metadata diskte var ama
         retrieval sonucu yanlis gorunuyor" semptomunun kok nedeni, retrieval
-        KODUNUN kirik olmasi DEGIL - `data/knowledge_base/index/` hic
-        olusturulmamissa (bkz. `seed_default_regulations`), sistem SESSIZCE
-        yalnizca 8 maddelik `DEFAULT_ISG_REGULATIONS` PLACEHOLDER corpus'una
-        duser; gercek yuzlerce chunk'lik mevzuat indeksi retrieval'a HIC
-        girmez. Bu alan, HANGI corpus'un aktif oldugunu (persisted_index |
-        fallback_placeholder | chunks_rebuild | unseeded) her `query()`
-        telemetrisine tasiyarak bu durumu operator icin GORUNUR kilar (bkz.
-        `RagQueryTelemetry.corpus_source`, `trace_serializer.serialize_rag_security`)."""
+        KODUNUN kirik olmasi DEGIL - Qdrant koleksiyonu hic olusturulmamissa
+        (bkz. `seed_default_regulations`), sistem SESSIZCE yalnizca 8 maddelik
+        `DEFAULT_ISG_REGULATIONS` PLACEHOLDER corpus'una duser; gercek
+        yuzlerce chunk'lik mevzuat indeksi retrieval'a HIC girmez. Bu alan,
+        HANGI corpus'un aktif oldugunu (qdrant_collection | fallback_placeholder
+        | chunks_rebuild | unseeded) her `query()` telemetrisine tasiyarak bu
+        durumu operator icin GORUNUR kilar (bkz. `RagQueryTelemetry.corpus_source`,
+        `trace_serializer.serialize_rag_security`)."""
 
         logger.info(
-            "EmbeddingRAGService baslatildi: embedding_provider=%s model=%s dim=%d reranker=%s relevance_method=%s",
+            "EmbeddingRAGService baslatildi: embedding_provider=%s model=%s dim=%d qdrant_collection=%s reranker=%s relevance_method=%s",
             embedding_config.provider,
             embedding_config.model_name,
             self._dimension,
+            self._collection_name,
             "deterministic" if (reranker_config and reranker_config.enabled) else "devre-disi",
             "weighted_hybrid" if (reranker_config and reranker_config.enabled) else "embedding_only",
         )
@@ -553,8 +606,11 @@ class EmbeddingRAGService:
         return self._dimension
 
     def document_count(self) -> int:
-        """FAISS indeksine su ana kadar eklenmis dokuman sayisini dondurur."""
-        return len(self._documents)
+        """Qdrant koleksiyonuna su ana kadar eklenmis dokuman sayisini dondurur (koleksiyon yoksa 0)."""
+        try:
+            return self._qdrant.count(self._collection_name, exact=True).count
+        except Exception:  # noqa: BLE001 - koleksiyon henuz olusturulmamis olabilir (unseeded)
+            return 0
 
     @property
     def relevance_weights(self) -> RelevanceWeights:
@@ -565,7 +621,7 @@ class EmbeddingRAGService:
 
     @property
     def corpus_source(self) -> str:
-        """Aktif corpus'un kaynagi: 'persisted_index' | 'fallback_placeholder' | 'chunks_rebuild' | 'unseeded'.
+        """Aktif corpus'un kaynagi: 'qdrant_collection' | 'fallback_placeholder' | 'chunks_rebuild' | 'unseeded'.
 
         'fallback_placeholder' degeri geriye-uyum/telemetri semasi icin
         KORUNUR ama `seed_default_regulations()` ARTIK bunu URETMEZ (bkz.
@@ -583,15 +639,15 @@ class EmbeddingRAGService:
         return self._last_query_telemetry
 
     def seed_default_regulations(self) -> None:
-        """Indeks bossa, YALNIZCA gercek persisted KB index'ini yukler - BASKA HICBIR KAYNAGA DUSMEZ.
+        """Koleksiyon bossa, YALNIZCA gercek doldurulmus Qdrant koleksiyonunu dogrular - BASKA HICBIR KAYNAGA DUSMEZ.
 
-        Indeks zaten dokuman iceriyorsa hicbir sey yapmaz (idempotent).
+        Koleksiyon zaten dokuman iceriyorsa hicbir sey yapmaz (idempotent).
         Kaynak (ONEMLI - taze chunk embedding'i BURADA OTOMATIK TETIKLENMEZ,
-        cunku bu her pipeline baslangicinda CPU maliyeti/gecikmesi demektir;
+        cunku bu her pipeline baslangicinda ag/gecikme maliyeti demektir;
         taze embedding yalnizca `build_knowledge_index.py` CLI'inin BILEREK
         cagirdigi `build_index_from_chunks()` ile olur):
-          - `data/knowledge_base/index/` altinda GUNCEL (model/dimension/kb_hash
-            eslesen) bir persisted index varsa YUKLENIR (bkz. `_try_load_persisted_index`).
+          - Qdrant'ta GUNCEL (model/dimension/kb_hash eslesen) bir koleksiyon
+            varsa DOGRULANIR (bkz. `_try_load_qdrant_collection`).
           - Yoksa/guncel degilse: `DEFAULT_ISG_REGULATIONS` gibi bir placeholder'a
             SESSIZCE DUSULMEZ - acik, yakalan(mayan)abilir bir
             `KnowledgeBaseNotBuiltError` FIRLATILIR (fail-fast). Cagiran taraf
@@ -599,71 +655,70 @@ class EmbeddingRAGService:
             index'i olmadan CALISMAZ.
 
         Raises:
-            KnowledgeBaseNotBuiltError: Diskte GUNCEL bir persisted index bulunamadi.
+            KnowledgeBaseNotBuiltError: Qdrant'ta GUNCEL bir koleksiyon bulunamadi.
         """
         if self.document_count() > 0:
             logger.info("EmbeddingRAGService zaten %d dokuman iceriyor; seed atlandi.", self.document_count())
             return
 
-        if self._try_load_persisted_index():
+        if self._try_load_qdrant_collection():
             return
 
         raise KnowledgeBaseNotBuiltError(
-            f"{_KB_INDEX_DIR} altinda GUNCEL bir persisted KB index'i bulunamadi. "
-            "Gercek 748 mevzuat chunk'ini lokal embedding modeliyle indekslemek icin "
+            f"Qdrant koleksiyonu '{self._collection_name}' icinde GUNCEL bir KB bulunamadi. "
+            "Gercek 748 mevzuat chunk'ini EVREN embedding modeliyle indekslemek icin "
             "'python -m src.rag.build_knowledge_index' calistirin. Sessiz bir placeholder'a "
             "DUSULMEDI - bu, RAG'in operator/gelistiriciye GORUNMEDEN 'sahte' verilerle "
             "calismasini ONLER (fail-fast)."
         )
 
-    def _try_load_persisted_index(self) -> bool:
-        """Diskteki persisted FAISS index + metadata'yi, GUNCEL (model/dimension/kb_hash eslesen) ise yukler.
+    def _try_load_qdrant_collection(self) -> bool:
+        """Qdrant'taki meta-noktayi (bkz. `_QDRANT_META_POINT_ID`), GUNCEL (model/dimension/kb_hash eslesen) ise dogrular.
 
         Returns:
-            Basariyla yuklendiyse `True`; dosyalar yoksa, bozuksa veya
-            GUNCEL DEGILSE (model/dimension/normalization/metric/kb_hash
-            uyusmuyorsa) `False` (hicbir sey degistirilmez, cagiran taraf
-            `seed_default_regulations()` uzerinden FAIL-FAST eder - bkz.
-            `KnowledgeBaseNotBuiltError`, artik SESSIZCE bir placeholder'a
-            DUSULMEZ).
+            Koleksiyon GUNCEL VE dolu ise `True`; meta-koleksiyon/nokta
+            yoksa veya GUNCEL DEGILSE (model/dimension/normalization/metric/
+            kb_hash uyusmuyorsa) `False` (hicbir sey degistirilmez, cagiran
+            taraf `seed_default_regulations()` uzerinden FAIL-FAST eder -
+            bkz. `KnowledgeBaseNotBuiltError`, artik SESSIZCE bir
+            placeholder'a DUSULMEZ).
 
         NOT (gorev tanimi 7. madde): model/dimension/normalization/metric
         uyusmazligi HICBIR ZAMAN sessizce kabul EDILMEZ - her biri ayri ayri
-        kontrol edilir, herhangi biri uyusmuyorsa index GUNCEL DEGIL sayilir.
+        kontrol edilir, herhangi biri uyusmuyorsa koleksiyon GUNCEL DEGIL sayilir.
         """
-        if not (_INDEX_FILE.exists() and _DOCUMENTS_FILE.exists() and _INDEX_META_FILE.exists()):
-            return False
-
         try:
-            meta = json.loads(_INDEX_META_FILE.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            logger.warning("Persisted KB index_meta.json okunamadi/gecersiz: %s", _INDEX_META_FILE)
+            points = self._qdrant.retrieve(self._meta_collection_name, ids=[_QDRANT_META_POINT_ID])
+        except Exception:  # noqa: BLE001 - meta-koleksiyon henuz olusturulmamis (unseeded)
             return False
+        if not points:
+            return False
+        meta = points[0].payload or {}
 
         if meta.get("model_name") != self._embedding_config.model_name:
             logger.warning(
-                "Persisted KB index farkli bir embedding modeliyle uretilmis (%r != %r); index rebuild gerekiyor.",
+                "Qdrant KB koleksiyonu farkli bir embedding modeliyle uretilmis (%r != %r); index rebuild gerekiyor.",
                 meta.get("model_name"),
                 self._embedding_config.model_name,
             )
             return False
         if meta.get("dimension") != self._dimension:
             logger.warning(
-                "Persisted KB index farkli boyutta (%r != %r); index rebuild gerekiyor.",
+                "Qdrant KB koleksiyonu farkli boyutta (%r != %r); index rebuild gerekiyor.",
                 meta.get("dimension"),
                 self._dimension,
             )
             return False
         if meta.get("normalization") != _INDEX_NORMALIZATION:
             logger.warning(
-                "Persisted KB index farkli normalization semasiyla uretilmis (%r != %r); index rebuild gerekiyor.",
+                "Qdrant KB koleksiyonu farkli normalization semasiyla uretilmis (%r != %r); index rebuild gerekiyor.",
                 meta.get("normalization"),
                 _INDEX_NORMALIZATION,
             )
             return False
         if meta.get("metric") != _INDEX_METRIC:
             logger.warning(
-                "Persisted KB index farkli metric ile uretilmis (%r != %r); index rebuild gerekiyor.",
+                "Qdrant KB koleksiyonu farkli metric ile uretilmis (%r != %r); index rebuild gerekiyor.",
                 meta.get("metric"),
                 _INDEX_METRIC,
             )
@@ -671,26 +726,21 @@ class EmbeddingRAGService:
         current_hash = _compute_kb_hash()
         if meta.get("kb_hash") != current_hash:
             logger.warning(
-                "Persisted KB index guncel chunk'larla uyusmuyor (kb_hash farkli); "
+                "Qdrant KB koleksiyonu guncel chunk'larla uyusmuyor (kb_hash farkli); "
                 "'python -m src.rag.build_knowledge_index' ile yeniden olusturun."
             )
             return False
 
-        try:
-            index = faiss.read_index(str(_INDEX_FILE))
-            documents = json.loads(_DOCUMENTS_FILE.read_text(encoding="utf-8"))
-        except Exception as exc:  # noqa: BLE001 - bozuk persisted dosya, guvenli sekilde fallback'e dus
-            logger.warning("Persisted KB index yuklenemedi: %s", exc)
+        if self.document_count() == 0:
+            logger.warning("Qdrant KB meta kaydi var ama ana koleksiyon bos; index rebuild gerekiyor.")
             return False
 
-        self._index = index
-        self._documents = documents
-        self._corpus_source = "persisted_index"
+        self._corpus_source = "qdrant_collection"
         logger.info(
-            "EmbeddingRAGService: persisted KB index yuklendi (%d dokuman, model=%s, kb_version=%s).",
-            len(documents),
+            "EmbeddingRAGService: Qdrant KB koleksiyonu dogrulandi (%d dokuman, model=%s, kb_version=%s).",
+            self.document_count(),
             meta.get("model_name"),
-            meta.get("kb_hash", "")[:12],
+            str(meta.get("kb_hash", ""))[:12],
         )
         return True
 
@@ -698,7 +748,7 @@ class EmbeddingRAGService:
         """TUM `data/knowledge_base/chunks/*.json` kayitlarini `sources.yaml` ile join edip embed eder (rebuild CLI'i icin).
 
         Bu metod idempotency GUARD'INI ATLAR (mevcut dokumanlarin ustune
-        EKLER) - yalnizca `scripts`/`build_knowledge_index.py` gibi
+        EKLER/GUNCELLER) - yalnizca `scripts`/`build_knowledge_index.py` gibi
         BILEREK taze bir `EmbeddingRAGService` orneginde cagrilmasi
         beklenir.
 
@@ -714,19 +764,45 @@ class EmbeddingRAGService:
                 f"{_KB_CHUNKS_DIR} altinda hicbir chunk bulunamadi. Once "
                 "'python scripts/build_kb_chunks.py' calistirip chunk'lari uretin."
             )
+        self._ensure_collection_exists()
         self._add_structured_documents(records)
         self._corpus_source = "chunks_rebuild"
         return len(records)
 
+    def _ensure_collection_exists(self) -> None:
+        """Ana Qdrant koleksiyonunu (yoksa) `self._dimension`/`cosine` ile olusturur (idempotent)."""
+        if not self._qdrant.collection_exists(self._collection_name):
+            self._qdrant.create_collection(
+                collection_name=self._collection_name,
+                vectors_config=VectorParams(size=self._dimension, distance=Distance.COSINE),
+            )
+
+    @staticmethod
+    def _point_id_for(document_id: str, chunk_id: Optional[str], index: int) -> str:
+        """`(document_id, chunk_id, index)` ucundan DETERMINISTIK bir Qdrant nokta ID'si (UUID5) turetir.
+
+        Ayni chunk'in tekrar indekslenmesi (rebuild) AYNI ID'yi uretir -
+        boylece `upsert` DUPLICATE nokta biriktirmez, mevcut noktayi GUNCELLER.
+        """
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"safir-kb:{document_id}:{chunk_id}:{index}"))
+
     def _add_structured_documents(self, records: List[Dict[str, Any]]) -> None:
-        """Yapilandirilmis kayitlari (metadata + text) embed edip FAISS'e ve `self._documents`e ekler."""
+        """Yapilandirilmis kayitlari (metadata + text) embed edip Qdrant koleksiyonuna upsert eder."""
         if not records:
             return
+        self._ensure_collection_exists()
         texts = [str(r.get("text") or "") for r in records]
         vectors = self._provider.embed_documents(texts)
-        self._index.add(vectors)
-        self._documents.extend(records)
-        logger.info("EmbeddingRAGService: %d dokuman indekslendi (toplam=%d)", len(records), len(self._documents))
+        points = [
+            PointStruct(
+                id=self._point_id_for(str(r.get("document_id") or ""), r.get("chunk_id"), i),
+                vector=vectors[i].tolist(),
+                payload=r,
+            )
+            for i, r in enumerate(records)
+        ]
+        self._qdrant.upsert(collection_name=self._collection_name, points=points)
+        logger.info("EmbeddingRAGService: %d dokuman indekslendi (toplam=%d)", len(records), self.document_count())
 
     def add_document(self, text: str) -> None:
         """Bir kural/mevzuat metnini (metadata'siz, DUZ METIN) anlamsal bellege ekler.
@@ -750,16 +826,15 @@ class EmbeddingRAGService:
     def query(
         self, question: str, top_k: Optional[int] = None, keywords: Optional[List[str]] = None
     ) -> List[RetrievedDocument]:
-        """Verilen soruya en yakin dokumanlari, iki-asamali retrieval (FAISS candidate_k -> DETERMINISTIK relevance skorlama -> threshold) ile dondurur.
+        """Verilen soruya en yakin dokumanlari, iki-asamali retrieval (Qdrant candidate_k -> DETERMINISTIK relevance skorlama -> threshold) ile dondurur.
 
-        2026-08-24 (RAG RERANKER DETERMINIZATION): ikinci asama artik bir
-        LLM'e (Gemini/Groq) SORULMUYOR - `deterministic_reranker.score_candidate()`
-        ile TAMAMEN yerel/matematiksel hesaplanir (bkz. o modulun dokustringi).
-        Bu, HICBIR AG CAGRISI/API anahtari/kota GEREKTIRMEZ - 429/400 gibi
-        harici hatalar ARTIK BU ASAMADA MUMKUN DEGILDIR.
+        2026-08-24 (RAG RERANKER DETERMINIZATION): ikinci asama bir LLM'e
+        SORULMUYOR - `deterministic_reranker.score_candidate()` ile TAMAMEN
+        yerel/matematiksel hesaplanir (bkz. o modulun dokustringi). Bu,
+        HICBIR AG CAGRISI/API anahtari/kota GEREKTIRMEZ.
 
         Akis:
-          1. FAISS'ten `candidate_k` aday cekilir (embedding benzerligi).
+          1. Qdrant'tan `candidate_k` aday cekilir (embedding benzerligi).
           2. Relevance skorlama AKTIFSE: her adayin `relevance_score`u
              (semantic+lexical+keyword+metadata+phrase agirlikli toplami)
              hesaplanir; `score_threshold`in ALTINDA kalanlar ELENIR (bkz.
@@ -770,16 +845,15 @@ class EmbeddingRAGService:
              skoruna gore siralanir (`similarity_threshold` varsa uygulanir),
              ilk `top_k` dondurulur (`retrieval_status="embedding_only"`).
 
-        NOT: gercek bir TEKNIK retrieval hatasi (orn. embedding modeli
-        yuklenemedi/bozuk index) BU METODUN sorumlulugunda DEGILDIR - o
-        durumda istisna oldugu gibi YUKARI firlatilir (cagiran taraf ele
-        alir); bu, relevance skorlamasinin (artik LLM/API'ye bagli OLMAYAN)
-        "basarisizligi" ile KARISTIRILMAZ.
+        NOT: gercek bir TEKNIK retrieval hatasi (orn. embedding modeli/Qdrant
+        baglantisi basarisiz) BU METODUN sorumlulugunda DEGILDIR - o durumda
+        istisna oldugu gibi YUKARI firlatilir (cagiran taraf ele alir); bu,
+        relevance skorlamasinin "basarisizligi" ile KARISTIRILMAZ.
 
         Args:
             question: Dogal dil sorgusu.
             top_k: NIHAI (skorlama/filtre SONRASI) sonuc sayisi; verilmezse
-                `faiss_config.top_k`/`reranker_config.top_k` kullanilir.
+                `qdrant_config.top_k`/`reranker_config.top_k` kullanilir.
             keywords: VLM'in dinamik risk keyword'leri (varsa) - keyword_score
                 sinyaline girdi olur; `None`/bos ise bu sinyal SESSIZCE 0
                 katkı verir (sistem BOZULMAZ).
@@ -789,7 +863,8 @@ class EmbeddingRAGService:
             hicbir esik-uzeri sonuc yoksa BOS LISTE.
         """
         query_started = time.perf_counter()
-        if self._index.ntotal == 0:
+        document_count = self.document_count()
+        if document_count == 0:
             logger.warning("EmbeddingRAGService bos; sorgu icin dokuman bulunamadi.")
             self._last_query_telemetry = RagQueryTelemetry(
                 query=question,
@@ -808,24 +883,24 @@ class EmbeddingRAGService:
             )
             return []
 
-        final_k = top_k or (self._reranker_config.top_k if self._reranker_config else None) or self._faiss_config.top_k
-        candidate_k = max(self._faiss_config.candidate_k, final_k)
-        candidate_k = min(candidate_k, self._index.ntotal)
+        final_k = top_k or (self._reranker_config.top_k if self._reranker_config else None) or self._qdrant_config.top_k
+        candidate_k = max(self._qdrant_config.candidate_k, final_k)
+        candidate_k = min(candidate_k, document_count)
 
         embedding_started = time.perf_counter()
         query_vector = self._provider.embed_query(question)
-        scores, indices = self._index.search(np.expand_dims(query_vector, axis=0), candidate_k)
+        hits = self._qdrant.query_points(
+            collection_name=self._collection_name, query=query_vector.tolist(), limit=candidate_k
+        ).points
         embedding_latency_ms = (time.perf_counter() - embedding_started) * 1000.0
 
         candidates: List[RetrievedDocument] = []
-        for rank, (score, idx) in enumerate(zip(scores[0], indices[0]), start=1):
-            if idx == -1:
-                continue
-            record = self._documents[idx]
+        for rank, point in enumerate(hits, start=1):
+            record = point.payload or {}
             candidates.append(
                 RetrievedDocument(
                     text=record.get("text", ""),
-                    embedding_score=float(score),
+                    embedding_score=float(point.score),
                     chunk_id=record.get("chunk_id"),
                     document_id=record.get("document_id"),
                     document_title=record.get("document_title"),
@@ -838,7 +913,7 @@ class EmbeddingRAGService:
                     source_url=record.get("source_url"),
                     institution=record.get("institution"),
                     publication_date=record.get("publication_date"),
-                    retrieval_rank=rank,  # FAISS zaten embedding_score'a gore AZALAN sirada doner
+                    retrieval_rank=rank,  # Qdrant zaten embedding_score'a gore AZALAN sirada doner
                 )
             )
 
@@ -892,7 +967,7 @@ class EmbeddingRAGService:
             # ("corpus disi" bir sorgu FAISS'ten HER ZAMAN "en az kotu" adaylari
             # dondurur - bu esik OLMADAN, skorlama devre disiyken tamamen
             # alakasiz bir sorgu bile SESSIZCE "accepted" sayilirdi).
-            similarity_threshold = self._faiss_config.similarity_threshold
+            similarity_threshold = self._qdrant_config.similarity_threshold
             embedding_only_final: List[RetrievedDocument] = []
             for doc in candidates:
                 if similarity_threshold is not None and doc.embedding_score < similarity_threshold:
@@ -1014,16 +1089,17 @@ class EmbeddingRAGService:
         return self.query(query, top_k)
 
     def persist(self) -> None:
-        """FAISS indeksini, dokuman metadata'sini ve index manifest'ini (model/dimension/normalization/metric/corpus fingerprint) diske yazar.
+        """Index manifest'ini (model/dimension/normalization/metric/corpus fingerprint) Qdrant meta-koleksiyonuna yazar.
 
-        Manifest (`index_meta.json`), runtime'da `_try_load_persisted_index()`
-        tarafindan model/dimension/normalization/metric/kb_hash UYUSMAZLIGINI
-        SESSIZCE KABUL ETMEMEK icin kullanilir (bkz. gorev tanimi 6/7. madde).
+        Qdrant koleksiyonunun kendisi (`_add_structured_documents`/`upsert`
+        cagrilarinda) zaten UZAKTAN kalicidir - bu metod yalnizca manifest
+        noktasini (bkz. `_QDRANT_META_POINT_ID`) yazar; runtime'da
+        `_try_load_qdrant_collection()` tarafindan model/dimension/
+        normalization/metric/kb_hash UYUSMAZLIGINI SESSIZCE KABUL ETMEMEK
+        icin kullanilir (bkz. gorev tanimi 6/7. madde).
         """
-        _KB_INDEX_DIR.mkdir(parents=True, exist_ok=True)
-        faiss.write_index(self._index, str(_INDEX_FILE))
-        _DOCUMENTS_FILE.write_text(json.dumps(self._documents, ensure_ascii=False, indent=2), encoding="utf-8")
         kb_hash = _compute_kb_hash()
+        chunk_count = self.document_count()
         meta = {
             "model_name": self._embedding_config.model_name,
             "dimension": self._dimension,
@@ -1031,11 +1107,19 @@ class EmbeddingRAGService:
             "metric": _INDEX_METRIC,
             "kb_hash": kb_hash,
             "corpus_fingerprint": kb_hash,  # kb_hash ile AYNI deger - manifest'te ACIK isimle de bulunsun diye
-            "chunk_count": len(self._documents),
+            "chunk_count": chunk_count,
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
-        _INDEX_META_FILE.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-        logger.info("KB index persisted: %s (%d dokuman)", _KB_INDEX_DIR, len(self._documents))
+        if not self._qdrant.collection_exists(self._meta_collection_name):
+            self._qdrant.create_collection(
+                collection_name=self._meta_collection_name,
+                vectors_config=VectorParams(size=1, distance=Distance.COSINE),
+            )
+        self._qdrant.upsert(
+            collection_name=self._meta_collection_name,
+            points=[PointStruct(id=_QDRANT_META_POINT_ID, vector=[0.0], payload=meta)],
+        )
+        logger.info("KB index manifest persisted: %s (%d dokuman)", self._meta_collection_name, chunk_count)
 
 
 # Modul 3 spesifikasyonundaki isim: ayni sinifa isaret eden alias (geriye
@@ -1052,7 +1136,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
     demo_config = load_config()
-    demo_service = FAISSRagService(demo_config.memory.embedding, demo_config.memory.faiss, demo_config.memory.reranker)
+    demo_service = FAISSRagService(demo_config.memory.embedding, demo_config.memory.qdrant, demo_config.memory.reranker)
     demo_service.seed_default_regulations()
 
     demo_query = "Yuksekte calisirken hangi ekipmanlar zorunlu?"

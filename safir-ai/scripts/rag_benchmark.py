@@ -322,7 +322,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config()
-    service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss, config.memory.reranker)
+    service = EmbeddingRAGService(config.memory.embedding, config.memory.qdrant, config.memory.reranker)
     service.seed_default_regulations()
     print(f"Corpus: {service.document_count()} chunk (corpus_source={service.corpus_source})\n")
 

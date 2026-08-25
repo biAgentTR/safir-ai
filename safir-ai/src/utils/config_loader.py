@@ -336,26 +336,43 @@ class SQLiteMemoryConfig(BaseModel):
 
 
 class EmbeddingConfig(BaseModel):
-    """Embedding & RAG Katmani icin LOKAL (`sentence-transformers`) embedding model ayarlari.
+    """Embedding & RAG Katmani icin EVREN (harici, OpenAI-uyumlu) embedding model ayarlari.
 
-    2026-08-23 guncellemesi: Gemini Embedding API TAMAMEN KALDIRILDI (ne
-    birincil yol ne fallback) - TEK saglayici artik "local"dir: harici API/
-    kota/API anahtari OLMADAN, CPU uzerinde `sentence-transformers` ile
-    calisir (bkz. `src/rag/embedding_providers.py::LocalEmbeddingProvider`).
+    2026-08-25 guncellemesi: LOKAL (`sentence-transformers`) embedding
+    TAMAMEN KALDIRILDI - TEK saglayici artik "evren"dir: EVREN'in
+    `/v1/embeddings` ucu (`model_name="bge-m3-embed"`, 1024 boyut, bkz.
+    dokumantasyon SS 5/10) uzerinden calisir (bkz.
+    `src/rag/embedding_providers.py::EvrenEmbeddingProvider`).
     """
 
-    provider: str = "local"             # su an yalnizca "local" destekleniyor
-    model_name: str                     # orn. "intfloat/multilingual-e5-small"
+    provider: str = "evren"             # su an yalnizca "evren" destekleniyor
+    model_name: str                     # orn. "bge-m3-embed"
     output_dimensionality: Optional[int] = None  # HARD-CODE edilmez, config'ten gelir
-    device: str = "cpu"                 # `sentence-transformers` cihazi ("cpu"/"cuda")
+    device: str = "cpu"                 # ARTIK KULLANILMIYOR (geriye-uyum icin durur - evren uzak API'dir)
     normalize_embeddings: bool = True
+    base_url: Optional[str] = None      # yalnizca provider="evren" icin (EVREN taban adresi)
+    api_key_env: Optional[str] = None   # yalnizca provider="evren" icin (orn. "EVREN_API_KEY")
 
 
-class FaissMemoryConfig(BaseModel):
-    index_path: str
-    embedding_model: str                # bkz. memory.embedding.model_name (ayni deger, senkron tutulmali)
+class QdrantMemoryConfig(BaseModel):
+    """EVREN'e tahsis edilen izole Qdrant ornegi icin baglanti ayarlari (FAISS'in yerini alir).
+
+    Dokumantasyon SS 11: her takima ayri, izole bir Qdrant SURECI/DISK
+    HACMI tahsis edilir; erisim bir yol on-eki (takim kodu) uzerinden
+    saglanir ve REST portu HER ZAMAN 443 olmalidir (aksi halde istemci
+    kendi varsayilanina yonelip "Connection refused" verir - bkz.
+    `src/rag/embedding_rag_service.py::_build_qdrant_client`).
+    `url=":memory:"` verilirse (test/offline kullanim) tamamen bellek-ici,
+    agsiz bir Qdrant orneği kullanilir - GERCEK Qdrant istemci kodu calisir,
+    hicbir ag baglantisi gerekmez.
+    """
+
+    url: str                            # ":memory:" veya "https://evren-vektor.ssyz.org.tr"
+    api_key_env: str = "EVREN_QDRANT_KEY"
+    prefix_env: str = "EVREN_TEAM"      # takim kodu (orn. "team33") - Qdrant yol on-eki
+    collection_name: str = "safir_regulations"
     top_k: int                          # RERANK SONRASI nihai sonuc sayisi
-    candidate_k: int = 20               # FAISS'ten cekilecek ADAY sayisi (rerank ONCESI)
+    candidate_k: int = 20               # Qdrant'tan cekilecek ADAY sayisi (rerank ONCESI)
     similarity_threshold: Optional[float] = None  # embedding-seviyesi filtre (opsiyonel, genelde None)
 
 
@@ -370,35 +387,38 @@ class RelevanceWeightsConfig(BaseModel):
 
 
 class RerankerConfig(BaseModel):
-    """Ikinci-asama retrieval relevance skorlama ayarlari.
+    """Ikinci-asama (deterministik) VE ucuncu-asama (AI/LLM-as-judge) retrieval skorlama ayarlari.
 
-    2026-08-24 (RAG RERANKER DETERMINIZATION): production relevance kararı
-    artik bir LLM'e (`provider`/`model_name`/`api_key_env`/`base_url`)
-    SORULMUYOR - `src/rag/deterministic_reranker.py`nin TAMAMEN yerel,
-    agirlikli-toplam algoritmasi kullaniliyor (bkz. `weights`). `provider`/
-    `model_name`/`api_key_env`/`base_url` alanlari GERIYE-DONUK UYUMLULUK
-    icin (ve `src/rag/reranker.py`nin hala bagimsiz test edilebilen
-    `GeminiReranker`/`GroqReranker` siniflari icin) KORUNDU, ancak
-    `EmbeddingRAGService` ARTIK BUNLARI OKUMAZ/KULLANMAZ.
+    2026-08-24 (RAG RERANKER DETERMINIZATION): ikinci-asama relevance karari
+    bir LLM'e SORULMAZ - `src/rag/deterministic_reranker.py`nin TAMAMEN
+    yerel, agirlikli-toplam algoritmasi kullanilir (bkz. `weights`).
+    2026-08-25 guncellemesi: `provider`/`model_name`/`api_key_env`/`base_url`
+    alanlari YENIDEN KULLANIMDA - artik EVREN'in OpenAI-uyumlu LLM ucunu
+    (`model_name="llm-fast"`) "LLM-as-judge" olarak calistiran UCUNCU,
+    OPSIYONEL asamayi (`src/rag/evren_reranker.py::EvrenReranker`) yapilandirir;
+    bu asama deterministik gate'i BYPASS ETMEZ, yalnizca gate'ten GECMIS
+    adaylari yeniden siralar (bkz. `EmbeddingRAGService.query()`
+    "cross_encoder" extension point'i - isim tarihseldir, artik LOKAL bir
+    cross-encoder DEGIL, EVREN LLM-as-judge kullanir).
     """
 
     enabled: bool = False
-    provider: str = "gemini"            # ARTIK KULLANILMIYOR (bkz. sinif dokustringi) - geriye-uyum icin durur
-    model_name: str = "gemini-3.5-flash-lite"  # ARTIK KULLANILMIYOR
+    provider: str = "evren"             # EVREN'in OpenAI-uyumlu LLM ucu (dedike bir rerank endpoint'i DEGIL)
+    model_name: str = "llm-fast"
     candidate_k: int = 20
     top_k: int = 5
-    score_threshold: float = 0.10       # bu skorun ALTINDAKI sonuclar ELENIR (0 sonuc GECERLIDIR) - artik deterministik relevance_score'a uygulanir
-    api_key_env: str = "GEMINI_API_KEY"  # ARTIK KULLANILMIYOR
-    base_url: Optional[str] = None      # ARTIK KULLANILMIYOR
+    score_threshold: float = 0.10       # bu skorun ALTINDAKI sonuclar ELENIR (0 sonuc GECERLIDIR) - deterministik relevance_score'a uygulanir
+    api_key_env: str = "EVREN_API_KEY"
+    base_url: Optional[str] = None      # EVREN taban adresi (orn. "https://evren-llmapi.ssyz.org.tr/v1")
     weights: RelevanceWeightsConfig = Field(default_factory=RelevanceWeightsConfig)
 
 
 class MemoryConfig(BaseModel):
-    """Yapilandirilmis olay bellegi (SQLite) ve anlamsal bellek (Embedding+FAISS+Rerank) ayarlari."""
+    """Yapilandirilmis olay bellegi (SQLite) ve anlamsal bellek (EVREN Embedding+Qdrant+Rerank) ayarlari."""
 
     sqlite: SQLiteMemoryConfig
     embedding: EmbeddingConfig
-    faiss: FaissMemoryConfig
+    qdrant: QdrantMemoryConfig
     reranker: RerankerConfig = Field(default_factory=RerankerConfig)
 
 

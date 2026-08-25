@@ -170,7 +170,7 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
         "    rag_service = _FakeRAG()\n"
         "else:\n"
         "    from src.rag.embedding_rag_service import EmbeddingRAGService\n"
-        "    rag_service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss, config.memory.reranker)\n"
+        "    rag_service = EmbeddingRAGService(config.memory.embedding, config.memory.qdrant, config.memory.reranker)\n"
         "    rag_service.seed_default_regulations()\n"
         "print('RAG servisi hazir:', type(rag_service).__name__)"
     )

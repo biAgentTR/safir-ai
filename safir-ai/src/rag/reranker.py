@@ -1,42 +1,37 @@
-"""04 - Embedding & RAG Katmani: LLM-as-judge ikinci-asama siralama (Gemini veya Groq).
+"""04 - Embedding & RAG Katmani: EVREN'i "LLM-as-judge" olarak kullanan ucuncu-asama rerank.
 
-`EmbeddingRAGService.query()`, FAISS'ten gelen `candidate_k` adayi bu
-katmana gonderir; `Reranker` implementasyonu, sorgu ile her aday arasindaki
-gercek alaka skorunu (0.0-1.0) bir metin modeline SADECE yapilandirilmis
-JSON dondurmesini isteyerek hesaplatir ve adaylari YENIDEN siralar.
-`embedding_score` (FAISS/cosine) ile `rerank_score` (LLM-as-judge) KARISTIRILMAZ -
-cagiran taraf (`EmbeddingRAGService`) ikisini ayri alanlarda tutar.
+`EmbeddingRAGService.query()`, deterministik relevance gate'ten GECMIS
+("accepted") adaylari, `EvrenReranker` uzerinden EVREN'in OpenAI-uyumlu LLM
+ucuna (`model="llm-fast"`) gonderip sorgu ile her aday arasindaki gercek
+alaka skorunu (0.0-1.0) SADECE yapilandirilmis JSON dondurmesini isteyerek
+hesaplatir ve adaylari YENIDEN siralar. `embedding_score` (Qdrant/cosine)
+ile `cross_encoder_score` (EVREN LLM-as-judge) KARISTIRILMAZ - cagiran taraf
+(`EmbeddingRAGService`) ikisini ayri alanlarda tutar.
 
-Iki saglayici: `GeminiReranker` (Google Gemini, embedding ile AYNI
-`GEMINI_API_KEY`) ve `GroqReranker` (Groq'un OpenAI-uyumlu ucu, AYRI bir
-`GROQ_API_KEY`/kota - Gemini'nin embedding/VLM kotasindan BAGIMSIZ). Ikisi de
-AYNI prompt/JSON semasini ve dogrulama kurallarini paylasir (bkz.
-`_build_rerank_prompt`/`_parse_rerank_response`) - yalnizca AG cagrisi
-saglayici-ozeldir.
+2026-08-25 guncellemesi (Gemini/Groq TAMAMEN KALDIRILDI): eski
+`GeminiReranker`/`GroqReranker` (harici, birbirinden bagimsiz iki saglayici)
+KALDIRILDI; EVREN'in OpenAI-uyumlu LLM ucunu kullanan TEK saglayici olan
+`EvrenReranker` eklendi. EVREN dokumantasyonu (SS 10), dedike bir rerank
+servisinin (`model="rerank"`) getirme kalitesini OLCUMLE dusurdugunu
+gostermektedir - bu yuzden `EvrenReranker` o dedike ucu KULLANMAZ; standart
+`/v1/chat/completions` ucunu ("llm-fast") bu modulun ONCEDEN var olan
+JSON-yargi promptuyla (`_build_rerank_prompt`/`_parse_rerank_response`)
+cagirir.
 
-GUVENLIK KURALI (degismedi): reranker API cagrisi basarisiz olursa VEYA
-donen JSON gecersiz/kurallara aykiri olursa (index araligi disi, tekrar eden
-index, eksik alan, ayristirilamayan metin), bu modul SESSIZCE embedding-
-siralamasini "final sonuc" gibi DONDURMEZ - `RerankerUnavailableError`
-firlatir; cagiran taraf bunu yakalayip retrieval'i "unavailable" (bos
-sonuc) olarak ele alir. Modelin serbest ACIKLAMA metni ASLA retrieval
-sonucu olarak KULLANILMAZ - yalnizca ayristirilmis {index, score} ciftleri.
+`EvrenReranker`, `src/rag/local_cross_encoder_reranker.py::CrossEncoderReranker`
+sozlesmesini (`score(query, texts) -> List[float]`) uygular - boylece
+`EmbeddingRAGService`nin ONCEDEN var olan "cross_encoder" extension point'ine
+(deterministik gate'i BYPASS ETMEYEN, yalnizca ZATEN kabul edilmis adaylari
+YENIDEN SIRALAYAN ucuncu asama) hicbir arayuz degisikligi olmadan baglanir.
 
-KARAR (2026-08-24, RAG PIPELINE RECONSTRUCTION, gorev tanimi 8. bolum -
-"reranker basarisiz olunca embedding_only fallback mi, retrieval_unavailable
-mi?"): SAFIR icin BILINCLI olarak **B) retrieval_unavailable** secildi -
-embedding-only siralamaya (A) SESSIZCE/OTOMATIK DUSULMEZ. Gerekce: bu sistem
-ISG mevzuati gibi HUKUKI/guvenlik-kritik atiflar uretiyor; embedding
-benzerligi (cosine) TEK BASINA bir maddenin sorguya GERCEKTEN alakali
-oldugunun kaniti DEGILDIR (bkz. `embedding_rag_service.py` - embedding_score
-bir "confidence"/olasilik DEGIL, vektor benzerligidir). LLM-as-judge rerank
-BASARISIZ olduysa, bu adaylarin GERCEKTEN dogrulanmis oldugunu iddia etmek
-YANLIS-POZITIF risk tasir (dogrulanmamis bir maddeyi "secilmis kanit" gibi
-sunmak). Bu yuzden reranker basarisiz oldugunda sistem BASARILI gibi
-DAVRANMAZ: final sonuc BOS doner, `retrieval_status="reranker_unavailable"`
-ACIKCA isaretlenir (bkz. `EmbeddingRAGService.query`), her aday
-`relevance_status="unavailable"` damgalanir - "hic aday yoktu" ile "adaylar
-bulundu ama dogrulanamadi" birbirinden AYRISTIRILIR.
+GUVENLIK KURALI (degismedi): EVREN cagrisi basarisiz olursa VEYA donen JSON
+gecersiz/kurallara aykiri olursa (index araligi disi, tekrar eden index,
+eksik alan, ayristirilamayan metin, EKSIK aday), bu modul SESSIZCE embedding/
+deterministik-relevance siralamasini "final sonuc" gibi DONDURMEZ -
+`CrossEncoderUnavailableError` firlatir; `EmbeddingRAGService.query()` bunu
+yakalayip siralamayi deterministik relevance skoruna GERI DUSURUR (KONTROLLU
+degradasyon, `RagQueryTelemetry.cross_encoder_status="unavailable"` ile
+ACIKCA isaretlenir - bkz. `embedding_rag_service.py`, DEGISTIRILMEDI).
 """
 
 from __future__ import annotations
@@ -45,8 +40,9 @@ import json
 import logging
 import os
 import re
-from abc import ABC, abstractmethod
 from typing import List, Tuple
+
+from src.rag.local_cross_encoder_reranker import CrossEncoderReranker, CrossEncoderUnavailableError
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +56,7 @@ _JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
 
 
 class RerankerUnavailableError(Exception):
-    """Reranker API cagrisi basarisiz oldu, gerekli konfigurasyon (API anahtari) eksik VEYA donen yanit gecersiz.
+    """EVREN rerank cagrisi basarisiz oldu VEYA donen yanit gecersiz.
 
     Bu, "alakasiz sonuc" ile KARISTIRILMAMALIDIR - bu, rerank'in HIC
     GUVENILIR SEKILDE YAPILAMADIGI anlamina gelir; cagiran taraf bu
@@ -69,29 +65,8 @@ class RerankerUnavailableError(Exception):
     """
 
 
-class Reranker(ABC):
-    """Tum reranker saglayicilari icin ortak sozlesme."""
-
-    @abstractmethod
-    def rerank(self, query: str, candidates: List[str]) -> List[Tuple[int, float]]:
-        """Adaylari sorguya gore yeniden siralar.
-
-        Args:
-            query: Kullanici/sistem sorgusu.
-            candidates: Aday dokuman metinleri (orijinal sira - FAISS/embedding sirasi).
-
-        Returns:
-            `(orijinal_indeks, relevance_score)` ikililerinin, `relevance_score`e
-            gore AZALAN sirali listesi.
-
-        Raises:
-            RerankerUnavailableError: API cagrisi basarisiz olursa, gerekli
-                konfigurasyon eksikse VEYA donen yanit gecersizse.
-        """
-
-
 def _build_rerank_prompt(query: str, candidates: List[str]) -> str:
-    """Saglayicidan bagimsiz, SADECE yapilandirilmis JSON isteyen rerank istemini uretir."""
+    """SADECE yapilandirilmis JSON isteyen rerank istemini uretir."""
     candidate_lines = []
     for i, text in enumerate(candidates):
         snippet = text.strip().replace("\n", " ")[:_MAX_CANDIDATE_CHARS]
@@ -165,90 +140,38 @@ def _parse_rerank_response(raw_text: str, candidate_count: int) -> List[Tuple[in
         seen_indices.add(index)
         results.append((index, score))
 
+    if len(results) != candidate_count:
+        logger.error(
+            "Reranker: yanit TUM adaylari kapsamiyor (%d/%d sonuc dondu).", len(results), candidate_count
+        )
+        raise RerankerUnavailableError(
+            f"Rerank yaniti tum adaylari kapsamiyor ({len(results)}/{candidate_count})."
+        )
+
     return sorted(results, key=lambda t: t[1], reverse=True)
 
 
-class GeminiReranker(Reranker):
-    """Gemini metin modelini "LLM-as-judge" olarak kullanan, SADECE yapilandirilmis JSON isteyen `Reranker`.
+class EvrenReranker(CrossEncoderReranker):
+    """EVREN'in OpenAI-uyumlu LLM ucunu ("llm-fast") "LLM-as-judge" olarak kullanan `CrossEncoderReranker`.
 
-    Dedike bir rerank API'si KULLANMAZ - mevcut Gemini API anahtarini
-    (aynisini embedding icin de kullanilan `GEMINI_API_KEY`) kullanir.
-    """
-
-    def __init__(self, model_name: str, api_key_env: str = "GEMINI_API_KEY") -> None:
-        """GeminiReranker'i model adiyla kurar (AG CAGRISI YAPMAZ - istemci lazy olusturulur).
-
-        Args:
-            model_name: Gemini metin modeli adi (orn. "gemini-3.5-flash-lite").
-            api_key_env: API anahtarinin okunacagi ortam degiskeni adi.
-        """
-        self._model_name = model_name
-        self._api_key_env = api_key_env
-        self._client = None
-
-    def _get_client(self):
-        if self._client is not None:
-            return self._client
-
-        api_key = os.environ.get(self._api_key_env, "").strip()
-        if not api_key:
-            raise RerankerUnavailableError(
-                f"Gemini reranker icin '{self._api_key_env}' ortam degiskeni tanimli degil."
-            )
-
-        from google import genai  # gec import: paket kurulu degilse bile modul import'u patlamasin
-
-        self._client = genai.Client(api_key=api_key)
-        return self._client
-
-    def rerank(self, query: str, candidates: List[str]) -> List[Tuple[int, float]]:
-        if not candidates:
-            return []
-
-        client = self._get_client()
-        prompt = _build_rerank_prompt(query, candidates)
-
-        try:
-            from google.genai import types
-
-            response = client.models.generate_content(
-                model=self._model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.0,
-                ),
-            )
-            raw_text = response.text or ""
-        except Exception as exc:  # noqa: BLE001 - HERHANGI bir API hatasi guvenli bir "unavailable"a cevrilir
-            logger.error("GeminiReranker: generate_content cagrisi basarisiz: %s", exc)
-            raise RerankerUnavailableError(f"Gemini rerank cagrisi basarisiz: {exc}") from exc
-
-        return _parse_rerank_response(raw_text, len(candidates))
-
-
-class GroqReranker(Reranker):
-    """Groq'un OpenAI-uyumlu ucunu "LLM-as-judge" olarak kullanan `Reranker`.
-
-    Gemini'den TAMAMEN AYRI bir API anahtari/kota kullanir (`GROQ_API_KEY`) -
-    boylece reranker cagrilari, embedding/VLM'in Gemini kotasiyla YARISMAZ.
-    Ayni JSON semasi/dogrulama kurallari (bkz. `_build_rerank_prompt`/
-    `_parse_rerank_response`) - yalnizca AG cagrisi farklidir (OpenAI SDK,
-    `response_format={"type": "json_object"}`).
+    EVREN'in dedike rerank ucunu (`model="rerank"`) KULLANMAZ (bkz. modul
+    dokustringi - dokumantasyon SS 10, getirme kalitesini dusurdugunu
+    gostermektedir); standart `/v1/chat/completions` cagrisi + yapilandirilmis
+    JSON istegi kullanir.
     """
 
     def __init__(
         self,
         model_name: str,
-        base_url: str = "https://api.groq.com/openai/v1",
-        api_key_env: str = "GROQ_API_KEY",
+        base_url: str,
+        api_key_env: str,
     ) -> None:
-        """GroqReranker'i model adi/uc noktasiyla kurar (AG CAGRISI YAPMAZ - istemci lazy olusturulur).
+        """EvrenReranker'i model/uc nokta bilgisiyle kurar (AG CAGRISI YAPMAZ - istemci lazy olusturulur).
 
         Args:
-            model_name: Groq model adi (orn. "openai/gpt-oss-20b").
-            base_url: Groq'un OpenAI-uyumlu taban adresi.
-            api_key_env: API anahtarinin okunacagi ortam degiskeni adi.
+            model_name: EVREN LLM model takma adi (orn. "llm-fast").
+            base_url: EVREN'in OpenAI-uyumlu taban adresi.
+            api_key_env: API anahtarinin okunacagi ortam degiskeni adi (orn. "EVREN_API_KEY").
         """
         self._model_name = model_name
         self._base_url = base_url
@@ -261,8 +184,8 @@ class GroqReranker(Reranker):
 
         api_key = os.environ.get(self._api_key_env, "").strip()
         if not api_key:
-            raise RerankerUnavailableError(
-                f"Groq reranker icin '{self._api_key_env}' ortam degiskeni tanimli degil."
+            raise CrossEncoderUnavailableError(
+                f"EVREN reranker icin '{self._api_key_env}' ortam degiskeni tanimli degil."
             )
 
         from openai import OpenAI  # gec import: paket kurulu degilse bile modul import'u patlamasin
@@ -270,12 +193,21 @@ class GroqReranker(Reranker):
         self._client = OpenAI(api_key=api_key, base_url=self._base_url)
         return self._client
 
-    def rerank(self, query: str, candidates: List[str]) -> List[Tuple[int, float]]:
-        if not candidates:
+    def score(self, query: str, texts) -> List[float]:
+        """`texts` ile AYNI sirada, EVREN'in LLM-as-judge alaka skorlarini dondurur.
+
+        Raises:
+            CrossEncoderUnavailableError: EVREN cagrisi basarisiz olursa veya
+                donen yanit gecersiz/eksik olursa (bkz. modul dokustringi -
+                `EmbeddingRAGService.query()` bunu KONTROLLU sekilde
+                deterministik relevance siralamasina geri duser).
+        """
+        texts = list(texts)
+        if not texts:
             return []
 
         client = self._get_client()
-        prompt = _build_rerank_prompt(query, candidates)
+        prompt = _build_rerank_prompt(query, texts)
 
         try:
             response = client.chat.completions.create(
@@ -286,7 +218,13 @@ class GroqReranker(Reranker):
             )
             raw_text = response.choices[0].message.content or ""
         except Exception as exc:  # noqa: BLE001 - HERHANGI bir API hatasi guvenli bir "unavailable"a cevrilir
-            logger.error("GroqReranker: chat.completions.create cagrisi basarisiz: %s", exc)
-            raise RerankerUnavailableError(f"Groq rerank cagrisi basarisiz: {exc}") from exc
+            logger.error("EvrenReranker: chat.completions.create cagrisi basarisiz: %s", exc)
+            raise CrossEncoderUnavailableError(f"EVREN rerank cagrisi basarisiz: {exc}") from exc
 
-        return _parse_rerank_response(raw_text, len(candidates))
+        try:
+            parsed = _parse_rerank_response(raw_text, len(texts))
+        except RerankerUnavailableError as exc:
+            raise CrossEncoderUnavailableError(str(exc)) from exc
+
+        score_by_index = dict(parsed)
+        return [score_by_index[i] for i in range(len(texts))]

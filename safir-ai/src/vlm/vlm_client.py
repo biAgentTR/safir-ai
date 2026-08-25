@@ -67,6 +67,21 @@ class VLMClient(BaseVLM):
         """
         return self._delegate.analyze_evidence(evidence_frames, prompt)
 
+    def analyze_video(
+        self, video_source: str, evidence_frames: List[EvidenceFrame], prompt: str
+    ) -> VLMResponse:
+        """Cagriyi, config'te secilen gercek VLM implementasyonunun video-tabanli analizine devreder.
+
+        Args:
+            video_source: Yerel video dosyasinin yolu (bkz. `EvrenVLM.analyze_video`).
+            evidence_frames: Yalnizca arayuz parametresi olarak devredilir.
+            prompt: Kullanici/istem metni.
+
+        Returns:
+            Gercek VLM servisinden donen `VLMResponse`.
+        """
+        return self._delegate.analyze_video(video_source, evidence_frames, prompt)
+
     def health_check(self) -> bool:
         """Devredilen gercek VLM implementasyonunun saglik durumunu dondurur."""
         return self._delegate.health_check()
@@ -127,6 +142,20 @@ class MockVLMClient(BaseVLM):
             latency_ms=(time.perf_counter() - started_at) * 1000,
             structured_events=structured_events,
         )
+
+    def analyze_video(
+        self, video_source: str, evidence_frames: List[EvidenceFrame], prompt: str
+    ) -> VLMResponse:
+        """`analyze_evidence` ile AYNI sahte mantigi kullanir (mock modda video/frame ayrimi yapilmaz).
+
+        Production akisi artik video-tabanli `analyze_video`'yu cagirir
+        (bkz. `src/main.py::SafirPipeline.stage_vlm`); mock istemci gercek
+        video dosyasini OKUMAZ, yalnizca `evidence_frames`e gore ayni sabit
+        Turkce ISG tasvirini + evidence_id'leri kumeleyen `EVENTS_JSON`i
+        dondurur - boylece mock-mod testleri/pipeline'i degismeden calisir.
+        """
+        del video_source  # mock modda gercek video okunmaz
+        return self.analyze_evidence(evidence_frames, prompt)
 
     def health_check(self) -> bool:
         """Mock istemci her zaman saglikli kabul edilir."""

@@ -1,7 +1,7 @@
 """`src/rag/embedding_providers.py` icin agsiz birim testleri.
 
-`sentence_transformers.SentenceTransformer` gercekten yuklenmez/indirilmez -
-monkeypatch ile sahte, deterministik bir modelle degistirilir.
+`openai.OpenAI` istemcisi gercekten kurulmaz/ag cagrisi yapmaz - monkeypatch
+ile sahte, deterministik bir istemciyle degistirilir.
 """
 
 from __future__ import annotations
@@ -14,159 +14,182 @@ import pytest
 
 from src.rag.embedding_providers import (
     ConfigurationError,
-    LocalEmbeddingProvider,
+    EvrenEmbeddingProvider,
     build_embedding_provider,
 )
 
 
-class _FakeSentenceTransformer:
-    """`SentenceTransformer(model_name, device=...)` yerine gecen, metne bagli deterministik vektor ureten sahte model."""
+class _FakeEmbeddingItem:
+    def __init__(self, embedding):
+        self.embedding = embedding
 
-    def __init__(self, model_name: str, device: str = "cpu", dimension: int = 8):
-        self.model_name = model_name
-        self.device = device
+
+class _FakeEmbeddingResponse:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeEmbeddingsResource:
+    """`client.embeddings.create(model=..., input=[...])` yerine gecen, metne bagli deterministik vektor ureten sahte kaynak."""
+
+    def __init__(self, dimension: int = 8):
         self._dimension = dimension
-        self.encode_calls = []
+        self.create_calls = []
 
-    def get_sentence_embedding_dimension(self) -> int:
-        return self._dimension
-
-    def encode(self, texts, *, batch_size, show_progress_bar, convert_to_numpy, normalize_embeddings):
-        self.encode_calls.append(
-            {
-                "texts": list(texts),
-                "batch_size": batch_size,
-                "normalize_embeddings": normalize_embeddings,
-            }
-        )
-        return np.array(
-            [[float((hash(t) >> i) % 7) for i in range(self._dimension)] for t in texts],
-            dtype="float32",
-        )
+    def create(self, *, model, input):  # noqa: A002 - OpenAI SDK imzasiyla uyumlu
+        self.create_calls.append({"model": model, "input": list(input)})
+        vectors = [[float((hash(t) >> i) % 7) for i in range(self._dimension)] for t in input]
+        return _FakeEmbeddingResponse([_FakeEmbeddingItem(v) for v in vectors])
 
 
-def _install_fake_sentence_transformers(monkeypatch, dimension: int = 8):
-    """`sentence_transformers` modulunu sahte bir surumle degistirir; olusan model orneklerini yakalar."""
-    created_models = []
+class _FakeOpenAIClient:
+    def __init__(self, base_url=None, api_key=None, dimension: int = 8):
+        self.base_url = base_url
+        self.api_key = api_key
+        self.embeddings = _FakeEmbeddingsResource(dimension=dimension)
 
-    fake_module = types.ModuleType("sentence_transformers")
 
-    def _factory(model_name, device="cpu"):
-        model = _FakeSentenceTransformer(model_name, device=device, dimension=dimension)
-        created_models.append(model)
-        return model
+def _install_fake_openai(monkeypatch, dimension: int = 8):
+    """`openai` modulunu sahte bir surumle degistirir; olusan istemcileri yakalar."""
+    created_clients = []
 
-    fake_module.SentenceTransformer = _factory
-    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_module)
-    return created_models
+    fake_module = types.ModuleType("openai")
+
+    def _factory(base_url=None, api_key=None):
+        client = _FakeOpenAIClient(base_url=base_url, api_key=api_key, dimension=dimension)
+        created_clients.append(client)
+        return client
+
+    fake_module.OpenAI = _factory
+    monkeypatch.setitem(sys.modules, "openai", fake_module)
+    return created_clients
 
 
 def test_provider_construction_never_touches_network(monkeypatch) -> None:
-    """Yapicinin (constructor) HICBIR model yuklemesi/agsi tetiklememesi gerekir - lazy model."""
-    monkeypatch.delitem(sys.modules, "sentence_transformers", raising=False)
-    provider = LocalEmbeddingProvider(model_name="intfloat/multilingual-e5-small", output_dimensionality=384)
-    assert provider.dimension == 384  # config'ten geliyor, model YUKLENMEDEN
-
-
-def test_missing_sentence_transformers_package_raises_configuration_error(monkeypatch) -> None:
-    monkeypatch.delitem(sys.modules, "sentence_transformers", raising=False)
-    monkeypatch.setattr(
-        "builtins.__import__",
-        _raising_import_for("sentence_transformers"),
+    """Yapicinin (constructor) HICBIR istemci kurulumu/ag cagrisi tetiklememesi gerekir - lazy client."""
+    monkeypatch.delitem(sys.modules, "openai", raising=False)
+    provider = EvrenEmbeddingProvider(
+        model_name="bge-m3-embed",
+        base_url="https://evren-llmapi.ssyz.org.tr/v1",
+        api_key_env="EVREN_API_KEY_TEST_UNSET",
+        output_dimensionality=1024,
     )
-    provider = LocalEmbeddingProvider(model_name="fake-model", output_dimensionality=8)
-    with pytest.raises(ConfigurationError, match="sentence-transformers"):
+    assert provider.dimension == 1024  # config'ten geliyor, istemci KURULMADAN
+
+
+def test_missing_api_key_raises_configuration_error(monkeypatch) -> None:
+    monkeypatch.delenv("EVREN_API_KEY_TEST_UNSET", raising=False)
+    provider = EvrenEmbeddingProvider(
+        model_name="bge-m3-embed",
+        base_url="https://evren-llmapi.ssyz.org.tr/v1",
+        api_key_env="EVREN_API_KEY_TEST_UNSET",
+        output_dimensionality=8,
+    )
+    with pytest.raises(ConfigurationError, match="EVREN_API_KEY_TEST_UNSET"):
         provider.embed_query("test")
 
 
-def _raising_import_for(blocked_module: str):
-    import builtins
+def test_embed_query_calls_embeddings_api(monkeypatch) -> None:
+    monkeypatch.setenv("EVREN_API_KEY_TEST", "sk-test")
+    clients = _install_fake_openai(monkeypatch, dimension=8)
 
-    real_import = builtins.__import__
-
-    def _fake_import(name, *args, **kwargs):
-        if name == blocked_module or name.startswith(blocked_module + "."):
-            raise ImportError(f"'{blocked_module}' kurulu degil (test simulasyonu)")
-        return real_import(name, *args, **kwargs)
-
-    return _fake_import
-
-
-def test_embed_query_uses_query_prefix(monkeypatch) -> None:
-    models = _install_fake_sentence_transformers(monkeypatch, dimension=8)
-
-    provider = LocalEmbeddingProvider(model_name="intfloat/multilingual-e5-small", output_dimensionality=8)
+    provider = EvrenEmbeddingProvider(
+        model_name="bge-m3-embed",
+        base_url="https://evren-llmapi.ssyz.org.tr/v1",
+        api_key_env="EVREN_API_KEY_TEST",
+        output_dimensionality=8,
+    )
     vector = provider.embed_query("yangın riski")
 
     assert vector.shape == (8,)
-    assert models[0].encode_calls[0]["texts"] == ["query: yangın riski"]
+    assert clients[0].embeddings.create_calls[0]["input"] == ["yangın riski"]
+    assert clients[0].embeddings.create_calls[0]["model"] == "bge-m3-embed"
 
 
-def test_embed_documents_uses_passage_prefix_and_single_call(monkeypatch) -> None:
-    models = _install_fake_sentence_transformers(monkeypatch, dimension=8)
+def test_embed_documents_single_call(monkeypatch) -> None:
+    monkeypatch.setenv("EVREN_API_KEY_TEST", "sk-test")
+    clients = _install_fake_openai(monkeypatch, dimension=8)
 
-    provider = LocalEmbeddingProvider(model_name="intfloat/multilingual-e5-small", output_dimensionality=8)
+    provider = EvrenEmbeddingProvider(
+        model_name="bge-m3-embed",
+        base_url="https://evren-llmapi.ssyz.org.tr/v1",
+        api_key_env="EVREN_API_KEY_TEST",
+        output_dimensionality=8,
+    )
     texts = ["madde 1", "madde 2", "madde 3"]
     vectors = provider.embed_documents(texts)
 
     assert vectors.shape == (3, 8)
-    # Lokal model - agirlik/kota kisitlamasi yok, TUM metinler TEK `encode()` cagrisinda gider.
-    assert len(models[0].encode_calls) == 1
-    assert models[0].encode_calls[0]["texts"] == [f"passage: {t}" for t in texts]
+    assert len(clients[0].embeddings.create_calls) == 1
+    assert clients[0].embeddings.create_calls[0]["input"] == texts
 
 
 def test_embed_documents_returns_normalized_vectors(monkeypatch) -> None:
-    _install_fake_sentence_transformers(monkeypatch, dimension=8)
+    monkeypatch.setenv("EVREN_API_KEY_TEST", "sk-test")
+    _install_fake_openai(monkeypatch, dimension=8)
 
-    provider = LocalEmbeddingProvider(model_name="intfloat/multilingual-e5-small", output_dimensionality=8)
+    provider = EvrenEmbeddingProvider(
+        model_name="bge-m3-embed",
+        base_url="https://evren-llmapi.ssyz.org.tr/v1",
+        api_key_env="EVREN_API_KEY_TEST",
+        output_dimensionality=8,
+    )
     vectors = provider.embed_documents(["bir metin"])
 
     norm = np.linalg.norm(vectors[0])
     assert norm == pytest.approx(1.0, abs=1e-5)
 
 
-def test_document_and_query_embedding_share_same_model_instance(monkeypatch) -> None:
-    """Gorev tanimi 4. madde: dokuman ve sorgu embedding'i AYNI model/dimension/normalization kullanmali."""
-    models = _install_fake_sentence_transformers(monkeypatch, dimension=8)
+def test_document_and_query_embedding_share_same_client_instance(monkeypatch) -> None:
+    """Dokuman ve sorgu embedding'i AYNI (lazy, tek kez kurulan) istemciyi kullanmali."""
+    monkeypatch.setenv("EVREN_API_KEY_TEST", "sk-test")
+    clients = _install_fake_openai(monkeypatch, dimension=8)
 
-    provider = LocalEmbeddingProvider(model_name="intfloat/multilingual-e5-small", output_dimensionality=8)
+    provider = EvrenEmbeddingProvider(
+        model_name="bge-m3-embed",
+        base_url="https://evren-llmapi.ssyz.org.tr/v1",
+        api_key_env="EVREN_API_KEY_TEST",
+        output_dimensionality=8,
+    )
     provider.embed_documents(["madde 1"])
     provider.embed_query("soru")
 
-    # Lazy client TEK bir kez olusturulur - hem dokuman hem sorgu embedding'i AYNI model orneğini kullanir.
-    assert len(models) == 1
+    assert len(clients) == 1
 
 
-def test_dimension_mismatch_is_not_silently_accepted(monkeypatch) -> None:
-    """Gorev tanimi 7. madde: model/dimension uyumsuzlugu SESSIZCE KABUL EDILMEZ."""
-    _install_fake_sentence_transformers(monkeypatch, dimension=8)
-
-    # Config 16 boyut bekliyor ama sahte model 8 boyut uretiyor.
-    provider = LocalEmbeddingProvider(model_name="intfloat/multilingual-e5-small", output_dimensionality=16)
-
-    with pytest.raises(ConfigurationError, match="boyut"):
-        provider.embed_query("test")
+def test_empty_dimension_falls_back_to_documented_default(monkeypatch) -> None:
+    """`output_dimensionality` verilmezse `bge-m3-embed`in dokumante edilen boyutu (1024) kullanilir."""
+    provider = EvrenEmbeddingProvider(
+        model_name="bge-m3-embed",
+        base_url="https://evren-llmapi.ssyz.org.tr/v1",
+        api_key_env="EVREN_API_KEY_TEST_UNSET",
+    )
+    assert provider.dimension == 1024
 
 
 def test_build_embedding_provider_rejects_unsupported_provider() -> None:
-    with pytest.raises(ConfigurationError):
+    with pytest.raises(ConfigurationError, match="evren"):
         build_embedding_provider(provider="unknown-provider", model_name="x", output_dimensionality=8)
 
 
-def test_build_embedding_provider_rejects_gemini() -> None:
-    """Gorev tanimi 2. madde: Gemini embedding'e SESSIZ FALLBACK YOK - 'gemini' provider'i acikca REDDEDILIR."""
-    with pytest.raises(ConfigurationError, match="local"):
-        build_embedding_provider(provider="gemini", model_name="gemini-embedding-001", output_dimensionality=768)
+def test_build_embedding_provider_rejects_local() -> None:
+    """Lokal (sentence-transformers) embedding TAMAMEN KALDIRILDI - 'local' provider'i acikca REDDEDILIR."""
+    with pytest.raises(ConfigurationError, match="evren"):
+        build_embedding_provider(provider="local", model_name="intfloat/multilingual-e5-small", output_dimensionality=384)
 
 
-def test_build_embedding_provider_requires_output_dimensionality() -> None:
+def test_build_embedding_provider_requires_base_url_and_api_key_env() -> None:
     with pytest.raises(ConfigurationError):
-        build_embedding_provider(provider="local", model_name="intfloat/multilingual-e5-small", output_dimensionality=None)
+        build_embedding_provider(provider="evren", model_name="bge-m3-embed", output_dimensionality=1024)
 
 
-def test_build_embedding_provider_returns_local_provider() -> None:
+def test_build_embedding_provider_returns_evren_provider() -> None:
     provider = build_embedding_provider(
-        provider="local", model_name="intfloat/multilingual-e5-small", output_dimensionality=384
+        provider="evren",
+        model_name="bge-m3-embed",
+        output_dimensionality=1024,
+        base_url="https://evren-llmapi.ssyz.org.tr/v1",
+        api_key_env="EVREN_API_KEY",
     )
-    assert isinstance(provider, LocalEmbeddingProvider)
-    assert provider.dimension == 384
+    assert isinstance(provider, EvrenEmbeddingProvider)
+    assert provider.dimension == 1024

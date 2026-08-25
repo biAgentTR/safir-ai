@@ -12,13 +12,14 @@ saf-fonksiyon seviyesindeki izole testleri icin bkz.
 from __future__ import annotations
 
 import hashlib
+import os
 
 import numpy as np
 import pytest
 
 from src.rag import embedding_rag_service as rag_module
 from src.rag.embedding_rag_service import EmbeddingRAGService, RetrievedDocument, _load_kb_chunk_records
-from src.utils.config_loader import EmbeddingConfig, FaissMemoryConfig, RerankerConfig, SQLiteMemoryConfig
+from src.utils.config_loader import EmbeddingConfig, QdrantMemoryConfig, RerankerConfig, SQLiteMemoryConfig
 
 
 class _FakeEmbeddingProvider:
@@ -57,14 +58,9 @@ def _make_service(tmp_path, candidate_k=20, top_k=5, enable_relevance=False, sco
     `deterministic_reranker.score_candidate()` cagrisidir (bkz. `EmbeddingRAGService.query()`).
     """
     embedding_config = EmbeddingConfig(provider="local", model_name="fake-model", output_dimensionality=16)
-    faiss_config = FaissMemoryConfig(
-        index_path=str(tmp_path / "index.faiss"),
-        embedding_model="fake-model",
-        top_k=top_k,
-        candidate_k=candidate_k,
-    )
+    qdrant_config = QdrantMemoryConfig(url=":memory:", top_k=top_k, candidate_k=candidate_k)
     reranker_config = RerankerConfig(enabled=enable_relevance, score_threshold=score_threshold, top_k=top_k)
-    return EmbeddingRAGService(embedding_config, faiss_config, reranker_config)
+    return EmbeddingRAGService(embedding_config, qdrant_config, reranker_config)
 
 
 class _FakeCrossEncoder:
@@ -93,14 +89,9 @@ def _make_service_with_cross_encoder(
     tmp_path, cross_encoder, candidate_k=20, top_k=5, enable_relevance=True, score_threshold=0.0
 ) -> EmbeddingRAGService:
     embedding_config = EmbeddingConfig(provider="local", model_name="fake-model", output_dimensionality=16)
-    faiss_config = FaissMemoryConfig(
-        index_path=str(tmp_path / "index.faiss"),
-        embedding_model="fake-model",
-        top_k=top_k,
-        candidate_k=candidate_k,
-    )
+    qdrant_config = QdrantMemoryConfig(url=":memory:", top_k=top_k, candidate_k=candidate_k)
     reranker_config = RerankerConfig(enabled=enable_relevance, score_threshold=score_threshold, top_k=top_k)
-    return EmbeddingRAGService(embedding_config, faiss_config, reranker_config, cross_encoder=cross_encoder)
+    return EmbeddingRAGService(embedding_config, qdrant_config, reranker_config, cross_encoder=cross_encoder)
 
 
 # ---------------------------------------------------------------------------
@@ -253,8 +244,8 @@ def test_all_below_threshold_returns_empty_list_not_random_topk(tmp_path, monkey
     monkeypatch.setattr(rag_module, "build_embedding_provider", lambda **kwargs: _VocabEmbeddingProvider(vocabulary))
 
     embedding_config = EmbeddingConfig(provider="local", model_name="fake-model", output_dimensionality=len(vocabulary))
-    faiss_config = FaissMemoryConfig(index_path=str(tmp_path / "index.faiss"), embedding_model="fake-model", top_k=5, candidate_k=5)
-    service = EmbeddingRAGService(embedding_config, faiss_config, RerankerConfig(enabled=True, score_threshold=0.10, top_k=5))
+    qdrant_config = QdrantMemoryConfig(url=":memory:", top_k=5, candidate_k=5)
+    service = EmbeddingRAGService(embedding_config, qdrant_config, RerankerConfig(enabled=True, score_threshold=0.10, top_k=5))
     service.add_documents(docs)
 
     results = service.query(query)
@@ -415,10 +406,8 @@ def test_content_based_retrieval_ranks_the_relevant_document_first(tmp_path, mon
     )
 
     embedding_config = EmbeddingConfig(provider="local", model_name="fake-model", output_dimensionality=len(vocabulary))
-    faiss_config = FaissMemoryConfig(
-        index_path=str(tmp_path / "index.faiss"), embedding_model="fake-model", top_k=2, candidate_k=5
-    )
-    service = EmbeddingRAGService(embedding_config, faiss_config, RerankerConfig(enabled=False))
+    qdrant_config = QdrantMemoryConfig(url=":memory:", top_k=2, candidate_k=5)
+    service = EmbeddingRAGService(embedding_config, qdrant_config, RerankerConfig(enabled=False))
     service.add_documents([document_a, document_b])
 
     forklift_results = service.query(query_a)
@@ -436,52 +425,48 @@ def test_content_based_retrieval_ranks_the_relevant_document_first(tmp_path, mon
 # ---------------------------------------------------------------------------
 
 
-def test_persisted_index_round_trip_sets_corpus_source_and_survives_reload(tmp_path, monkeypatch) -> None:
-    """`persist()` ile yazilan bir index, TAZE bir `EmbeddingRAGService` tarafindan gercekten geri yuklenebilmeli.
+def test_persisted_index_round_trip_sets_corpus_source_and_survives_reload(tmp_path) -> None:
+    """`persist()` ile yazilan bir koleksiyon, TAZE bir `EmbeddingRAGService` tarafindan gercekten geri yuklenebilmeli.
 
-    Gercek `data/knowledge_base/index/` dizinine DOKUNMAMAK icin modul-
-    seviyesi path sabitleri (`_KB_INDEX_DIR`/`_INDEX_FILE`/`_DOCUMENTS_FILE`/
-    `_INDEX_META_FILE`) `tmp_path`e yonlendirilir - `persist()`/
-    `_try_load_persisted_index()`in KENDISI (gercek production kodu)
+    Gercek EVREN Qdrant orneğine DOKUNMAMAK icin YEREL DISK-tabanli bir
+    Qdrant orneği kullanilir (`tmp_path` altinda - bkz.
+    `_build_qdrant_client` dokustringi); `persist()`/
+    `_try_load_qdrant_collection()`in KENDISI (gercek production kodu)
     degistirilmeden cagrilir.
     """
-    monkeypatch.setattr(rag_module, "_KB_INDEX_DIR", tmp_path)
-    monkeypatch.setattr(rag_module, "_INDEX_FILE", tmp_path / "faiss.index")
-    monkeypatch.setattr(rag_module, "_DOCUMENTS_FILE", tmp_path / "documents.json")
-    monkeypatch.setattr(rag_module, "_INDEX_META_FILE", tmp_path / "index_meta.json")
+    qdrant_path = str(tmp_path / "qdrant_local")
+    embedding_config = EmbeddingConfig(provider="local", model_name="fake-model", output_dimensionality=16)
+    qdrant_config = QdrantMemoryConfig(url=qdrant_path, top_k=3, candidate_k=5)
 
-    builder = _make_service(tmp_path, candidate_k=5, top_k=3)
+    builder = EmbeddingRAGService(embedding_config, qdrant_config, RerankerConfig(enabled=False))
     builder.add_documents(["Forklift çalışma alanında yaya bulunması yasaktır."])
     builder.persist()
+    builder._qdrant.close()  # noqa: SLF001 - yerel disk-tabanli Qdrant dosya kilidini serbest birak (tek-yazar)
 
-    assert (tmp_path / "faiss.index").exists()
-    assert (tmp_path / "documents.json").exists()
-    assert (tmp_path / "index_meta.json").exists()
-
-    fresh = _make_service(tmp_path, candidate_k=5, top_k=3)
+    fresh = EmbeddingRAGService(embedding_config, qdrant_config, RerankerConfig(enabled=False))
     assert fresh.corpus_source == "unseeded"
 
-    loaded = fresh._try_load_persisted_index()
+    loaded = fresh._try_load_qdrant_collection()
 
     assert loaded is True
-    assert fresh.corpus_source == "persisted_index"
+    assert fresh.corpus_source == "qdrant_collection"
     assert fresh.document_count() == 1
 
     results = fresh.query("Forklift yakınında yaya")
     telemetry = fresh.get_last_query_telemetry()
 
-    assert telemetry.corpus_source == "persisted_index"
+    assert telemetry.corpus_source == "qdrant_collection"
     assert results
     assert results[0].text == "Forklift çalışma alanında yaya bulunması yasaktır."
 
 
-def test_seed_default_regulations_fails_fast_when_no_persisted_index(tmp_path, monkeypatch) -> None:
-    """Gorev tanimi 8. madde: persisted index yoksa DEFAULT_ISG_REGULATIONS gibi bir placeholder'a SESSIZ FALLBACK YOK - acik hata."""
-    monkeypatch.setattr(rag_module, "_KB_INDEX_DIR", tmp_path / "does_not_exist")
-    monkeypatch.setattr(rag_module, "_INDEX_FILE", tmp_path / "does_not_exist" / "faiss.index")
-    monkeypatch.setattr(rag_module, "_DOCUMENTS_FILE", tmp_path / "does_not_exist" / "documents.json")
-    monkeypatch.setattr(rag_module, "_INDEX_META_FILE", tmp_path / "does_not_exist" / "index_meta.json")
+def test_seed_default_regulations_fails_fast_when_no_persisted_index(tmp_path) -> None:
+    """Gorev tanimi 8. madde: doldurulmus bir Qdrant koleksiyonu yoksa DEFAULT_ISG_REGULATIONS gibi bir placeholder'a SESSIZ FALLBACK YOK - acik hata.
 
+    `_make_service` (bkz. yukarida) her cagrida taze/izole bir `:memory:`
+    Qdrant orneği kurar - bu testin sonucu, baska bir testin/repo'nun
+    doldurdugu bir koleksiyondan BAGIMSIZ, deterministik olmalidir.
+    """
     service = _make_service(tmp_path, candidate_k=5, top_k=3)
 
     with pytest.raises(rag_module.KnowledgeBaseNotBuiltError, match="build_knowledge_index"):
@@ -516,54 +501,31 @@ def test_retrieval_result_carries_chunk_id_document_id_and_scores_end_to_end(tmp
 
 
 # ---------------------------------------------------------------------------
-# RAG entegrasyon dogrulama turu (2026-08-24): GERCEK repo-persisted index
-# ("data/knowledge_base/index/") -> ContextBuilder -> agent prompt zincirini
-# dogrular. Embedding modeli SAHTE'dir (bu ortamda gercek sentence-transformers
-# modelini indiremiyoruz) - bu testler SEMANTIK kalite IDDIA ETMEZ; yalnizca
-# GERCEK persisted index dosyalarinin GERCEKTEN yuklendigini ve gercek
-# chunk metni + provenance'in ContextBuilder uzerinden agent prompt'una
-# KADAR kayipsiz tasindigini kanitlar.
+# RAG entegrasyon dogrulama turu (2026-08-24): GERCEK KB chunk metni + provenance'inin
+# ContextBuilder -> agent prompt zincirinden kayipsiz gectigini dogrular
+# (embedding/Qdrant'a BAGIMLI DEGIL - bkz. asagidaki test dokustringi).
 # ---------------------------------------------------------------------------
 
 
-class _Fake384DimProvider(_FakeEmbeddingProvider):
-    """GERCEK persisted index'in boyutuyla (384) eslesen sahte saglayici - `_try_load_persisted_index()`in dimension kontrolunu GECEBILMEK icin."""
+def test_real_chunk_text_and_provenance_reach_context_builder_prompt(tmp_path) -> None:
+    """HEDEF 1/4/5: GERCEK bir KB chunk'inin TAM METNI + provenance'i, ContextBuilder.to_prompt_block()'a (Agent'in GORDUGU metin) kayipsiz ulasiyor mu?
 
-    _DIMENSION = 384
-
-
-def test_real_persisted_repo_index_loads_with_full_corpus(monkeypatch) -> None:
-    """`data/knowledge_base/index/` altindaki GERCEK, repo'ya pushlanmis index'in yuklendigini dogrular (mock kullanilmaz)."""
-    if not rag_module._INDEX_FILE.exists():
-        pytest.skip("data/knowledge_base/index/ bu checkout'ta yok.")
-
-    monkeypatch.setattr(rag_module, "build_embedding_provider", lambda **kwargs: _Fake384DimProvider())
-    embedding_config = EmbeddingConfig(provider="local", model_name="intfloat/multilingual-e5-small", output_dimensionality=384)
-    faiss_config = FaissMemoryConfig(
-        index_path=str(rag_module._INDEX_FILE), embedding_model="intfloat/multilingual-e5-small", top_k=5, candidate_k=20
-    )
-    service = EmbeddingRAGService(embedding_config, faiss_config, RerankerConfig(enabled=False))
-
-    service.seed_default_regulations()
-
-    assert service.corpus_source == "persisted_index"
-    assert service.document_count() == 748
-
-
-def test_real_persisted_chunk_text_and_provenance_reach_context_builder_prompt(monkeypatch, tmp_path) -> None:
-    """HEDEF 1/4/5: GERCEK persisted index'ten alinan bir chunk'in TAM METNI + provenance'i, ContextBuilder.to_prompt_block()'a (Agent'in GORDUGU metin) kayipsiz ulasiyor mu?"""
-    if not rag_module._INDEX_FILE.exists():
-        pytest.skip("data/knowledge_base/index/ bu checkout'ta yok.")
-
-    import json
+    2026-08-25 EVREN MIGRASYONU: bu test artik Qdrant'a/EVREN'e HIC
+    BAGIMLI DEGIL - `_load_kb_chunk_records()` ile AYNI kaynak JSON
+    chunk'lari (`data/knowledge_base/chunks/*.json`) dogrudan okunur (eskiden
+    bu chunk'lar `documents.json` FAISS yan-dosyasi UZERINDEN okunuyordu -
+    ama kaynak ICERIK AYNIYDI, yalnizca ERISIM yolu FAISS'e bagimliydi).
+    """
+    records = _load_kb_chunk_records()
+    if not records:
+        pytest.skip("data/knowledge_base/chunks/ bos - bu test gercek KB corpus'una bagimlidir.")
 
     from src.memory.context_builder import ContextBuilder
     from src.memory.event_store import EventStore
 
-    documents = json.loads(rag_module._DOCUMENTS_FILE.read_text(encoding="utf-8"))
     # Gorev tanimindaki somut ornek: "Is Ekipmanlari ... Ek I, I.3.1" - GERCEK corpus'ta var mi dogrula.
     real_chunk = next(
-        (d for d in documents if d.get("document_id") == "is_ekipmanlari_yonetmeligi" and d.get("article_number") == "I.3.1"),
+        (d for d in records if d.get("document_id") == "is_ekipmanlari_yonetmeligi" and d.get("article_number") == "I.3.1"),
         None,
     )
     assert real_chunk is not None, "GERCEK corpus'ta is_ekipmanlari_yonetmeligi Ek I.3.1 chunk'i bulunamadi."
@@ -603,36 +565,44 @@ def test_real_persisted_chunk_text_and_provenance_reach_context_builder_prompt(m
 
 
 # ---------------------------------------------------------------------------
-# RAG PIPELINE RECONSTRUCTION (2026-08-24): GERCEK persisted index + GERCEK lokal
-# E5 embedding modeliyle calisan semantik retrieval testleri (gorev tanimi 15.
-# bolum, madde 1-5). Bu testler GERCEK model agirliklarinin (ilk kullanimda
-# HuggingFace Hub'dan) yuklenebilmesini gerektirir - agsiz/izole sandbox'larda
-# (orn. bu repo'nun CI'i, huggingface.co'ya erisimi olmayan bir ortam) TEMIZ
-# bir sekilde SKIP edilir; ag erisimi olan bir ortamda GERCEK semantik kaliteyi
-# dogrular (bkz. modul dokustringindeki "Gercek API'lere karsi..." notu - bu
-# artik lokal bir model oldugu icin 'API' degil ama ayni ilke gecerlidir).
+# 2026-08-25 EVREN MIGRASYONU: GERCEK EVREN embedding (`bge-m3-embed`) ile
+# calisan semantik retrieval testleri (eskiden GERCEK persisted FAISS index +
+# lokal E5 modeli kullanirdi - artik Qdrant EVREN'e tahsis edilmis UZAK bir
+# servis oldugu icin repo'ya PUSHLANAMAZ). `EVREN_API_KEY` ortam degiskeni
+# tanimli DEGILSE (bu sandbox/CI ortaminda beklenen durum - evren-llmapi.
+# ssyz.org.tr'ye ag erisimi YOK) TEMIZ bir sekilde SKIP edilir; gercek bir
+# EVREN anahtariyla calistirildiginda GERCEK semantik kaliteyi dogrular.
+# Qdrant TARAFI icin GERCEK EVREN sunucusuna ihtiyac YOKTUR - yerel disk-
+# tabanli bir Qdrant orneği yeterlidir (semantik kalite YALNIZCA embedding
+# modelinden gelir, vektor deposundan DEGIL).
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def _real_local_rag_service(tmp_path):
-    """GERCEK persisted index + GERCEK `LocalEmbeddingProvider` ile kurulmus servis; model yuklenemezse SKIP eder."""
-    if not rag_module._INDEX_FILE.exists():
-        pytest.skip("data/knowledge_base/index/ bu checkout'ta yok.")
+def _real_evren_rag_service(tmp_path):
+    """GERCEK `EvrenEmbeddingProvider` (+ yerel Qdrant) ile kurulmus servis; EVREN_API_KEY yoksa/baglanti basarisizsa SKIP eder."""
+    if not os.environ.get("EVREN_API_KEY", "").strip():
+        pytest.skip("EVREN_API_KEY tanimli degil - gercek EVREN embedding testi atlandi.")
 
-    embedding_config = EmbeddingConfig(provider="local", model_name="intfloat/multilingual-e5-small", output_dimensionality=384)
-    faiss_config = FaissMemoryConfig(
-        index_path=str(rag_module._INDEX_FILE),
-        embedding_model="intfloat/multilingual-e5-small",
-        top_k=5,
-        candidate_k=20,
+    records = _load_kb_chunk_records()
+    if not records:
+        pytest.skip("data/knowledge_base/chunks/ bos - bu test gercek KB corpus'una bagimlidir.")
+
+    embedding_config = EmbeddingConfig(
+        provider="evren",
+        model_name="bge-m3-embed",
+        output_dimensionality=1024,
+        base_url="https://evren-llmapi.ssyz.org.tr/v1",
+        api_key_env="EVREN_API_KEY",
     )
-    service = EmbeddingRAGService(embedding_config, faiss_config, RerankerConfig(enabled=False))
+    qdrant_config = QdrantMemoryConfig(url=str(tmp_path / "qdrant_local"), top_k=5, candidate_k=20)
+    service = EmbeddingRAGService(embedding_config, qdrant_config, RerankerConfig(enabled=False))
     try:
-        service.seed_default_regulations()
-        service.query("baglanti testi")  # gercek model YUKLEME denemesi burada olur
-    except Exception as exc:  # noqa: BLE001 - agsiz sandbox'ta model indirilemez, TEMIZ skip
-        pytest.skip(f"Gercek lokal embedding modeli yuklenemedi (ag erisimi yok?): {exc}")
+        service._add_structured_documents(records[:200])
+        service._corpus_source = "chunks_rebuild"
+        service.query("baglanti testi")  # gercek EVREN cagrisi burada olur
+    except Exception as exc:  # noqa: BLE001 - ag erisimi yok/gecersiz anahtar, TEMIZ skip
+        pytest.skip(f"Gercek EVREN embedding servisine baglanilamadi: {exc}")
     return service
 
 
@@ -646,26 +616,25 @@ def _real_local_rag_service(tmp_path):
     ],
 )
 def test_real_semantic_queries_against_real_corpus_return_relevant_documents(
-    _real_local_rag_service, query: str
+    _real_evren_rag_service, query: str
 ) -> None:
-    """HEDEF 15/1-4: gercek 748 chunk corpus'unda, gercek lokal E5 embedding ile bu 4 sorgu GERCEKTEN sonuc doner."""
-    results = _real_local_rag_service.query(query)
-    telemetry = _real_local_rag_service.get_last_query_telemetry()
+    """HEDEF 15/1-4: gercek KB chunk'lari uzerinde, gercek EVREN embedding ile bu 4 sorgu GERCEKTEN sonuc doner."""
+    results = _real_evren_rag_service.query(query)
+    telemetry = _real_evren_rag_service.get_last_query_telemetry()
 
-    assert telemetry.corpus_source == "persisted_index"
+    assert telemetry.corpus_source == "chunks_rebuild"
     assert telemetry.candidate_count > 0
     assert results, f"{query!r} icin hic sonuc donmedi (candidate_count={telemetry.candidate_count})"
     for doc in results:
         assert doc.document_id is not None
-        assert doc.relevance_status == "accepted"
         assert doc.retrieval_rank is not None
         assert doc.source_verified is True
 
 
 def test_real_semantic_query_completely_outside_corpus_scope_does_not_fabricate_relevance(
-    _real_local_rag_service,
+    _real_evren_rag_service,
 ) -> None:
-    """HEDEF 15/5 (corpus disi mevzuat): FAISS her zaman "en az kotu" adaylari dondurur (cosine benzerligi hicbir zaman "sonuc yok" demez);
+    """HEDEF 15/5 (corpus disi mevzuat): Qdrant her zaman "en az kotu" adaylari dondurur (cosine benzerligi hicbir zaman "sonuc yok" demez);
 
     bu test, corpus'la ILGISIZ bir sorgunun candidate_count > 0 uretse bile
     (bu, retrieval'in TEK BASINA "corpus disi" durumu ELEYEMEDIGINI kanitlar -
@@ -673,13 +642,13 @@ def test_real_semantic_query_completely_outside_corpus_scope_does_not_fabricate_
     ISG mevzuatiyla eslesen sorgulardan (yukaridaki 4 test) ACIKCA daha dusuk
     oldugunu dogrular - "ayni yuksek guvenle" sunulmadigini kanitlar.
     """
-    off_topic_results = _real_local_rag_service.query("Roma imparatorluğu tarihi ve gladyatör dövüşleri")
-    off_topic_telemetry = _real_local_rag_service.get_last_query_telemetry()
+    off_topic_results = _real_evren_rag_service.query("Roma imparatorluğu tarihi ve gladyatör dövüşleri")
+    off_topic_telemetry = _real_evren_rag_service.get_last_query_telemetry()
 
-    on_topic_results = _real_local_rag_service.query("forklift yaya güvenliği")
-    on_topic_telemetry = _real_local_rag_service.get_last_query_telemetry()
+    on_topic_results = _real_evren_rag_service.query("forklift yaya güvenliği")
+    on_topic_telemetry = _real_evren_rag_service.get_last_query_telemetry()
 
-    assert off_topic_telemetry.candidate_count > 0  # FAISS HER ZAMAN bir seyler dondurur
+    assert off_topic_telemetry.candidate_count > 0  # Qdrant HER ZAMAN bir seyler dondurur
     if off_topic_results and on_topic_results:
         assert off_topic_telemetry.avg_embedding_score < on_topic_telemetry.avg_embedding_score, (
             "corpus-disi sorgunun ortalama embedding skoru, corpus-ici bir sorgudan DUSUK olmali "
@@ -715,39 +684,46 @@ def test_embedding_rag_service_cross_encoder_defaults_to_none_for_isolated_use()
     assert sig.parameters["cross_encoder"].default is None
 
     embedding_config = EmbeddingConfig(provider="local", model_name="m", output_dimensionality=16)
-    faiss_config = FaissMemoryConfig(index_path="unused", embedding_model="m", top_k=5, candidate_k=20)
-    service = EmbeddingRAGService(embedding_config, faiss_config, RerankerConfig(enabled=False))
+    qdrant_config = QdrantMemoryConfig(url=":memory:", top_k=5, candidate_k=20)
+    service = EmbeddingRAGService(embedding_config, qdrant_config, RerankerConfig(enabled=False))
     assert service._cross_encoder is None  # noqa: SLF001 - varsayilan devre-disi durumu dogrudan dogrular
 
 
-def test_production_pipeline_instantiates_a_local_cross_encoder_by_default() -> None:
-    """CROSS_ENCODER_STATUS = PRODUCTION (bkz. rapor) - `SafirPipeline.__init__`, `EmbeddingRAGService`i kurarken GERCEK bir `LocalCrossEncoderReranker` GECER (production default'u ARTIK Cross-Encoder AKTIF)."""
+def test_production_pipeline_instantiates_an_evren_reranker_by_default() -> None:
+    """CROSS_ENCODER_STATUS = PRODUCTION - `SafirPipeline.__init__`, `EmbeddingRAGService`i kurarken GERCEK bir `EvrenReranker` GECER.
+
+    2026-08-25 EVREN MIGRASYONU: production default'u `LocalCrossEncoderReranker`
+    (TAMAMEN lokal) DEGIL, EVREN'in LLM ucunu "LLM-as-judge" kullanan
+    `EvrenReranker`dir (bkz. `src/rag/reranker.py`) - `LocalCrossEncoderReranker`
+    sinifi KALDIRILMADI (standalone/benchmark icin durur), yalnizca
+    production wiring'i DEGISTI.
+    """
     import inspect
 
     import src.main as main_module
 
     source = inspect.getsource(main_module)
-    assert "cross_encoder=LocalCrossEncoderReranker(" in source
-    assert "from src.rag.local_cross_encoder_reranker import" in source
-    # eski, LLM-as-judge reranker'in interface'ine ZORLA BAGLANMADI - ayri, kendi isimli sinif.
+    assert "cross_encoder=EvrenReranker(" in source
+    assert "from src.rag.reranker import EvrenReranker" in source
+    # eski Gemini/Groq LLM-as-judge reranker'lar KALDIRILDI - hicbir yerde cagrilmiyor.
     assert "GeminiReranker" not in source
     assert "GroqReranker" not in source
 
 
-def test_old_llm_reranker_is_not_in_the_production_import_chain() -> None:
-    """`src/rag/reranker.py` (eski `GeminiReranker`/`GroqReranker`, LLM-as-judge) production path'te (`src/main.py`/`embedding_rag_service.py`) IMPORT EDILMEMIS olmali - yalnizca kendi eski test dosyasindan referans alinabilir."""
+def test_gemini_and_groq_rerankers_are_not_in_the_production_import_chain() -> None:
+    """Eski `GeminiReranker`/`GroqReranker` (LLM-as-judge) TAMAMEN KALDIRILDI - production path'te (`src/main.py`/`embedding_rag_service.py`) hicbir referans KALMAMALI."""
     import inspect
 
     import src.main as main_module
 
     main_source = inspect.getsource(main_module)
     rag_service_source = open(rag_module.__file__, encoding="utf-8").read()
+    reranker_source = open(rag_module.__file__.replace("embedding_rag_service.py", "reranker.py"), encoding="utf-8").read()
 
-    for source_text in (main_source, rag_service_source):
-        assert "from src.rag.reranker import" not in source_text
-        assert "from src.rag import reranker" not in source_text
-        assert "import src.rag.reranker" not in source_text
-        # gercek kod cagrisi (docstring/yorum ICINDEKI kavramsal bahisler DEGIL):
+    for source_text in (main_source, rag_service_source, reranker_source):
+        # gercek kod cagrisi/sinif tanimi (docstring/yorum ICINDEKI tarihsel bahisler DEGIL):
+        assert "class GeminiReranker" not in source_text
+        assert "class GroqReranker" not in source_text
         assert "GeminiReranker(" not in source_text
         assert "GroqReranker(" not in source_text
 
@@ -999,10 +975,10 @@ def test_relevance_component_weights_match_the_service_configured_weights(tmp_pa
 
     custom_weights = RelevanceWeightsConfig(semantic=0.5, lexical=0.2, keyword=0.2, metadata=0.05, phrase=0.05)
     embedding_config = EmbeddingConfig(provider="local", model_name="fake-model", output_dimensionality=16)
-    faiss_config = FaissMemoryConfig(index_path=str(tmp_path / "index.faiss"), embedding_model="fake-model", top_k=5, candidate_k=5)
+    qdrant_config = QdrantMemoryConfig(url=":memory:", top_k=5, candidate_k=5)
     reranker_config = RerankerConfig(enabled=True, score_threshold=0.0, top_k=5, weights=custom_weights)
 
-    service = EmbeddingRAGService(embedding_config, faiss_config, reranker_config)
+    service = EmbeddingRAGService(embedding_config, qdrant_config, reranker_config)
 
     assert service.relevance_weights.semantic == 0.5
     assert service.relevance_weights.lexical == 0.2

@@ -52,35 +52,22 @@ Sistem üç backend'i tek soyutlama üzerinden destekler (`configs/config.yaml`)
 
 | Backend | Ne zaman | Nasıl |
 |---|---|---|
-| **vLLM (yerel)** | Yarışma teslimi (varsayılan) | `vlm.active_model: qwen`, `llm.active_model: qwen3` |
-| **Mock** | GPU'suz, offline geliştirme | `app.use_mock_vlm: true`, `app.use_mock_llm: true` |
-| **Gemini** | VRAM yetersizken **test** | aşağıya bakın |
+| **EVREN (TEKNOFEST servisi)** | Aktif (varsayılan) | `vlm.active_model: evren`, `llm.active_model: evren` |
+| **vLLM (yerel)** | Yerel GPU ile çalıştırmak istenirse | `vlm.active_model: qwen`, `llm.active_model: qwen3` |
+| **Mock** | GPU/ağ'sız, offline geliştirme | `app.use_mock_vlm: true`, `app.use_mock_llm: true` |
 
-### Gemini test backend'i (geçici — yalnızca geliştirme/test)
+### EVREN backend'i (aktif)
 
-> ⚠️ **Uyarı:** Harici API, şartnamenin "tamamen yerel/offline çalışma"
-> gereksinimini ihlal eder. Gemini yalnızca yerel VRAM (8 GB) iki 3B modeli
-> makul hızda koşamadığında **test** amacıyla kullanılır. **Yarışma teslimi
-> için** `active_model` değerleri yerel modele (`qwen`/`qwen3`) geri
-> alınmalıdır.
-
-Aynı pipeline'ı Gemini'nin OpenAI-uyumlu ucu üzerinden test etmek için **iki
-satır** yeterlidir:
-
-```yaml
-# configs/config.yaml
-vlm:  { active_model: "gemini" }
-llm:  { active_model: "gemini" }
-```
-
-ve API anahtarı (bkz. `.env.example`):
+Video **doğrudan** EVREN'in video-analiz ucuna (`model: "vlm"`) gönderilir;
+yerel GPU/vLLM gerekmez. Gerekli tek şey API anahtarı (bkz. `.env.example`):
 
 ```bash
-export GEMINI_API_KEY=...   # https://aistudio.google.com/apikey
+export EVREN_API_KEY=sk-evren-teamNN-XXXXXXXX
 ```
 
-Yerel vLLM sınıfları hiç değişmeden kalır; Gemini `src/vlm/gemini_vlm.py`
-adaptörü ve `VLLMEndpointConfig.provider` alanı üzerinden eklenir.
+Yerel vLLM sınıfları (`qwen`/`gemma`) hiç değişmeden kalır; EVREN
+`src/vlm/evren_vlm.py` adaptörü ve `VLLMEndpointConfig.provider` alanı
+üzerinden eklenir.
 
 ## Otomatik Eskalasyon (Human-on-the-Loop)
 

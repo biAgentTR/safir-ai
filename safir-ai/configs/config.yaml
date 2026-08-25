@@ -282,12 +282,13 @@ sampler:
 #
 # GELISTIRME/TEST (opsiyonel): GPU'suz ortamda tum pipeline'i denemek icin
 #   app.use_mock_vlm: true + app.use_mock_llm: true  (harici hicbir sey gerekmez)
-# veya harici Gemini ile (yalnizca gelistirme; offline degildir):
-#   vlm.active_model: "gemini" + llm.active_model: "gemini" + GEMINI_API_KEY.
+# AKTIF (production): TEKNOFEST EVREN yarisma cikarim servisi - video DOGRUDAN
+#   EVREN'in video-analiz ucuna (`model="vlm"`) gonderilir, yerel GPU/vLLM
+#   gerekmez. `EVREN_API_KEY` ortam degiskeni tanimli olmalidir (bkz. .env).
 # =============================================================================
 vlm:
-  active_model: "gemini"             # qwen | gemma | gemini  (VLMFactory tarafindan okunur) — AKTIF: gemini
-  batch_size: 40                     # Tek VLM istegine dahil edilecek azami evidence karesi sayisi (kumeleme VLM'de yapilir; bkz. src/vlm/base_vlm.py)
+  active_model: "evren"              # qwen | gemma | evren  (VLMFactory tarafindan okunur) — AKTIF: evren
+  batch_size: 40                     # Yalnizca frame-tabanli (qwen/gemma) saglayicilarda kullanilir; evren video-tabanli calisir (bkz. src/vlm/evren_vlm.py)
   models:
     qwen:
       model_name: "Qwen/Qwen3.5-9B"   # native gorsel destekli; 32 GB'de vLLM FP8 ile
@@ -303,39 +304,52 @@ vlm:
       max_new_tokens: 512
       temperature: 0.2
       top_p: 0.9
-    gemini:                          # gecici TEST backend'i (harici API — offline degildir)
-      provider: "gemini"
-      model_name: "gemini-3.5-flash-lite"
-      base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
-      api_key_env: "GEMINI_API_KEY"
+    evren:                          # AKTIF: TEKNOFEST EVREN yarisma cikarim servisi (harici API, video-tabanli)
+      provider: "evren"
+      model_name: "vlm"             # EVREN'in ayrilmis, hizli video-analiz model takma adi (bkz. dokumantasyon SS 5/7.3)
+      base_url: "https://evren-llmapi.ssyz.org.tr/v1"
+      api_key_env: "EVREN_API_KEY"
       max_new_tokens: 2048
-      temperature: 0.2
+      temperature: 0.0              # dokumantasyon onerisi: video isteklerinde deterministik cikti icin 0.0
       top_p: 0.9
 
 # -----------------------------------------------------------------------------
-# 04 - Hibrit Bellek ve Baglam Olusturucu - CPU ONLY
+# 04 - Hibrit Bellek ve Baglam Olusturucu - EVREN Embedding + Qdrant
 # -----------------------------------------------------------------------------
 memory:
   sqlite:
     db_path: "data/events.db"
   embedding:
-    provider: "local"                  # sentence-transformers, CPU, harici API/kota YOK
-    model_name: "intfloat/multilingual-e5-small"
-    output_dimensionality: 384
-    device: "cpu"
+    provider: "evren"                  # EVREN /v1/embeddings (bge-m3-embed) - lokal sentence-transformers KALDIRILDI
+    model_name: "bge-m3-embed"         # dokumantasyon SS 5/10: en yuksek ilk-isabet (R@1) dogrulugu
+    output_dimensionality: 1024
+    base_url: "https://evren-llmapi.ssyz.org.tr/v1"
+    api_key_env: "EVREN_API_KEY"
     normalize_embeddings: true
-  faiss:
-    index_path: "data/knowledge_base/index/faiss.index"
-    embedding_model: "intfloat/multilingual-e5-small"
+  qdrant:
+    url: "https://evren-vektor.ssyz.org.tr"   # takima tahsis edilmis izole Qdrant orneği (dokumantasyon SS 11)
+    api_key_env: "EVREN_QDRANT_KEY"
+    prefix_env: "EVREN_TEAM"                  # takim kodu (orn. "team33") - Qdrant yol on-eki
+    collection_name: "safir_regulations"
     top_k: 5                           # RERANK SONRASI nihai sonuc sayisi
-    candidate_k: 20                    # FAISS'ten cekilecek aday sayisi (rerank ONCESI)
+    candidate_k: 20                    # Qdrant'tan cekilecek aday sayisi (rerank ONCESI)
     similarity_threshold: null
   reranker:
-    enabled: true                      # deterministik relevance skorlama katmanini calistir (LLM/API GEREKTIRMEZ)
+    enabled: true                      # deterministik relevance skorlama katmanini calistir (2. asama, LLM/API GEREKTIRMEZ)
     candidate_k: 20
     top_k: 5
     score_threshold: 0.10              # relevance_score'un ALTINDAKI sonuclar ELENIR (0 sonuc GECERLIDIR)
-    weights:                           # src/rag/deterministic_reranker.py::RelevanceWeights
+    # asagidaki provider/model_name/api_key_env/base_url, 3. asama (opsiyonel,
+    # deterministik gate'ten GECMIS adaylari YENIDEN siralayan) AI reranker
+    # icindir - EVREN'in OpenAI-uyumlu LLM ucunu "LLM-as-judge" olarak
+    # kullanir (bkz. src/rag/reranker.py::EvrenReranker); EVREN'in dedike
+    # rerank ucunu (model="rerank") KULLANMAZ (dokumantasyon SS 10, getirme
+    # kalitesini dusurdugunu gostermektedir).
+    provider: "evren"
+    model_name: "llm-fast"
+    base_url: "https://evren-llmapi.ssyz.org.tr/v1"
+    api_key_env: "EVREN_API_KEY"
+    weights:                           # src/rag/deterministic_reranker.py::RelevanceWeights (2. asama, degismedi)
       semantic: 0.60
       lexical: 0.15
       keyword: 0.15
@@ -348,17 +362,12 @@ memory:
 # 05 - Ajan ve Muhakeme Katmani (LangGraph) - GPU / vLLM
 # -----------------------------------------------------------------------------
 llm:
-  active_model: "gemini"              # qwen3 | gemma3 | gemini | groq — AKTIF: gemini
-  # NOT (groq denemesi): qwen/qwen3.6-27b (ve digger standart Groq ucret-
-  # siz-katman modelleri, orn. gpt-oss-20b/120b) istek basina 8000 TPM
-  # ("prompt + max_new_tokens") sinirina sahip. Bu ajanin RAG-zenginlestirilmis
-  # istemi TEK BASINA ~5500+ token - max_new_tokens'i "dusunme" adimlarina
-  # yetecek kadar artirmak (1024 -> 4096) siniri astirdi (413 "Request too
-  # large"); dusurmek ise bos/gecersiz JSON'a donuyordu (400
-  # json_validate_failed). Groq'un 70K TPM'li compound/compound-mini
-  # modelleri KENDI ic arac-cagirma mekanizmalarina sahip - LangGraph'in
-  # bind_tools'uyla CATISABILIR, denenmedi. Reranker/guard Groq'ta KALDI
-  # (kucuk, JSON-only istemler - bu sinira YAKLASMIYORLAR).
+  active_model: "evren"               # qwen3 | gemma3 | evren — AKTIF: evren
+  # NOT (EVREN "dusunme" modu): EVREN dokumantasyonu (SS 3.2), akil yurutme
+  # (thinking) modunun KAPALI tutulmasini onerir - acildiginda token
+  # tuketimi 9-17 kat artarken dogruluk kazanci ihmal edilebilir/negatiftir
+  # ve `reasoning_content` her zaman BOS doner. Bu yuzden asagidaki `evren`
+  # girdisi `enable_thinking` GONDERMEZ (varsayilan: kapali).
   models:
     qwen3:                           # aktif model Qwen3-4B-Instruct-2507'dir (VLM'den (Qwen3.5) FARKLI aile — bilerek: olgun/kararli, metin-only, gorsele ihtiyaci yok)
       model_name: "Qwen/Qwen3-4B-Instruct-2507"   # non-thinking mod (<think> bloklari yok), Nisan 2025'ten beri olgun vLLM destegi
@@ -372,25 +381,12 @@ llm:
       vllm_port: 8004
       max_new_tokens: 1024
       temperature: 0.1
-    gemini:                          # gecici TEST backend'i (harici API — offline degildir)
-      provider: "gemini"
-      model_name: "gemini-3.5-flash-lite"
-      base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
-      api_key_env: "GEMINI_API_KEY"
+    evren:                           # AKTIF: TEKNOFEST EVREN yarisma cikarim servisi (harici API)
+      provider: "evren"
+      model_name: "llm-fast"         # dokumantasyon SS 6: JSON uretimi/arac cagirma/siniflandirmada llm-large ile olcumlenebilir fark yok
+      base_url: "https://evren-llmapi.ssyz.org.tr/v1"
+      api_key_env: "EVREN_API_KEY"
       max_new_tokens: 1024
-      temperature: 0.1
-    groq:                            # gecici TEST backend'i (harici API — offline degildir); Gemini kotasindan
-                                      # BAGIMSIZ ayri bir kota (OpenAI-uyumlu uc, ayni LLMClient/ChatOpenAI sarmalayicisi)
-      provider: "groq"
-      model_name: "qwen/qwen3.6-27b"
-      base_url: "https://api.groq.com/openai/v1"
-      api_key_env: "GROQ_API_KEY"
-      # NOT: qwen3.6-27b muhtemelen varsayilan "thinking" modda (yerel qwen3
-      # yukarida BILEREK "non-thinking" surumu secilmisti, ayni sebep). 1024
-      # token, dusunme adimlari + JSON ciktisi icin YETERSIZ kalip bos/
-      # gecersiz JSON'a (Groq 400 json_validate_failed, bos failed_generation)
-      # yol acabiliyordu - bu yuzden buraya ozel, digerlerinden daha genis.
-      max_new_tokens: 4096
       temperature: 0.1
 
 agent:

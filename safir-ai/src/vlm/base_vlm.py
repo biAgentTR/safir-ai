@@ -1,8 +1,10 @@
 """03 - Gorsel Dil Modeli Katmani: tum VLM implementasyonlari icin soyut taban sinif.
 
 ONEMLI (mimari): Olay kumelemesi ARTIK bu katmanda yapilir (sampler'da
-DEGIL). `BaseVLM` alt siniflari (`QwenVLM`, `GemmaVLM`, `GeminiVLM`)
-`analyze_evidence(evidence_frames, prompt)` implemente eder; taban sinif
+DEGIL). `BaseVLM` alt siniflari (`QwenVLM`, `GemmaVLM`)
+`analyze_evidence(evidence_frames, prompt)` implemente eder (`EvrenVLM`,
+production'da kullanilan tek video-tabanli implementasyon, bunun yerine
+`analyze_video` kullanir - bkz. `src/vlm/evren_vlm.py`); taban sinif
 bunun uzerine iki ORTAK yetenek insa eder:
 
 - `analyze_evidence_batched`: TUM evidence karelerini TEK bir dev payload'a

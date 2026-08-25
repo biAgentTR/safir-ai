@@ -48,7 +48,7 @@ class LLMClient:
         endpoint = llm_config.active_endpoint()
         self._model_name = endpoint.model_name
         # Yerel vLLM icin base_url=http://host:port/v1 ve api_key="EMPTY";
-        # provider="gemini" icin endpoint.base_url + GEMINI_API_KEY (api_key_env).
+        # provider="evren" icin endpoint.base_url + EVREN_API_KEY (api_key_env).
         # logprobs=None: langchain_openai varsayilan olarak `logprobs: false`
         # gonderir; Gemini'nin OpenAI-uyumlu ucu bu alani reddeder ("Unknown name
         # logprobs" 400). None yapmak alani payload'dan tamamen dusurur

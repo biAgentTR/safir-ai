@@ -149,13 +149,13 @@ def _build_test_config(tmp_path: Path) -> SafirConfig:
         "memory": {
             "sqlite": {"db_path": str(tmp_path / "events.db")},
             "embedding": {
-                "provider": "sentence-transformers",
+                "provider": "evren",
                 "model_name": "test-embedding-model",
-                "device": "cpu",
+                "base_url": "https://evren-llmapi.ssyz.org.tr/v1",
+                "api_key_env": "EVREN_API_KEY_TEST_UNUSED",
             },
-            "faiss": {
-                "index_path": str(tmp_path / "faiss_index"),
-                "embedding_model": "test-embedding-model",
+            "qdrant": {
+                "url": ":memory:",
                 "top_k": 3,
             },
         },

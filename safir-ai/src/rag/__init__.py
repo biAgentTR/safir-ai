@@ -13,7 +13,7 @@ olarak Gemini/Groq ile yeniden siralayan (rerank) alt paket:
   REBUILD CLI'i (gercek 748 mevzuat chunk'ini lokal modelle embed edip diske persist eder).
 
 Alt moduller PEP 562 (`__getattr__`) ile tembel (lazy) yuklenir - bu paketin
-ust duzeyi, `EmbeddingRAGService`in agir bagimliliklarini (faiss, sentence-transformers)
+ust duzeyi, `EmbeddingRAGService`in agir bagimliliklarini (qdrant-client, openai)
 yalnizca gercekten erisildiginde ice aktarir.
 """
 

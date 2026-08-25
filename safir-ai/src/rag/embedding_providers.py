@@ -4,36 +4,29 @@
 `embed_documents(texts)`/`embed_query(text)` cagirabilsin diye bu soyutlama
 tanimlanmistir.
 
-2026-08-23 guncellemesi (Gemini Embedding API TAMAMEN KALDIRILDI): embedding
-artik TAMAMEN LOKAL calisir - `sentence-transformers` ile CPU uzerinde,
-harici bir API/kota/API anahtari OLMADAN. Tek gercek implementasyon
-`LocalEmbeddingProvider`dir. Gemini Embedding API'ye giden HICBIR kod yolu
-KALMADI (ne birincil yol ne de fallback) - bkz. `build_embedding_provider`.
+2026-08-25 guncellemesi (LOKAL embedding TAMAMEN KALDIRILDI): embedding artik
+TAMAMEN EVREN'in (TEKNOFEST yarisma cikarim servisi) OpenAI-uyumlu
+`/v1/embeddings` ucu uzerinden calisir (`model="bge-m3-embed"`, 1024 boyut -
+bkz. katilimci dokumantasyonu SS 5/10). Tek gercek implementasyon
+`EvrenEmbeddingProvider`dir; lokal `sentence-transformers` yoluna HICBIR
+KOD YOLU KALMADI (ne birincil yol ne fallback).
 
-Model (`sentence-transformers`/HuggingFace agirliklari) YALNIZCA ilk gercek
-embed cagrisinda (lazy) diskten/HuggingFace Hub onbelleginden yuklenir -
-boylece bu modulun import edilmesi veya `LocalEmbeddingProvider` orneklenmesi
-ASLA agir bir model yuklemesi TETIKLEMEZ.
+Istemci (`openai` SDK) YALNIZCA ilk gercek embed cagrisinda (lazy) kurulur -
+boylece bu modulun import edilmesi veya `EvrenEmbeddingProvider` orneklenmesi
+ASLA bir ag baglantisi TETIKLEMEZ.
 """
 
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
 import numpy as np
 
-_QUERY_PREFIX = "query: "
-_PASSAGE_PREFIX = "passage: "
-"""`intfloat/multilingual-e5-*` model ailesinin GEREKTIRDIGI, retrieval kalitesi
-icin ZORUNLU giris on-ekleri (bkz. modelin resmi kullanim talimatlari) - bu
-on-ekler OLMADAN model onemli olcude daha zayif retrieval performansi verir.
-Sorgu/dokuman AYRIMI, eski Gemini `task_type=RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT`
-ayrimiyla AYNI amaca hizmet eder (asimetrik retrieval semasi)."""
-
 
 class ConfigurationError(Exception):
-    """Embedding saglayicisi icin gerekli konfigurasyon eksik/gecersiz (orn. desteklenmeyen provider, boyut uyusmazligi)."""
+    """Embedding saglayicisi icin gerekli konfigurasyon eksik/gecersiz (orn. desteklenmeyen provider, API anahtari eksik)."""
 
 
 class EmbeddingProvider(ABC):
@@ -73,127 +66,114 @@ def _l2_normalize(vectors: np.ndarray) -> np.ndarray:
     return vectors / norms
 
 
-class LocalEmbeddingProvider(EmbeddingProvider):
-    """`sentence-transformers` (HuggingFace) uzerinden CALISAN, TAMAMEN LOKAL `EmbeddingProvider`.
+class EvrenEmbeddingProvider(EmbeddingProvider):
+    """EVREN'in OpenAI-uyumlu `/v1/embeddings` ucu uzerinden CALISAN embedding saglayicisi.
 
-    Harici bir API cagrisi, API anahtari veya kota YOKTUR - model agirliklari
-    ilk kullanimda (lazy) HuggingFace Hub onbelleginden/diskten yuklenir, tum
-    hesaplama CPU uzerinde yerel olarak yapilir. Varsayilan model
-    (`intfloat/multilingual-e5-small`, 384 boyut) kucuk (~118M parametre),
-    CPU'da makul hizda calisan, coklu-dilli (Turkce dahil) bir retrieval
-    modelidir; dokuman/sorgu embedding'i icin `passage: `/`query: ` on-ekleri
-    kullanir (modelin kendi resmi kullanim semasi - eski Gemini
-    `task_type=RETRIEVAL_DOCUMENT/RETRIEVAL_QUERY` ayrimiyla ES DEGERDIR).
+    Dokumantasyon SS 5/10: `bge-m3-embed` yogun (dense) gomme modeli, 1024
+    boyut, en yuksek ilk-isabet (R@1) dogrulugunu vermektedir (yeniden
+    siralama ONERILMEMEKTEDIR - bkz. `src/rag/evren_reranker.py` modul
+    dokustringi, bu servis dedike bir rerank endpoint'i KULLANMAZ). Kimlik
+    dogrulama, standart OpenAI istemcisiyle AYNI sekilde `Authorization:
+    Bearer <EVREN_API_KEY>` uzerinden yapilir.
     """
 
     def __init__(
         self,
         model_name: str,
+        base_url: str,
+        api_key_env: str,
         output_dimensionality: Optional[int] = None,
-        device: str = "cpu",
     ) -> None:
-        """LocalEmbeddingProvider'i model adi ve (varsa) beklenen boyutla kurar (HICBIR MODEL YUKLEMEZ).
+        """EvrenEmbeddingProvider'i model/uc nokta bilgisiyle kurar (HICBIR AG CAGRISI YAPMAZ).
 
         Args:
-            model_name: HuggingFace/`sentence-transformers` model kimligi
-                (orn. "intfloat/multilingual-e5-small").
+            model_name: EVREN embedding model takma adi (orn. "bge-m3-embed").
+            base_url: EVREN'in OpenAI-uyumlu taban adresi (orn.
+                "https://evren-llmapi.ssyz.org.tr/v1").
+            api_key_env: API anahtarinin okunacagi ortam degiskeni adi
+                (orn. "EVREN_API_KEY").
             output_dimensionality: Config'ten gelen BEKLENEN vektor boyutu;
-                verilmisse ilk gercek embed cagrisinda modelin GERCEKTEN
-                urettigi boyutla KARSILASTIRILIR (uyusmazlik sessizce KABUL
-                EDILMEZ, bkz. `_ensure_dimension_matches`). `None` ise
-                modelin kendi boyutu oldugu gibi kabul edilir.
-            device: `sentence-transformers` cihaz parametresi ("cpu"/"cuda"); varsayilan "cpu".
+                `None` ise `bge-m3-embed` icin dokumantasyondaki bilinen
+                deger (1024) kullanilir.
         """
         self._model_name = model_name
+        self._base_url = base_url.rstrip("/")
+        self._api_key_env = api_key_env
         self._configured_dimension = output_dimensionality
-        self._device = device
-        self._model = None  # lazy - ilk gercek cagriya kadar YUKLENMEZ
+        self._client = None  # lazy - ilk gercek embed cagrisina kadar YUKLENMEZ
 
     @property
     def dimension(self) -> int:
-        if self._configured_dimension is not None:
-            return self._configured_dimension
-        return self._get_model().get_sentence_embedding_dimension()
+        return self._configured_dimension or 1024
 
-    def _get_model(self):
-        """`sentence-transformers` modelini (lazy) yukler; paket kurulu degilse acik `ConfigurationError` firlatir."""
-        if self._model is not None:
-            return self._model
+    def _get_client(self):
+        """`openai` istemcisini (lazy) kurar; API anahtari eksikse acik `ConfigurationError` firlatir."""
+        if self._client is not None:
+            return self._client
 
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError as exc:
+        api_key = os.environ.get(self._api_key_env, "").strip()
+        if not api_key:
             raise ConfigurationError(
-                "'sentence-transformers' paketi kurulu degil. Lokal embedding icin "
-                "'pip install sentence-transformers' calistirin."
-            ) from exc
-
-        self._model = SentenceTransformer(self._model_name, device=self._device)
-        self._ensure_dimension_matches(self._model.get_sentence_embedding_dimension())
-        return self._model
-
-    def _ensure_dimension_matches(self, actual_dimension: int) -> None:
-        """Modelin GERCEKTEN urettigi boyutu, config'te BEKLENEN boyutla karsilastirir - uyusmazlik SESSIZCE KABUL EDILMEZ."""
-        if self._configured_dimension is not None and actual_dimension != self._configured_dimension:
-            raise ConfigurationError(
-                f"Embedding modeli '{self._model_name}' {actual_dimension} boyutunda vektor uretiyor, "
-                f"ancak config'te output_dimensionality={self._configured_dimension} tanimli. "
-                "configs/config.yaml -> memory.embedding.output_dimensionality'i duzeltin."
+                f"EVREN embedding icin '{self._api_key_env}' ortam degiskeni tanimli degil."
             )
 
-    def _embed(self, texts: List[str], prefix: str) -> np.ndarray:
+        from openai import OpenAI
+
+        self._client = OpenAI(base_url=self._base_url, api_key=api_key)
+        return self._client
+
+    def _embed(self, texts: List[str]) -> np.ndarray:
         if not texts:
             return np.zeros((0, self.dimension), dtype="float32")
 
-        model = self._get_model()
-        prefixed = [f"{prefix}{t}" for t in texts]
-        vectors = model.encode(
-            prefixed,
-            batch_size=32,
-            show_progress_bar=False,
-            convert_to_numpy=True,
-            normalize_embeddings=False,  # kendi _l2_normalize'imizla yapiyoruz (Gemini yolundakiyle AYNI davranis)
-        )
-        array = np.asarray(vectors, dtype="float32")
-        self._ensure_dimension_matches(array.shape[1])
-        return _l2_normalize(array)
+        client = self._get_client()
+        response = client.embeddings.create(model=self._model_name, input=texts)
+        vectors = np.array([item.embedding for item in response.data], dtype="float32")
+        return _l2_normalize(vectors)
 
     def embed_documents(self, texts: List[str]) -> np.ndarray:
-        return self._embed(texts, prefix=_PASSAGE_PREFIX)
+        return self._embed(texts)
 
     def embed_query(self, text: str) -> np.ndarray:
-        return self._embed([text], prefix=_QUERY_PREFIX)[0]
+        return self._embed([text])[0]
 
 
 def build_embedding_provider(
     provider: str,
     model_name: str,
     output_dimensionality: Optional[int],
-    device: str = "cpu",
+    base_url: Optional[str] = None,
+    api_key_env: Optional[str] = None,
+    **_ignored: object,
 ) -> EmbeddingProvider:
     """Config'teki `provider` degerine gore uygun `EmbeddingProvider`i uretir.
 
     Args:
-        provider: `configs/config.yaml` -> `memory.embedding.provider` (su an YALNIZCA "local").
-        model_name: Embedding model adi (`sentence-transformers`/HuggingFace kimligi).
-        output_dimensionality: Beklenen vektor boyutu; `None` ise `ConfigurationError`.
-        device: `sentence-transformers` cihaz parametresi.
+        provider: `configs/config.yaml` -> `memory.embedding.provider` (su an YALNIZCA "evren").
+        model_name: EVREN embedding model takma adi (orn. "bge-m3-embed").
+        output_dimensionality: Beklenen vektor boyutu; `None` ise EVREN'in bilinen degeri (1024) kullanilir.
+        base_url: EVREN taban adresi.
+        api_key_env: API anahtarinin okunacagi ortam degiskeni adi.
 
     Returns:
-        Kurulmus (ama henuz hicbir model agirligi YUKLEMEMIS) `EmbeddingProvider`.
+        Kurulmus (ama henuz hicbir ag baglantisi ACMAMIS) `EmbeddingProvider`.
 
     Raises:
-        ConfigurationError: `provider` desteklenmiyorsa veya `output_dimensionality` eksikse.
-            "gemini" DAHIL, "local" DISINDAKI HICBIR deger kabul EDILMEZ -
-            Gemini Embedding API'ye SESSIZCE fallback YAPILMAZ.
+        ConfigurationError: `provider` desteklenmiyorsa veya `base_url`/`api_key_env` eksikse.
+            "local" DAHIL, "evren" DISINDAKI HICBIR deger kabul EDILMEZ.
     """
-    if provider != "local":
+    if provider != "evren":
         raise ConfigurationError(
-            f"Desteklenmeyen embedding saglayicisi: '{provider}'. Su an YALNIZCA 'local' destekleniyor "
-            "(Gemini Embedding API kaldirildi - harici API/kota gerektiren hicbir fallback yoktur)."
+            f"Desteklenmeyen embedding saglayicisi: '{provider}'. Su an YALNIZCA 'evren' destekleniyor "
+            "(lokal sentence-transformers embedding kaldirildi)."
         )
-    if not output_dimensionality:
+    if not base_url or not api_key_env:
         raise ConfigurationError(
-            "memory.embedding.output_dimensionality config'te tanimli olmalidir (hard-code edilmez)."
+            "memory.embedding.base_url ve memory.embedding.api_key_env config'te tanimli olmalidir."
         )
-    return LocalEmbeddingProvider(model_name=model_name, output_dimensionality=output_dimensionality, device=device)
+    return EvrenEmbeddingProvider(
+        model_name=model_name,
+        base_url=base_url,
+        api_key_env=api_key_env,
+        output_dimensionality=output_dimensionality,
+    )

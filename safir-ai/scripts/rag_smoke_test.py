@@ -49,7 +49,7 @@ def main() -> int:
     # yuklenemezse (paket/internet yok) `query()` KONTROLLU sekilde deterministic relevance'a duser.
     service = EmbeddingRAGService(
         config.memory.embedding,
-        config.memory.faiss,
+        config.memory.qdrant,
         config.memory.reranker,
         cross_encoder=LocalCrossEncoderReranker(DEFAULT_LOCAL_CROSS_ENCODER_MODEL),
     )
@@ -68,7 +68,7 @@ def main() -> int:
     print("=" * 72)
 
     for query in _QUERIES:
-        candidate_k = min(config.memory.faiss.candidate_k, service.document_count())
+        candidate_k = min(config.memory.qdrant.candidate_k, service.document_count())
         results = service.query(query)
         telemetry = service.get_last_query_telemetry()
 

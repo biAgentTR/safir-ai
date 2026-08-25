@@ -3,7 +3,7 @@
 RAG (embedding/FAISS/rerank) alt paketi `src/rag/`e tasindi (bkz. o paketin
 docstring'i) - bu paket artik yalnizca SQLite-tabanli depolari (`EventStore`,
 `AnalysisStore`, `ConversationStore`) ve bunlari birlestiren `ContextBuilder`i
-icerir; `sentence-transformers`/`faiss` gibi agir bagimliliklar burada YOKTUR.
+icerir; `qdrant-client`/`openai` gibi agir bagimliliklar burada YOKTUR.
 
 Alt moduller PEP 562 (`__getattr__`) ile tembel (lazy) yuklenir.
 """

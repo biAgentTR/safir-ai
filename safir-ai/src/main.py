@@ -54,7 +54,7 @@ from src.memory.context_builder import ContextBuilder
 from src.memory.conversation_store import ConversationStore
 from src.memory import document_extraction
 from src.rag.embedding_rag_service import EmbeddingRAGService
-from src.rag.local_cross_encoder_reranker import DEFAULT_LOCAL_CROSS_ENCODER_MODEL, LocalCrossEncoderReranker
+from src.rag.reranker import EvrenReranker
 from src.memory.event_store import EventStore
 from src.sampler.adaptive_sampler import EvidenceFrame, sampler_from_config
 from src.security.prompt_injection_guard import build_prompt_injection_guard
@@ -793,20 +793,25 @@ class SafirPipeline:
         self._default_sample_fps = config.sampler.sample_fps
         self._vlm = get_vlm_client(config.vlm, use_mock=config.app.use_mock_vlm)
         self._event_store = EventStore(config.memory.sqlite)
-        # 2026-08-24 (RAG+RISK PRODUCTION KAPANIS): LOKAL Cross-Encoder, production
-        # default'unda AKTIF - `LocalCrossEncoderReranker` (bkz. o modulun
-        # dokustringi) TAMAMEN yerel calisir (harici API/kota/internet YOK, lazy
-        # model yuklemesi). Sadece deterministic relevance gate'ten GECMIS
-        # ("accepted") adaylari YENIDEN SIRALAR - gate'in KENDISINI BYPASS ETMEZ.
-        # Model agirligi bu ortamda yuklenemezse `EmbeddingRAGService.query()`
-        # KONTROLLU sekilde deterministic relevance siralamasina duser (bkz.
-        # `RagQueryTelemetry.cross_encoder_status`) - hicbir harici API'ye SESSIZCE
-        # dusulmez, pipeline COKMEZ.
+        # 2026-08-25 (EVREN MIGRASYONU): EVREN LLM-as-judge (`EvrenReranker`,
+        # bkz. `src/rag/reranker.py` modul dokustringi), production
+        # default'unda AKTIF - EVREN'in OpenAI-uyumlu LLM ucunu ("llm-fast")
+        # kullanir, EVREN'in dedike rerank ucunu KULLANMAZ (dokumantasyon
+        # SS 10, getirme kalitesini dusurdugunu gostermektedir). Sadece
+        # deterministic relevance gate'ten GECMIS ("accepted") adaylari
+        # YENIDEN SIRALAR - gate'in KENDISINI BYPASS ETMEZ. EVREN cagrisi
+        # basarisiz olursa `EmbeddingRAGService.query()` KONTROLLU sekilde
+        # deterministic relevance siralamasina duser (bkz.
+        # `RagQueryTelemetry.cross_encoder_status`), pipeline COKMEZ.
         self._rag_service = EmbeddingRAGService(
             config.memory.embedding,
-            config.memory.faiss,
+            config.memory.qdrant,
             config.memory.reranker,
-            cross_encoder=LocalCrossEncoderReranker(DEFAULT_LOCAL_CROSS_ENCODER_MODEL),
+            cross_encoder=EvrenReranker(
+                model_name=config.memory.reranker.model_name,
+                base_url=config.memory.reranker.base_url,
+                api_key_env=config.memory.reranker.api_key_env,
+            ),
         )
         self._rag_service.seed_default_regulations()
         # Prompt Injection Guard (bkz. src/security/prompt_injection_guard.py):
@@ -917,7 +922,7 @@ class SafirPipeline:
         if on_stage:
             on_stage(*STAGE_VLM)
 
-        vlm_response = self.stage_vlm(evidence_frames, user_prompt)
+        vlm_response = self.stage_vlm(video_source, evidence_frames, user_prompt)
         _emit("vlm", {"vlm_response": vlm_response, "evidence_frames": evidence_frames, "user_prompt": user_prompt})
 
         if on_stage:
@@ -1020,26 +1025,23 @@ class SafirPipeline:
         )
         return sampler, evidence_frames
 
-    def stage_vlm(self, evidence_frames: List[EvidenceFrame], user_prompt: str) -> VLMResponse:
-        """03: VLM gorsel anlama + OLAY KUMELEME - kronolojik, kayipsiz batch dagitim.
+    def stage_vlm(
+        self, video_source: str, evidence_frames: List[EvidenceFrame], user_prompt: str
+    ) -> VLMResponse:
+        """03: VLM gorsel anlama + OLAY KUMELEME - video DOGRUDAN VLM'e gonderilir.
 
-        Butun evidence kareleri TEK bir dev payload'a doldurulmaz: `BaseVLM.
-        analyze_evidence_batched` ile `self._config.vlm.batch_size` buyuklugunde
-        kronolojik batch'lere bolunup ayri ayri analiz edilir (batch siniri
-        OLAY SINIRI DEGILDIR). Birden fazla batch olustuysa, batch-yerel
-        olaylar `BaseVLM.reconcile_events` ile TEK bir global olay listesine
-        birlestirilir. Evidence_id dogrulamasi/atanamayan evidence yonetimi
-        `_reconcile_unassigned_evidence` ile yapilir - hicbir evidence
-        SESSIZCE kaybolmaz. Bir batch basarisiz olursa DIGER batch'lerin
-        sonucu KAYBEDILMEZ; TUM batch'ler basarisiz olursa eski (geriye-donuk
-        uyumlu) `[HATA]` degraded formatina duser.
+        Video, sampler'in urettigi evidence kareleri (resim) parcalanip
+        VLM'e coklu istek olarak GONDERILMEZ: `self._vlm.analyze_video` ile
+        video kaynagi TEK bir istekte, dogrudan gonderilir (bkz. `EvrenVLM`).
+        `evidence_frames` yalnizca `evidence_ids`/zaman damgasi baglami icin
+        `stage_events`e tasinir - VLM girdisi olarak KULLANILMAZ. VLM
+        cagrisi basarisiz olursa eski (geriye-donuk uyumlu) `[HATA]` degrade
+        formatina dusulur; risk ASLA `0`/basarili gibi yorumlanmaz.
         """
         try:
-            batch_responses = self._vlm.analyze_evidence_batched(
-                evidence_frames, prompt=user_prompt, batch_size=self._config.vlm.batch_size
-            )
-        except Exception as exc:  # noqa: BLE001 - beklenmedik/toplu hata da degraded rapora tasinir
-            logger.exception("VLM batch dagitimi basarisiz; degraded raporla devam ediliyor.")
+            response = self._vlm.analyze_video(video_source, evidence_frames, prompt=user_prompt)
+        except Exception as exc:  # noqa: BLE001 - beklenmedik hata da degraded rapora tasinir
+            logger.exception("VLM video analizi basarisiz; degraded raporla devam ediliyor.")
             return VLMResponse(
                 description=f"[HATA] VLM analizi yapilamadi ({exc}). Manuel inceleme gerekli.",
                 model_name=getattr(self._vlm, "model_name", "unknown"),
@@ -1049,50 +1051,8 @@ class SafirPipeline:
                 status="failed",
             )
 
-        if not batch_responses:
-            return VLMResponse(
-                description="[HATA] VLM analizi yapilamadi (evidence yok). Manuel inceleme gerekli.",
-                model_name=getattr(self._vlm, "model_name", "unknown"),
-                frame_count=0,
-                latency_ms=0.0,
-                structured_events=[],
-                status="failed",
-            )
-
-        succeeded = [r for r in batch_responses if r.status != "failed"]
-        if not succeeded:
-            failed_ids = [eid for r in batch_responses for eid in r.evidence_ids]
-            return VLMResponse(
-                description=f"[HATA] VLM analizi yapilamadi (evidence {failed_ids}). Manuel inceleme gerekli.",
-                model_name=batch_responses[0].model_name,
-                frame_count=sum(r.frame_count for r in batch_responses),
-                latency_ms=sum(r.latency_ms for r in batch_responses),
-                structured_events=[],
-                status="failed",
-                evidence_ids=failed_ids,
-            )
-
-        if len(batch_responses) == 1:
-            final = succeeded[0]
-        else:
-            try:
-                final = self._vlm.reconcile_events(batch_responses, prompt=user_prompt)
-            except Exception:  # noqa: BLE001 - reconciliation basarisiz olsa da evidence kaybolmaz
-                logger.exception(
-                    "VLM reconciliation basarisiz; batch-yerel olaylar on-ekli sekilde (degrade) birlestiriliyor."
-                )
-                final = _naive_concat_batches(batch_responses)
-
-        failed_ids = [eid for r in batch_responses if r.status == "failed" for eid in r.evidence_ids]
-        final.status = "completed" if not failed_ids else "partial_failure"
-        if failed_ids:
-            final.description = (
-                f"{final.description}\n\n[UYARI] Evidence {failed_ids} icin VLM analizi basarisiz oldu "
-                "(analysis_failed); bu kareler icin otomatik degerlendirme YAPILAMADI, manuel inceleme onerilir."
-            )
-        final.structured_events = _reconcile_unassigned_evidence(final.structured_events, evidence_frames, batch_responses)
-        final.evidence_ids = [ef.evidence_id for ef in evidence_frames]
-        return final
+        response.evidence_ids = [ef.evidence_id for ef in evidence_frames]
+        return response
 
     def stage_events(self, vlm_response: VLMResponse, evidence_frames: List[EvidenceFrame]):
         """07: EventEngine -> buffer/budama -> TemporalReasoner -> RuleEngine.
@@ -1571,7 +1531,7 @@ def get_ask_service() -> AskService:
             analysis_store=get_analysis_store(),
             rag_service=get_pipeline()._rag_service,  # pipeline'in seed'lenmis RAG'i (yeniden kullanim)
             llm_client=llm_client,
-            rag_top_k=cfg.memory.faiss.top_k,
+            rag_top_k=cfg.memory.qdrant.top_k,
         )
     return _ask_service
 

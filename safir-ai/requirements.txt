@@ -32,8 +32,10 @@ langgraph>=0.1.9
 langchain-core>=0.2.28
 langchain-openai>=0.1.17
 
-# --- Hibrit Bellek Katmani (Embedding: LOKAL/sentence-transformers, harici API/kota YOK) ---
-faiss-cpu>=1.8.0
+# --- Hibrit Bellek Katmani (Embedding: EVREN /v1/embeddings; Vektor deposu: Qdrant) ---
+qdrant-client>=1.9.0
+# sentence-transformers: yalnizca opsiyonel LOKAL Cross-Encoder (src/rag/local_cross_encoder_reranker.py,
+# production'da VARSAYILAN DEGIL - bkz. src/main.py) standalone/benchmark kullanimi icin kalir.
 sentence-transformers>=3.0.0
 
 # --- Rerank (opsiyonel, Groq/Gemini) + Prompt Injection Guard icin ---
