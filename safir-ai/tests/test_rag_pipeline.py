@@ -547,7 +547,6 @@ def test_real_chunk_text_and_provenance_reach_context_builder_prompt(tmp_path) -
         vlm_description="Operator KKD olmadan is ekipmani kullaniyor.",
         user_prompt="Risk durumu nedir?",
         timestamp=10.0,
-        relevant_regulations=[],
         semantically_related_chunks=[retrieved],
     )
     prompt_block = context.to_prompt_block()

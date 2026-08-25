@@ -69,7 +69,7 @@ export const STAGE_META: { stage: TraceStage; label: string; blurb: string }[] =
   { stage: 'sampler', label: 'Kare Örnekleme', blurb: 'CPU uyarlanabilir örnekleyici' },
   { stage: 'vlm', label: 'Çok Modlu Analiz', blurb: 'Görsel-dil modeli' },
   { stage: 'events', label: 'Olay Analizi', blurb: 'Tespit / zamansal / kural' },
-  { stage: 'rag_security', label: 'RAG ve Güvenlik Telemetrisi', blurb: 'Semantik retrieval + Prompt Injection Guard' },
+  { stage: 'rag_security', label: 'RAG ve Güvenlik', blurb: 'Semantik retrieval + Prompt Injection Guard' },
   { stage: 'decision', label: 'Ajan Önerisi', blurb: 'Taslak değerlendirme — resmi risk skoru DEĞİLDİR' },
   { stage: 'escalation', label: 'Risk Yükseltme', blurb: 'Otomatik tetikleme politikası' },
   { stage: 'report', label: 'Nihai Rapor', blurb: 'Yapılandırılmış çıktı' },

@@ -44,7 +44,6 @@ from src.decision.escalation import EscalationPolicy, FieldAlarmDispatcher
 from src.event_analysis.event_builder import EventBuilder
 from src.event_analysis.event_engine import EventEngine
 from src.event_analysis.event_history import EventHistory
-from src.event_analysis.regulation_matcher import resolve_regulation_matches
 from src.event_analysis.risk_resolver import RiskProvenance, resolve_deterministic_risk_with_provenance
 from src.event_analysis.rule_engine import RuleEngine
 from src.event_analysis.schemas import DetectedEvent, EventEngineInput, RuleMatch, TemporalEvent
@@ -831,17 +830,15 @@ class SafirPipeline:
 
         # 07 - Olay Analizi Katmani (T008-T012): Context Builder ile LangGraph
         # Ajani arasindaki ara katman. `RetrieverTool`, `rag_service` None
-        # olsa bile guvenlidir (mock veriye duser); `RuleEngine`in kendi
-        # fallback'i de retriever hata verirse kisa mevzuat etiketine doner.
+        # olsa bile guvenlidir (mock veriye duser).
         self._event_engine = EventEngine()
         self._temporal_reasoner = TemporalReasoner(relation_window_sec=DEFAULT_RELATION_WINDOW_SEC)
-        # RuleEngine artik `RetrieverTool` (LLM-agent icin duz-metin bicimlendirmesi)
-        # UZERINDEN DEGIL, `self._rag_service.query(...)`e DOGRUDAN baglanir - boylece
-        # `EmbeddingRAGService.query()`nin KENDI deterministik relevance gate'ini
-        # (zaten yalnizca "accepted" adaylari dondurur) GERCEKTEN kullanir (bkz.
-        # `RuleEngine._describe_regulation` P0 duzeltmesi: eski metin-icerme kontrolu
-        # GERCEK KB'nin metniyle hicbir zaman eslesmiyordu).
-        self._rule_engine = RuleEngine(retriever=self._rag_service)
+        # 2026-08-25: RuleEngine ARTIK hicbir RAG/AG cagrisi yapmaz (retriever
+        # kaldirildi) - tamamen yerel, deterministik event_type -> kisa mevzuat
+        # etiketi/siddet eslemesidir. Mevzuatin GERCEK metni SADECE gercek
+        # semantik RAG sorgusundan (asagida `stage_context`) gelir (bkz.
+        # `src/event_analysis/rule_engine.py` modul dokustringi).
+        self._rule_engine = RuleEngine()
         self._event_builder = EventBuilder()
         self._event_history = EventHistory(self._event_store)
 
@@ -1113,32 +1110,32 @@ class SafirPipeline:
         rule_matches,
         temporal_events: Optional[List] = None,
     ):
-        """04: ContextBuilder (SQLite + RuleEngine-dogrulanmis mevzuat + semantik RAG) -> ajan istem blogu.
+        """04: ContextBuilder (SQLite + GERCEK semantik RAG) -> ajan istem blogu.
 
-        T017: mevzuat listesi artik `ContextBuilder`in kendi (serbest-metin,
-        dogrulanmamis) FAISS aramasindan DEGIL, `RuleEngine.evaluate(...)`
-        ciktisindan (`rule_matches`) `resolve_regulation_matches(...)` ile
-        deterministik olarak turetilir (bkz. `src/event_analysis/regulation_matcher.py`).
-        `rule_matches` bossa mevzuat listesi de bos kalir - "Mevzuat
-        eslestirilemedi" GECERLI bir sonuctur, bir mevzuat UYDURULMAZ.
+        2026-08-25: mevzuat/kanit icerigi ARTIK TEK bir kaynaktan gelir -
+        `temporal_events`in `matched_keywords`inden (VLM'in dinamik risk
+        keyword'leri) kurulan GERCEK semantik RAG sorgusu (bkz.
+        `_build_semantic_query`), sonucu `ContextBuilder`in
+        `semantically_related_chunks` alanina gider. Onceden AYRICA
+        `RuleEngine.evaluate(...)`nin (`rule_matches`) deterministik kisa
+        etiketlerinden tureyen IKINCI, telemetrisiz bir "mevzuat" listesi de
+        Context'e ekleniyordu - bu, operatore GORUNURDE iki ayri RAG kanali
+        gibi gorunuyordu ve KALDIRILDI (bkz. `src/event_analysis/rule_engine.py`
+        modul dokustringi). `rule_matches` HALA `_summarize_rule_matches` ile
+        (asagida) ajana KISA, deterministik siniflandirma sinyali olarak
+        gecirilir - bu bir "mevzuat metni" DEGILDIR, yalnizca "hangi ISG
+        kategorisi/siddeti tetiklendi" bilgisidir.
 
-        RAG 2. asama (2026-08-22): `temporal_events`in `matched_keywords`
-        (VLM'in dinamik risk keyword'leri) BURADA, RuleEngine'den TAMAMEN
-        AYRI bir semantik RAG sorgusu icin kullanilir (bkz.
-        `_build_semantic_query`); sonuc `ContextBuilder`in
-        `semantically_related_chunks` alanina gider - `relevant_regulations`i
-        DEGISTIRMEZ. Semantik sorgu basarisiz olursa (API anahtari eksik,
-        reranker "unavailable" vb.) HATA YUTULUR ve bos liste ile devam
-        edilir - bu, agent akisini KESMEZ (bkz. `EmbeddingRAGService.query`
-        docstring'i: bu zaten kendi icinde 'unavailable -> []' davranisina
-        sahiptir; buradaki try/except yalnizca beklenmedik istisnalara karsi
-        ek bir guvenlik agi).
+        Semantik sorgu basarisiz olursa (API anahtari eksik, reranker
+        "unavailable" vb.) HATA YUTULUR ve bos liste ile devam edilir - bu,
+        agent akisini KESMEZ (bkz. `EmbeddingRAGService.query` docstring'i:
+        bu zaten kendi icinde 'unavailable -> []' davranisina sahiptir;
+        buradaki try/except yalnizca beklenmedik istisnalara karsi ek bir
+        guvenlik agi).
 
         Returns:
             `(prompt_block, context)`.
         """
-        regulation_matches = resolve_regulation_matches(rule_matches)
-
         matched_keywords = _aggregate_matched_keywords(temporal_events or [])
         semantic_query = _build_semantic_query(matched_keywords, vlm_response.description)
         semantically_related_chunks: List = []
@@ -1162,7 +1159,6 @@ class SafirPipeline:
             vlm_description=vlm_response.description,
             user_prompt=user_prompt,
             timestamp=latest_timestamp,
-            relevant_regulations=[m.regulation_title for m in regulation_matches],
             semantically_related_chunks=semantically_related_chunks,
         )
         prompt_block = context.to_prompt_block()
@@ -1373,6 +1369,20 @@ class SafirPipeline:
             )
             for chunk in context.semantically_related_chunks
         ]
+        # 2026-08-25: `relevant_regulations` (Rapor -> "Ilgili ISG Mevzuati") ARTIK
+        # TEK kaynaktan turer - `semantic_rag_sources`in KENDISINDEN (yani
+        # `context.semantically_related_chunks`den, GERCEK semantik RAG sorgusu +
+        # deterministik relevance/guvenlik esiginden GECMIS "accepted" adaylar).
+        # Onceden BURADA RuleEngine'in AYRI, deterministik kisa-etiket listesi
+        # (`context.relevant_regulations`) kullaniliyordu - bu, gercek RAG
+        # telemetrisine SAHIP DEGILDI ve operatore ikinci/sahte bir "RAG" kanali
+        # gibi gorunuyordu (bkz. `src/event_analysis/rule_engine.py` modul
+        # dokustringi). Esik-uzeri hicbir kanit yoksa liste BOS kalir - bir
+        # mevzuat UYDURULMAZ.
+        relevant_regulations = [
+            f"{source.rule_title}" + (f" (Madde {source.article_number})" if source.article_number else "") + f": {source.content}"
+            for source in semantic_rag_sources
+        ]
         # Source validation (gorev tanimi 10. bolum): Ajanin serbest metninde (summary +
         # actions) gecen mevzuat-benzeri atiflardan, BU CAGRIDA GERCEKTEN retrieved olan
         # kanitlarla eslesmeyenleri isaretler - deterministik, regex-tabanli (LLM'e SORULMAZ).
@@ -1425,7 +1435,7 @@ class SafirPipeline:
                 TimelineEntry(timestamp=e["timestamp"], description=e["description"]) for e in timeline
             ],
             evidence_frames=_select_report_evidence_frames(vlm_response, evidence_frames),
-            relevant_regulations=context.relevant_regulations,
+            relevant_regulations=relevant_regulations,
             semantic_rag_sources=semantic_rag_sources,
             unverified_references=unverified_references,
             sampler_stats=(

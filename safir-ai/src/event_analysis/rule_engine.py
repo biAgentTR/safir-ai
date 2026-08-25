@@ -15,41 +15,30 @@ Iki kural katmani uretir:
    seti koda gomulmez, YAML'dan okunur; boylece yeni bir bilesik ihlal
    kurali eklemek kod degisikligi gerektirmez.
 
-`agent/` bagimliligi
---------------------
-Bu modul, `src.agent.tools.RetrieverTool`'u dogrudan import ETMEZ (yasakli
-`src/agent/` klasorune bagimlilik eklememek icin). Bunun yerine
-`RegulationRetriever` adinda bir `Protocol` tanimlar; `query(question, top_k)
--> List[...]` imzasina uyan herhangi bir nesne (gercek kullanimda dogrudan
-`src.rag.embedding_rag_service.EmbeddingRAGService`, testte basit bir mock)
-`RuleEngine`e opsiyonel olarak enjekte edilebilir. Retriever verilmezse,
-tekli kural eslesmeleri yalnizca `EVENT_TYPE_REGULATION_MAP`'teki kisa
-etiketle doner (zenginlestirme atlanir).
-
-2026-08-25 duzeltmesi (getirilen mevzuat metni GERCEK KB'den gelmiyordu):
-`_describe_regulation` ONCEDEN `RetrieverTool.run(...) -> str` (LLM-agent icin
-bicimlendirilmis DUZ METIN) kullanip, donen metnin sorgulanan KISA ETIKETI
-(orn. "Yangin Guvenligi Talimati YG-03" - `EVENT_TYPE_REGULATION_MAP`, bu
-etiketler ESKI `DEFAULT_ISG_REGULATIONS` PLACEHOLDER corpus'unun basliklarina
-gore yazilmisti, bkz. o sabitin dokustringi) BIREBIR ICERIP ICERMEDIGINI
-kontrol ediyordu. Sisteme GERCEK, ~748 chunk'lik Qdrant/EVREN tabanli mevzuat
-KB'si baglandiktan SONRA bu kontrol ARTIK HICBIR ZAMAN gecemiyordu (gercek
-mevzuat metni, uydurma/placeholder etiketi HARFIYEN icermez) - bu yuzden
-zenginlestirme HER ZAMAN reddedilip UI'da hep placeholder etiket gosteriliyordu.
-Artik `RegulationRetriever.query(...)` DOGRUDAN `EmbeddingRAGService.query()`e
-baglanir; bu metod ZATEN yalnizca deterministik relevance esiginden GECMIS
-("accepted") adaylari dondurur (bkz. `embedding_rag_service.py::query`) - o
-yuzden `_describe_regulation` ayrica bir metin-icerme kontrolu YAPMAZ, dondurulen
-(varsa) ilk sonucu GUVENILIR sayar. Alakasiz sonuclara karsi korunma, artik TEK
-bir yerde (deterministik reranker'in `score_threshold` gate'i) yasar - burada
-tekrarlanan ve GERCEK KB ile hicbir zaman calismayan kirik bir kontrol degil.
+2026-08-25 duzeltmesi (RuleEngine KENDI RAG sorgusu YAPMAZ - tek gercek RAG kaynagi):
+Bu modul bir donem (`RegulationRetriever` Protocol'u + `_describe_regulation`
+icinde `EmbeddingRAGService.query()`e dogrudan baglanan bir zenginlestirme)
+KENDI, AYRI, telemetrisiz bir RAG sorgusu yaparak `rule_description`i gercek
+KB metniyle "zenginlestiriyordu". Bu, operatore GORUNURDE iki farkli RAG
+kanali (biri skor/telemetri TASIMAYAN "Baglam ve RAG", digeri skorlu/reranked
+"RAG ve Guvenlik") gibi gorunmesine yol acti - kafa karistirici VE gereksiz
+tekrardi. RuleEngine ARTIK tekrar SADECE deterministik, event_type -> kisa
+mevzuat ETIKETI eslemesi yapar (`EVENT_TYPE_REGULATION_MAP`); mevzuatin
+GERCEK, kanit-niteligindeki metni SADECE `EmbeddingRAGService.query()`nin
+telemetrili/skorlu/cross-encoder'li tek gercek yolundan (bkz.
+`src/main.py::stage_context`, "RAG ve Guvenlik" paneli) gelir ve nihai
+raporun `relevant_regulations` alanina ORADAN yazilir (bkz.
+`src/main.py::build_report`). `rule_description`, `severity` ile birlikte
+yalnizca "hangi ISG kategorisi tetiklendi" bilgisini tasiyan kisa, deterministik
+bir siniflandirma etiketidir - bir RAG/kanit metni DEGILDIR ve bu sekilde
+sunulmaz.
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Protocol, runtime_checkable
+from typing import Dict, List, Optional
 
 import yaml
 
@@ -78,53 +67,6 @@ _RULE_ID_BY_EVENT_TYPE: Dict[EventType, str] = {
 ile ayni 8 mevzuat maddesini kapsar; burada yalnizca kisa, okunabilir bir
 `rule_id` uretmek icin ayrilmistir, mevzuat metnini tekrarlamaz."""
 
-_RAG_QUERY_BY_EVENT_TYPE: Dict[EventType, str] = {
-    EventType.DUSME_RISKI: (
-        "Yukseklikte calisma, dusme onleyici ekipman (emniyet kemeri, yasam hatti), "
-        "korkuluk veya guvenlik agi ile ilgili is sagligi ve guvenligi kurallari."
-    ),
-    EventType.KKD_IHLALI: (
-        "Kisisel Koruyucu Donanim (baret, is ayakkabisi, yansitici yelek) kullanim "
-        "zorunlulugu ile ilgili is sagligi ve guvenligi kurallari."
-    ),
-    EventType.ARAC_YAYA_YAKINLIGI: (
-        "Forklift veya is makinesi trafiginde yaya gecitleri ve yaya guvenligi ile "
-        "ilgili operasyonel kurallar."
-    ),
-    EventType.SICAK_CALISMA_IHLALI: (
-        "Izinsiz ates, kivilcim veya sicak yuzey islemi (sicak calisma izni) ile "
-        "ilgili is sagligi ve guvenligi kurallari."
-    ),
-    EventType.YANGIN_DUMAN: (
-        "Duman veya alev tespiti, yangin algilama ve yangin sondurme ile ilgili "
-        "yangin guvenligi kurallari."
-    ),
-    EventType.DAR_ALAN_IHLALI: (
-        "Gaz olcumu yapilmadan veya gozetmen olmadan kapali/dar alana giris ile "
-        "ilgili is sagligi ve guvenligi kurallari."
-    ),
-    EventType.ENERJI_KESME_IHLALI: (
-        "Enerji kesme (LOTO - Lockout/Tagout) prosedurune uyulmadan mudahale ile "
-        "ilgili operasyonel kurallar."
-    ),
-    EventType.AGIR_YUK_RISKI: (
-        "Sinyalman olmadan vinc veya kren ile agir yuk kaldirma ile ilgili is "
-        "sagligi ve guvenligi kurallari."
-    ),
-}
-"""`EventType` -> retriever'a gonderilecek DOGAL DIL sorgu metni (2026-08-25).
-
-`EVENT_TYPE_REGULATION_MAP`'teki KISA ETIKET (orn. "Yangin Guvenligi Talimati
-YG-03") bir RAG sorgusu olarak kullanildiginda, GERCEK KB'de o etiketle
-alakasiz ama ayni dokuman icindeki BASKA bir maddeye (orn. "aydinlatma") en
-yakin embedding eslesmesini bulabiliyordu - etiketin kendisi bir mevzuat
-ICERIGI degil, uydurma/kisa bir REFERANS adi oldugu icin. Bu sabit, her
-kategori icin GERCEKTEN o konuyu (`EventType` docstring'lerindeki mevcut
-aciklamalarla AYNI) tarif eden bir soru sunar; boylece semantik arama, dogru
-konudaki (orn. yangin/duman algilama) bir chunk'i bulma sansini artirir.
-Tanimsiz kategoriler icin `_describe_regulation`, kisa etikete geri doner."""
-
-
 _DEFAULT_SEVERITY_BY_EVENT_TYPE: Dict[EventType, str] = {
     EventType.DUSME_RISKI: "yuksek",
     EventType.KKD_IHLALI: "orta",
@@ -138,23 +80,6 @@ _DEFAULT_SEVERITY_BY_EVENT_TYPE: Dict[EventType, str] = {
 """`EventType` -> Rule Engine'in tekli kurallara atadigi varsayilan siddet.
 Bu, `05 LangGraph Ajani`nin urettigi risk skorundan bagimsiz, salt kural
 tabanli bir on-degerlendirmedir."""
-
-
-@runtime_checkable
-class RegulationRetriever(Protocol):
-    """`src.rag.embedding_rag_service.EmbeddingRAGService.query` ile ayni imzaya sahip herhangi bir nesne icin duck-typing sozlesmesi.
-
-    `RuleEngine`, `agent/` klasorune bagimlilik eklememek icin
-    `src.agent.tools.RetrieverTool`'u import etmez; bunun yerine bu Protocol'e
-    uyan herhangi bir nesne (gercek kullanimda dogrudan `EmbeddingRAGService`,
-    testte basit bir mock) enjekte edilebilir. `src/rag/` bir alt katmandir
-    (agent'a bagimli DEGILDIR), bu yuzden ona dogrudan baglanmak yasakli
-    `agent/` bagimliligini IHLAL ETMEZ.
-    """
-
-    def query(self, question: str, top_k: int = 1) -> List[object]:
-        """Verilen soruya en ilgili (ZATEN deterministik relevance esiginden GECMIS) dokuman listesini dondurur."""
-        ...
 
 
 def _safe_event_type(value: Optional[str]) -> Optional[EventType]:
@@ -183,29 +108,20 @@ class RuleEngine:
     """`TemporalEvent` listesini tekli mevzuat eslestirmesi ve kombinasyon kurallarina karsi sorgular.
 
     Bkz. modul dokustringi icin tekli/kombinasyon kural katmanlarinin tam
-    aciklamasi ve `agent/`'a bagimlilik eklenmemesini saglayan Protocol
-    yaklasimi.
+    aciklamasi. Bu sinif HICBIR AG/RAG CAGRISI YAPMAZ - tamamen yerel,
+    deterministik bir tablo/YAML eslemesidir.
     """
 
-    def __init__(
-        self,
-        retriever: Optional[RegulationRetriever] = None,
-        rules_path: str | Path = DEFAULT_RULES_PATH,
-    ) -> None:
-        """RuleEngine'i opsiyonel bir retriever ve kombinasyon kurallari dosyasiyla baslatir.
+    def __init__(self, rules_path: str | Path = DEFAULT_RULES_PATH) -> None:
+        """RuleEngine'i kombinasyon kurallari dosyasiyla baslatir.
 
         Args:
-            retriever: `RegulationRetriever` sozlesmesine (`.query(question,
-                top_k) -> List[...]`) uyan opsiyonel mevzuat arama nesnesi
-                (orn. dogrudan `EmbeddingRAGService`). `None` ise tekli kural
-                eslesmeleri yalnizca kisa mevzuat etiketiyle doner.
             rules_path: `combination_rules` listesini iceren YAML dosyasinin
                 yolu (varsayilan: `src/event_analysis/rules/isg_rules.yaml`).
 
         Raises:
             FileNotFoundError: `rules_path` mevcut degilse.
         """
-        self._retriever = retriever
         self._combination_rules = self._load_combination_rules(Path(rules_path))
 
     @staticmethod
@@ -276,79 +192,13 @@ class RuleEngine:
         return [
             RuleMatch(
                 rule_id=_RULE_ID_BY_EVENT_TYPE.get(event_type, event_type.value),
-                rule_description=self._describe_regulation(event_type, regulation_label),
+                rule_description=regulation_label,
                 event_type=event.event_type,
                 severity=_DEFAULT_SEVERITY_BY_EVENT_TYPE.get(event_type, "orta"),
                 source_event_id=event.event_id,
                 related_event_ids=[],
             )
         ]
-
-    def _describe_regulation(self, event_type: EventType, regulation_label: str) -> str:
-        """Mevzuat etiketini, varsa retriever uzerinden GERCEK KB metniyle zenginlestirir.
-
-        T017 dogrulamasi: bu, event_type -> mevzuat uygulanabilirligi (HANGI
-        mevzuat) kararini VERMEZ - o zaten `EVENT_TYPE_REGULATION_MAP`
-        uzerinden deterministik olarak alinmistir. Burada retriever yalnizca
-        ZATEN BILINEN bu etiketin TAM METNINI getirir (bir dokuman-lookup
-        adimidir).
-
-        2026-08-25 duzeltmesi: `self._retriever.query(...)`,
-        `EmbeddingRAGService.query()`nin KENDISIDIR - bu metod ZATEN yalnizca
-        deterministik relevance esiginden (`RerankerConfig.score_threshold`)
-        GECMIS ("accepted") adaylari dondurur; esigin ALTINDA kalan/alakasiz
-        adaylar `query()` icinde SESSIZCE ELENIR (bos liste doner). Bu yuzden
-        burada AYRICA bir metin-icerme kontrolu YAPILMAZ (eski surumdeki
-        kontrol, ESKI placeholder corpus icin yazilmisti ve gercek KB'nin
-        metniyle hicbir zaman eslesmiyordu - bkz. modul dokustringi); donen
-        ilk sonuc dogrudan GUVENILIR sayilir. Retriever `None`, hata verir
-        veya BOS liste donduruyse (deterministik gate onu zaten eledi) guvenli
-        kisa etikete geri donulur - uydurma bir mevzuat metni ASLA rapora sizmaz.
-
-        2026-08-25 (2. duzeltme - sorgu KALITESI): retriever'a KISA ETIKET
-        (orn. "Yangin Guvenligi Talimati YG-03") DEGIL, `_RAG_QUERY_BY_EVENT_TYPE`
-        icindeki dogal-dil konu aciklamasi SORULUR. Kisa etiket bir mevzuat
-        ICERIGI degil, uydurma/kisa bir REFERANS adidir; bunu birebir sorgu
-        olarak kullanmak, GERCEK KB'de ayni dokuman icindeki ALAKASIZ bir
-        maddeye (orn. "yangin guvenligi" dokumanindaki "aydinlatma" maddesi)
-        en yakin embedding eslesmesini bulabiliyordu - deterministik esik
-        GECILSE bile konu YANLIS olabiliyordu. Kategori icin ozel bir sorgu
-        tanimli degilse (orn. mevzuat karsiligi olmayan kategoriler) kisa
-        etiketin kendisine geri donulur.
-
-        Args:
-            event_type: Sorgulanan `EventType` (retriever'a gonderilecek
-                dogal-dil sorguyu `_RAG_QUERY_BY_EVENT_TYPE`den secmek icin).
-            regulation_label: `EVENT_TYPE_REGULATION_MAP`'ten gelen kisa etiket
-                (orn. "ISG Yonetmeligi Madde 12"); nihai aciklamanin ONUNE
-                eklenen KISA REFERANS olarak kullanilir.
-
-        Returns:
-            Retriever mevcutsa VE en az bir (zaten deterministik gate'ten
-            gecmis) sonuc donduysa `"<kisa etiket>: <gercek chunk metni>"`;
-            retriever yoksa, cagri basarisiz olursa VEYA hicbir sonuc yoksa
-            orijinal (guvenli) kisa etiket.
-        """
-        if self._retriever is None:
-            return regulation_label
-
-        rag_query = _RAG_QUERY_BY_EVENT_TYPE.get(event_type, regulation_label)
-        try:
-            results = self._retriever.query(rag_query, top_k=1)
-        except Exception:
-            logger.exception(
-                "RuleEngine: retriever cagrisi basarisiz, kisa mevzuat etiketiyle devam ediliyor."
-            )
-            return regulation_label
-
-        if not results:
-            return regulation_label
-
-        text = getattr(results[0], "text", None)
-        if not text:
-            return regulation_label
-
-        return f"{regulation_label}: {text}"
 
     def _match_combination_rules(self, sorted_events: List[TemporalEvent]) -> List[RuleMatch]:
         """`related_events` iliski kumelerini YAML'daki kombinasyon kurallarina karsi degerlendirir.

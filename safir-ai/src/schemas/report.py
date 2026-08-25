@@ -81,10 +81,10 @@ class EventSummary(BaseModel):
 class RagContext(BaseModel):
     """Modul 4 spesifikasyonundaki ortak sema: FAISS RAG'dan gelen tek bir mevzuat sonucu.
 
-    `SafirReport.relevant_regulations` (duz metin listesi, RuleEngine-turevli
-    kisa basliklar) ile ayni veriyi, kural basligi/skor gibi yapilandirilmis
-    alanlarla birlikte sunmak isteyen tuketiciler icin kullanilir (bkz.
-    `EmbeddingRAGService.search_laws`).
+    `SafirReport.relevant_regulations` (duz metin listesi, bu alanla AYNI
+    gercek semantik RAG sonuclarindan turetilir - bkz. o alanin dokustringi)
+    ile ayni veriyi, kaynak basligi/skor gibi yapilandirilmis alanlarla
+    birlikte sunmak isteyen tuketiciler icin kullanilir.
 
     2026-08-24 (RAG entegrasyon dogrulama turu - traceability gap kapatildi):
     Onceden bu sema TANIMLIYDI ama HICBIR YERDE POPULATE EDILMIYORDU - operator,
@@ -323,7 +323,13 @@ class SafirReport(BaseModel):
     )
     relevant_regulations: List[str] = Field(
         default_factory=list,
-        description="RuleEngine-dogrulanmis (deterministik) mevzuat basliklari - risk kararina baglidir.",
+        description=(
+            "2026-08-25: `semantic_rag_sources` ile AYNI, GERCEK semantik RAG sorgusundan "
+            "(deterministik relevance/guvenlik esiginden GECMIS 'accepted' adaylar) turetilmis "
+            "duz-metin kaynak listesi - baska hicbir (sabit/manuel) kaynaktan gelmez. Risk "
+            "skoru/seviyesini ETKILEMEZ (risk tamamen ayri, deterministik RuleEngine'den gelir); "
+            "esik-uzeri kanit bulunamadiysa BOS LISTE - bir mevzuat UYDURULMAZ."
+        ),
     )
     unverified_references: List[str] = Field(
         default_factory=list,
@@ -343,8 +349,9 @@ class SafirReport(BaseModel):
             "Bu analizde semantik RAG sorgusunun (VLM keyword'lerinden kurulan, bkz. "
             "`main.py::_build_semantic_query`) persisted KB index'inden GERCEKTEN sectigi "
             "kaynaklar - chunk_id/document_id/article_number/source_url ile birlikte. "
-            "`relevant_regulations`den BAGIMSIZDIR, risk_score/risk_level'i ETKILEMEZ "
-            "(bkz. RagContext docstring'i); yalnizca 'bu karar/gozlem hangi mevzuat "
+            "`relevant_regulations` (duz metin) BUNUN AYNISINDAN turetilir; risk_score/"
+            "risk_level'i ETKILEMEZ (bkz. RagContext docstring'i); yalnizca 'bu karar/gozlem "
+            "hangi mevzuat "
             "maddesine dayaniyor?' sorusunun KALICI, iz-surulebilir cevabidir. Esik-uzeri "
             "sonuc bulunamadiysa VEYA reranker basarisiz olduysa (bkz. `rag_security` trace "
             "stage'i) BOS LISTE - GECERLI bir sonuctur, uydurulmus bir kaynak EKLENMEZ."

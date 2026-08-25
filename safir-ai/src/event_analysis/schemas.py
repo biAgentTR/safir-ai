@@ -362,27 +362,3 @@ class StructuredEvent(BaseModel):
         }
 
 
-class RegulationMatch(BaseModel):
-    """T017 - Regulation Match Resolver ciktisi: bir mevzuatin bu cagriya GERCEKTEN uygulanip uygulanmadiginin acik kaydi.
-
-    RAG'in (FAISS) top-k benzerlik sonucu TEK BASINA "uygulanabilirlik" kaniti
-    DEGILDIR (bkz. `src/event_analysis/regulation_matcher.py` modul dokustringi
-    icin tam gerekce). Bu model, "eslesme" / "eslesme yok" ayrimini acikca
-    tasir; `match_status="no_match"` GECERLI ve BEKLENEN bir sonuctur - bir
-    mevzuat asla UYDURULMAZ.
-    """
-
-    match_status: str = Field(description="'matched' | 'no_match'.")
-    regulation_id: Optional[str] = Field(
-        default=None, description="Eslesen kuralin kimligi (orn. 'ISG-M12', 'COMBO-01'); no_match ise None."
-    )
-    regulation_title: Optional[str] = Field(
-        default=None, description="Eslesen mevzuatin/kuralin aciklamasi; no_match ise None."
-    )
-    relevance_score: float = Field(
-        ge=0.0,
-        le=1.0,
-        description="1.0: RuleEngine'in deterministik olarak dogruladigi (event_type -> mevzuat tablosu) esleme; "
-        "0.0: eslesme yok. Vektor/embedding benzerlik skoru DEGILDIR.",
-    )
-    reason: str = Field(description="Kisa, insan-okur gerekce (neden eslesti/eslesmedi).")

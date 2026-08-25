@@ -196,20 +196,6 @@ function ms(v: number | null): string {
         </div>
         <div v-else class="text-sm text-slate-500">Bu analizde ayrık olay tespit edilmedi.</div>
 
-        <div v-if="events.rule_matches.length">
-          <div class="field-label">İSG kural eşleşmeleri</div>
-          <ul class="flex flex-wrap gap-2">
-            <li
-              v-for="(r, i) in events.rule_matches"
-              :key="i"
-              class="text-xs px-2 py-1 rounded border border-risk-high/40 bg-risk-high/10 text-slate-200"
-            >
-              <span class="font-mono">{{ r.rule_id }}</span>
-              <span class="text-slate-400"> · {{ r.severity }}</span>
-            </li>
-          </ul>
-        </div>
-
         <div v-if="events.temporal_events.length" class="text-xs text-slate-500">
           {{ events.temporal_events.length }} zamansal (sürekli) olay birleştirildi.
         </div>
@@ -218,9 +204,9 @@ function ms(v: number | null): string {
       <!-- ============ RAG & SECURITY TELEMETRY ============ -->
       <div v-else-if="ragSecurity" class="space-y-6">
         <div class="rounded-md border border-edge bg-surface-2/60 px-3 py-2 text-xs text-slate-400">
-          RAG semantik olarak <span class="text-slate-200">ilgili olabilecek kaynakları</span> getirir; risk skoru/seviyesi
-          ve mevzuat eşleşmesi kararı bundan <span class="text-slate-200">bağımsız</span>, deterministik RuleEngine
-          tarafından belirlenir (bkz. "Rapor" sekmesindeki "İlgili İSG Mevzuatı").
+          RAG semantik olarak <span class="text-slate-200">ilgili olabilecek kaynakları</span> getirir - "Rapor"
+          sekmesindeki "İlgili İSG Mevzuatı" bu sonuçlardan (deterministik eşiği geçmiş) türetilir. Risk skoru/seviyesi
+          bundan <span class="text-slate-200">bağımsız</span>, tamamen deterministik RuleEngine tarafından belirlenir.
         </div>
 
         <!-- RAG -->

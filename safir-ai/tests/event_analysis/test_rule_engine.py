@@ -1,52 +1,15 @@
 """T010 (src/event_analysis/rule_engine.py) icin GPU/ag bagimliligi gerektirmeyen birim testleri.
 
-`RuleEngine.evaluate()`'in tekli mevzuat eslestirmesini, kombinasyon
-(bilesik ihlal) kurallarini ve opsiyonel `RegulationRetriever` entegrasyonunu
-dogrular. Gercek `EmbeddingRAGService`e bagimlilik yoktur; `RegulationRetriever`
-Protocol'une (`.query(question, top_k) -> List[...]`, `EmbeddingRAGService.query`
-ile AYNI imza) uyan basit bir mock kullanilir.
+`RuleEngine.evaluate()`'in tekli mevzuat eslestirmesini ve kombinasyon
+(bilesik ihlal) kurallarini dogrular. `RuleEngine` HICBIR AG/RAG CAGRISI
+YAPMAZ (2026-08-25: eski retriever-tabanli zenginlestirme KALDIRILDI - bkz.
+modul dokustringi); tamamen yerel/deterministik bir tablo/YAML eslemesidir.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
-from src.event_analysis.rule_engine import _RAG_QUERY_BY_EVENT_TYPE, RuleEngine
-from src.event_analysis.schemas import EVENT_TYPE_REGULATION_MAP, EventType, TemporalEvent
-
-
-@dataclass
-class _FakeDoc:
-    """`EmbeddingRAGService.query()`nin dondurdugu `RetrievedDocument`nin, bu testler icin yeterli minimal (duck-typed) izdusumu."""
-
-    text: str
-
-
-class _MockRetriever:
-    """`RegulationRetriever` Protocol'une uyan, gercek RAG'a bagli olmayan test cifti.
-
-    `EmbeddingRAGService.query()` ZATEN yalnizca deterministik relevance
-    esiginden GECMIS ("accepted") adaylari dondurur (bkz. `rule_engine.py`
-    modul dokustringindeki 2026-08-25 duzeltme notu); bu yuzden bu mock,
-    "iliskisiz sonuc" senaryosunu ARTIK yanlis metin dondurerek DEGIL, bos
-    liste (`results=[]`) dondurerek temsil eder - gercek sistemde deterministik
-    gate zaten boyle davranir.
-    """
-
-    def __init__(self, results: list[str] | None = ("[MOCK] Ilgili mevzuat metni.",)) -> None:
-        self.results = list(results) if results else []
-        self.calls: list[tuple[str, int]] = []
-
-    def query(self, question: str, top_k: int = 1) -> list[_FakeDoc]:
-        self.calls.append((question, top_k))
-        return [_FakeDoc(text=r) for r in self.results]
-
-
-class _FailingRetriever:
-    """Her cagride istisna firlatan retriever; RuleEngine'in hataya dayanikliligini test eder."""
-
-    def query(self, question: str, top_k: int = 1) -> list[_FakeDoc]:
-        raise RuntimeError("retriever servisine erisilemedi")
+from src.event_analysis.rule_engine import RuleEngine
+from src.event_analysis.schemas import TemporalEvent
 
 
 def _temporal_event(
@@ -124,88 +87,13 @@ def test_unknown_event_type_is_skipped_gracefully() -> None:
     assert matches == []
 
 
-def test_without_retriever_rule_description_is_short_regulation_label() -> None:
+def test_rule_description_is_the_short_deterministic_regulation_label() -> None:
+    """`rule_description`, ARTIK (ve HER ZAMAN) `EVENT_TYPE_REGULATION_MAP`teki kisa,
+    deterministik etikettir - RuleEngine kendi basina bir RAG/kanit metni URETMEZ
+    (bkz. modul dokustringi: gercek mevzuat metni SADECE `EmbeddingRAGService.query()`
+    uzerinden, "RAG ve Guvenlik" panelinde/`report.relevant_regulations`de gelir)."""
     events = [_temporal_event("evt_0", "kkd_ihlali")]
-    matches = RuleEngine(retriever=None).evaluate(events)
-
-    assert matches[0].rule_description == "ISG Yonetmeligi Madde 24"
-
-
-def test_with_retriever_rule_description_uses_enriched_text() -> None:
-    """Retriever GERCEK bir sonuc donduruyorsa (EmbeddingRAGService.query()'nin
-    zaten deterministik relevance esiginden GECIRDIGI, "accepted" bir aday),
-    bu metin kisa etiketin ARDINDAN eklenerek KULLANILIR."""
-    retriever = _MockRetriever(results=["KKD zorunlulugu detayli metin (gercek KB chunk'i)."])
-    events = [_temporal_event("evt_0", "kkd_ihlali")]
-
-    matches = RuleEngine(retriever=retriever).evaluate(events)
-
-    assert matches[0].rule_description == "ISG Yonetmeligi Madde 24: KKD zorunlulugu detayli metin (gercek KB chunk'i)."
-    # Sorgu artik KISA ETIKET DEGIL, kategori icin dogal-dil konu aciklamasidir
-    # (bkz. `_RAG_QUERY_BY_EVENT_TYPE` - kisa etiket bir mevzuat ICERIGI degil,
-    # birebir sorgu olarak kullanildiginda GERCEK KB'de alakasiz bir maddeye
-    # eslesebiliyordu).
-    assert len(retriever.calls) == 1
-    question, top_k = retriever.calls[0]
-    assert top_k == 1
-    assert "Kisisel Koruyucu Donanim" in question
-
-
-def test_rag_query_map_covers_every_regulation_aligned_event_type() -> None:
-    """Mevzuat karsiligi olan (8) her `EventType` icin `_RAG_QUERY_BY_EVENT_TYPE`de
-    ozel bir dogal-dil sorgusu tanimli olmali - aksi halde `_describe_regulation`
-    sessizce KISA ETIKETE (uydurma/kisa referans adi) sorgu olarak geri doner
-    (bkz. bu modulun P0 regresyonu: birebir etiket sorgusu GERCEK KB'de
-    alakasiz maddelere eslesebiliyordu)."""
-    regulation_aligned_types = {et for et, label in EVENT_TYPE_REGULATION_MAP.items() if label is not None}
-    assert regulation_aligned_types <= set(_RAG_QUERY_BY_EVENT_TYPE)
-
-
-def test_rag_query_for_yangin_duman_is_topic_description_not_the_fake_label() -> None:
-    """En onemli regresyon: `yangin_duman` icin retriever'a gonderilen sorgu, ARTIK
-    `EVENT_TYPE_REGULATION_MAP`teki kisa (uydurma) etiketin ('Yangin Guvenligi
-    Talimati YG-03' - hicbir zaman gercek bir mevzuat olarak var olmamis, bkz.
-    `src/prompts/agent_prompts.py`deki UYDURMA ornegi) KENDISI DEGIL, konuyu
-    (duman/alev tespiti) GERCEKTEN tarif eden dogal bir sorudur."""
-    fake_label = EVENT_TYPE_REGULATION_MAP[EventType.YANGIN_DUMAN]
-    rag_query = _RAG_QUERY_BY_EVENT_TYPE[EventType.YANGIN_DUMAN]
-    assert rag_query != fake_label
-    assert "duman" in rag_query.lower()
-
-
-def test_retriever_failure_falls_back_to_short_label_without_raising() -> None:
-    events = [_temporal_event("evt_0", "kkd_ihlali")]
-    matches = RuleEngine(retriever=_FailingRetriever()).evaluate(events)
-
-    assert matches[0].rule_description == "ISG Yonetmeligi Madde 24"
-
-
-# --- T017: mevzuat "getirme" (RAG lookup) != "uygulanabilirlik" karari -----
-# 2026-08-25: alakasiz sonuclara karsi koruma artik TEK bir yerde -
-# `EmbeddingRAGService.query()`nin deterministik relevance/score_threshold
-# gate'inde (bkz. `deterministic_reranker.py` testleri) - yasiyor; `query()`
-# esigin ALTINDA kalan/alakasiz adaylari zaten BOS LISTE ile eler. Bu yuzden
-# RuleEngine tarafindaki regresyon testi de ayni sozlesmeyi (bos liste =
-# "ilgili sonuc yok") dogrulayacak sekilde guncellendi.
-
-
-def test_retriever_returning_no_accepted_results_falls_back_to_short_label() -> None:
-    """En onemli regresyon: retriever (gercek sistemde `EmbeddingRAGService.query()`)
-    sorgulanan kategoriyle ilgili HICBIR "accepted" sonuc bulamadiginda (deterministik
-    relevance gate onlari zaten eledigi icin) BOS LISTE doner - RuleEngine bu durumda
-    kisa (guvenli) etikete geri donmeli, uydurma/ilgisiz bir mevzuat metni ASLA rapora
-    SIZMAMALI."""
-    empty_retriever = _MockRetriever(results=[])
-    events = [_temporal_event("evt_0", "kkd_ihlali")]
-
-    matches = RuleEngine(retriever=empty_retriever).evaluate(events)
-
-    assert matches[0].rule_description == "ISG Yonetmeligi Madde 24"
-
-
-def test_retriever_returning_empty_string_falls_back_to_short_label() -> None:
-    events = [_temporal_event("evt_0", "kkd_ihlali")]
-    matches = RuleEngine(retriever=_MockRetriever(results=[""])).evaluate(events)
+    matches = RuleEngine().evaluate(events)
 
     assert matches[0].rule_description == "ISG Yonetmeligi Madde 24"
 

@@ -506,75 +506,65 @@ def test_rule_engine_has_no_matches_falls_back_to_llm_agent_decision(
 
 
 # ------------------------------------------------------------------
-# T017: RAG/LangGraph mevzuat eslestirme - forced-match duzeltmesi
+# 2026-08-25: "Ilgili ISG Mevzuati" ARTIK TEK kaynaktan - GERCEK semantik
+# RAG sorgusundan (report.semantic_rag_sources ile AYNI veri) - gelir.
+# RuleEngine'in ESKIDEN AYRI, telemetrisiz bir "mevzuat" listesi de
+# uretmesi (T017'nin orijinal "forced-match" duzeltmesi) KALDIRILDI - bu,
+# operatore GORUNURDE iki ayri RAG kanali gibi gorunuyordu (bkz.
+# `src/event_analysis/rule_engine.py` modul dokustringi). RuleEngine'in
+# event_type -> mevzuat kategorisi/siddet eslemesi risk hesaplamasi icin
+# HALA calisir (bkz. `test_regulation_match_presence_bounded_effect_on_
+# deterministic_risk` altta) - yalnizca "Ilgili ISG Mevzuati" GORUNTUSUNU
+# beslemez.
 # ------------------------------------------------------------------
 
 
-def test_report_regulations_reflect_rule_engine_match_not_raw_text_similarity(
+def test_relevant_regulations_are_derived_from_real_semantic_rag_not_rule_engine(
     pipeline: SafirPipeline, motion_video: str
 ) -> None:
-    """En onemli regresyon: `_FakeRagService`, HANGI soru sorulursa sorulsun HER ZAMAN
-    `"[FAKE-RAG] {question}"` seklinde bir "belge" doner (yani her sorguya ilgisiz/
-    kosulsuz bir eslesme verir - tam olarak "ilgisiz bir ISG dokumaninin getirilip
-    zorla eslestirilmesi" senaryosu). Eger `ContextBuilder` hala eskisi gibi
-    `vlm_description` uzerinde bagimsiz bir RAG sorgusu yapsaydi, rapor bu HAM
-    metni ("[FAKE-RAG] <tum VLM aciklamasi>") "ilgili mevzuat" olarak gosterirdi.
-
-    T017 sonrasi, mevzuat listesi YALNIZCA RuleEngine'in deterministik
-    event_type -> mevzuat eslemesinden (bu videoda: forklift -> arac_yaya_yakinligi
-    -> OK-07) gelmeli; ham VLM aciklama metninin RAG'e sorulup donen sonucu
-    DEGIL.
-
-    2026-08-25: `RuleEngine._describe_regulation`, retriever'i ARTIK kisa
-    etiketin (orn. "Operasyonel Kural OK-07") KENDISIYLE degil,
-    `_RAG_QUERY_BY_EVENT_TYPE`deki kategoriye ozel dogal-dil konu
-    aciklamasiyla sorgular (kisa etiket, GERCEK KB'de alakasiz maddelere
-    eslesebilen uydurma bir referans adiydi - bkz. `rule_engine.py`
-    modul dokustringi). Sonucun basinda kisa etiket hala ONEK olarak durur.
-    """
-    from src.event_analysis.rule_engine import _RAG_QUERY_BY_EVENT_TYPE
-    from src.event_analysis.schemas import EventType
-
+    """`report.relevant_regulations`, `report.semantic_rag_sources` (GERCEK,
+    VLM keyword'lerinden kurulan semantik RAG sorgusunun sonucu) ile BIREBIR
+    AYNI icerigi tasimali - RuleEngine'in kisa/deterministik etiketleriyle
+    DEGIL."""
     report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
 
-    assert report.relevant_regulations, "OK-07 deterministik olarak eslesmis olmali"
-    expected_query_fragment = f"[FAKE-RAG] {_RAG_QUERY_BY_EVENT_TYPE[EventType.ARAC_YAYA_YAKINLIGI]}"
-    for regulation in report.relevant_regulations:
-        # `_FakeRagService`, sorulan soruyu aynen "[FAKE-RAG] <soru>" olarak
-        # yansitir; regulation metni "<kisa etiket>: <retriever sonucu>"
-        # bicimindedir - retriever'a giden GERCEK sorgu (kisa etiket DEGIL,
-        # kategori konu aciklamasi) burada gorunmeli.
-        assert regulation.startswith("Operasyonel Kural OK-07: ") or regulation.startswith("ISG "), (
-            f"Beklenmedik mevzuat metni (ham VLM aciklamasindan mi geldi?): {regulation!r}"
-        )
-        assert expected_query_fragment in regulation or "[FAKE-RAG]" in regulation
-        assert report.natural_language_summary not in regulation
+    assert report.relevant_regulations, "Semantik RAG sorgusu (VLM keyword'lerinden) sonuc uretmis olmali"
+    assert len(report.relevant_regulations) == len(report.semantic_rag_sources)
+    for regulation, source in zip(report.relevant_regulations, report.semantic_rag_sources):
+        assert source.content in regulation
+        assert source.rule_title in regulation
+        # RuleEngine'in kisa etiketleri (orn. "Operasyonel Kural OK-07")
+        # ARTIK bu alanda GORUNMEZ - `_FakeRagService` sorulan soruyu aynen
+        # yansitir, bu da VLM aciklamasi/keyword'lerinden kurulur.
+        assert "[FAKE-RAG]" in regulation
 
 
-def test_no_rule_match_produces_empty_regulation_list_not_a_random_fake_regulation(
+def test_empty_semantic_rag_result_produces_empty_regulation_list_not_a_fabricated_one(
     pipeline: SafirPipeline, motion_video: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """RuleEngine hicbir eslesme uretmediginde (`evaluate` bos donerse), rapor
-    BOS bir `relevant_regulations` uretmeli - `_FakeRagService`nin (ilgisiz de
-    olsa) DAIMA bir "belge" dondurmesine ragmen. Kullanici, RAG retriever'in
+    """Gercek semantik RAG sorgusu hicbir esik-uzeri sonuc bulamadiginda (bos liste
+    donduginde), rapor BOS bir `relevant_regulations` uretmeli - RuleEngine'in
+    kendi eslesmeleri (varsa) bunu ETKILEMEZ/DOLDURMAZ. Kullanici, RAG'in
     kosulsuz dondurdugu rastgele bir mevzuati asla GORMEMELI."""
-    monkeypatch.setattr(
-        pipeline, "_rule_engine", type("_Empty", (), {"evaluate": staticmethod(lambda _events: [])})()
-    )
+    monkeypatch.setattr(pipeline._rag_service, "query", lambda *a, **k: [])
 
     report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
 
     assert report.relevant_regulations == []
+    assert report.semantic_rag_sources == []
+    # RuleEngine deterministik eslesmesi (varsa) HALA calisir - yalnizca
+    # "Ilgili ISG Mevzuati" gorunumunu BESLEMEZ.
+    assert report.contributing_rule_ids
 
 
 def test_rag_service_failure_does_not_crash_the_pipeline(
     pipeline: SafirPipeline, motion_video: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """RAG servisi (retriever) patlarsa (agdan erisilemedi/hata), pipeline COKMEMELI.
+    """RAG servisi patlarsa (agdan erisilemedi/hata), pipeline COKMEMELI.
 
-    `ContextBuilder` artik RAG'e hic dokunmuyor (bkz. T017); tek kalan RAG
-    cagrisi `RuleEngine._describe_regulation` icinde ZATEN try/except ile
-    korunuyor - bu test o dayanikliligi uctan uca dogrular."""
+    `ContextBuilder` artik RAG'e hic dokunmuyor; TEK RAG cagrisi
+    `SafirPipeline.stage_context` icinde ZATEN try/except ile korunuyor -
+    bu test o dayanikliligi uctan uca dogrular."""
 
     def _boom(*_args, **_kwargs):
         raise RuntimeError("RAG servisi erisilemez durumda (simulasyon)")
