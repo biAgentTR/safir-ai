@@ -38,9 +38,11 @@ qdrant-client>=1.9.0
 # production'da VARSAYILAN DEGIL - bkz. src/main.py) standalone/benchmark kullanimi icin kalir.
 sentence-transformers>=3.0.0
 
-# --- Rerank (opsiyonel, Groq/Gemini) + Prompt Injection Guard icin ---
-# NOT: google-genai artik embedding icin KULLANILMIYOR (bkz. yukarida) - yalnizca
-# reranker.provider="gemini" secilirse VEYA guard.enabled=true ise gereklidir.
+# --- Prompt Injection Guard icin (opsiyonel eski Gemini backend'i) ---
+# NOT: google-genai artik embedding/reranker icin KULLANILMIYOR (bkz. yukarida) -
+# guard AKTIF/production'da EVREN kullanir (openai>=1.35 zaten yukarida var,
+# ek bagimlilik GEREKMEZ); bu paket yalnizca guard.provider="gemini" (eski,
+# aktif olmayan test backend'i) SECILIRSE gereklidir.
 google-genai>=1.0.0
 
 # --- Rapor Disa Aktarma (PDF) ---

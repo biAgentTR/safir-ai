@@ -5,15 +5,16 @@ KAPSAM DISI (bilerek): bu modul risk_score/risk_level/event_type hesaplamaz,
 RuleEngine kararini degistirmez, regulation match uretmez, RAG retrieval
 kararinin yerine gecmez. Tek gorevi: DETECT -> CLASSIFY -> QUARANTINE/PASS.
 
-Iki saglayici: `GeminiPromptInjectionGuard` (mevcut Gemini istemci deseni,
-bkz. `src/rag/reranker.py`/`embedding_providers.py`: lazy `genai.Client`,
-SADECE yapilandirilmis JSON isteyen prompt) ve `GroqPromptInjectionGuard`
-(Groq'un OpenAI-uyumlu ucu, AYRI bir `GROQ_API_KEY`/kota - Gemini'nin
-embedding/VLM/reranker kotasindan BAGIMSIZ). Ikisi de AYNI prompt/JSON
-semasini ve dogrulama kurallarini paylasir (bkz. `_build_guard_prompt`/
-`_parse_guard_response`) - yalnizca AG cagrisi saglayici-ozeldir. Modelin
-serbest ACIKLAMA metni ASLA quarantine karari olarak KULLANILMAZ - yalnizca
-ayristirilmis {is_injection, confidence, reason} alanlari.
+Uc saglayici: `EvrenPromptInjectionGuard` (AKTIF/production - EVREN'in
+OpenAI-uyumlu LLM ucu, `src/rag/reranker.py::EvrenReranker` ile AYNI lazy
+`openai.OpenAI` istemci deseni ve `EVREN_API_KEY`), `GeminiPromptInjectionGuard`
+(eski, gecici GELISTIRME/TEST backend'i - lazy `genai.Client`) ve
+`GroqPromptInjectionGuard` (eski, gecici GELISTIRME/TEST backend'i - AYRI
+bir `GROQ_API_KEY`/kota). Ucu de AYNI prompt/JSON semasini ve dogrulama
+kurallarini paylasir (bkz. `_build_guard_prompt`/`_parse_guard_response`) -
+yalnizca AG cagrisi saglayici-ozeldir. Modelin serbest ACIKLAMA metni ASLA
+quarantine karari olarak KULLANILMAZ - yalnizca ayristirilmis
+{is_injection, confidence, reason} alanlari.
 
 Guard API cagrisi basarisiz olursa VEYA donen JSON gecersizse, `fail_closed`
 politikasi devreye girer (bkz. `_failure_result`): `fail_closed=True`
@@ -105,6 +106,19 @@ def build_prompt_injection_guard(guard_config) -> PromptInjectionGuard:
     Raises:
         GuardUnavailableError: `provider` desteklenmiyorsa.
     """
+    if guard_config.provider == "evren":
+        if not guard_config.base_url:
+            raise GuardUnavailableError(
+                "Prompt injection guard icin 'guard.base_url' config'te tanimli olmalidir "
+                "(provider='evren' icin EVREN taban adresi, orn. 'https://evren-llmapi.ssyz.org.tr/v1')."
+            )
+        return EvrenPromptInjectionGuard(
+            model_name=guard_config.model_name,
+            fail_closed=guard_config.fail_closed,
+            confidence_threshold=guard_config.confidence_threshold,
+            base_url=guard_config.base_url,
+            api_key_env=guard_config.api_key_env,
+        )
     if guard_config.provider == "gemini":
         return GeminiPromptInjectionGuard(
             model_name=guard_config.model_name,
@@ -122,7 +136,7 @@ def build_prompt_injection_guard(guard_config) -> PromptInjectionGuard:
         )
     raise GuardUnavailableError(
         f"Desteklenmeyen prompt injection guard saglayicisi: '{guard_config.provider}'. "
-        "Su an 'gemini' veya 'groq' destekleniyor."
+        "Su an 'evren', 'gemini' veya 'groq' destekleniyor."
     )
 
 
@@ -218,11 +232,103 @@ def _failure_result(source: str, fail_closed: bool, latency_ms: float, provider_
     )
 
 
+class EvrenPromptInjectionGuard(PromptInjectionGuard):
+    """EVREN'in OpenAI-uyumlu LLM ucunu SADECE yapilandirilmis JSON ile siniflandirici olarak kullanan `PromptInjectionGuard`.
+
+    AKTIF/production saglayici (2026-08-25 EVREN MIGRASYONU) - projenin
+    geri kalaninda (VLM/LLM/embedding/reranker) zaten kullanilan AYNI
+    saglayici/istemci desenini izler: `src/rag/reranker.py::EvrenReranker`
+    ile BIREBIR ayni lazy `openai.OpenAI` istemci kurulumu + `EVREN_API_KEY`
+    ortam degiskeni cozumlemesi (ikinci, paralel bir HTTP/client mimarisi
+    OLUSTURULMADI). Dedike bir "guard/moderation" API'si KULLANMAZ - EVREN'in
+    standart `/v1/chat/completions` ucuna, JSON-mode ile, mevcut EVREN LLM
+    modeli (`configs/config.yaml` -> `guard.model_name`, HARD-CODE DEGIL)
+    ile istek atar.
+    """
+
+    def __init__(
+        self,
+        model_name: str,
+        fail_closed: bool = True,
+        confidence_threshold: float = 0.80,
+        base_url: str = "https://evren-llmapi.ssyz.org.tr/v1",
+        api_key_env: str = "EVREN_API_KEY",
+    ) -> None:
+        """EvrenPromptInjectionGuard'i model adi ve politikayla kurar (AG CAGRISI YAPMAZ - istemci lazy olusturulur).
+
+        Args:
+            model_name: EVREN LLM model takma adi (orn. "llm-fast" - config'ten gelir, hardcode edilmez).
+            fail_closed: `True` ise API/parse hatasinda icerik quarantine
+                edilir (production varsayilani); `False` ise allow edilir
+                (her iki durumda da acikca loglanir).
+            confidence_threshold: `is_injection=True` sonucunun quarantine'e
+                cevrilmesi icin gereken minimum guven skoru (0.0-1.0).
+            base_url: EVREN'in OpenAI-uyumlu taban adresi.
+            api_key_env: API anahtarinin okunacagi ortam degiskeni adi (orn. "EVREN_API_KEY").
+        """
+        self._model_name = model_name
+        self._fail_closed = fail_closed
+        self._confidence_threshold = confidence_threshold
+        self._base_url = base_url
+        self._api_key_env = api_key_env
+        self._client = None
+
+    def _get_client(self):
+        if self._client is not None:
+            return self._client
+
+        api_key = os.environ.get(self._api_key_env, "").strip()
+        if not api_key:
+            raise GuardUnavailableError(
+                f"Prompt injection guard icin '{self._api_key_env}' ortam degiskeni tanimli degil."
+            )
+
+        from openai import OpenAI  # gec import: paket kurulu degilse bile modul import'u patlamasin
+
+        self._client = OpenAI(api_key=api_key, base_url=self._base_url)
+        return self._client
+
+    def inspect(self, text: str, source: str) -> GuardResult:
+        if not text or not text.strip():
+            return GuardResult(is_injection=False, confidence=0.0, reason=None, action="allow", source=source)
+
+        started = time.perf_counter()
+        try:
+            client = self._get_client()
+            prompt = _build_guard_prompt(text, source)
+
+            response = client.chat.completions.create(
+                model=self._model_name,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0.0,
+            )
+            raw_text = response.choices[0].message.content or ""
+            is_injection, confidence, reason = _parse_guard_response(raw_text)
+        except Exception as exc:  # noqa: BLE001 - HERHANGI bir hata guvenli fail_closed/fail_open politikasina cevrilir
+            logger.error("EvrenPromptInjectionGuard: inspect basarisiz (source=%s): %s", source, exc)
+            latency_ms = (time.perf_counter() - started) * 1000.0
+            return _failure_result(source, self._fail_closed, latency_ms, "EvrenPromptInjectionGuard")
+
+        latency_ms = (time.perf_counter() - started) * 1000.0
+        action = "quarantine" if (is_injection and confidence >= self._confidence_threshold) else "allow"
+        return GuardResult(
+            is_injection=is_injection,
+            confidence=confidence,
+            reason=reason,
+            action=action,
+            source=source,
+            latency_ms=round(latency_ms, 1),
+        )
+
+
 class GeminiPromptInjectionGuard(PromptInjectionGuard):
     """Gemini metin modelini SADECE yapilandirilmis JSON ile siniflandirici olarak kullanan `PromptInjectionGuard`.
 
-    Dedike bir "guard/moderation" API'si KULLANMAZ - mevcut Gemini API
-    anahtarini (embedding/reranker ile AYNI `GEMINI_API_KEY`) kullanir.
+    ESKI, gecici GELISTIRME/TEST backend'i (AKTIF DEGIL - bkz.
+    `EvrenPromptInjectionGuard`). Dedike bir "guard/moderation" API'si
+    KULLANMAZ - mevcut Gemini API anahtarini (embedding/reranker ile AYNI
+    `GEMINI_API_KEY`) kullanir.
     """
 
     def __init__(
@@ -305,11 +411,11 @@ class GeminiPromptInjectionGuard(PromptInjectionGuard):
 class GroqPromptInjectionGuard(PromptInjectionGuard):
     """Groq'un OpenAI-uyumlu ucunu SADECE yapilandirilmis JSON ile siniflandirici olarak kullanan `PromptInjectionGuard`.
 
-    Gemini'den TAMAMEN AYRI bir API anahtari/kota kullanir (`GROQ_API_KEY`) -
-    boylece guard cagrilari, embedding/VLM/reranker'in Gemini kotasiyla
-    YARISMAZ. Ayni JSON semasi/dogrulama kurallari (bkz. `_build_guard_prompt`/
-    `_parse_guard_response`) - yalnizca AG cagrisi farklidir (OpenAI SDK,
-    `response_format={"type": "json_object"}`).
+    ESKI, gecici GELISTIRME/TEST backend'i (AKTIF DEGIL - bkz.
+    `EvrenPromptInjectionGuard`). Gemini'den TAMAMEN AYRI bir API anahtari/
+    kota kullanir (`GROQ_API_KEY`). Ayni JSON semasi/dogrulama kurallari
+    (bkz. `_build_guard_prompt`/`_parse_guard_response`) - yalnizca AG
+    cagrisi farklidir (OpenAI SDK, `response_format={"type": "json_object"}`).
     """
 
     def __init__(
@@ -438,6 +544,7 @@ __all__ = [
     "GuardResult",
     "GuardUnavailableError",
     "PromptInjectionGuard",
+    "EvrenPromptInjectionGuard",
     "GeminiPromptInjectionGuard",
     "GroqPromptInjectionGuard",
     "build_prompt_injection_guard",

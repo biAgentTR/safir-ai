@@ -507,17 +507,18 @@ class GuardConfig(BaseModel):
     hesaplamaz, RuleEngine kararini VEYA RAG retrieval kararini degistirmez -
     yalnizca Agent'a giden guvenilmeyen serbest metni (user_prompt, VLM
     aciklamasi) DETECT -> CLASSIFY -> QUARANTINE/PASS akisindan gecirir.
-    `provider`: "gemini" (embedding ile AYNI Gemini API anahtari) veya "groq"
-    (Groq'un OpenAI-uyumlu ucu, AYRI kota/anahtar).
+    `provider`: "evren" (AKTIF/production - EVREN'in OpenAI-uyumlu LLM ucu,
+    `EVREN_API_KEY`) - "gemini"/"groq" eski, gecici GELISTIRME/TEST
+    backend'leri olarak KORUNUR (aktif degil, silinmedi).
     """
 
     enabled: bool = False
-    provider: str = "gemini"
-    model_name: str = "gemini-3.5-flash-lite"
+    provider: str = "evren"
+    model_name: str = "llm-fast"
     fail_closed: bool = True
     confidence_threshold: float = 0.80
-    api_key_env: str = "GEMINI_API_KEY"
-    base_url: Optional[str] = None      # yalnizca provider="groq" icin (verilmezse Groq varsayilani kullanilir)
+    api_key_env: str = "EVREN_API_KEY"
+    base_url: Optional[str] = None      # provider="evren"/"groq" icin ZORUNLU (gemini'de kullanilmaz)
 
 
 class SafirConfig(BaseModel):

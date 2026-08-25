@@ -423,23 +423,27 @@ escalation:
 # Agent'a giden guvenilmeyen serbest metni (user_prompt, VLM aciklamasi)
 # talimat olarak yorumlanmaya karsi kontrol eder. risk_score/risk_level/
 # event_type/RuleEngine/RAG kararlarina DOKUNMAZ (bkz. src/security/
-# prompt_injection_guard.py modul dokustringi). embedding/reranker ile AYNI
-# Gemini API anahtarini kullanir.
+# prompt_injection_guard.py modul dokustringi). 2026-08-25 EVREN MIGRASYONU:
+# VLM/LLM/embedding/reranker ile AYNI EVREN altyapisini (OpenAI-uyumlu LLM
+# ucu, EVREN_API_KEY) kullanir - `model_name` (`llm-fast`), `llm.models.evren`
+# ile AYNI EVREN modelidir (bkz. src/security/prompt_injection_guard.py::
+# EvrenPromptInjectionGuard). Eski gemini/groq saglayicilari hala
+# desteklenir (silinmedi) ama AKTIF DEGIL.
 # NOT (varsayilan KAPALI): reranker'in aksine (yalnizca RAG sonucunu bos
 # birakir - `stage_context` icinde try/except ile yutulur), guard basarisiz
 # oldugunda fail_closed=true politikasi vlm_description/user_prompt metnini
-# GORUNUR sekilde quarantine ile isaretler. GEMINI_API_KEY tanimli DEGILSE
+# GORUNUR sekilde quarantine ile isaretler. EVREN_API_KEY tanimli DEGILSE
 # (orn. CI/test ortami) bu her cagrida tetiklenir - bu yuzden guard,
-# GEMINI_API_KEY provizyonlanip dogrulandiktan SONRA acikca enabled:true
+# EVREN_API_KEY provizyonlanip dogrulandiktan SONRA acikca enabled:true
 # yapilmalidir (production).
 guard:
   enabled: true
-  provider: "groq"                   # reranker'dan da AYRI bir Groq modeli/kotasi (guvenlik-siniflandirmasina uygun isim)
-  model_name: "openai/gpt-oss-safeguard-20b"
+  provider: "evren"                  # AKTIF: EVREN'in OpenAI-uyumlu LLM ucu (VLM/LLM/embedding/reranker ile AYNI altyapi)
+  model_name: "llm-fast"             # llm.models.evren.model_name ile AYNI EVREN modeli (bkz. dokumantasyon SS 6: siniflandirma icin llm-fast yeterli)
   fail_closed: true                  # true: guard API/parse hatasinda icerik QUARANTINE edilir (production)
   confidence_threshold: 0.80         # is_injection=true VE confidence >= bu deger -> quarantine
-  base_url: "https://api.groq.com/openai/v1"
-  api_key_env: "GROQ_API_KEY"
+  base_url: "https://evren-llmapi.ssyz.org.tr/v1"
+  api_key_env: "EVREN_API_KEY"
 
 # -----------------------------------------------------------------------------
 # API / Servis Katmani
