@@ -57,10 +57,14 @@ event_classifier_prompts.py`, `_classify_with_llm_fallback`). Boylece:
 - `classifier=None` (varsayilan, orn. mock-LLM modunda `main.py` bunu HIC
   enjekte etmez) ile davranis TAMAMEN ESKISI GIBI kalir - genel_gozlem'e
   duser; bu OPSIYONEL bir zenginlestirmedir, ZORUNLU bir bagimlilik degil.
-- Siniflandirici cagrisi BASARISIZ olursa (ag hatasi, bozuk JSON, gecersiz
-  kategori) sessizce/CRASH ETMEDEN eski (genel_gozlem) davranisa duser -
-  bu SON CARE bir zenginlestirmedir, pipeline'in GUVENILIRLIGINI ASLA
-  riske ATMAZ.
+- 2026-08-25 (2. duzeltme): siniflandirici BASARISIZ olursa (ag hatasi,
+  bozuk JSON, gecersiz kategori), bu ARTIK sessizce "genel_gozlem"e (yani
+  "risk yok" ONAYINA) DUSMEZ - "belirsiz/karar verilemedi" ile "onaylanmis
+  risk yok" AYNI SEY DEGILDIR (`risk_status="unknown"` icin daha once
+  yapilan P0 duzeltmesiyle AYNI gerekce). Basarisiz cagri, `event_type=
+  None`/`event_name="degerlendirme_yapilamadi"` ile ACIKCA isaretlenen AYRI
+  bir "belirsiz" olay uretir (bkz. `_indeterminate_event`) - pipeline yine
+  de ASLA COKMEZ, yalnizca dogru/durust bir etiket kullanilir.
 
 T014 - Olumsuzlama tespiti (ve sinirlari)
 -------------------------------------------
@@ -342,10 +346,19 @@ class EventEngine:
             )
 
         if not detections:
-            fallback_event = self._classify_with_llm_fallback(engine_input) if self._classifier is not None else None
-            if fallback_event is not None:
-                detections.append(fallback_event)
+            if self._classifier is not None:
+                # Siniflandirici YAPILANDIRILMIS - "genel_gozlem" ARTIK yalnizca
+                # siniflandiricinin GERCEKTEN/POZITIF olarak "risk yok" dedigi
+                # durumda kullanilir; siniflandirici basarisiz olursa/gecersiz
+                # bir sey donerse bu, "risk yok" ile ASLA KARISTIRILMAZ - acikca
+                # "degerlendirilemedi" olarak isaretlenir (bkz. `_classify_with_llm_fallback`).
+                detections.append(self._classify_with_llm_fallback(engine_input))
             else:
+                # Siniflandirici HIC yapilandirilmamis (bkz. `main.py`: mock-LLM
+                # modunda veya operator bilerek devre disi biraktiginda) - bu,
+                # ONCEDEN VAR OLAN, degismemis davranistir: hicbir siniflandirma
+                # denemesi YAPILMADI, bu yuzden "genel_gozlem"e (dusuk guvenli)
+                # duser. Bu, "denedik ve basarisiz olduk" ile AYNI SEY DEGILDIR.
                 detections.append(
                     DetectedEvent(
                         event_name=EventType.GENEL_GOZLEM.value,
@@ -458,21 +471,34 @@ class EventEngine:
             )
         return detections
 
-    def _classify_with_llm_fallback(self, engine_input: EventEngineInput) -> Optional[DetectedEvent]:
+    def _classify_with_llm_fallback(self, engine_input: EventEngineInput) -> DetectedEvent:
         """SON CARE: birincil (structured) VE ikincil (anahtar-kelime) yol basarisiz oldugunda kucuk bir LLM'e siniflandirma sorar.
 
-        Bkz. modul dokustringi 2026-08-25 notu. Bu metod HICBIR ISTISNA
-        YAYMAZ - herhangi bir hata (ag, JSON, gecersiz kategori) `None`
-        dondurur; cagiran (`detect`) bunu eski (genel_gozlem) davranisina
-        guvenli sekilde geri duser.
+        Bkz. modul dokustringi 2026-08-25 notu. 2026-08-25 (2. duzeltme -
+        "belirsiz" ile "onaylanmis risk yok" KARISTIRILMAMALI): bu metod
+        ARTIK ASLA `None` DONDURMEZ VE bu metod cagrildiginda ASLA sessizce
+        "genel_gozlem"e (yani "risk yok" ONAYINA) DUSMEZ. Siniflandirici
+        GERCEKTEN VE ACIKCA "genel_gozlem" derse bu GECERLI, POZITIF bir
+        sonuctur (`event_type="genel_gozlem"`). Ancak siniflandirici cagrisi
+        BASARISIZ olursa (ag hatasi, bozuk JSON, gecersiz/bilinmeyen kategori),
+        bu "risk yoktur" ANLAMINA GELMEZ - sistem sadece KARAR VEREMEDI; bu
+        yuzden boyle bir durumda `event_type=None` (T020: "eslestirilemedi",
+        GECERLI/BEKLENEN bir sonuc) VE `event_name="degerlendirme_yapilamadi"`
+        ile acikca isaretlenen, AYRI bir "belirsiz" olay dondurulur - operator/
+        rapor bunu ASLA "onaylanmis risksiz gozlem" ile KARISTIRMAZ. `event_type=
+        None` oldugu icin RuleEngine bu olay icin zaten hicbir RuleMatch
+        URETMEZ (mevcut, degismemis davranis - bkz. `rule_engine.py`).
 
         Args:
             engine_input: Structured VE keyword yolunun HER IKISININ de
                 basarisiz oldugu cagriya ait girdi.
 
         Returns:
-            LLM gecerli bir kategori + gerekce donsurse bir `DetectedEvent`;
-            cagri basarisiz olursa/gecersiz kategori donerse `None`.
+            Siniflandirici gecerli bir kategori dondurduyse o kategoriye ait
+            bir `DetectedEvent` (bu, `genel_gozlem` OLABILIR - ama bu durumda
+            POZITIF/onaylanmis bir sonuctur); siniflandirici basarisiz olursa
+            `event_type=None`, `event_name="degerlendirme_yapilamadi"` olan,
+            "risk yok" ile ASLA karistirilamayacak belirgin bir "belirsiz" olay.
         """
         try:
             messages = [
@@ -487,16 +513,19 @@ class EventEngine:
             event_type_raw = str(payload.get("event_type", "")).strip().lower()
             if event_type_raw not in _VALID_EVENT_TYPES:
                 logger.warning(
-                    "EventEngine LLM fallback: gecersiz/bilinmeyen kategori dondurdu (%r); genel_gozlem'e duseliyor.",
+                    "EventEngine LLM fallback: gecersiz/bilinmeyen kategori dondurdu (%r); "
+                    "'risk yok' DEGIL, 'degerlendirilemedi' olarak isaretleniyor.",
                     event_type_raw,
                 )
-                return None
+                return self._indeterminate_event(engine_input)
 
             confidence = self._coerce_confidence(payload.get("confidence"), default=0.3)
             reason = str(payload.get("reason") or "").strip()
         except Exception:  # noqa: BLE001 - fallback best-effort'tur, ASLA pipeline'i KESMEZ
-            logger.exception("EventEngine LLM fallback siniflandirmasi basarisiz; genel_gozlem'e duseliyor.")
-            return None
+            logger.exception(
+                "EventEngine LLM fallback siniflandirmasi basarisiz; 'risk yok' DEGIL, 'degerlendirilemedi' olarak isaretleniyor."
+            )
+            return self._indeterminate_event(engine_input)
 
         event_type = EventType(event_type_raw)
         keywords = self._extract_keywords_for_type(event_type_raw, engine_input.vlm_description)
@@ -515,6 +544,26 @@ class EventEngine:
             confidence=confidence,
             matched_keywords=keywords,
             source_model=f"{engine_input.source_model}{_LLM_FALLBACK_SOURCE_SUFFIX}",
+        )
+
+    @staticmethod
+    def _indeterminate_event(engine_input: EventEngineInput) -> DetectedEvent:
+        """Siniflandirici BASARISIZ oldugunda (hata/bozuk JSON/gecersiz kategori) dondurulen, "risk YOK" ile ASLA karistirilmayan belirsiz olay.
+
+        `event_type=None` (T020: "eslestirilemedi" - GECERLI/BEKLENEN bir
+        sonuc, RuleEngine bunun icin hicbir RuleMatch URETMEZ) VE `event_name
+        ="degerlendirme_yapilamadi"` (sabit taksonomi disi, serbest bicimli
+        bir isim - bkz. `DetectedEvent.event_name` docstring'i) ile, sistemin
+        bu gozlem icin GERCEKTEN bir karar VEREMEDIGINI acikca isaretler.
+        """
+        return DetectedEvent(
+            event_name="degerlendirme_yapilamadi",
+            event_type=None,
+            description=engine_input.vlm_description,
+            timestamp=engine_input.timestamp,
+            confidence=0.0,
+            matched_keywords=[],
+            source_model=f"{engine_input.source_model}{_LLM_FALLBACK_SOURCE_SUFFIX}_failed",
         )
 
     @staticmethod

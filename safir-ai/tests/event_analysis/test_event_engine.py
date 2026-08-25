@@ -152,31 +152,49 @@ def test_llm_fallback_genel_gozlem_verdict_is_honored() -> None:
     assert events[0].source_model.endswith("+llm_fallback_classifier")
 
 
-def test_llm_fallback_invalid_category_falls_back_to_genel_gozlem_without_crashing() -> None:
-    """LLM gecersiz/uydurma bir kategori donerse (`_VALID_EVENT_TYPES`de yoksa), sessizce eski davranisa (genel_gozlem) duser."""
+def test_llm_fallback_invalid_category_is_marked_indeterminate_not_confirmed_safe() -> None:
+    """LLM gecersiz/uydurma bir kategori donerse, bu "risk yok" (genel_gozlem) ile
+    ASLA karistirilmaz - acikca "degerlendirme_yapilamadi" (event_type=None) olarak isaretlenir."""
     classifier = _FakeClassifier(response_text='{"event_type": "uydurma_kategori", "confidence": 0.9, "reason": "x"}')
     events = EventEngine(classifier=classifier).detect(_input("Belirsiz bir durum."))
 
     assert len(events) == 1
-    assert events[0].event_type == EventType.GENEL_GOZLEM.value
-    assert events[0].source_model == "test-vlm"  # LLM fallback SUFFIX'i eklenmedi (kullanilmadi)
+    assert events[0].event_type is None
+    assert events[0].event_name == "degerlendirme_yapilamadi"
+    assert events[0].confidence == 0.0
+    assert events[0].source_model.endswith("_failed")
 
 
-def test_llm_fallback_malformed_json_falls_back_to_genel_gozlem_without_crashing() -> None:
+def test_llm_fallback_malformed_json_is_marked_indeterminate_not_confirmed_safe() -> None:
     classifier = _FakeClassifier(response_text="bu gecerli bir JSON degil")
     events = EventEngine(classifier=classifier).detect(_input("Belirsiz bir durum."))
 
     assert len(events) == 1
-    assert events[0].event_type == EventType.GENEL_GOZLEM.value
+    assert events[0].event_type is None
+    assert events[0].event_name == "degerlendirme_yapilamadi"
 
 
-def test_llm_fallback_call_failure_falls_back_to_genel_gozlem_without_crashing() -> None:
-    """Siniflandirici cagrisi (ag hatasi vb.) PATLARSA, pipeline COKMEZ - guvenli fallback."""
+def test_llm_fallback_call_failure_is_marked_indeterminate_not_confirmed_safe() -> None:
+    """Siniflandirici cagrisi (ag hatasi vb.) PATLARSA, pipeline COKMEZ AMA sonuc
+    "risk yok" (genel_gozlem) OLARAK DA YORUMLANMAZ - acikca belirsiz isaretlenir."""
     classifier = _FakeClassifier(raise_exc=RuntimeError("ag hatasi (simulasyon)"))
     events = EventEngine(classifier=classifier).detect(_input("Belirsiz bir durum."))
 
     assert len(events) == 1
+    assert events[0].event_type is None
+    assert events[0].event_name == "degerlendirme_yapilamadi"
+
+
+def test_classifier_disabled_still_uses_plain_genel_gozlem_unchanged() -> None:
+    """`classifier=None` (operatorun bilerek devre disi biraktigi durum, orn. mock-LLM modu):
+    bu "denedik basarisiz olduk" DEGIL - hic denenmedi; ONCEDEN VAR OLAN, degismemis
+    genel_gozlem davranisi KORUNUR (aksi halde her mock-mod calistirmasi "degerlendirme_
+    yapilamadi" ile dolar, ki bu YANLIS - operator fallback'i BILEREK kapatti)."""
+    events = EventEngine(classifier=None).detect(_input("Sahada normal calisma gozlemlendi."))
+
+    assert len(events) == 1
     assert events[0].event_type == EventType.GENEL_GOZLEM.value
+    assert events[0].confidence == 0.0
 
 
 def test_llm_fallback_extracts_canonical_keywords_for_matched_category() -> None:
