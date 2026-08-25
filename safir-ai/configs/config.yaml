@@ -312,6 +312,11 @@ vlm:
       max_new_tokens: 2048
       temperature: 0.0              # dokumantasyon onerisi: video isteklerinde deterministik cikti icin 0.0
       top_p: 0.9
+      chunk_duration_sec: 60         # "video cozunurluk zarfi" duzeltmesi: EVREN videonun TAMAMINA TEK piksel
+                                      # butcesi uyguladigi icin (dokumantasyon onerisi: "klip kisa parcalara
+                                      # bolunmeli"), bu sureden UZUN videolar otomatik olarak ardisik 60s'lik
+                                      # parcalara bolunup HER parca AYRI istekte gonderilir (bkz.
+                                      # src/vlm/video_chunker.py, src/vlm/evren_vlm.py::EvrenVLM._analyze_video_chunks)
 
 # -----------------------------------------------------------------------------
 # 04 - Hibrit Bellek ve Baglam Olusturucu - EVREN Embedding + Qdrant

@@ -5,15 +5,28 @@ EVREN'in video-analiz ucu (`model="vlm"`), diger VLM implementasyonlarindan
 DOGRUDAN tek bir video dosyasini (base64, `video_url` icerik blogu) kabul
 eder (bkz. katilimci dokumantasyonu SS 7.1). Bu nedenle `EvrenVLM`,
 `BaseVLM._build_chat_payload`in frame-tabanli akisini KULLANMAZ;
-`analyze_video(video_source, evidence_frames, prompt)` ile videoyu TEK bir
-istekte gonderir - sampler'in urettigi kareler yalnizca (mock istemciyle
-PARITE icin) imzada tasinir, gercek saglayicida KULLANILMAZ.
+`analyze_video(video_source, evidence_frames, prompt)` ile videoyu (gerekirse
+parcalara bolunerek, bkz. asagida) gonderir - sampler'in urettigi kareler
+yalnizca (mock istemciyle PARITE icin) imzada tasinir, gercek saglayicida
+KULLANILMAZ.
 
 `analyze_evidence` (frame-tabanli, eski/coklu-goruntu akisi) yalnizca
 `BaseVLM` soyut sozlesmesini karsilamak icin tanimlanmistir; production
 akisinda (`src/main.py::SafirPipeline.stage_vlm`) CAGRILMAZ - EVREN'in
 istek basina en fazla 2 goruntu kabul etmesi nedeniyle (bkz. dokumantasyon
 SS 7.5) kare-bolme/coklu-istek deseni kasitli olarak yeniden KURULMAZ.
+
+2026-08-25 ("video cozunurluk zarfi" duzeltmesi): EVREN, gonderilen videonun
+TAMAMINA TEK bir toplam piksel butcesi uygular (dokumantasyon) - 180 saniyelik
+bir klip ile 60 saniyelik AYNI cozunurlukteki bir klip AYNI oranda
+kucultulmez; uzun klip cok daha agresif kucultulur ve detaylar (baret, kucuk
+alev/duman baslangici vb.) kaybolabilir. `endpoint.chunk_duration_sec`
+config'te tanimliysa (bkz. `configs/config.yaml` -> `vlm.models.evren`),
+`analyze_video` videoyu bu sureden uzunsa `src/vlm/video_chunker.py` ile
+ardisik parcalara boler, HER parcayi AYRI bir istekte gonderir ve sonuclari
+(zaman-damgasi kaydirmasiyla) birlestirir - EVREN dokumantasyonunun "klip
+kisa parcalara bolunmeli" onerisini uygular. `None`/`<=0` ise (varsayilan)
+davranis DEGISMEZ - video eskisi gibi tek istekte gonderilir.
 """
 
 from __future__ import annotations
@@ -21,13 +34,14 @@ from __future__ import annotations
 import base64
 import logging
 import time
-from typing import List
+from typing import Any, Dict, List
 
 import httpx
 
 from src.prompts import VLM_OBSERVER_SYSTEM_PROMPT
 from src.sampler.schema import EvidenceFrame
 from src.vlm.base_vlm import BaseVLM, VLMResponse, parse_structured_events
+from src.vlm.video_chunker import VideoChunk, cleanup_chunks, split_video_into_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +58,19 @@ _VIDEO_MODE_NOTE = (
 )
 
 
+def _format_mmss(seconds: float) -> str:
+    """Saniyeyi `MM:SS` bicimine cevirir (birlestirilmis aciklamada parca zaman etiketi icin)."""
+    total = max(0, int(seconds))
+    return f"{total // 60:02d}:{total % 60:02d}"
+
+
 class EvrenVLM(BaseVLM):
     """TEKNOFEST EVREN yarisma servisinin video-tabanli VLM ucunu kullanan implementasyon."""
 
     def analyze_video(
         self, video_source: str, evidence_frames: List[EvidenceFrame], prompt: str
     ) -> VLMResponse:
-        """Video dosyasini DOGRUDAN (kare cikarma/bolme olmadan) EVREN'e gonderip olay kumeleme + Turkce gozlem uretir.
+        """Videoyu EVREN'e gonderip olay kumeleme + Turkce gozlem uretir (gerekirse parcalara bolerek).
 
         Args:
             video_source: Yerel bir video dosyasinin yolu. RTSP/canli akis
@@ -63,11 +83,13 @@ class EvrenVLM(BaseVLM):
 
         Returns:
             EVREN tarafindan uretilen, kumelenmis olaylari ve dogal dil
-            gozlemini iceren `VLMResponse`.
+            gozlemini iceren `VLMResponse` (birden fazla parca varsa
+            birlestirilmis/zaman-kaydirmali).
 
         Raises:
             RuntimeError: `video_source` bir RTSP/canli akis adresiyse, video
-                dosyasi okunamazsa veya EVREN cagrisi basarisiz olursa.
+                dosyasi okunamazsa/acilamazsa veya HICBIR parca icin EVREN
+                cagrisi basarili olmazsa.
         """
         del evidence_frames  # yalnizca arayuz parametresi; bkz. docstring
 
@@ -77,11 +99,46 @@ class EvrenVLM(BaseVLM):
                 f"EVREN VLM yalnizca yerel video dosyalarini destekler (RTSP/canli akis DESTEKLENMEZ): {video_source}"
             )
 
+        chunk_duration_sec = getattr(self._endpoint, "chunk_duration_sec", None) or 0.0
+        if chunk_duration_sec <= 0:
+            return self._send_single_video(video_source, prompt)
+
+        chunks = split_video_into_chunks(video_source, chunk_duration_sec)
+        if len(chunks) == 1:
+            return self._send_single_video(video_source, prompt)
+
+        logger.info(
+            "EVREN VLM: video %d parcaya bolundu (chunk_duration_sec=%.1f), her parca AYRI istekte gonderilecek.",
+            len(chunks),
+            chunk_duration_sec,
+        )
         try:
-            with open(video_source, "rb") as fh:
+            return self._analyze_video_chunks(chunks, prompt)
+        finally:
+            cleanup_chunks(chunks)
+
+    def _send_single_video(self, video_path: str, prompt: str) -> VLMResponse:
+        """Tek bir video dosyasini (TAM veya bir parcasini) DOGRUDAN, tek istekte EVREN'e gonderir.
+
+        Args:
+            video_path: Gonderilecek `.mp4` dosyasinin yolu (tam video veya
+                `video_chunker`in urettigi bir parca).
+            prompt: Analiz odagini belirten kullanici istemi.
+
+        Returns:
+            Bu tekil istegin `VLMResponse`i - `structured_events`teki
+            `start_time`/`end_time` bu dosyanin KENDI basindan (0) itibaren
+            saniyedir (parca ise cagiran taraf, bkz. `_analyze_video_chunks`,
+            bunu orijinal videodaki gercek zamana KAYDIRIR).
+
+        Raises:
+            RuntimeError: Video dosyasi okunamazsa veya EVREN cagrisi basarisiz olursa.
+        """
+        try:
+            with open(video_path, "rb") as fh:
                 video_b64 = base64.b64encode(fh.read()).decode("ascii")
         except OSError as exc:
-            raise RuntimeError(f"EVREN icin video dosyasi okunamadi: {video_source} ({exc})") from exc
+            raise RuntimeError(f"EVREN icin video dosyasi okunamadi: {video_path} ({exc})") from exc
 
         full_prompt = f"{VLM_OBSERVER_SYSTEM_PROMPT}\n\nEk istem: {prompt}{_VIDEO_MODE_NOTE}".strip()
         payload = {
@@ -99,7 +156,7 @@ class EvrenVLM(BaseVLM):
             "temperature": self._endpoint.temperature,
         }
         logger.info(
-            "EVREN VLM video cagrisi yapiliyor: video=%s model=%s", video_source, self.model_name
+            "EVREN VLM video cagrisi yapiliyor: video=%s model=%s", video_path, self.model_name
         )
 
         started_at = time.perf_counter()
@@ -124,6 +181,72 @@ class EvrenVLM(BaseVLM):
             frame_count=0,
             latency_ms=latency_ms,
             structured_events=structured_events,
+        )
+
+    def _analyze_video_chunks(self, chunks: List[VideoChunk], prompt: str) -> VLMResponse:
+        """Her video parcasini SIRAYLA, AYRI bir istekte gonderir ve sonuclari zaman-kaydirmasiyla birlestirir.
+
+        Parcalar SIRAYLA (paralel DEGIL) gonderilir - EVREN uzerinde ayni
+        anda birden fazla agir video istegi acmamak icin (rate-limit/kota
+        riski, bkz. dokumantasyon SS 7.1 "1800s'ye kadar surebilir" notu).
+        Bir parcanin istegi basarisiz olursa DIGER parcalar ETKILENMEZ - o
+        parca icin `[ANALYSIS_FAILED]` notlu bir aciklama eklenir ve
+        `structured_events`i BOS sayilir; TUM parcalar basarisiz olursa
+        `RuntimeError` firlatilir (cagiran `stage_vlm` bunu degraded rapora cevirir).
+
+        Args:
+            chunks: `split_video_into_chunks` ciktisi (>= 2 eleman).
+            prompt: Kullanici istemi (her parcaya AYNEN iletilir).
+
+        Returns:
+            Tum parcalarin `structured_events`ini (orijinal videodaki GERCEK
+            zamana kaydirilmis) ve zaman-etiketli birlestirilmis aciklamayi
+            iceren tek bir `VLMResponse`.
+
+        Raises:
+            RuntimeError: HICBIR parca basarili olmazsa.
+        """
+        merged_events: List[Dict[str, Any]] = []
+        description_parts: List[str] = []
+        total_latency_ms = 0.0
+        succeeded_count = 0
+
+        for chunk in chunks:
+            label = f"[{_format_mmss(chunk.start_offset_sec)}-{_format_mmss(chunk.end_offset_sec)}]"
+            try:
+                response = self._send_single_video(chunk.path, prompt)
+            except Exception as exc:  # noqa: BLE001 - bir parcanin hatasi digerlerine YAYILMAZ
+                logger.exception(
+                    "EVREN VLM: video parcasi basarisiz (index=%d, %s); diger parcalar etkilenmeyecek.",
+                    chunk.index,
+                    label,
+                )
+                description_parts.append(f"{label} [ANALYSIS_FAILED] Bu parca icin VLM analizi basarisiz: {exc}")
+                continue
+
+            succeeded_count += 1
+            total_latency_ms += response.latency_ms
+            description_parts.append(f"{label} {response.description}".strip())
+            for event in response.structured_events:
+                shifted = dict(event)
+                for key in ("start_time", "end_time"):
+                    value = shifted.get(key)
+                    if isinstance(value, (int, float)):
+                        shifted[key] = value + chunk.start_offset_sec
+                merged_events.append(shifted)
+
+        if succeeded_count == 0:
+            raise RuntimeError(
+                f"EVREN VLM: {len(chunks)} video parcasinin HICBIRI basarili olmadi (bkz. loglar)."
+            )
+
+        merged_events.sort(key=lambda e: e.get("start_time") or 0.0)
+        return VLMResponse(
+            description="\n".join(description_parts).strip(),
+            model_name=self.model_name,
+            frame_count=0,
+            latency_ms=total_latency_ms,
+            structured_events=merged_events,
         )
 
     def analyze_evidence(self, evidence_frames: List[EvidenceFrame], prompt: str) -> VLMResponse:

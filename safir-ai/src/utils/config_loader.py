@@ -274,6 +274,16 @@ class VLLMEndpointConfig(BaseModel):
     """Istek govdesine eklenecek saglayici-ozel alanlar (vLLM guided decoding icin;
     orn. `{"guided_json": {...}}` veya `{"guided_regex": "..."}`). Varsayilan bos
     (davranis degismez). Cekirdek alanlari (model/messages/...) EZMEZ."""
+    chunk_duration_sec: Optional[float] = None
+    """2026-08-25 (EVREN "video cozunurluk zarfi" duzeltmesi): yalnizca video-
+    tabanli saglayicilar (bkz. `src/vlm/evren_vlm.py::EvrenVLM`) tarafindan
+    okunur - EVREN, gonderilen videonun TAMAMINA TEK bir piksel butcesi
+    uyguladigi icin (dokumantasyon onerisi: "klip kisa parcalara bolunmeli"),
+    bu deger verildiginde video, `src/vlm/video_chunker.py` ile bu sureden
+    (saniye) uzun ise otomatik olarak ardisik parcalara bolunup HER parca
+    AYRI bir istekte gonderilir, sonuclar zaman-damgasi kaydirmasiyla
+    birlestirilir. `None`/`<=0` (varsayilan) = bolme YAPILMAZ (eski davranis,
+    video tek istekte gonderilir); qwen/gemma (frame-tabanli) icin ETKISIZDIR."""
 
     def resolved_base_url(self) -> str:
         """Bu uc nokta icin kullanilacak OpenAI-uyumlu taban URL'yi dondurur.
