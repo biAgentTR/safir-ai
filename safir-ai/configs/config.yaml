@@ -367,8 +367,14 @@ llm:
   # NOT (EVREN "dusunme" modu): EVREN dokumantasyonu (SS 3.2), akil yurutme
   # (thinking) modunun KAPALI tutulmasini onerir - acildiginda token
   # tuketimi 9-17 kat artarken dogruluk kazanci ihmal edilebilir/negatiftir
-  # ve `reasoning_content` her zaman BOS doner. Bu yuzden asagidaki `evren`
-  # girdisi `enable_thinking` GONDERMEZ (varsayilan: kapali).
+  # ve `reasoning_content` her zaman BOS doner. 2026-08-25 P0 duzeltmesi:
+  # ONCEDEN bu alan hic GONDERILMIYORDU ("varsayilan kapali" varsayimiyla) -
+  # ancak gercekte gonderilmeyince model dusunme moduna girip TUM
+  # max_new_tokens butcesini gizli akil yurutmeye harcayip goruen `content`i
+  # BOS birakabiliyordu (ajan JSON parse edemiyor, risk_status=unknown
+  # sonucuna dusuyordu). Artik asagidaki `evren` girdisi `extra_body.
+  # chat_template_kwargs.enable_thinking: false` ile ACIKCA kapatir
+  # (bkz. `src/vlm/llm_client.py::LLMClient.__init__`).
   models:
     qwen3:                           # aktif model Qwen3-4B-Instruct-2507'dir (VLM'den (Qwen3.5) FARKLI aile — bilerek: olgun/kararli, metin-only, gorsele ihtiyaci yok)
       model_name: "Qwen/Qwen3-4B-Instruct-2507"   # non-thinking mod (<think> bloklari yok), Nisan 2025'ten beri olgun vLLM destegi
@@ -389,6 +395,9 @@ llm:
       api_key_env: "EVREN_API_KEY"
       max_new_tokens: 1024
       temperature: 0.1
+      extra_body:                    # yukaridaki NOT: enable_thinking ACIKCA GONDERILMEZSE model
+        chat_template_kwargs:        # dusunme moduna girip tum max_new_tokens butcesini gizli
+          enable_thinking: false     # akil yurutme tokenlarina harcayabilir, goruen content BOS kalir
 
 agent:
   max_iterations: 6                  # LangGraph durum makinesinin maksimum dongu sayisi

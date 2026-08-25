@@ -53,6 +53,13 @@ class LLMClient:
         # gonderir; Gemini'nin OpenAI-uyumlu ucu bu alani reddeder ("Unknown name
         # logprobs" 400). None yapmak alani payload'dan tamamen dusurur
         # (yerel vLLM icin de zarari yok).
+        # extra_body: saglayici-ozel alanlar (ör. Qwen3/EVREN "dusunme" modunu
+        # kapatan chat_template_kwargs.enable_thinking) - VLM tarafinda
+        # `base_vlm.py::_build_chat_payload`in ayni `endpoint.extra_body`
+        # config alanini ISTEK GOVDESINE eklemesiyle AYNI mekanizma/desen;
+        # burada eksikti (bkz. P0: bos content -> risk_status=unknown kok
+        # nedeni - thinking modu acikken tum max_tokens butcesi gizli
+        # akil yurutme tokenlarina gidip goruen content'i BOS birakabiliyordu).
         self._base_chat = ChatOpenAI(
             model=endpoint.model_name,
             base_url=endpoint.resolved_base_url(),
@@ -60,6 +67,7 @@ class LLMClient:
             temperature=endpoint.temperature,
             max_tokens=endpoint.max_new_tokens,
             logprobs=None,
+            extra_body=endpoint.extra_body or None,
         )
         # `bind_tools` bunu araci-baglanmis surumle degistirir; `_base_chat`
         # (araci baglanmamis) JSON-modu (invoke_json) icin saklanir.

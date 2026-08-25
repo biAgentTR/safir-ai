@@ -166,6 +166,14 @@ class SafirAgent:
             LLM'in yanitiyla guncellenmis durum (mesaj ve iterasyon sayaci).
         """
         response: AIMessage = self._llm.invoke(state["messages"])
+        if not response.content and not getattr(response, "tool_calls", None):
+            # Teshis: content VE tool_calls ikisi de bossa (ör. model butun
+            # max_new_tokens butcesini gizli "dusunme" tokenlarina harcadiysa),
+            # `finish_reason`/token kullanim bilgisi bunu dogrudan gosterir.
+            logger.warning(
+                "LLM yaniti bos (content ve tool_calls ikisi de bos). response_metadata=%s",
+                getattr(response, "response_metadata", None),
+            )
         return {"messages": [response], "iteration": state["iteration"] + 1}
 
     def _tools_node(self, state: AgentState) -> AgentState:
