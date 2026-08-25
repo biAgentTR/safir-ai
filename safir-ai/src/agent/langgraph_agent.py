@@ -43,8 +43,8 @@ _JSON_RETRY_INSTRUCTION = (
 # (eski RISK_SKORU/AKSIYON_ONERISI bicimini ve mock ciktilarini korur).
 _RISK_LINE_PATTERN = re.compile(r"(?:RISK_SKORU|risk_score)\D{0,4}(\d{1,3})", re.IGNORECASE)
 _ACTION_LINE_PATTERN = re.compile(r"AKSIYON_ONERISI:\s*(.+)", re.IGNORECASE)
-# Serbest metin icine gomulu ilk JSON nesnesini yakalar (```json blogu dahil).
-_JSON_OBJECT_PATTERN = re.compile(r"\{.*\}", re.DOTALL)
+# Markdown ```json ... ``` (veya salt ``` ... ```) kod blogunun icerigini yakalar.
+_MARKDOWN_JSON_FENCE_PATTERN = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 
 
 class AgentState(TypedDict):
@@ -395,15 +395,91 @@ class SafirAgent:
 
     @staticmethod
     def _extract_json(text: str) -> Optional[Dict[str, Any]]:
-        """Serbest metin icindeki ilk JSON nesnesini ayristirir; bulunamazsa None."""
-        match = _JSON_OBJECT_PATTERN.search(text)
-        if not match:
+        """Serbest metin icindeki ilk gecerli JSON nesnesini ayristirir; bulunamazsa None.
+
+        Sirasiyla dener:
+        1. Dogrudan `json.loads` (model SADECE JSON dondurmusse - beklenen yol).
+        2. Markdown ```json ... ``` kod blogunun icerigi.
+        3. Metnin herhangi bir yerindeki (baslik/aciklama ile sarili olsa da)
+           ilk DENGELI (balanced-brace) JSON nesnesi.
+
+        Eskiden kullanilan `\\{.*\\}` (greedy) regex'i, metinde birden fazla
+        `{`/`}` oldugunda (ör. kod blogu + sonrasinda ek aciklama, ic ice
+        yapi) YANLIS sinirlar secip gecerli JSON'u bile bozuk hale
+        getirebiliyordu; bu yuzden parantez derinligi + string/escape
+        farkindaligiyla calisan `_extract_balanced_json_object` kullanilir.
+        """
+        if not text:
+            return None
+
+        direct = SafirAgent._try_parse_json_object(text.strip())
+        if direct is not None:
+            return direct
+
+        fence_match = _MARKDOWN_JSON_FENCE_PATTERN.search(text)
+        if fence_match:
+            fenced_content = fence_match.group(1)
+            fenced = SafirAgent._try_parse_json_object(fenced_content.strip())
+            if fenced is not None:
+                return fenced
+            balanced_in_fence = SafirAgent._try_parse_json_object(
+                SafirAgent._extract_balanced_json_object(fenced_content)
+            )
+            if balanced_in_fence is not None:
+                return balanced_in_fence
+
+        balanced = SafirAgent._try_parse_json_object(SafirAgent._extract_balanced_json_object(text))
+        if balanced is not None:
+            return balanced
+
+        return None
+
+    @staticmethod
+    def _try_parse_json_object(candidate: Optional[str]) -> Optional[Dict[str, Any]]:
+        """`candidate` gecerli bir JSON NESNESI ise sozluk olarak dondurur, aksi halde None."""
+        if not candidate:
             return None
         try:
-            data = json.loads(match.group(0))
+            data = json.loads(candidate)
         except (json.JSONDecodeError, ValueError):
             return None
         return data if isinstance(data, dict) else None
+
+    @staticmethod
+    def _extract_balanced_json_object(text: str) -> Optional[str]:
+        """Metindeki ilk `{`den baslayarak parantez derinligini sayip DENGELI JSON nesnesini bulur.
+
+        String icindeki `{`/`}` karakterlerini (ve kacis/escape edilmis
+        tirnaklari) yok sayar, boylece iceriginde suslu parantez GECEN bir
+        alan degeri (ör. `"summary": "... {ozel} ..."`) nesnenin erken
+        kapandigini varsaymaz. Bulunamazsa (dengelenmemis/kirik JSON) None doner.
+        """
+        start = text.find("{")
+        if start == -1:
+            return None
+
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+        return None
 
     @staticmethod
     def _coerce_risk_score(value: Any) -> Optional[int]:
