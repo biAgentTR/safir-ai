@@ -322,7 +322,10 @@ class SafirAgent:
             content = response.content or ""
             if self._extract_json(content) is not None:
                 return content
-            logger.warning("JSON-modu yeniden denemesi de gecerli JSON uretmedi.")
+            logger.warning(
+                "JSON-modu yeniden denemesi de gecerli JSON uretmedi. Ham cikti: %s",
+                self._truncate_for_log(content),
+            )
         except Exception as exc:  # noqa: BLE001 - retry best-effort; hata fallback'e dusurulur
             logger.warning("JSON-modu yeniden denemesi basarisiz: %s", exc)
         return fallback_text
@@ -357,7 +360,10 @@ class SafirAgent:
             safe_timestamps = parsed.get("safe_timestamps") or []
             incident_timestamps = parsed.get("incident_timestamps") or []
         else:
-            logger.warning("Ajan yaniti JSON olarak ayristirilamadi, regex fallback kullaniliyor.")
+            logger.warning(
+                "Ajan yaniti JSON olarak ayristirilamadi, regex fallback kullaniliyor. Ham cikti: %s",
+                self._truncate_for_log(final_text),
+            )
             risk_match = _RISK_LINE_PATTERN.search(final_text)
             action_match = _ACTION_LINE_PATTERN.search(final_text)
             risk_score = self._coerce_risk_score(risk_match.group(1) if risk_match else None)
@@ -392,6 +398,19 @@ class SafirAgent:
             safe_timestamps=safe_timestamps,
             incident_timestamps=incident_timestamps,
         )
+
+    @staticmethod
+    def _truncate_for_log(text: str, limit: int = 1000) -> str:
+        """Ham LLM ciktisini teshis amacli loglamak icin guvenli/kirpilmis `repr` uretir.
+
+        `repr` kullanmak, kacan/goze gorunmez karakterleri (ör. yanlislikla
+        eklenmis `\\n`/kontrol karakteri, cikti kesilmesi) log satirinda
+        AYIRT EDILEBILIR kilar - duz metin bunlari gizleyip teshisi zorlastirirdi.
+        """
+        if not text:
+            return "(bos)"
+        snippet = text if len(text) <= limit else text[:limit] + f"...(+{len(text) - limit} karakter)"
+        return repr(snippet)
 
     @staticmethod
     def _extract_json(text: str) -> Optional[Dict[str, Any]]:
