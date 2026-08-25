@@ -8,9 +8,25 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "config.yaml"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "config.yaml"
+
+# EVREN/Qdrant (ve diger tum) ortam degiskenleri, bu modulun ILK import
+# edildigi anda - CWD'den veya hangi giris noktasinin (src.main, bir CLI
+# scripti gibi `python -m src.rag.build_knowledge_index`, vb.) calistigindan
+# BAGIMSIZ olarak - proje kokundeki (`PROJECT_ROOT`, yukarida `DEFAULT_
+# CONFIG_PATH` ile AYNI referans noktasi) `.env` dosyasindan yuklenir. Bu
+# modul, EVREN_API_KEY/EVREN_QDRANT_KEY gibi degerleri okuyan TUM config
+# siniflarindan (VLLMEndpointConfig.resolved_api_key, QdrantMemoryConfig
+# kullanicilari, vb.) ONCE, her giris noktasinda (dogrudan veya `load_config`
+# uzerinden dolayli) import edildigi icin bu, EVREN/Qdrant konfigurasyonu
+# COZULMEDEN ONCE calismasini garantiler. Zaten tanimli GERCEK ortam
+# degiskenlerinin (orn. Docker/CI'da set edilenler) uzerine SESSIZCE
+# YAZILMAZ (`override=False`, python-dotenv varsayilani).
+load_dotenv(PROJECT_ROOT / ".env")
 
 
 class SystemConfig(BaseModel):
