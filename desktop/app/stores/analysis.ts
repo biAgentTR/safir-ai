@@ -21,7 +21,7 @@ export const STAGE_ORDER: TraceStage[] = [
   'sampler',
   'vlm',
   'events',
-  'agent_context',
+  'rag_security',
   'decision',
   'escalation',
   'report',

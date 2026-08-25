@@ -949,7 +949,15 @@ class SafirPipeline:
         prompt_block, context = self.stage_context(
             vlm_response, user_prompt, latest_timestamp, rule_matches, temporal_events
         )
-        _emit("agent_context", {"prompt_block": prompt_block})
+        # 2026-08-25: "agent_context" (eski "Baglam ve RAG") trace stage'i ARTIK
+        # EMIT EDILMIYOR - `stage_context()`in KENDISI (prompt_block/context uretimi,
+        # RuleEngine mevzuat eslesmesi, GERCEK semantik RAG sorgusu) HALA CALISIYOR
+        # (bkz. asagidaki `rag_security` emit'inin okudugu `self._last_stage_rag_telemetry`,
+        # yine bu cagridan gelir); yalnizca bu asamanin AYRI bir trace/UI paneli olarak
+        # GORUNMESI kaldirildi - operatore artik TEK, gercek skorlu/telemetrili RAG
+        # goruntusu ("rag_security"/"RAG ve Guvenlik Telemetrisi") gosteriliyor.
+        # `report.relevant_regulations` (Rapor sekmesindeki "Ilgili ISG Mevzuati")
+        # ETKILENMEDI - o alan hala RuleEngine'in deterministik eslesmesinden dolar.
         _emit(
             "rag_security",
             {

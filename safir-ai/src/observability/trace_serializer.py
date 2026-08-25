@@ -33,20 +33,27 @@ STAGE_ORDER: List[str] = [
     "sampler",
     "vlm",
     "events",
-    "agent_context",
     "rag_security",
     "decision",
     "decision_final",
     "escalation",
     "report",
 ]
+"""2026-08-25: "agent_context" (eski "Baglam ve RAG") stage'i KALDIRILDI - bu asama
+sadece `prompt_block` metnini VE RuleEngine'in deterministik `relevant_regulations`
+eslesmesini (kisa/dahili referans etiketleri, GERCEK skorlu semantik RAG telemetrisi
+DEGIL) goruyordu; ayni ekranda hemen ardindan gelen "rag_security" ("RAG ve Guvenlik
+Telemetrisi") zaten GERCEK, skorlu/reranked semantik RAG sonucunu gosteriyor - iki
+ayri panel operatoru "hangisi gercek RAG?" sorusuyla kafasi karisik birakiyordu.
+`stage_context()`in kendisi (prompt_block/context uretimi, RuleEngine eslesmesi,
+gercek semantik RAG sorgusu) pipeline icinde HALA calisir - yalnizca AYRI bir trace
+paneli olarak GORUNMESI kaldirildi (bkz. `src/main.py::run()`)."""
 
 # Yalnizca sunum (presentation) metadata'si — pipeline isimleri/isleyisi degismez.
 STAGE_LABELS: Dict[str, str] = {
     "sampler": "Frame Sampling",
     "vlm": "Multimodal Analysis",
     "events": "Event Analysis",
-    "agent_context": "Context & RAG",
     "rag_security": "RAG & Security Telemetry",
     "decision": "Agent Decision (draft)",
     "decision_final": "Final Risk (RuleEngine-authoritative)",
@@ -245,16 +252,6 @@ def serialize_events(
         ],
     }
     summary = f"{len(detected)} olay tespit edildi, {len(rules)} ISG kurali tetiklendi"
-    return summary, data, {}, "completed", None
-
-
-def serialize_agent_context(
-    payload: Dict[str, Any], job_id: str
-) -> Tuple[str, Dict[str, Any], Dict[str, bytes], str, Optional[str]]:
-    """`agent_context` emit'ini serialize eder (yalnizca mevcut `prompt_block` metni)."""
-    prompt_block = payload.get("prompt_block", "") or ""
-    data = {"prompt_block": prompt_block, "length": len(prompt_block)}
-    summary = f"Ajan baglami hazirlandi ({len(prompt_block)} karakter)"
     return summary, data, {}, "completed", None
 
 
@@ -552,7 +549,6 @@ class PipelineTraceCollector:
         "sampler": serialize_sampler,
         "vlm": serialize_vlm,
         "events": serialize_events,
-        "agent_context": serialize_agent_context,
         "rag_security": serialize_rag_security,
         "decision": serialize_decision,
         "decision_final": serialize_decision_final,

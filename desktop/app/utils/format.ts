@@ -69,7 +69,6 @@ export const STAGE_META: { stage: TraceStage; label: string; blurb: string }[] =
   { stage: 'sampler', label: 'Kare Örnekleme', blurb: 'CPU uyarlanabilir örnekleyici' },
   { stage: 'vlm', label: 'Çok Modlu Analiz', blurb: 'Görsel-dil modeli' },
   { stage: 'events', label: 'Olay Analizi', blurb: 'Tespit / zamansal / kural' },
-  { stage: 'agent_context', label: 'Bağlam ve RAG', blurb: 'Ajan bağlamı oluşturma' },
   { stage: 'rag_security', label: 'RAG ve Güvenlik Telemetrisi', blurb: 'Semantik retrieval + Prompt Injection Guard' },
   { stage: 'decision', label: 'Ajan Önerisi', blurb: 'Taslak değerlendirme — resmi risk skoru DEĞİLDİR' },
   { stage: 'escalation', label: 'Risk Yükseltme', blurb: 'Otomatik tetikleme politikası' },
@@ -106,11 +105,6 @@ export function stageFlow(
       return {
         in: data ? `${n(d.detected_events)} tespit` : 'tespit edilen olaylar',
         out: data ? `${n(d.temporal_events)} zamansal · ${n(d.rule_matches)} kural` : 'zamansal olaylar / kural eşleşmeleri',
-      }
-    case 'agent_context':
-      return {
-        in: 'olaylar + mevzuat',
-        out: data ? `${d.length ?? 0} karakter bağlam` : 'ajan bağlamı',
       }
     case 'rag_security': {
       const ragOut = data ? (d.rag ? `${d.rag.final_count}/${d.rag.candidate_count} sonuç` : 'RAG çalışmadı') : 'RAG sonucu'

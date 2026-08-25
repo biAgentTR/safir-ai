@@ -118,7 +118,6 @@ export type TraceStage =
   | 'sampler'
   | 'vlm'
   | 'events'
-  | 'agent_context'
   | 'rag_security'
   | 'decision'
   | 'escalation'
@@ -245,11 +244,6 @@ export interface EventsStageData {
   rule_matches: RuleMatch[]
 }
 
-/** agent_context stage. */
-export interface ContextStageData {
-  prompt_block: string
-  length: number
-}
 
 /**
  * rag_security stage: src/observability/trace_serializer.py serialize_rag_security.

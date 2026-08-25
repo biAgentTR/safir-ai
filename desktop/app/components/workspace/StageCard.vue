@@ -3,7 +3,6 @@
 // serialized trace payload per stage. Never shows raw_response / secrets /
 // system prompt (those are not in the payload by design).
 import type {
-  ContextStageData,
   Decision,
   Escalation,
   EventsStageData,
@@ -38,7 +37,6 @@ const view = <T,>(s: TraceStage): T | null => (stage.value === s ? (ev.value?.da
 const sampler = computed(() => view<SamplerStageData>('sampler'))
 const vlm = computed(() => view<VlmStageData>('vlm'))
 const events = computed(() => view<EventsStageData>('events'))
-const context = computed(() => view<ContextStageData>('agent_context'))
 const ragSecurity = computed(() => view<RagSecurityStageData>('rag_security'))
 const decision = computed(() => view<Decision>('decision'))
 const escalation = computed(() => view<Escalation>('escalation'))
@@ -52,10 +50,6 @@ const vlmInputFrames = computed(() => {
   const s = store.eventForStage('sampler')?.data as unknown as SamplerStageData | undefined
   return s?.evidence_frames ?? []
 })
-
-// Fix 4: real regulations retrieved by the agent (report.relevant_regulations).
-// No fabricated similarity score / chunk id — the backend does not provide them.
-const regulations = computed(() => store.report?.relevant_regulations ?? [])
 
 const GUARD_SOURCE_LABEL: Record<string, string> = {
   user_prompt: 'Kullanıcı İstemi',
@@ -221,33 +215,12 @@ function ms(v: number | null): string {
         </div>
       </div>
 
-      <!-- ============ CONTEXT & RAG ============ -->
-      <div v-else-if="context" class="space-y-4">
-        <p class="text-sm text-slate-400">Ajan bağlamı hazırlandı ({{ context.length }} karakter): tespit edilen olaylar + FAISS'ten getirilen İSG mevzuatı birleştirildi.</p>
-
-        <!-- Fix 4: real retrieved regulations (report.relevant_regulations) -->
-        <div>
-          <div class="field-label">Getirilen İSG mevzuatı (RAG / FAISS)</div>
-          <ul v-if="regulations.length" class="space-y-1 text-sm text-slate-200">
-            <li v-for="(reg, i) in regulations" :key="i" class="bg-surface-2 border border-edge rounded-md px-3 py-2">{{ reg }}</li>
-          </ul>
-          <p v-else class="text-sm text-slate-500">
-            {{ store.report ? 'Bu analiz için ilgili mevzuat maddesi bulunamadı.' : 'Mevzuat sonuçları rapor tamamlanınca listelenir.' }}
-          </p>
-        </div>
-
-        <details>
-          <summary class="cursor-pointer text-xs text-slate-400">Teknik: agent context prompt_block</summary>
-          <pre class="mt-2 text-[11px] font-mono text-slate-500 bg-surface-2 border border-edge rounded-md p-3 max-h-72 overflow-auto whitespace-pre-wrap">{{ context.prompt_block }}</pre>
-        </details>
-      </div>
-
       <!-- ============ RAG & SECURITY TELEMETRY ============ -->
       <div v-else-if="ragSecurity" class="space-y-6">
         <div class="rounded-md border border-edge bg-surface-2/60 px-3 py-2 text-xs text-slate-400">
           RAG semantik olarak <span class="text-slate-200">ilgili olabilecek kaynakları</span> getirir; risk skoru/seviyesi
           ve mevzuat eşleşmesi kararı bundan <span class="text-slate-200">bağımsız</span>, deterministik RuleEngine
-          tarafından belirlenir (bkz. "Bağlam ve RAG" sekmesindeki "Getirilen İSG mevzuatı").
+          tarafından belirlenir (bkz. "Rapor" sekmesindeki "İlgili İSG Mevzuatı").
         </div>
 
         <!-- RAG -->
