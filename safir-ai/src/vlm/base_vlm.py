@@ -41,6 +41,69 @@ _MAX_INFERENCE_RETRIES = 2
 _RETRY_BACKOFF_BASE_SEC = 0.5
 
 
+def apply_extra_body(payload: Dict[str, Any], extra_body: Dict[str, Any]) -> None:
+    """Saglayici-ozel alanlari (ozellikle `enable_thinking: false`) payload'a ekler.
+
+    Mentor eleştirisi 5 ("Akil Yurutme/Thinking Modu Tuzagindan Kacinma"):
+    `enable_thinking` acikken kucuk/orta modeller `max_tokens` butcesinin
+    TAMAMINI gizli akil yurutmeye harcayip goruen `content`i BOS birakabilir
+    (HTTP 200, ama bos yanit - bkz. `raise_if_empty_content`). Bu fonksiyon,
+    `configs/config.yaml`daki `extra_body.chat_template_kwargs.enable_thinking:
+    false`i HER `/chat/completions` payload'ina TUTARLI sekilde uygulamak
+    icin TEK bir yerden paylasilir (`BaseVLM._build_chat_payload`,
+    `BaseVLM._build_reconciliation_payload`, `EvrenVLM`nin video istekleri).
+    Cekirdek alanlari (model/messages/...) EZMEZ.
+
+    Args:
+        payload: Uzerine yazilacak istek govdesi (yerinde degistirilir).
+        extra_body: `VLLMEndpointConfig.extra_body`.
+    """
+    for key, value in (extra_body or {}).items():
+        payload.setdefault(key, value)
+
+
+def raise_if_empty_content(raw_content: str, source: str, response_data: Dict[str, Any]) -> None:
+    """VLM'in ham cevabi bos/yalnizca boslukdan ibaretse, sessizce devam etmek yerine ACIKCA hata firlatir.
+
+    Mentor eleştirisi 5: "Testlerde sistemin sessizce (HTTP 200 donerek ama
+    bos icerikle) cokmesi projenin elenmesine neden olabilir." `apply_extra_body`
+    bu durumun EN YAYGIN KOK NEDENINI (dusunme modunun acik kalmasi) giderir;
+    ancak baska bir nedenle (ag/model hatasi, beklenmedik `finish_reason`)
+    yine de bos icerik gelirse, bu SESSIZCE bos bir `VLMResponse.description`/
+    cevaba donusup ilerideki asamalarda "hicbir sey gozlemlenmedi" gibi
+    YANLIS yorumlanmasin diye burada ACIKCA (RuntimeError ile) yakalanir -
+    cagiran taraf (`_post_chat_completion`/`EvrenVLM`) bunu zaten bilinen
+    "basarisiz VLM cagrisi" yoluna (degraded rapor/parca basarisizligi/retry)
+    yonlendirir; risk UYDURULMAZ, hata GIZLENMEZ.
+
+    Args:
+        raw_content: `data["choices"][0]["message"]["content"]` (strip edilmemis olabilir).
+        source: Teshis icin loglanacak kimlik (model adi veya video yolu).
+        response_data: Ham VLM yaniti (teshis: `finish_reason`/`usage` var mi loglanir).
+
+    Raises:
+        RuntimeError: `raw_content` bos/yalnizca boslukdan olusuyorsa.
+    """
+    if raw_content and raw_content.strip():
+        return
+    try:
+        finish_reason = response_data["choices"][0].get("finish_reason")
+    except (KeyError, IndexError, AttributeError):
+        finish_reason = None
+    usage = response_data.get("usage") if isinstance(response_data, dict) else None
+    logger.error(
+        "VLM bos icerik dondurdu (HTTP 200, ama content bos) - olasi neden: 'dusunme' "
+        "modu tum max_tokens butcesini tuketti. kaynak=%s finish_reason=%s usage=%s",
+        source,
+        finish_reason,
+        usage,
+    )
+    raise RuntimeError(
+        f"VLM bos yanit dondurdu (kaynak={source}, finish_reason={finish_reason}, usage={usage}) - "
+        "olasi neden: 'enable_thinking' acik kalip max_tokens butcesi gizli akil yurutmeye tuketildi."
+    )
+
+
 @dataclass
 class VLMResponse:
     """Bir VLM cagrisinin (tek bir istek/batch veya reconciliation icin) standardize edilmis ciktisi."""
@@ -314,13 +377,15 @@ class BaseVLM(ABC):
             {"type": "text", "text": VLM_RECONCILIATION_SYSTEM_PROMPT},
             {"type": "text", "text": text},
         ]
-        return {
+        payload: Dict[str, Any] = {
             "model": self._endpoint.model_name,
             "messages": [{"role": "user", "content": content}],
             "max_tokens": self._endpoint.max_new_tokens,
             "temperature": self._endpoint.temperature,
             "top_p": self._endpoint.top_p,
         }
+        apply_extra_body(payload, self._endpoint.extra_body)
+        return payload
 
     def answer_video_question(self, video_source: str, question: str, analysis_summary: str) -> str:
         """Ayni videoya, kalici raporun onceki analizinden SONRA yeni bir soru sorar.
@@ -382,9 +447,7 @@ class BaseVLM(ABC):
             "temperature": self._endpoint.temperature,
             "top_p": self._endpoint.top_p,
         }
-        # Saglayici-ozel guided decoding alanlari (vLLM); cekirdek alanlar ezilmez.
-        for key, value in (self._endpoint.extra_body or {}).items():
-            payload.setdefault(key, value)
+        apply_extra_body(payload, self._endpoint.extra_body)
         return payload
 
     def _post_chat_completion(self, payload: Dict[str, Any]) -> VLMResponse:
@@ -416,6 +479,7 @@ class BaseVLM(ABC):
                 response.raise_for_status()
                 data = response.json()
                 raw_content = data["choices"][0]["message"]["content"]
+                raise_if_empty_content(raw_content, self.model_name, data)
                 break
             except (KeyError, IndexError) as exc:
                 raise RuntimeError(f"VLM yaniti beklenmedik bicimde ({self.model_name}): {exc}") from exc

@@ -287,6 +287,90 @@ def test_answer_video_question_missing_file_raises_runtime_error(tmp_path: Path)
         vlm.answer_video_question(str(tmp_path / "yok.mp4"), "soru", "ozet")
 
 
+# --------------------------- "dusunme modu tuzagi" (mentor eleştirisi 5) ---------------------------
+
+
+def test_send_single_video_merges_extra_body_enable_thinking(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_send_single_video` payload'i `endpoint.extra_body`i (ör. enable_thinking:false) ICERMELI -
+    eskiden bu YOL `BaseVLM._build_chat_payload`i KULLANMADIGI icin ATLANIYORDU."""
+    video_path = tmp_path / "short.mp4"
+    _write_video(video_path, num_frames=50, fps=10.0)
+
+    calls: List[Dict[str, Any]] = []
+
+    def _fake_post(url, json, headers, timeout):
+        calls.append(json)
+        return _FakeHttpResponse(_evren_payload("Rutin saha."))
+
+    monkeypatch.setattr("src.vlm.evren_vlm.httpx.post", _fake_post)
+
+    endpoint = VLLMEndpointConfig(
+        model_name="vlm", max_new_tokens=1024, temperature=0.0, provider="evren",
+        base_url="http://fake-evren.local/v1",
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    vlm = EvrenVLM(endpoint)
+    vlm.analyze_video(str(video_path), evidence_frames=[], prompt="test")
+
+    assert len(calls) == 1
+    assert calls[0]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_answer_video_question_merges_extra_body_enable_thinking(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    video_path = tmp_path / "short.mp4"
+    _write_video(video_path, num_frames=50, fps=10.0)
+
+    calls: List[Dict[str, Any]] = []
+
+    def _fake_post(url, json, headers, timeout):
+        calls.append(json)
+        return _FakeHttpResponse({"choices": [{"message": {"content": "cevap"}}]})
+
+    monkeypatch.setattr("src.vlm.evren_vlm.httpx.post", _fake_post)
+
+    endpoint = VLLMEndpointConfig(
+        model_name="vlm", max_new_tokens=1024, temperature=0.0, provider="evren",
+        base_url="http://fake-evren.local/v1",
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    vlm = EvrenVLM(endpoint)
+    vlm.answer_video_question(str(video_path), "soru", "ozet")
+
+    assert len(calls) == 1
+    assert calls[0]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_send_single_video_raises_on_empty_content(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """EVREN HTTP 200 + bos content donerse (dusunme modu tuzagi), SESSIZCE gecilmemeli - ACIKCA hata."""
+    video_path = tmp_path / "short.mp4"
+    _write_video(video_path, num_frames=50, fps=10.0)
+
+    def _fake_post(url, json, headers, timeout):
+        return _FakeHttpResponse({"choices": [{"message": {"content": ""}, "finish_reason": "length"}]})
+
+    monkeypatch.setattr("src.vlm.evren_vlm.httpx.post", _fake_post)
+
+    vlm = EvrenVLM(_endpoint(chunk_duration_sec=None))
+    with pytest.raises(RuntimeError, match="bos yanit"):
+        vlm.analyze_video(str(video_path), evidence_frames=[], prompt="test")
+
+
+def test_answer_video_question_raises_on_empty_content(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    video_path = tmp_path / "short.mp4"
+    _write_video(video_path, num_frames=50, fps=10.0)
+
+    def _fake_post(url, json, headers, timeout):
+        return _FakeHttpResponse({"choices": [{"message": {"content": "   "}, "finish_reason": "length"}]})
+
+    monkeypatch.setattr("src.vlm.evren_vlm.httpx.post", _fake_post)
+
+    vlm = EvrenVLM(_endpoint(chunk_duration_sec=None))
+    with pytest.raises(RuntimeError, match="bos yanit"):
+        vlm.answer_video_question(str(video_path), "soru", "ozet")
+
+
 def test_base_vlm_default_answer_video_question_not_implemented() -> None:
     """Diger saglayicilar (Qwen/Gemma) icin varsayilan: acikca DESTEKLENMIYOR (sessiz basarisizlik degil)."""
     from src.vlm.base_vlm import BaseVLM

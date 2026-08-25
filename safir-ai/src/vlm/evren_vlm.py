@@ -27,6 +27,16 @@ ardisik parcalara boler, HER parcayi AYRI bir istekte gonderir ve sonuclari
 (zaman-damgasi kaydirmasiyla) birlestirir - EVREN dokumantasyonunun "klip
 kisa parcalara bolunmeli" onerisini uygular. `None`/`<=0` ise (varsayilan)
 davranis DEGISMEZ - video eskisi gibi tek istekte gonderilir.
+
+2026-08-25 (mentor eleştirisi 5, "Dusunme Modu Tuzagi"): bu modulun video
+istekleri `BaseVLM._build_chat_payload` (Qwen/Gemma frame-tabanli yolun
+kullandigi, `extra_body`/`enable_thinking:false`i ZATEN merge eden ortak
+kurucu) KULLANMIYORDU - kendi payload'larini DOGRUDAN kuruyorlardi ve bu
+yuzden `enable_thinking: false` HICBIR video isteginde ACIKCA gonderilmiyordu
+(tam olarak P0 LLM duzeltmesindeki ayni tuzak, ama VLM tarafinda). Artik
+`apply_extra_body` ile HER video istegine (`_send_single_video`,
+`answer_video_question`) ayni mekanizma uygulanir; ayrica `raise_if_empty_content`
+ile EVREN'in HTTP 200 + bos content donmesi ARTIK SESSIZCE gecmez.
 """
 
 from __future__ import annotations
@@ -40,7 +50,13 @@ import httpx
 
 from src.prompts import ASK_VIDEO_SYSTEM_PROMPT, VLM_OBSERVER_SYSTEM_PROMPT, build_ask_video_user_prompt
 from src.sampler.schema import EvidenceFrame
-from src.vlm.base_vlm import BaseVLM, VLMResponse, parse_structured_events
+from src.vlm.base_vlm import (
+    BaseVLM,
+    VLMResponse,
+    apply_extra_body,
+    parse_structured_events,
+    raise_if_empty_content,
+)
 from src.vlm.video_chunker import VideoChunk, cleanup_chunks, split_video_into_chunks
 
 logger = logging.getLogger(__name__)
@@ -155,6 +171,7 @@ class EvrenVLM(BaseVLM):
             "max_tokens": self._endpoint.max_new_tokens,
             "temperature": self._endpoint.temperature,
         }
+        apply_extra_body(payload, self._endpoint.extra_body)
         logger.info(
             "EVREN VLM video cagrisi yapiliyor: video=%s model=%s", video_path, self.model_name
         )
@@ -173,6 +190,7 @@ class EvrenVLM(BaseVLM):
         except (KeyError, IndexError) as exc:
             raise RuntimeError(f"EVREN yaniti beklenmedik bicimde: {exc}") from exc
 
+        raise_if_empty_content(raw_content, video_path, data)
         description, structured_events = parse_structured_events(raw_content)
         latency_ms = (time.perf_counter() - started_at) * 1000
         return VLMResponse(
@@ -300,6 +318,7 @@ class EvrenVLM(BaseVLM):
             "max_tokens": self._endpoint.max_new_tokens,
             "temperature": self._endpoint.temperature,
         }
+        apply_extra_body(payload, self._endpoint.extra_body)
         logger.info("EVREN video-QA cagrisi yapiliyor: video=%s model=%s", video_source, self.model_name)
 
         response = httpx.post(
@@ -311,9 +330,12 @@ class EvrenVLM(BaseVLM):
         response.raise_for_status()
         data = response.json()
         try:
-            return str(data["choices"][0]["message"]["content"]).strip()
+            raw_content = str(data["choices"][0]["message"]["content"]).strip()
         except (KeyError, IndexError) as exc:
             raise RuntimeError(f"EVREN yaniti beklenmedik bicimde: {exc}") from exc
+
+        raise_if_empty_content(raw_content, video_source, data)
+        return raw_content
 
     def analyze_evidence(self, evidence_frames: List[EvidenceFrame], prompt: str) -> VLMResponse:
         """Bu saglayicida DESTEKLENMEZ - production akisi `analyze_video` kullanir.

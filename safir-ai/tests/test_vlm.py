@@ -173,3 +173,71 @@ def test_endpoint_extra_body_merges_into_vlm_payload() -> None:
     payload = QwenVLM(endpoint)._build_chat_payload([frame], "test")
     assert payload["guided_json"] == {"type": "array"}
     assert payload["model"] == "m"  # cekirdek alan ezilmedi
+
+
+# --------------------------- "dusunme modu tuzagi" (mentor eleştirisi 5) ---------------------------
+
+
+def test_reconciliation_payload_also_merges_extra_body() -> None:
+    """`_build_reconciliation_payload` (mentor eleştirisi 5) `_build_chat_payload` ile AYNI
+    `extra_body`/`enable_thinking:false` mekanizmasini uygulamali - eskiden ATLIYORDU."""
+    from src.utils.config_loader import VLLMEndpointConfig
+    from src.vlm.base_vlm import VLMResponse
+    from src.vlm.qwen_vlm import QwenVLM
+
+    endpoint = VLLMEndpointConfig(
+        model_name="m", vllm_host="h", vllm_port=1, max_new_tokens=10, temperature=0.1,
+        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+    batch_responses = [
+        VLMResponse(description="d", model_name="m", frame_count=1, latency_ms=1.0, structured_events=[])
+    ]
+    payload = QwenVLM(endpoint)._build_reconciliation_payload(batch_responses, "test")
+    assert payload["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+def test_post_chat_completion_raises_on_empty_content(monkeypatch) -> None:
+    """EVREN/vLLM'in HTTP 200 + bos content donmesi SESSIZCE gecmemeli (mentor eleştirisi 5:
+    'testlerde sistemin sessizce çökmesi projenin elenmesine neden olabilir')."""
+    from src.utils.config_loader import VLLMEndpointConfig
+    from src.vlm.qwen_vlm import QwenVLM
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": ""}, "finish_reason": "length"}], "usage": {"total_tokens": 1024}}
+
+    monkeypatch.setattr("src.vlm.base_vlm.httpx.post", lambda *a, **k: _FakeResponse())
+
+    endpoint = VLLMEndpointConfig(model_name="m", vllm_host="h", vllm_port=1, max_new_tokens=10, temperature=0.1)
+    vlm = QwenVLM(endpoint)
+    frame = _sample_evidence_frame()
+
+    import pytest as _pytest
+
+    with _pytest.raises(RuntimeError, match="bos yanit"):
+        vlm.analyze_evidence([frame], "test")
+
+
+def test_post_chat_completion_accepts_non_empty_content(monkeypatch) -> None:
+    """Guard yanlis-pozitif VERMEMELI: gecerli/dolu bir content normal sekilde islenmeli."""
+    from src.utils.config_loader import VLLMEndpointConfig
+    from src.vlm.qwen_vlm import QwenVLM
+
+    class _FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": "Rutin saha gozlemi."}, "finish_reason": "stop"}]}
+
+    monkeypatch.setattr("src.vlm.base_vlm.httpx.post", lambda *a, **k: _FakeResponse())
+
+    endpoint = VLLMEndpointConfig(model_name="m", vllm_host="h", vllm_port=1, max_new_tokens=10, temperature=0.1)
+    vlm = QwenVLM(endpoint)
+    frame = _sample_evidence_frame()
+
+    response = vlm.analyze_evidence([frame], "test")
+    assert response.description == "Rutin saha gozlemi."

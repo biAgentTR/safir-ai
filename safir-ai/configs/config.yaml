@@ -380,6 +380,16 @@ llm:
   # sonucuna dusuyordu). Artik asagidaki `evren` girdisi `extra_body.
   # chat_template_kwargs.enable_thinking: false` ile ACIKCA kapatir
   # (bkz. `src/vlm/llm_client.py::LLMClient.__init__`).
+  # 2026-08-25 (mentor eleştirisi 5): bu koruma artik VLM video istekleri
+  # (`src/vlm/evren_vlm.py`) icin de gecerli - onceden yalnizca bu `llm`
+  # blogundaki (Ajan) cagrilarda vardi, video analizinde YOKTU (bkz.
+  # `src/vlm/base_vlm.py::apply_extra_body`/`raise_if_empty_content`).
+  # NOT (determinizm/tekrarlanabilirlik, mentor onerisi): `temperature`
+  # (asagida) HER cagrida ZATEN acikca gonderiliyor; EVREN'in OpenAI-uyumlu
+  # ucu `seed` destekliyorsa, `extra_body: {seed: <sayi>}` eklenerek AYNI
+  # mekanizmayla (kod DEGISIKLIGI GEREKMEDEN) etkinlestirilebilir - EVREN'in
+  # `seed` parametresini fiilen destekledigi bu oturumda DOGRULANAMADIGINDAN
+  # varsayilan olarak EKLENMEDI (bkz. proje kurallari: API yuzeyini tahmin etme).
   models:
     qwen3:                           # aktif model Qwen3-4B-Instruct-2507'dir (VLM'den (Qwen3.5) FARKLI aile — bilerek: olgun/kararli, metin-only, gorsele ihtiyaci yok)
       model_name: "Qwen/Qwen3-4B-Instruct-2507"   # non-thinking mod (<think> bloklari yok), Nisan 2025'ten beri olgun vLLM destegi
