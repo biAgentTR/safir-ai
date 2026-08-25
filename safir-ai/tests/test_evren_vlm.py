@@ -243,3 +243,61 @@ def test_rtsp_source_still_rejected_with_chunking_enabled(tmp_path: Path) -> Non
     vlm = EvrenVLM(_endpoint(chunk_duration_sec=60.0))
     with pytest.raises(RuntimeError):
         vlm.analyze_video("rtsp://example.com/stream", evidence_frames=[], prompt="test")
+
+
+# --------------------------- answer_video_question (Ask SAFIR video-QA) ---------------------------
+
+
+def test_answer_video_question_sends_same_video_and_returns_plain_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Video-QA, aynen `analyze_video` gibi TEK bir istekte videoyu gonderir; ancak
+    yanit EVENTS_JSON'a AYRISTIRILMAZ - dogrudan ham metin doner."""
+    video_path = tmp_path / "short.mp4"
+    _write_video(video_path, num_frames=50, fps=10.0)
+
+    calls: List[Dict[str, Any]] = []
+
+    def _fake_post(url, json, headers, timeout):
+        calls.append(json)
+        return _FakeHttpResponse({"choices": [{"message": {"content": "Forklift sarı, personel baret takiyor."}}]})
+
+    monkeypatch.setattr("src.vlm.evren_vlm.httpx.post", _fake_post)
+
+    vlm = EvrenVLM(_endpoint(chunk_duration_sec=None))
+    answer = vlm.answer_video_question(str(video_path), "Forkliftin rengi neydi?", "Onceki ozet: rutin saha.")
+
+    assert answer == "Forklift sarı, personel baret takiyor."
+    assert len(calls) == 1
+    sent_content = calls[0]["messages"][0]["content"]
+    assert sent_content[1]["type"] == "video_url"
+    assert "Forkliftin rengi neydi?" in sent_content[0]["text"]
+    assert "Onceki ozet: rutin saha." in sent_content[0]["text"]
+
+
+def test_answer_video_question_rejects_rtsp_source(tmp_path: Path) -> None:
+    vlm = EvrenVLM(_endpoint(chunk_duration_sec=None))
+    with pytest.raises(RuntimeError):
+        vlm.answer_video_question("rtsp://example.com/stream", "soru", "ozet")
+
+
+def test_answer_video_question_missing_file_raises_runtime_error(tmp_path: Path) -> None:
+    vlm = EvrenVLM(_endpoint(chunk_duration_sec=None))
+    with pytest.raises(RuntimeError):
+        vlm.answer_video_question(str(tmp_path / "yok.mp4"), "soru", "ozet")
+
+
+def test_base_vlm_default_answer_video_question_not_implemented() -> None:
+    """Diger saglayicilar (Qwen/Gemma) icin varsayilan: acikca DESTEKLENMIYOR (sessiz basarisizlik degil)."""
+    from src.vlm.base_vlm import BaseVLM
+
+    class _StubVLM(BaseVLM):
+        def analyze_evidence(self, evidence_frames, prompt):
+            raise NotImplementedError
+
+        def health_check(self):
+            return True
+
+    stub = _StubVLM(_endpoint(chunk_duration_sec=None))
+    with pytest.raises(NotImplementedError):
+        stub.answer_video_question("video.mp4", "soru", "ozet")

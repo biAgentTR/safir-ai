@@ -506,6 +506,13 @@ class AskRequest(BaseModel):
 
     question: str = Field(min_length=1, description="Kullanicinin dogal dil sorusu.")
     job_id: Optional[str] = Field(default=None, description="Opsiyonel: baglam alinacak analiz kimligi.")
+    use_video: bool = Field(
+        default=False,
+        description=(
+            "True ve job_id verilmisse, soru ONCE dogrudan videoya sorulur (EVREN prefix-cache "
+            "avantaji); basarisiz olursa sessizce metin-tabanli akisa doner (bkz. AskService)."
+        ),
+    )
 
     @field_validator("question")
     @classmethod
@@ -1573,11 +1580,16 @@ def get_ask_service() -> AskService:
     if _ask_service is None:
         cfg = load_config()
         llm_client = get_llm_client(cfg.llm, use_mock=cfg.app.use_mock_llm)
+        # `use_video` icin: ayni video-tabanli VLM istemcisi (pipeline'inkiyle AYNI config/mod) -
+        # yalnizca EVREN gibi answer_video_question destekleyen bir saglayicida ise yarar; diger
+        # saglayicilarda AskService bunu SESSIZCE metin-tabanli akisa geri dondurur.
+        vlm_client = get_vlm_client(cfg.vlm, use_mock=cfg.app.use_mock_vlm)
         _ask_service = AskService(
             analysis_store=get_analysis_store(),
             rag_service=get_pipeline()._rag_service,  # pipeline'in seed'lenmis RAG'i (yeniden kullanim)
             llm_client=llm_client,
             rag_top_k=cfg.memory.qdrant.top_k,
+            vlm_client=vlm_client,
         )
     return _ask_service
 
@@ -2222,6 +2234,10 @@ def ask_safir(request: AskRequest) -> AskResponse:
 
     - `job_id` verilirse: o analizin kalici `SafirReport`'u ONCELIKLI baglam olur.
     - Her durumda mevcut `EmbeddingRAGService` ile ilgili ISG mevzuati getirilir.
+    - `use_video=True` verilirse (ve is/video hala diskte varsa) soru ONCE
+      dogrudan videoya sorulur (EVREN prefix-cache avantaji, bkz.
+      `AskService._try_video_answer`); basarisiz olursa SESSIZCE metin-tabanli
+      akisa doner.
     - Cevap YALNIZCA guvenli baglamdan uretilir; raw_response/internal reasoning/
       secret/base64 modele gonderilmez ve yanitta yer almaz.
 
@@ -2236,7 +2252,7 @@ def ask_safir(request: AskRequest) -> AskResponse:
             LLM/servis cevap uretemezse (503; stack trace UI'a donmez).
     """
     try:
-        result = get_ask_service().answer(request.question, request.job_id)
+        result = get_ask_service().answer(request.question, request.job_id, use_video=request.use_video)
     except JobNotFound as exc:
         raise HTTPException(status_code=404, detail=f"Analiz bulunamadi: {exc}") from exc
     except ValueError as exc:
@@ -2800,7 +2816,10 @@ def get_system_overview() -> SystemOverviewResponse:
 
 @app.get("/ask/stream")
 async def ask_safir_stream(
-    question: str, job_id: Optional[str] = None, conversation_id: Optional[str] = None
+    question: str,
+    job_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    use_video: bool = False,
 ) -> StreamingResponse:
     """Ask SAFIR'i SSE ile parca parca (streaming) yanitlar.
 
@@ -2857,7 +2876,12 @@ async def ask_safir_stream(
 
         try:
             meta, chunks = get_ask_service().stream_answer(
-                question, job_id, history=history, user_context=user_context, document_context=document_context
+                question,
+                job_id,
+                history=history,
+                user_context=user_context,
+                document_context=document_context,
+                use_video=use_video,
             )
         except JobNotFound as exc:
             yield f"event: error\ndata: {json.dumps({'detail': f'Analiz bulunamadi: {exc}'})}\n\n"

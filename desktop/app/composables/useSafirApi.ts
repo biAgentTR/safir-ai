@@ -127,18 +127,24 @@ export function useSafirApi() {
   }
 
   /** POST /ask -> grounded answer + sources (context-aware assistant). */
-  async function ask(question: string, jobId?: string | null): Promise<AskResponse> {
+  async function ask(question: string, jobId?: string | null, useVideo = false): Promise<AskResponse> {
     return await $fetch(url('/ask'), {
       method: 'POST',
-      body: { question, job_id: jobId ?? null },
+      body: { question, job_id: jobId ?? null, use_video: useVideo },
     })
   }
 
   /** Absolute (proxied) URL for the streaming Ask SAFIR SSE endpoint (GET /ask/stream). */
-  function askStreamUrl(question: string, jobId?: string | null, conversationId?: string | null): string {
+  function askStreamUrl(
+    question: string,
+    jobId?: string | null,
+    conversationId?: string | null,
+    useVideo = false,
+  ): string {
     const params = new URLSearchParams({ question })
     if (jobId) params.set('job_id', jobId)
     if (conversationId) params.set('conversation_id', conversationId)
+    if (useVideo) params.set('use_video', 'true')
     return url(`/ask/stream?${params.toString()}`)
   }
 

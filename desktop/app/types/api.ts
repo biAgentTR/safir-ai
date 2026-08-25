@@ -409,11 +409,13 @@ export interface HistoryDetail {
 export interface AskRequest {
   question: string
   job_id?: string | null
+  /** Ask the VIDEO directly (EVREN prefix-cache follow-up); falls back to text silently if unavailable. */
+  use_video?: boolean
 }
 
 /** A grounded source in the answer (src/assistant: Source). Only real fields. */
 export interface AskSource {
-  type: 'analysis' | 'regulation' | string
+  type: 'analysis' | 'regulation' | 'document' | 'video' | string
   text?: string | null
   score?: number | null
   label?: string | null

@@ -11,6 +11,10 @@ from src.prompts.agent_prompts import (
     AGENT_SYSTEM_PROMPT,
     build_agent_user_prompt,
 )
+from src.prompts.ask_video_prompts import (
+    ASK_VIDEO_SYSTEM_PROMPT,
+    build_ask_video_user_prompt,
+)
 from src.prompts.event_classifier_prompts import (
     EVENT_CLASSIFIER_SYSTEM_PROMPT,
     build_event_classifier_user_prompt,
@@ -23,4 +27,6 @@ __all__ = [
     "build_agent_user_prompt",
     "EVENT_CLASSIFIER_SYSTEM_PROMPT",
     "build_event_classifier_user_prompt",
+    "ASK_VIDEO_SYSTEM_PROMPT",
+    "build_ask_video_user_prompt",
 ]

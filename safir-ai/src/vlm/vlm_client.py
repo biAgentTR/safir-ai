@@ -82,6 +82,15 @@ class VLMClient(BaseVLM):
         """
         return self._delegate.analyze_video(video_source, evidence_frames, prompt)
 
+    def answer_video_question(self, video_source: str, question: str, analysis_summary: str) -> str:
+        """Cagriyi, config'te secilen gercek VLM implementasyonuna devreder.
+
+        Devredilen implementasyon bunu desteklemiyorsa (bkz. `BaseVLM`
+        varsayilani), `NotImplementedError` OLDUGU GIBI yukari yayilir -
+        `AskService` bunu yakalayip metin-tabanli akisa geri doner.
+        """
+        return self._delegate.answer_video_question(video_source, question, analysis_summary)
+
     def health_check(self) -> bool:
         """Devredilen gercek VLM implementasyonunun saglik durumunu dondurur."""
         return self._delegate.health_check()

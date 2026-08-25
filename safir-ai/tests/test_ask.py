@@ -172,6 +172,155 @@ def test_llm_unavailable_returns_safe_503(ask_env, monkeypatch):
     assert resp.json()["detail"] == "SAFIR su anda cevap olusturamadi."
 
 
+# --------------------------- use_video (EVREN prefix-cache video-QA) ---------------------------
+
+
+class _FakeVLM:
+    """Sahte VLM istemcisi: `answer_video_question` cagrildigini/argumanlarini kaydeder."""
+
+    def __init__(self, answer: str = "[VIDEO] Forklift sarı, baret takiliyor.") -> None:
+        self.answer = answer
+        self.calls: list[tuple[str, str, str]] = []
+        self.raise_exc: Exception | None = None
+
+    def answer_video_question(self, video_source: str, question: str, analysis_summary: str) -> str:
+        self.calls.append((video_source, question, analysis_summary))
+        if self.raise_exc:
+            raise self.raise_exc
+        return self.answer
+
+
+def test_ask_use_video_true_routes_to_vlm_and_bypasses_text_llm(ask_env, video_in_data):
+    client = TestClient(app)
+    job_id = _run_job(client, video_in_data)
+
+    fake_vlm = _FakeVLM()
+    ask_env["ask"]._vlm = fake_vlm
+
+    resp = client.post(
+        "/ask", json={"question": "Forkliftin rengi neydi?", "job_id": job_id, "use_video": True}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["answer"] == fake_vlm.answer
+    assert any(s["type"] == "video" for s in body["sources"])
+    assert any("video" in c.lower() for c in body["context_used"])
+    assert len(fake_vlm.calls) == 1
+    called_video_source, called_question, _ = fake_vlm.calls[0]
+    assert called_video_source == video_in_data
+    assert called_question == "Forkliftin rengi neydi?"
+
+
+def test_ask_use_video_false_never_calls_vlm(ask_env, video_in_data):
+    client = TestClient(app)
+    job_id = _run_job(client, video_in_data)
+
+    fake_vlm = _FakeVLM()
+    ask_env["ask"]._vlm = fake_vlm
+
+    resp = client.post("/ask", json={"question": "Bu analiz neden bu risk seviyesinde?", "job_id": job_id})
+    assert resp.status_code == 200
+    assert fake_vlm.calls == []
+
+
+def test_ask_use_video_without_job_id_falls_back_to_text(ask_env):
+    """`job_id` yoksa (genel soru), `use_video=True` olsa bile video-QA denenmez (sessizce metne doner)."""
+    client = TestClient(app)
+    fake_vlm = _FakeVLM()
+    ask_env["ask"]._vlm = fake_vlm
+
+    resp = client.post("/ask", json={"question": "SAFIR nasil calisir?", "use_video": True})
+    assert resp.status_code == 200
+    assert fake_vlm.calls == []
+
+
+def test_ask_use_video_vlm_failure_falls_back_to_text_silently(ask_env, video_in_data):
+    """VLM cagrisi patlarsa (ag hatasi vb.), kullaniciya hata DEGIL, normal metin-tabanli cevap donmeli."""
+    client = TestClient(app)
+    job_id = _run_job(client, video_in_data)
+
+    fake_vlm = _FakeVLM()
+    fake_vlm.raise_exc = RuntimeError("EVREN erisilemedi")
+    ask_env["ask"]._vlm = fake_vlm
+
+    resp = client.post(
+        "/ask", json={"question": "Forkliftin rengi neydi?", "job_id": job_id, "use_video": True}
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert not any(s["type"] == "video" for s in body["sources"])
+    assert body["answer"]  # MockLLMClient'in metin-tabanli cevabi
+
+
+def test_ask_use_video_without_vlm_client_falls_back_to_text(ask_env, video_in_data):
+    """`vlm_client=None` (varsayilan, mevcut testlerin AskService'i) ile `use_video=True` crash etmez."""
+    client = TestClient(app)
+    job_id = _run_job(client, video_in_data)
+    assert ask_env["ask"]._vlm is None
+
+    resp = client.post(
+        "/ask", json={"question": "Forkliftin rengi neydi?", "job_id": job_id, "use_video": True}
+    )
+    assert resp.status_code == 200
+    assert not any(s["type"] == "video" for s in resp.json()["sources"])
+
+
+def test_ask_stream_use_video_yields_single_chunk_from_vlm(ask_env, video_in_data):
+    client = TestClient(app)
+    job_id = _run_job(client, video_in_data)
+
+    fake_vlm = _FakeVLM()
+    ask_env["ask"]._vlm = fake_vlm
+
+    resp = client.get(
+        "/ask/stream",
+        params={"question": "Forkliftin rengi neydi?", "job_id": job_id, "use_video": True},
+    )
+    assert resp.status_code == 200
+    blocks = _parse_sse_blocks(resp.text)
+    meta = blocks[0][1]
+    assert any(s["type"] == "video" for s in meta["sources"])
+    deltas = [data["delta"] for ev, data in blocks[1:-1] if ev == "message" and "delta" in data]
+    assert "".join(deltas) == fake_vlm.answer
+    assert blocks[-1][0] == "end"
+
+
+def test_ask_use_video_rejects_rtsp_source(ask_env, monkeypatch):
+    """Video kaynagi RTSP/canli akissa (yerel dosya degil), video-QA denenmez - sessizce metne doner."""
+    from src.memory.analysis_store import AnalysisStore
+    from src.schemas.report import SafirReport
+
+    fake_vlm = _FakeVLM()
+    ask_env["ask"]._vlm = fake_vlm
+
+    store: AnalysisStore = ask_env["store"]
+    store.create("live-job", "rtsp://kamera/1", status="running")
+    report = SafirReport(
+        video_source="rtsp://kamera/1",
+        generated_at="2026-08-25T00:00:00Z",
+        natural_language_summary="Canli kamera analizi.",
+        summary="Canli kamera analizi.",
+        risk_score=10,
+        risk_level="dusuk",
+        recommended_action="izlemeye devam et",
+    )
+    store.mark_completed(
+        "live-job",
+        report_json=report.model_dump_json(),
+        risk_level="dusuk",
+        risk_score=10,
+        summary="Canli kamera analizi.",
+    )
+
+    client = TestClient(app)
+    resp = client.post(
+        "/ask", json={"question": "Ne goruyorsun?", "job_id": "live-job", "use_video": True}
+    )
+    assert resp.status_code == 200
+    assert fake_vlm.calls == []
+    assert not any(s["type"] == "video" for s in resp.json()["sources"])
+
+
 def test_ask_system_prompt_enforces_grounding():
     from src.assistant.ask_service import ASK_SYSTEM_PROMPT
 

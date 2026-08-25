@@ -25,6 +25,10 @@ const SUGGESTIONS = [
 
 const canSend = computed(() => question.value.trim().length > 0 && phase.value !== 'loading')
 
+// "Videoya sor" (EVREN prefix-cache follow-up, bkz. AskSafirAsistan sayfası
+// ile aynı desen) — yalnızca bir job bağlamı varken anlamlıdır.
+const useVideo = ref(false)
+
 async function submit() {
   if (!canSend.value) return
   phase.value = 'loading'
@@ -33,7 +37,7 @@ async function submit() {
   sources.value = []
   contextUsed.value = []
   try {
-    const res = await api.ask(question.value.trim(), props.jobId ?? null)
+    const res = await api.ask(question.value.trim(), props.jobId ?? null, useVideo.value && !!props.jobId)
     answer.value = res.answer
     sources.value = res.sources ?? []
     contextUsed.value = res.context_used ?? []
@@ -79,7 +83,7 @@ function useSuggestion(s: string) {
     </div>
 
     <!-- suggestion chips -->
-    <div class="mt-2 flex flex-wrap gap-2">
+    <div class="mt-2 flex flex-wrap items-center gap-2">
       <button
         v-for="s in SUGGESTIONS"
         :key="s"
@@ -87,6 +91,18 @@ function useSuggestion(s: string) {
         :disabled="phase === 'loading'"
         @click="useSuggestion(s)"
       >{{ s }}</button>
+      <button
+        v-if="jobId"
+        type="button"
+        class="ml-auto flex items-center gap-1.5 text-[11px] px-2 py-1 rounded border transition-colors"
+        :class="useVideo
+          ? 'border-accent/50 bg-accent-soft text-accent'
+          : 'border-edge bg-surface-2 text-slate-400 hover:text-slate-200'"
+        :disabled="phase === 'loading'"
+        @click="useVideo = !useVideo"
+      >
+        <span>🎥</span> Videoya sor
+      </button>
     </div>
 
     <!-- loading -->
@@ -119,8 +135,8 @@ function useSuggestion(s: string) {
           >
             <span
               class="shrink-0 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide"
-              :class="s.type === 'analysis' ? 'bg-accent-soft text-accent' : 'bg-surface-3 text-slate-400'"
-            >{{ s.type === 'analysis' ? 'ANALİZ' : 'MEVZUAT' }}</span>
+              :class="s.type === 'analysis' || s.type === 'video' ? 'bg-accent-soft text-accent' : 'bg-surface-3 text-slate-400'"
+            >{{ s.type === 'analysis' ? 'ANALİZ' : s.type === 'video' ? 'VİDEO' : 'MEVZUAT' }}</span>
             <span class="text-slate-300 min-w-0">
               {{ s.label ?? s.text }}
               <span v-if="s.score != null" class="text-slate-600"> · skor {{ s.score }}</span>

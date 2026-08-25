@@ -38,7 +38,7 @@ from typing import Any, Dict, List
 
 import httpx
 
-from src.prompts import VLM_OBSERVER_SYSTEM_PROMPT
+from src.prompts import ASK_VIDEO_SYSTEM_PROMPT, VLM_OBSERVER_SYSTEM_PROMPT, build_ask_video_user_prompt
 from src.sampler.schema import EvidenceFrame
 from src.vlm.base_vlm import BaseVLM, VLMResponse, parse_structured_events
 from src.vlm.video_chunker import VideoChunk, cleanup_chunks, split_video_into_chunks
@@ -248,6 +248,72 @@ class EvrenVLM(BaseVLM):
             latency_ms=total_latency_ms,
             structured_events=merged_events,
         )
+
+    def answer_video_question(self, video_source: str, question: str, analysis_summary: str) -> str:
+        """Ayni video dosyasini TEKRAR EVREN'e gonderip yeni bir soruyu dogrudan yanitlar.
+
+        Mentor eleştirisi ("VLM Onbellegi/Prefix Caching Avantaji", bkz.
+        `src/prompts/ask_video_prompts.py` modul dokustringi): EVREN
+        dokumantasyonuna gore AYNI video icin ilk sorgu ~17.8s, sonraki
+        sorgular ~3.7s suruyor - bu, sunucu tarafi otomatik prefix-cache'e
+        isaret eder. Bu metod, ozel bir cache-key/session API'si UYDURMADAN,
+        en dogrudan ve savunulabilir yolu izler: videoyu OLDUGU GIBI (ayni
+        byte'lar) tekrar gonderir; EVREN sunucusu bu tekrari kendi tespit
+        ederse hizlanma DOGAL olarak gerceklesir.
+
+        Args:
+            video_source: Daha once analiz edilmis videonun yerel dosya yolu.
+            question: Kullanicinin bu video hakkindaki yeni sorusu.
+            analysis_summary: Videonun daha once uretilmis kisa metin ozeti.
+
+        Returns:
+            Modelin ham (yapisal olmayan) Turkce serbest-metin cevabi.
+
+        Raises:
+            RuntimeError: `video_source` bir RTSP/canli akis adresiyse, video
+                dosyasi okunamazsa/acilamazsa veya EVREN cagrisi basarisiz olursa.
+        """
+        lowered = video_source.strip().lower()
+        if lowered.startswith(("rtsp://", "http://", "https://")):
+            raise RuntimeError(
+                f"EVREN video-QA yalnizca yerel video dosyalarini destekler (RTSP/canli akis DESTEKLENMEZ): {video_source}"
+            )
+
+        try:
+            with open(video_source, "rb") as fh:
+                video_b64 = base64.b64encode(fh.read()).decode("ascii")
+        except OSError as exc:
+            raise RuntimeError(f"EVREN icin video dosyasi okunamadi: {video_source} ({exc})") from exc
+
+        user_text = build_ask_video_user_prompt(question, analysis_summary)
+        payload = {
+            "model": self._endpoint.model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": f"{ASK_VIDEO_SYSTEM_PROMPT}\n\n{user_text}"},
+                        {"type": "video_url", "video_url": {"url": f"data:video/mp4;base64,{video_b64}"}},
+                    ],
+                }
+            ],
+            "max_tokens": self._endpoint.max_new_tokens,
+            "temperature": self._endpoint.temperature,
+        }
+        logger.info("EVREN video-QA cagrisi yapiliyor: video=%s model=%s", video_source, self.model_name)
+
+        response = httpx.post(
+            f"{self.base_url}/chat/completions",
+            json=payload,
+            headers=self._endpoint.auth_headers(),
+            timeout=_EVREN_VIDEO_TIMEOUT_SEC,
+        )
+        response.raise_for_status()
+        data = response.json()
+        try:
+            return str(data["choices"][0]["message"]["content"]).strip()
+        except (KeyError, IndexError) as exc:
+            raise RuntimeError(f"EVREN yaniti beklenmedik bicimde: {exc}") from exc
 
     def analyze_evidence(self, evidence_frames: List[EvidenceFrame], prompt: str) -> VLMResponse:
         """Bu saglayicida DESTEKLENMEZ - production akisi `analyze_video` kullanir.

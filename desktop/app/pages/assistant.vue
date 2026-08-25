@@ -225,6 +225,7 @@ function startNewChat() {
   showNoteForm.value = false
   documents.value = []
   uploadError.value = null
+  askVideoMode.value = false
 }
 
 async function openConversation(id: string) {
@@ -237,6 +238,7 @@ async function openConversation(id: string) {
   lastSources.value = []
   showNoteForm.value = false
   uploadError.value = null
+  askVideoMode.value = false
   try {
     const detail = await api.getConversation(id)
     activeJobId.value = detail.job_id
@@ -330,6 +332,12 @@ const question = ref('')
 const sending = ref(false)
 const sendError = ref<string | null>(null)
 
+// "Videoya sor" (Adım: EVREN prefix-cache follow-up) — yalnızca bir analize
+// bağlı sohbette anlamlıdır; soruyu metin özeti yerine DOĞRUDAN videoya sorar
+// (video hâlâ diskte varsa; değilse backend sessizce metne döner).
+const askVideoMode = ref(false)
+const canUseVideoMode = computed(() => !!activeJobId.value)
+
 const canSend = computed(() => question.value.trim().length > 0 && !sending.value)
 const textareaRows = computed(() => Math.min(6, Math.max(2, question.value.split('\n').length)))
 
@@ -353,18 +361,24 @@ async function submit() {
 
     let full = ''
     await new Promise<void>((resolve, reject) => {
-      askStream.start(q, activeJobId.value, conversationId, {
-        onMeta: (meta: AskStreamMeta) => {
-          lastSources.value = meta.sources ?? []
+      askStream.start(
+        q,
+        activeJobId.value,
+        conversationId,
+        {
+          onMeta: (meta: AskStreamMeta) => {
+            lastSources.value = meta.sources ?? []
+          },
+          onDelta: (delta: string) => {
+            full += delta
+            assistantMsg.content = full
+            scrollToBottom()
+          },
+          onEnd: () => resolve(),
+          onError: (detail: string) => reject(new Error(detail)),
         },
-        onDelta: (delta: string) => {
-          full += delta
-          assistantMsg.content = full
-          scrollToBottom()
-        },
-        onEnd: () => resolve(),
-        onError: (detail: string) => reject(new Error(detail)),
-      })
+        askVideoMode.value && canUseVideoMode.value,
+      )
     })
 
     assistantMsg.pending = false
@@ -630,8 +644,8 @@ onBeforeUnmount(() => askStream.stop())
             >
               <span
                 class="shrink-0 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide"
-                :class="s.type === 'analysis' ? 'bg-accent-soft text-accent' : s.type === 'document' ? 'bg-surface-3 text-slate-300' : 'bg-surface-3 text-slate-400'"
-              >{{ s.type === 'analysis' ? 'ANALİZ' : s.type === 'document' ? 'BELGE' : 'MEVZUAT' }}</span>
+                :class="s.type === 'analysis' ? 'bg-accent-soft text-accent' : s.type === 'video' ? 'bg-accent-soft text-accent' : s.type === 'document' ? 'bg-surface-3 text-slate-300' : 'bg-surface-3 text-slate-400'"
+              >{{ s.type === 'analysis' ? 'ANALİZ' : s.type === 'video' ? 'VİDEO' : s.type === 'document' ? 'BELGE' : 'MEVZUAT' }}</span>
               <span class="text-slate-300 min-w-0">
                 {{ s.label ?? s.text }}
                 <span v-if="s.score != null" class="text-slate-600"> · skor {{ s.score }}</span>
@@ -645,8 +659,26 @@ onBeforeUnmount(() => askStream.stop())
           {{ sendError }}
         </div>
 
+        <!-- video modu (EVREN prefix-cache follow-up) -->
+        <div v-if="canUseVideoMode" class="mt-3 flex items-center gap-2">
+          <button
+            type="button"
+            class="flex items-center gap-1.5 text-[11px] px-2 py-1 rounded border transition-colors"
+            :class="askVideoMode
+              ? 'border-accent/50 bg-accent-soft text-accent'
+              : 'border-edge bg-surface-2 text-slate-400 hover:text-slate-200'"
+            :disabled="sending"
+            @click="askVideoMode = !askVideoMode"
+          >
+            <span>🎥</span> Videoya sor
+          </button>
+          <span v-if="askVideoMode" class="text-[11px] text-slate-600">
+            Sonraki soru doğrudan videoya sorulacak (özet yerine).
+          </span>
+        </div>
+
         <!-- giris -->
-        <div class="mt-4 flex gap-2">
+        <div class="mt-2 flex gap-2">
           <textarea
             v-model="question"
             :rows="textareaRows"

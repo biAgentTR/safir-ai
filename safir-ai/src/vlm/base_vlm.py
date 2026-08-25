@@ -322,6 +322,32 @@ class BaseVLM(ABC):
             "top_p": self._endpoint.top_p,
         }
 
+    def answer_video_question(self, video_source: str, question: str, analysis_summary: str) -> str:
+        """Ayni videoya, kalici raporun onceki analizinden SONRA yeni bir soru sorar.
+
+        Varsayilan olarak DESTEKLENMEZ - yalnizca `EvrenVLM` (video-tabanli,
+        prefix-cache avantajina sahip tek saglayici, bkz. o modulun
+        dokustringi) bunu implemente eder. `QwenVLM`/`GemmaVLM`/mock
+        istemciler icin cagiran taraf (`AskService`) bu istisnayi YAKALAYIP
+        metin-tabanli soru-cevap akisina SESSIZCE geri doner - bu asla
+        kullaniciya gorunen bir hataya donusmez.
+
+        Args:
+            video_source: Daha once analiz edilmis videonun yerel dosya yolu.
+            question: Kullanicinin bu video hakkindaki yeni (takip) sorusu.
+            analysis_summary: Videonun daha once uretilmis kisa metin ozeti
+                (baglam icindir, KANIT degildir).
+
+        Returns:
+            Modelin videoyu dogrudan izleyerek urettigi Turkce serbest-metin cevap.
+
+        Raises:
+            NotImplementedError: Bu saglayici video-QA'yi desteklemiyorsa (varsayilan).
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} video-tabanli takip sorusu (answer_video_question) desteklemiyor."
+        )
+
     @abstractmethod
     def health_check(self) -> bool:
         """Modelin vLLM servisinin ayakta olup olmadigini kontrol eder.
