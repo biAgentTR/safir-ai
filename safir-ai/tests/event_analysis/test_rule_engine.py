@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.event_analysis.rule_engine import RuleEngine
-from src.event_analysis.schemas import TemporalEvent
+from src.event_analysis.rule_engine import _RAG_QUERY_BY_EVENT_TYPE, RuleEngine
+from src.event_analysis.schemas import EVENT_TYPE_REGULATION_MAP, EventType, TemporalEvent
 
 
 @dataclass
@@ -141,7 +141,36 @@ def test_with_retriever_rule_description_uses_enriched_text() -> None:
     matches = RuleEngine(retriever=retriever).evaluate(events)
 
     assert matches[0].rule_description == "ISG Yonetmeligi Madde 24: KKD zorunlulugu detayli metin (gercek KB chunk'i)."
-    assert retriever.calls == [("ISG Yonetmeligi Madde 24", 1)]
+    # Sorgu artik KISA ETIKET DEGIL, kategori icin dogal-dil konu aciklamasidir
+    # (bkz. `_RAG_QUERY_BY_EVENT_TYPE` - kisa etiket bir mevzuat ICERIGI degil,
+    # birebir sorgu olarak kullanildiginda GERCEK KB'de alakasiz bir maddeye
+    # eslesebiliyordu).
+    assert len(retriever.calls) == 1
+    question, top_k = retriever.calls[0]
+    assert top_k == 1
+    assert "Kisisel Koruyucu Donanim" in question
+
+
+def test_rag_query_map_covers_every_regulation_aligned_event_type() -> None:
+    """Mevzuat karsiligi olan (8) her `EventType` icin `_RAG_QUERY_BY_EVENT_TYPE`de
+    ozel bir dogal-dil sorgusu tanimli olmali - aksi halde `_describe_regulation`
+    sessizce KISA ETIKETE (uydurma/kisa referans adi) sorgu olarak geri doner
+    (bkz. bu modulun P0 regresyonu: birebir etiket sorgusu GERCEK KB'de
+    alakasiz maddelere eslesebiliyordu)."""
+    regulation_aligned_types = {et for et, label in EVENT_TYPE_REGULATION_MAP.items() if label is not None}
+    assert regulation_aligned_types <= set(_RAG_QUERY_BY_EVENT_TYPE)
+
+
+def test_rag_query_for_yangin_duman_is_topic_description_not_the_fake_label() -> None:
+    """En onemli regresyon: `yangin_duman` icin retriever'a gonderilen sorgu, ARTIK
+    `EVENT_TYPE_REGULATION_MAP`teki kisa (uydurma) etiketin ('Yangin Guvenligi
+    Talimati YG-03' - hicbir zaman gercek bir mevzuat olarak var olmamis, bkz.
+    `src/prompts/agent_prompts.py`deki UYDURMA ornegi) KENDISI DEGIL, konuyu
+    (duman/alev tespiti) GERCEKTEN tarif eden dogal bir sorudur."""
+    fake_label = EVENT_TYPE_REGULATION_MAP[EventType.YANGIN_DUMAN]
+    rag_query = _RAG_QUERY_BY_EVENT_TYPE[EventType.YANGIN_DUMAN]
+    assert rag_query != fake_label
+    assert "duman" in rag_query.lower()
 
 
 def test_retriever_failure_falls_back_to_short_label_without_raising() -> None:

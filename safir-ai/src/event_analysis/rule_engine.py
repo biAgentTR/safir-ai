@@ -78,6 +78,53 @@ _RULE_ID_BY_EVENT_TYPE: Dict[EventType, str] = {
 ile ayni 8 mevzuat maddesini kapsar; burada yalnizca kisa, okunabilir bir
 `rule_id` uretmek icin ayrilmistir, mevzuat metnini tekrarlamaz."""
 
+_RAG_QUERY_BY_EVENT_TYPE: Dict[EventType, str] = {
+    EventType.DUSME_RISKI: (
+        "Yukseklikte calisma, dusme onleyici ekipman (emniyet kemeri, yasam hatti), "
+        "korkuluk veya guvenlik agi ile ilgili is sagligi ve guvenligi kurallari."
+    ),
+    EventType.KKD_IHLALI: (
+        "Kisisel Koruyucu Donanim (baret, is ayakkabisi, yansitici yelek) kullanim "
+        "zorunlulugu ile ilgili is sagligi ve guvenligi kurallari."
+    ),
+    EventType.ARAC_YAYA_YAKINLIGI: (
+        "Forklift veya is makinesi trafiginde yaya gecitleri ve yaya guvenligi ile "
+        "ilgili operasyonel kurallar."
+    ),
+    EventType.SICAK_CALISMA_IHLALI: (
+        "Izinsiz ates, kivilcim veya sicak yuzey islemi (sicak calisma izni) ile "
+        "ilgili is sagligi ve guvenligi kurallari."
+    ),
+    EventType.YANGIN_DUMAN: (
+        "Duman veya alev tespiti, yangin algilama ve yangin sondurme ile ilgili "
+        "yangin guvenligi kurallari."
+    ),
+    EventType.DAR_ALAN_IHLALI: (
+        "Gaz olcumu yapilmadan veya gozetmen olmadan kapali/dar alana giris ile "
+        "ilgili is sagligi ve guvenligi kurallari."
+    ),
+    EventType.ENERJI_KESME_IHLALI: (
+        "Enerji kesme (LOTO - Lockout/Tagout) prosedurune uyulmadan mudahale ile "
+        "ilgili operasyonel kurallar."
+    ),
+    EventType.AGIR_YUK_RISKI: (
+        "Sinyalman olmadan vinc veya kren ile agir yuk kaldirma ile ilgili is "
+        "sagligi ve guvenligi kurallari."
+    ),
+}
+"""`EventType` -> retriever'a gonderilecek DOGAL DIL sorgu metni (2026-08-25).
+
+`EVENT_TYPE_REGULATION_MAP`'teki KISA ETIKET (orn. "Yangin Guvenligi Talimati
+YG-03") bir RAG sorgusu olarak kullanildiginda, GERCEK KB'de o etiketle
+alakasiz ama ayni dokuman icindeki BASKA bir maddeye (orn. "aydinlatma") en
+yakin embedding eslesmesini bulabiliyordu - etiketin kendisi bir mevzuat
+ICERIGI degil, uydurma/kisa bir REFERANS adi oldugu icin. Bu sabit, her
+kategori icin GERCEKTEN o konuyu (`EventType` docstring'lerindeki mevcut
+aciklamalarla AYNI) tarif eden bir soru sunar; boylece semantik arama, dogru
+konudaki (orn. yangin/duman algilama) bir chunk'i bulma sansini artirir.
+Tanimsiz kategoriler icin `_describe_regulation`, kisa etikete geri doner."""
+
+
 _DEFAULT_SEVERITY_BY_EVENT_TYPE: Dict[EventType, str] = {
     EventType.DUSME_RISKI: "yuksek",
     EventType.KKD_IHLALI: "orta",
@@ -229,7 +276,7 @@ class RuleEngine:
         return [
             RuleMatch(
                 rule_id=_RULE_ID_BY_EVENT_TYPE.get(event_type, event_type.value),
-                rule_description=self._describe_regulation(regulation_label),
+                rule_description=self._describe_regulation(event_type, regulation_label),
                 event_type=event.event_type,
                 severity=_DEFAULT_SEVERITY_BY_EVENT_TYPE.get(event_type, "orta"),
                 source_event_id=event.event_id,
@@ -237,7 +284,7 @@ class RuleEngine:
             )
         ]
 
-    def _describe_regulation(self, regulation_label: str) -> str:
+    def _describe_regulation(self, event_type: EventType, regulation_label: str) -> str:
         """Mevzuat etiketini, varsa retriever uzerinden GERCEK KB metniyle zenginlestirir.
 
         T017 dogrulamasi: bu, event_type -> mevzuat uygulanabilirligi (HANGI
@@ -258,10 +305,23 @@ class RuleEngine:
         veya BOS liste donduruyse (deterministik gate onu zaten eledi) guvenli
         kisa etikete geri donulur - uydurma bir mevzuat metni ASLA rapora sizmaz.
 
+        2026-08-25 (2. duzeltme - sorgu KALITESI): retriever'a KISA ETIKET
+        (orn. "Yangin Guvenligi Talimati YG-03") DEGIL, `_RAG_QUERY_BY_EVENT_TYPE`
+        icindeki dogal-dil konu aciklamasi SORULUR. Kisa etiket bir mevzuat
+        ICERIGI degil, uydurma/kisa bir REFERANS adidir; bunu birebir sorgu
+        olarak kullanmak, GERCEK KB'de ayni dokuman icindeki ALAKASIZ bir
+        maddeye (orn. "yangin guvenligi" dokumanindaki "aydinlatma" maddesi)
+        en yakin embedding eslesmesini bulabiliyordu - deterministik esik
+        GECILSE bile konu YANLIS olabiliyordu. Kategori icin ozel bir sorgu
+        tanimli degilse (orn. mevzuat karsiligi olmayan kategoriler) kisa
+        etiketin kendisine geri donulur.
+
         Args:
+            event_type: Sorgulanan `EventType` (retriever'a gonderilecek
+                dogal-dil sorguyu `_RAG_QUERY_BY_EVENT_TYPE`den secmek icin).
             regulation_label: `EVENT_TYPE_REGULATION_MAP`'ten gelen kisa etiket
-                (orn. "ISG Yonetmeligi Madde 12"); ayni zamanda retriever'a
-                gonderilen sorgu metnidir.
+                (orn. "ISG Yonetmeligi Madde 12"); nihai aciklamanin ONUNE
+                eklenen KISA REFERANS olarak kullanilir.
 
         Returns:
             Retriever mevcutsa VE en az bir (zaten deterministik gate'ten
@@ -272,8 +332,9 @@ class RuleEngine:
         if self._retriever is None:
             return regulation_label
 
+        rag_query = _RAG_QUERY_BY_EVENT_TYPE.get(event_type, regulation_label)
         try:
-            results = self._retriever.query(regulation_label, top_k=1)
+            results = self._retriever.query(rag_query, top_k=1)
         except Exception:
             logger.exception(
                 "RuleEngine: retriever cagrisi basarisiz, kisa mevzuat etiketiyle devam ediliyor."

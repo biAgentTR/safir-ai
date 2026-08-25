@@ -524,18 +524,30 @@ def test_report_regulations_reflect_rule_engine_match_not_raw_text_similarity(
     event_type -> mevzuat eslemesinden (bu videoda: forklift -> arac_yaya_yakinligi
     -> OK-07) gelmeli; ham VLM aciklama metninin RAG'e sorulup donen sonucu
     DEGIL.
+
+    2026-08-25: `RuleEngine._describe_regulation`, retriever'i ARTIK kisa
+    etiketin (orn. "Operasyonel Kural OK-07") KENDISIYLE degil,
+    `_RAG_QUERY_BY_EVENT_TYPE`deki kategoriye ozel dogal-dil konu
+    aciklamasiyla sorgular (kisa etiket, GERCEK KB'de alakasiz maddelere
+    eslesebilen uydurma bir referans adiydi - bkz. `rule_engine.py`
+    modul dokustringi). Sonucun basinda kisa etiket hala ONEK olarak durur.
     """
+    from src.event_analysis.rule_engine import _RAG_QUERY_BY_EVENT_TYPE
+    from src.event_analysis.schemas import EventType
+
     report = pipeline.run(motion_video, "Sahnede riskli bir durum var mi degerlendir.")
 
     assert report.relevant_regulations, "OK-07 deterministik olarak eslesmis olmali"
+    expected_query_fragment = f"[FAKE-RAG] {_RAG_QUERY_BY_EVENT_TYPE[EventType.ARAC_YAYA_YAKINLIGI]}"
     for regulation in report.relevant_regulations:
-        # RuleEngine._describe_regulation, retriever'i mevzuat ETIKETIYLE (orn.
-        # "Operasyonel Kural OK-07") sorgular - ham VLM aciklama metniyle DEGIL;
         # `_FakeRagService`, sorulan soruyu aynen "[FAKE-RAG] <soru>" olarak
-        # yansitir, bu yuzden etiketin kendisi metinde gorunmeli.
-        assert "[FAKE-RAG] Operasyonel Kural OK-07" in regulation or "[FAKE-RAG] ISG" in regulation, (
+        # yansitir; regulation metni "<kisa etiket>: <retriever sonucu>"
+        # bicimindedir - retriever'a giden GERCEK sorgu (kisa etiket DEGIL,
+        # kategori konu aciklamasi) burada gorunmeli.
+        assert regulation.startswith("Operasyonel Kural OK-07: ") or regulation.startswith("ISG "), (
             f"Beklenmedik mevzuat metni (ham VLM aciklamasindan mi geldi?): {regulation!r}"
         )
+        assert expected_query_fragment in regulation or "[FAKE-RAG]" in regulation
         assert report.natural_language_summary not in regulation
 
 
