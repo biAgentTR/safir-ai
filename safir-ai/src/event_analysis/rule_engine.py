@@ -19,12 +19,30 @@ Iki kural katmani uretir:
 --------------------
 Bu modul, `src.agent.tools.RetrieverTool`'u dogrudan import ETMEZ (yasakli
 `src/agent/` klasorune bagimlilik eklememek icin). Bunun yerine
-`RegulationRetriever` adinda bir `Protocol` tanimlar; `run(question, top_k)
--> str` imzasina uyan herhangi bir nesne (gercek kullanimda
-`RetrieverTool(rag_service).run`, testte ise basit bir mock) `RuleEngine`e
-opsiyonel olarak enjekte edilebilir. Retriever verilmezse, tekli kural
-eslesmeleri yalnizca `EVENT_TYPE_REGULATION_MAP`'teki kisa etiketle
-doner (zenginlestirme atlanir).
+`RegulationRetriever` adinda bir `Protocol` tanimlar; `query(question, top_k)
+-> List[...]` imzasina uyan herhangi bir nesne (gercek kullanimda dogrudan
+`src.rag.embedding_rag_service.EmbeddingRAGService`, testte basit bir mock)
+`RuleEngine`e opsiyonel olarak enjekte edilebilir. Retriever verilmezse,
+tekli kural eslesmeleri yalnizca `EVENT_TYPE_REGULATION_MAP`'teki kisa
+etiketle doner (zenginlestirme atlanir).
+
+2026-08-25 duzeltmesi (getirilen mevzuat metni GERCEK KB'den gelmiyordu):
+`_describe_regulation` ONCEDEN `RetrieverTool.run(...) -> str` (LLM-agent icin
+bicimlendirilmis DUZ METIN) kullanip, donen metnin sorgulanan KISA ETIKETI
+(orn. "Yangin Guvenligi Talimati YG-03" - `EVENT_TYPE_REGULATION_MAP`, bu
+etiketler ESKI `DEFAULT_ISG_REGULATIONS` PLACEHOLDER corpus'unun basliklarina
+gore yazilmisti, bkz. o sabitin dokustringi) BIREBIR ICERIP ICERMEDIGINI
+kontrol ediyordu. Sisteme GERCEK, ~748 chunk'lik Qdrant/EVREN tabanli mevzuat
+KB'si baglandiktan SONRA bu kontrol ARTIK HICBIR ZAMAN gecemiyordu (gercek
+mevzuat metni, uydurma/placeholder etiketi HARFIYEN icermez) - bu yuzden
+zenginlestirme HER ZAMAN reddedilip UI'da hep placeholder etiket gosteriliyordu.
+Artik `RegulationRetriever.query(...)` DOGRUDAN `EmbeddingRAGService.query()`e
+baglanir; bu metod ZATEN yalnizca deterministik relevance esiginden GECMIS
+("accepted") adaylari dondurur (bkz. `embedding_rag_service.py::query`) - o
+yuzden `_describe_regulation` ayrica bir metin-icerme kontrolu YAPMAZ, dondurulen
+(varsa) ilk sonucu GUVENILIR sayar. Alakasiz sonuclara karsi korunma, artik TEK
+bir yerde (deterministik reranker'in `score_threshold` gate'i) yasar - burada
+tekrarlanan ve GERCEK KB ile hicbir zaman calismayan kirik bir kontrol degil.
 """
 
 from __future__ import annotations
@@ -77,15 +95,18 @@ tabanli bir on-degerlendirmedir."""
 
 @runtime_checkable
 class RegulationRetriever(Protocol):
-    """`src.agent.tools.RetrieverTool` ile ayni imzaya sahip herhangi bir nesne icin duck-typing sozlesmesi.
+    """`src.rag.embedding_rag_service.EmbeddingRAGService.query` ile ayni imzaya sahip herhangi bir nesne icin duck-typing sozlesmesi.
 
-    `RuleEngine`, `agent/` klasorune bagimlilik eklememek icin `RetrieverTool`'u
-    import etmez; bu Protocol'e uyan herhangi bir nesne (gercek kullanimda
-    `RetrieverTool(rag_service).run`, testte basit bir mock) enjekte edilebilir.
+    `RuleEngine`, `agent/` klasorune bagimlilik eklememek icin
+    `src.agent.tools.RetrieverTool`'u import etmez; bunun yerine bu Protocol'e
+    uyan herhangi bir nesne (gercek kullanimda dogrudan `EmbeddingRAGService`,
+    testte basit bir mock) enjekte edilebilir. `src/rag/` bir alt katmandir
+    (agent'a bagimli DEGILDIR), bu yuzden ona dogrudan baglanmak yasakli
+    `agent/` bagimliligini IHLAL ETMEZ.
     """
 
-    def run(self, question: str, top_k: int = 3) -> str:
-        """Verilen soruya en ilgili mevzuat/kural metnini dogal dil olarak dondurur."""
+    def query(self, question: str, top_k: int = 1) -> List[object]:
+        """Verilen soruya en ilgili (ZATEN deterministik relevance esiginden GECMIS) dokuman listesini dondurur."""
         ...
 
 
@@ -127,10 +148,10 @@ class RuleEngine:
         """RuleEngine'i opsiyonel bir retriever ve kombinasyon kurallari dosyasiyla baslatir.
 
         Args:
-            retriever: `RegulationRetriever` sozlesmesine uyan opsiyonel
-                mevzuat arama nesnesi (orn. `RetrieverTool(rag_service)`).
-                `None` ise tekli kural eslesmeleri yalnizca kisa mevzuat
-                etiketiyle doner.
+            retriever: `RegulationRetriever` sozlesmesine (`.query(question,
+                top_k) -> List[...]`) uyan opsiyonel mevzuat arama nesnesi
+                (orn. dogrudan `EmbeddingRAGService`). `None` ise tekli kural
+                eslesmeleri yalnizca kisa mevzuat etiketiyle doner.
             rules_path: `combination_rules` listesini iceren YAML dosyasinin
                 yolu (varsayilan: `src/event_analysis/rules/isg_rules.yaml`).
 
@@ -217,52 +238,56 @@ class RuleEngine:
         ]
 
     def _describe_regulation(self, regulation_label: str) -> str:
-        """Mevzuat etiketini, varsa retriever uzerinden tam metinle zenginlestirir.
+        """Mevzuat etiketini, varsa retriever uzerinden GERCEK KB metniyle zenginlestirir.
 
         T017 dogrulamasi: bu, event_type -> mevzuat uygulanabilirligi (HANGI
         mevzuat) kararini VERMEZ - o zaten `EVENT_TYPE_REGULATION_MAP`
         uzerinden deterministik olarak alinmistir. Burada retriever yalnizca
         ZATEN BILINEN bu etiketin TAM METNINI getirir (bir dokuman-lookup
-        adimidir). Ancak bir RAG/index bozuklugu (yanlis indeks, stale veri,
-        alakasiz belge donen bir retriever) sessizce YANLIS bir metni bu
-        DOGRU etikete yapistirabilir - bu da raporda etiketle celisen bir
-        mevzuat metni gosterip kullaniciyi yanlis yonlendirir. Bu yuzden
-        donen metin, sorgulanan ETIKETI GERCEKTEN ICERMIYORSA (yani
-        retriever, sorulan mevzuatla ILGISIZ bir sey donduysse) enrichment
-        REDDEDILIR ve guvenli kisa etikete geri donulur; boylece uydurma/
-        yanlis-eslesen bir mevzuat metni ASLA rapora sizmaz.
+        adimidir).
+
+        2026-08-25 duzeltmesi: `self._retriever.query(...)`,
+        `EmbeddingRAGService.query()`nin KENDISIDIR - bu metod ZATEN yalnizca
+        deterministik relevance esiginden (`RerankerConfig.score_threshold`)
+        GECMIS ("accepted") adaylari dondurur; esigin ALTINDA kalan/alakasiz
+        adaylar `query()` icinde SESSIZCE ELENIR (bos liste doner). Bu yuzden
+        burada AYRICA bir metin-icerme kontrolu YAPILMAZ (eski surumdeki
+        kontrol, ESKI placeholder corpus icin yazilmisti ve gercek KB'nin
+        metniyle hicbir zaman eslesmiyordu - bkz. modul dokustringi); donen
+        ilk sonuc dogrudan GUVENILIR sayilir. Retriever `None`, hata verir
+        veya BOS liste donduruyse (deterministik gate onu zaten eledi) guvenli
+        kisa etikete geri donulur - uydurma bir mevzuat metni ASLA rapora sizmaz.
 
         Args:
             regulation_label: `EVENT_TYPE_REGULATION_MAP`'ten gelen kisa etiket
-                (orn. "ISG Yonetmeligi Madde 12").
+                (orn. "ISG Yonetmeligi Madde 12"); ayni zamanda retriever'a
+                gonderilen sorgu metnidir.
 
         Returns:
-            Retriever mevcutsa VE donen metin sorgulanan etiketi gercekten
-            iceriyorsa zenginlestirilmis metin; retriever yoksa, cagri
-            basarisiz olursa VEYA donen metin etiketle ILGISIZSE orijinal
-            (guvenli) etiket.
+            Retriever mevcutsa VE en az bir (zaten deterministik gate'ten
+            gecmis) sonuc donduysa `"<kisa etiket>: <gercek chunk metni>"`;
+            retriever yoksa, cagri basarisiz olursa VEYA hicbir sonuc yoksa
+            orijinal (guvenli) kisa etiket.
         """
         if self._retriever is None:
             return regulation_label
 
         try:
-            enriched = self._retriever.run(question=regulation_label, top_k=1)
+            results = self._retriever.query(regulation_label, top_k=1)
         except Exception:
             logger.exception(
                 "RuleEngine: retriever cagrisi basarisiz, kisa mevzuat etiketiyle devam ediliyor."
             )
             return regulation_label
 
-        if not enriched or regulation_label not in enriched:
-            if enriched:
-                logger.warning(
-                    "RuleEngine: retriever '%s' etiketiyle ILGISIZ bir metin dondurdu, "
-                    "enrichment REDDEDILDI (kisa etikete donuluyor).",
-                    regulation_label,
-                )
+        if not results:
             return regulation_label
 
-        return enriched
+        text = getattr(results[0], "text", None)
+        if not text:
+            return regulation_label
+
+        return f"{regulation_label}: {text}"
 
     def _match_combination_rules(self, sorted_events: List[TemporalEvent]) -> List[RuleMatch]:
         """`related_events` iliski kumelerini YAML'daki kombinasyon kurallarina karsi degerlendirir.

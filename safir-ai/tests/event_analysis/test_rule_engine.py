@@ -2,32 +2,50 @@
 
 `RuleEngine.evaluate()`'in tekli mevzuat eslestirmesini, kombinasyon
 (bilesik ihlal) kurallarini ve opsiyonel `RegulationRetriever` entegrasyonunu
-dogrular. Gercek `EmbeddingRAGService`/`RetrieverTool`'a bagimlilik yoktur;
-`RegulationRetriever` Protocol'une uyan basit bir mock kullanilir.
+dogrular. Gercek `EmbeddingRAGService`e bagimlilik yoktur; `RegulationRetriever`
+Protocol'une (`.query(question, top_k) -> List[...]`, `EmbeddingRAGService.query`
+ile AYNI imza) uyan basit bir mock kullanilir.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 from src.event_analysis.rule_engine import RuleEngine
 from src.event_analysis.schemas import TemporalEvent
 
 
-class _MockRetriever:
-    """`RegulationRetriever` Protocol'une uyan, gercek RAG'a bagli olmayan test cifti."""
+@dataclass
+class _FakeDoc:
+    """`EmbeddingRAGService.query()`nin dondurdugu `RetrievedDocument`nin, bu testler icin yeterli minimal (duck-typed) izdusumu."""
 
-    def __init__(self, response: str = "[MOCK] Ilgili mevzuat metni.") -> None:
-        self.response = response
+    text: str
+
+
+class _MockRetriever:
+    """`RegulationRetriever` Protocol'une uyan, gercek RAG'a bagli olmayan test cifti.
+
+    `EmbeddingRAGService.query()` ZATEN yalnizca deterministik relevance
+    esiginden GECMIS ("accepted") adaylari dondurur (bkz. `rule_engine.py`
+    modul dokustringindeki 2026-08-25 duzeltme notu); bu yuzden bu mock,
+    "iliskisiz sonuc" senaryosunu ARTIK yanlis metin dondurerek DEGIL, bos
+    liste (`results=[]`) dondurerek temsil eder - gercek sistemde deterministik
+    gate zaten boyle davranir.
+    """
+
+    def __init__(self, results: list[str] | None = ("[MOCK] Ilgili mevzuat metni.",)) -> None:
+        self.results = list(results) if results else []
         self.calls: list[tuple[str, int]] = []
 
-    def run(self, question: str, top_k: int = 3) -> str:
+    def query(self, question: str, top_k: int = 1) -> list[_FakeDoc]:
         self.calls.append((question, top_k))
-        return self.response
+        return [_FakeDoc(text=r) for r in self.results]
 
 
 class _FailingRetriever:
     """Her cagride istisna firlatan retriever; RuleEngine'in hataya dayanikliligini test eder."""
 
-    def run(self, question: str, top_k: int = 3) -> str:
+    def query(self, question: str, top_k: int = 1) -> list[_FakeDoc]:
         raise RuntimeError("retriever servisine erisilemedi")
 
 
@@ -114,15 +132,15 @@ def test_without_retriever_rule_description_is_short_regulation_label() -> None:
 
 
 def test_with_retriever_rule_description_uses_enriched_text() -> None:
-    """Retriever donen metin sorgulanan ETIKETI ICERIYORSA (gercekci/dogru bir RAG sonucu
-    gibi - bkz. `DEFAULT_ISG_REGULATIONS`in her maddesinin kendi etiketiyle basladigi format),
-    enrichment kabul edilir ve KULLANILIR."""
-    retriever = _MockRetriever(response="ISG Yonetmeligi Madde 24: KKD zorunlulugu detayli metin.")
+    """Retriever GERCEK bir sonuc donduruyorsa (EmbeddingRAGService.query()'nin
+    zaten deterministik relevance esiginden GECIRDIGI, "accepted" bir aday),
+    bu metin kisa etiketin ARDINDAN eklenerek KULLANILIR."""
+    retriever = _MockRetriever(results=["KKD zorunlulugu detayli metin (gercek KB chunk'i)."])
     events = [_temporal_event("evt_0", "kkd_ihlali")]
 
     matches = RuleEngine(retriever=retriever).evaluate(events)
 
-    assert matches[0].rule_description == "ISG Yonetmeligi Madde 24: KKD zorunlulugu detayli metin."
+    assert matches[0].rule_description == "ISG Yonetmeligi Madde 24: KKD zorunlulugu detayli metin (gercek KB chunk'i)."
     assert retriever.calls == [("ISG Yonetmeligi Madde 24", 1)]
 
 
@@ -134,30 +152,31 @@ def test_retriever_failure_falls_back_to_short_label_without_raising() -> None:
 
 
 # --- T017: mevzuat "getirme" (RAG lookup) != "uygulanabilirlik" karari -----
+# 2026-08-25: alakasiz sonuclara karsi koruma artik TEK bir yerde -
+# `EmbeddingRAGService.query()`nin deterministik relevance/score_threshold
+# gate'inde (bkz. `deterministic_reranker.py` testleri) - yasiyor; `query()`
+# esigin ALTINDA kalan/alakasiz adaylari zaten BOS LISTE ile eler. Bu yuzden
+# RuleEngine tarafindaki regresyon testi de ayni sozlesmeyi (bos liste =
+# "ilgili sonuc yok") dogrulayacak sekilde guncellendi.
 
 
-def test_retriever_returning_unrelated_regulation_text_is_rejected_not_forced() -> None:
-    """En onemli regresyon: sorgulanan mevzuat ETIKETIYLE (orn. 'ISG Yonetmeligi
-    Madde 24' - kkd_ihlali icin) HICBIR ILGISI OLMAYAN bir metin donen (bozuk
-    index/yanlis eslesen) bir retriever, bu metni RuleEngine'e ZORLA
-    KABUL ETTIREMEMELI. RuleEngine, kisa (guvenli) etikete geri donmeli -
-    ilgisiz mevzuat metni rapora ASLA SIZMAMALI."""
-    unrelated_retriever = _MockRetriever(
-        response="Operasyonel Kural OK-07: Forklift ve is makinesi trafiginde yaya gecitleri her zaman acik tutulmali."
-    )
-    events = [_temporal_event("evt_0", "kkd_ihlali")]  # KKD ihlali sorgulaniyor, forklift kurali DEGIL.
+def test_retriever_returning_no_accepted_results_falls_back_to_short_label() -> None:
+    """En onemli regresyon: retriever (gercek sistemde `EmbeddingRAGService.query()`)
+    sorgulanan kategoriyle ilgili HICBIR "accepted" sonuc bulamadiginda (deterministik
+    relevance gate onlari zaten eledigi icin) BOS LISTE doner - RuleEngine bu durumda
+    kisa (guvenli) etikete geri donmeli, uydurma/ilgisiz bir mevzuat metni ASLA rapora
+    SIZMAMALI."""
+    empty_retriever = _MockRetriever(results=[])
+    events = [_temporal_event("evt_0", "kkd_ihlali")]
 
-    matches = RuleEngine(retriever=unrelated_retriever).evaluate(events)
+    matches = RuleEngine(retriever=empty_retriever).evaluate(events)
 
-    # Ilgisiz (forklift) metni DEGIL, guvenli kisa etiketi kullanmali.
     assert matches[0].rule_description == "ISG Yonetmeligi Madde 24"
-    assert "Forklift" not in matches[0].rule_description
-    assert "OK-07" not in matches[0].rule_description
 
 
 def test_retriever_returning_empty_string_falls_back_to_short_label() -> None:
     events = [_temporal_event("evt_0", "kkd_ihlali")]
-    matches = RuleEngine(retriever=_MockRetriever(response="")).evaluate(events)
+    matches = RuleEngine(retriever=_MockRetriever(results=[""])).evaluate(events)
 
     assert matches[0].rule_description == "ISG Yonetmeligi Madde 24"
 

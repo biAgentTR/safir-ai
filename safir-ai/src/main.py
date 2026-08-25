@@ -835,7 +835,13 @@ class SafirPipeline:
         # fallback'i de retriever hata verirse kisa mevzuat etiketine doner.
         self._event_engine = EventEngine()
         self._temporal_reasoner = TemporalReasoner(relation_window_sec=DEFAULT_RELATION_WINDOW_SEC)
-        self._rule_engine = RuleEngine(retriever=RetrieverTool(self._rag_service))
+        # RuleEngine artik `RetrieverTool` (LLM-agent icin duz-metin bicimlendirmesi)
+        # UZERINDEN DEGIL, `self._rag_service.query(...)`e DOGRUDAN baglanir - boylece
+        # `EmbeddingRAGService.query()`nin KENDI deterministik relevance gate'ini
+        # (zaten yalnizca "accepted" adaylari dondurur) GERCEKTEN kullanir (bkz.
+        # `RuleEngine._describe_regulation` P0 duzeltmesi: eski metin-icerme kontrolu
+        # GERCEK KB'nin metniyle hicbir zaman eslesmiyordu).
+        self._rule_engine = RuleEngine(retriever=self._rag_service)
         self._event_builder = EventBuilder()
         self._event_history = EventHistory(self._event_store)
 
