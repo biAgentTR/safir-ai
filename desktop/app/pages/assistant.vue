@@ -225,7 +225,6 @@ function startNewChat() {
   showNoteForm.value = false
   documents.value = []
   uploadError.value = null
-  askVideoMode.value = false
 }
 
 async function openConversation(id: string) {
@@ -238,7 +237,6 @@ async function openConversation(id: string) {
   lastSources.value = []
   showNoteForm.value = false
   uploadError.value = null
-  askVideoMode.value = false
   try {
     const detail = await api.getConversation(id)
     activeJobId.value = detail.job_id
@@ -316,11 +314,33 @@ function truncateTitle(text: string): string {
   return t + '…'
 }
 
-const SUGGESTIONS = [
+const STATIC_SUGGESTIONS = [
   'SAFİR nasıl çalışır?',
   'Bu analizdeki en kritik olay hangisi?',
   'Hangi İSG mevzuatı ilgili?',
 ]
+
+// Rapora ÖZGÜ, dinamik öneriler (mentor eleştirisi: "diyalog sırasında
+// inisiyatif alma" sabit chip'lerle karşılanmaz) — hangi analize bağlı
+// olduğumuz değiştikçe (yeni sohbette seçilen VEYA açılan sohbetin kendi
+// job'ı) GET /ask/suggestions'tan yüklenir; sinyal yoksa statiklere döner.
+const effectiveJobId = computed(() => activeJobId.value ?? selectedJobId.value)
+const dynamicSuggestions = ref<string[]>([])
+const SUGGESTIONS = computed(() => (dynamicSuggestions.value.length ? dynamicSuggestions.value : STATIC_SUGGESTIONS))
+
+watch(
+  effectiveJobId,
+  async (jobId) => {
+    dynamicSuggestions.value = []
+    if (!jobId) return
+    try {
+      dynamicSuggestions.value = await api.getAskSuggestions(jobId)
+    } catch {
+      dynamicSuggestions.value = [] // sessizce statik onerilere don - sayfa kirilmaz
+    }
+  },
+  { immediate: true },
+)
 
 function useSuggestion(s: string) {
   question.value = s
@@ -331,12 +351,6 @@ function useSuggestion(s: string) {
 const question = ref('')
 const sending = ref(false)
 const sendError = ref<string | null>(null)
-
-// "Videoya sor" (Adım: EVREN prefix-cache follow-up) — yalnızca bir analize
-// bağlı sohbette anlamlıdır; soruyu metin özeti yerine DOĞRUDAN videoya sorar
-// (video hâlâ diskte varsa; değilse backend sessizce metne döner).
-const askVideoMode = ref(false)
-const canUseVideoMode = computed(() => !!activeJobId.value)
 
 const canSend = computed(() => question.value.trim().length > 0 && !sending.value)
 const textareaRows = computed(() => Math.min(6, Math.max(2, question.value.split('\n').length)))
@@ -361,6 +375,9 @@ async function submit() {
 
     let full = ''
     await new Promise<void>((resolve, reject) => {
+      // Bir analize bağlı sohbette soru HER ZAMAN önce doğrudan videoya
+      // sorulur (EVREN prefix-cache avantajını manuel bir anahtara bağlı
+      // bırakmamak için) — backend video kullanılamazsa sessizce metne döner.
       askStream.start(
         q,
         activeJobId.value,
@@ -377,7 +394,7 @@ async function submit() {
           onEnd: () => resolve(),
           onError: (detail: string) => reject(new Error(detail)),
         },
-        askVideoMode.value && canUseVideoMode.value,
+        !!activeJobId.value,
       )
     })
 
@@ -659,23 +676,10 @@ onBeforeUnmount(() => askStream.stop())
           {{ sendError }}
         </div>
 
-        <!-- video modu (EVREN prefix-cache follow-up) -->
-        <div v-if="canUseVideoMode" class="mt-3 flex items-center gap-2">
-          <button
-            type="button"
-            class="flex items-center gap-1.5 text-[11px] px-2 py-1 rounded border transition-colors"
-            :class="askVideoMode
-              ? 'border-accent/50 bg-accent-soft text-accent'
-              : 'border-edge bg-surface-2 text-slate-400 hover:text-slate-200'"
-            :disabled="sending"
-            @click="askVideoMode = !askVideoMode"
-          >
-            <span>🎥</span> Videoya sor
-          </button>
-          <span v-if="askVideoMode" class="text-[11px] text-slate-600">
-            Sonraki soru doğrudan videoya sorulacak (özet yerine).
-          </span>
-        </div>
+        <!-- video-QA göstergesi (EVREN prefix-cache follow-up, HER ZAMAN aktif) -->
+        <p v-if="activeJobId" class="mt-3 text-[11px] text-slate-600 flex items-center gap-1.5">
+          <span>🎥</span> Sorular önce doğrudan videoya sorulur (bulunamazsa özet metne döner).
+        </p>
 
         <!-- giris -->
         <div class="mt-2 flex gap-2">

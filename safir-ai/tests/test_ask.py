@@ -172,6 +172,26 @@ def test_llm_unavailable_returns_safe_503(ask_env, monkeypatch):
     assert resp.json()["detail"] == "SAFIR su anda cevap olusturamadi."
 
 
+# --------------------------- /ask/suggestions (dinamik takip sorusu onerileri) ---------------------------
+
+
+def test_ask_suggestions_returns_dynamic_questions_for_job(ask_env, video_in_data):
+    client = TestClient(app)
+    job_id = _run_job(client, video_in_data)
+
+    resp = client.get("/ask/suggestions", params={"job_id": job_id})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert isinstance(body["suggestions"], list)
+    assert len(body["suggestions"]) <= 4
+
+
+def test_ask_suggestions_unknown_job_404(ask_env):
+    client = TestClient(app)
+    resp = client.get("/ask/suggestions", params={"job_id": "yok-boyle-job"})
+    assert resp.status_code == 404
+
+
 # --------------------------- use_video (EVREN prefix-cache video-QA) ---------------------------
 
 

@@ -18,6 +18,7 @@ import type {
   HistoryListItem,
   HistoryDetail,
   AskResponse,
+  AskSuggestionsResponse,
   Conversation,
   ConversationCreateRequest,
   ConversationDetail,
@@ -134,6 +135,17 @@ export function useSafirApi() {
     })
   }
 
+  /**
+   * GET /ask/suggestions -> report-specific follow-up question suggestions
+   * (mentor critique: "initiative-taking" needs dynamic, not static, chips).
+   * Returns an empty list if the report has no signal worth surfacing —
+   * callers fall back to the static SUGGESTIONS chips in that case.
+   */
+  async function getAskSuggestions(jobId: string): Promise<string[]> {
+    const res: AskSuggestionsResponse = await $fetch(url('/ask/suggestions'), { query: { job_id: jobId } })
+    return res.suggestions ?? []
+  }
+
   /** Absolute (proxied) URL for the streaming Ask SAFIR SSE endpoint (GET /ask/stream). */
   function askStreamUrl(
     question: string,
@@ -242,6 +254,7 @@ export function useSafirApi() {
     getReportPdfUrl,
     getReportPdf,
     ask,
+    getAskSuggestions,
     askStreamUrl,
     createConversation,
     getConversations,

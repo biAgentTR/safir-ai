@@ -429,6 +429,11 @@ export interface AskResponse {
   context_used: string[]
 }
 
+/** GET /ask/suggestions response (src/main.py: AskSuggestionsResponse) — report-specific follow-up chips. */
+export interface AskSuggestionsResponse {
+  suggestions: string[]
+}
+
 /** POST /alerts/trigger */
 export interface AlertTriggerRequest {
   risk_score: number

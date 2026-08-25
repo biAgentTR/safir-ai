@@ -40,6 +40,7 @@ from src.observability.trace_serializer import MAX_FRAMES_PER_JOB, PipelineTrace
 from src.agent.langgraph_agent import SafirAgent
 from src.agent.tools import RetrieverTool
 from src.assistant.ask_service import AskService, JobNotFound
+from src.assistant.suggestion_engine import build_dynamic_suggestions
 from src.decision.escalation import EscalationPolicy, FieldAlarmDispatcher
 from src.event_analysis.event_builder import EventBuilder
 from src.event_analysis.event_engine import EventEngine
@@ -538,6 +539,12 @@ class AskResponse(BaseModel):
     sources: List[AskSource] = Field(default_factory=list)
     job_id: Optional[str] = None
     context_used: List[str] = Field(default_factory=list)
+
+
+class AskSuggestionsResponse(BaseModel):
+    """`GET /ask/suggestions` yaniti: bu rapora OZGU takip sorusu onerileri (bkz. suggestion_engine.py)."""
+
+    suggestions: List[str] = Field(default_factory=list)
 
 
 # --- SAFIR Asistan: sohbet gecmisi (Conversation) - yalnizca UI/gecmis icindir,
@@ -2267,6 +2274,33 @@ def ask_safir(request: AskRequest) -> AskResponse:
         job_id=result.job_id,
         context_used=result.context_used,
     )
+
+
+@app.get("/ask/suggestions", response_model=AskSuggestionsResponse)
+def ask_safir_suggestions(job_id: str) -> AskSuggestionsResponse:
+    """Verilen analiz raporuna OZGU, dinamik takip sorusu onerileri (bkz. `suggestion_engine.py`).
+
+    Mentor eleştirisi ("Jurinin Demo Videosu ve Beklentileri" - "inisiyatif
+    alma ve dogru sorulari sorma"): sabit oneri listesi HER raporda AYNIdir,
+    hicbir inisiyatif GOSTERMEZ. Bu uc nokta, raporun KENDI icerigine (siniflandirilamayan
+    olay, insan incelemesine dusen eskalasyon, VLM'in kendi metninde belirttigi
+    belirsizlik, kisi-iceren olay kategorisi) bakip O RAPORA OZGU sorular onerir.
+
+    Args:
+        job_id: Onerilerin cikarilacagi analizin kimligi.
+
+    Returns:
+        0-4 arasi oneri metni; hicbir sinyal yoksa BOS liste doner (UI statik/genel
+        onerilere geri doner - bkz. frontend `SUGGESTIONS`).
+
+    Raises:
+        HTTPException: `job_id` bilinmiyorsa (404) veya raporu HENUZ yoksa (404).
+    """
+    record = get_analysis_store().get(job_id)
+    if record is None or not record.report_json:
+        raise HTTPException(status_code=404, detail=f"Analiz bulunamadi: {job_id}")
+    report = SafirReport.model_validate_json(record.report_json)
+    return AskSuggestionsResponse(suggestions=build_dynamic_suggestions(report))
 
 
 _MAX_CONVERSATION_TITLE_LEN = 80

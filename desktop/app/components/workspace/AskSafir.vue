@@ -17,17 +17,33 @@ const contextUsed = ref<string[]>([])
 const errorMsg = ref('')
 const showSources = ref(true)
 
-const SUGGESTIONS = [
+const STATIC_SUGGESTIONS = [
   'Bu analiz neden bu risk seviyesinde değerlendirildi?',
   'Operatör ne yapmalı?',
   'Hangi İSG mevzuatı ilgili?',
 ]
 
-const canSend = computed(() => question.value.trim().length > 0 && phase.value !== 'loading')
+// Rapora ÖZGÜ, dinamik öneriler (mentor eleştirisi: "inisiyatif alma" sabit
+// chip'lerle karşılanmaz) — job değiştiğinde GET /ask/suggestions'tan
+// yüklenir; sinyal yoksa (boş liste) statik önerilere geri dönülür.
+const dynamicSuggestions = ref<string[]>([])
+const SUGGESTIONS = computed(() => (dynamicSuggestions.value.length ? dynamicSuggestions.value : STATIC_SUGGESTIONS))
 
-// "Videoya sor" (EVREN prefix-cache follow-up, bkz. AskSafirAsistan sayfası
-// ile aynı desen) — yalnızca bir job bağlamı varken anlamlıdır.
-const useVideo = ref(false)
+watch(
+  () => props.jobId,
+  async (jobId) => {
+    dynamicSuggestions.value = []
+    if (!jobId) return
+    try {
+      dynamicSuggestions.value = await api.getAskSuggestions(jobId)
+    } catch {
+      dynamicSuggestions.value = [] // sessizce statik onerilere don - sayfa kirilmaz
+    }
+  },
+  { immediate: true },
+)
+
+const canSend = computed(() => question.value.trim().length > 0 && phase.value !== 'loading')
 
 async function submit() {
   if (!canSend.value) return
@@ -37,7 +53,10 @@ async function submit() {
   sources.value = []
   contextUsed.value = []
   try {
-    const res = await api.ask(question.value.trim(), props.jobId ?? null, useVideo.value && !!props.jobId)
+    // Bir job bağlamı varken video-QA HER ZAMAN denenir (EVREN prefix-cache
+    // avantajını manuel bir anahtara bağlı bırakmamak için) — backend zaten
+    // video kullanılamazsa (RTSP/silinmiş dosya/hata) sessizce metne döner.
+    const res = await api.ask(question.value.trim(), props.jobId ?? null, !!props.jobId)
     answer.value = res.answer
     sources.value = res.sources ?? []
     contextUsed.value = res.context_used ?? []
@@ -65,7 +84,10 @@ function useSuggestion(s: string) {
     <div class="flex items-center gap-2 mb-3">
       <h3 class="text-sm font-semibold text-slate-100 tracking-wide">SAFİR'e Sor</h3>
       <span class="text-[11px] text-slate-500">— analiz &amp; İSG mevzuatı bağlamlı asistan</span>
-      <span v-if="jobId" class="ml-auto text-[10px] font-mono text-slate-600">job: {{ jobId.slice(0, 8) }}</span>
+      <span v-if="jobId" class="ml-auto flex items-center gap-1.5 text-[10px] font-mono text-slate-600">
+        <span title="Sorular önce doğrudan videoya sorulur (EVREN önbellekleme avantajı)">🎥</span>
+        job: {{ jobId.slice(0, 8) }}
+      </span>
     </div>
 
     <!-- input -->
@@ -91,18 +113,6 @@ function useSuggestion(s: string) {
         :disabled="phase === 'loading'"
         @click="useSuggestion(s)"
       >{{ s }}</button>
-      <button
-        v-if="jobId"
-        type="button"
-        class="ml-auto flex items-center gap-1.5 text-[11px] px-2 py-1 rounded border transition-colors"
-        :class="useVideo
-          ? 'border-accent/50 bg-accent-soft text-accent'
-          : 'border-edge bg-surface-2 text-slate-400 hover:text-slate-200'"
-        :disabled="phase === 'loading'"
-        @click="useVideo = !useVideo"
-      >
-        <span>🎥</span> Videoya sor
-      </button>
     </div>
 
     <!-- loading -->
