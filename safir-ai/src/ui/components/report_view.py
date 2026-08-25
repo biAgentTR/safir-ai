@@ -364,6 +364,15 @@ class TimelineEscalationPanel:
                     st.success(result["message"])
                 except httpx.HTTPError as exc:
                     st.error(f"Alarm onaylanamadi: {exc}")
+        elif tier == "pending_review":
+            explanation = report.get("risk_explanation") or (
+                "Risk durumu belirsiz VEYA deterministik (RuleEngine) kanit yok."
+            )
+            st.warning(
+                f"🧑‍✈️ **Operator onayı bekleniyor** — hiçbir otomatik bildirim/alarm "
+                f"tetiklenmedi (skor: {risk_score if risk_score is not None else 'yok'}/100).\n\n{explanation}\n\n"
+                "Karar vermek icin asagidaki 'Manuel alarm tetikle' bolumunu kullanabilirsiniz."
+            )
         elif tier == "notify":
             st.warning(
                 f"Bildirim: risk **{risk_level.upper()}** (skor: {risk_score}/100). "

@@ -78,6 +78,87 @@ def test_high_risk_auto_dispatches_alarm_without_operator_gate(config: Escalatio
     assert sink.dispatched[0]["auto"] is True
 
 
+def test_unassessed_risk_status_falls_to_pending_review_no_auto_action(config: EscalationConfig) -> None:
+    """`risk_status != "assessed"` (Agent muhakemesi basarisiz): otomatik islem/alarm YAPILMAZ,
+    PENDING_REVIEW'e dusulur - operatorun ACIK karari beklenir (bkz. escalation.py 2026-08-25 notu)."""
+    sink = _RecordingSink()
+    policy = EscalationPolicy(config, sink=sink)
+
+    decision = policy.evaluate(
+        risk_score=None, risk_level="unknown", recommended_action="incele", summary="s", risk_status="unknown"
+    )
+
+    assert decision.tier is EscalationTier.PENDING_REVIEW
+    assert decision.auto_dispatched is False
+    assert decision.alert_id is None
+    assert sink.dispatched == []
+
+
+@pytest.mark.parametrize("score,risk_level", [(35, "orta"), (90, "kritik")])
+def test_notify_or_alarm_without_deterministic_backing_falls_to_pending_review(
+    config: EscalationConfig, score: int, risk_level: str
+) -> None:
+    """Risk skoru NOTIFY/ALARM esigine ulassa BILE, HICBIR RuleEngine kaniti yoksa
+    (skor tamamen Agent'in/LLM'in kendi taslak tahmini), otomatik islem/alarm
+    YAPILMAZ - PENDING_REVIEW'e dusulur; gercek bir saha alarmi dogrulanmamis,
+    tek-kaynakli bir tahminle OTOMATIK tetiklenmez."""
+    sink = _RecordingSink()
+    policy = EscalationPolicy(config, sink=sink)
+
+    decision = policy.evaluate(
+        risk_score=score,
+        risk_level=risk_level,
+        recommended_action="degerlendir",
+        summary="s",
+        has_deterministic_backing=False,
+    )
+
+    assert decision.tier is EscalationTier.PENDING_REVIEW
+    assert decision.auto_dispatched is False
+    assert decision.alert_id is None
+    assert sink.dispatched == []
+
+
+def test_low_risk_without_deterministic_backing_still_stays_monitor(config: EscalationConfig) -> None:
+    """Dusuk risk icin `has_deterministic_backing=False` KISITLAMASI UYGULANMAZ - operatoru
+    dusuk riskte meshgul etmenin faydasi yoktur, MONITOR olarak kalir."""
+    sink = _RecordingSink()
+    policy = EscalationPolicy(config, sink=sink)
+
+    decision = policy.evaluate(
+        risk_score=10,
+        risk_level="dusuk",
+        recommended_action="izle",
+        summary="s",
+        has_deterministic_backing=False,
+    )
+
+    assert decision.tier is EscalationTier.MONITOR
+    assert decision.auto_dispatched is False
+    assert sink.dispatched == []
+
+
+@pytest.mark.parametrize("score", [51, 90])
+def test_alarm_with_deterministic_backing_still_auto_dispatches(config: EscalationConfig, score: int) -> None:
+    """Deterministik (RuleEngine) kanit VARSA, yuksek/kritik risk HALA operator
+    onayi beklenmeden otomatik tetiklenir - PENDING_REVIEW yalnizca kanitsiz/
+    belirsiz durumlar icindir, GERCEK dogrulanmis alarmlari GECIKTIRMEZ."""
+    sink = _RecordingSink()
+    policy = EscalationPolicy(config, sink=sink)
+
+    decision = policy.evaluate(
+        risk_score=score,
+        risk_level="kritik",
+        recommended_action="alarm",
+        summary="s",
+        has_deterministic_backing=True,
+    )
+
+    assert decision.tier is EscalationTier.ALARM
+    assert decision.auto_dispatched is True
+    assert decision.alert_id is not None
+
+
 def test_field_dispatcher_acknowledge_marks_record(config: EscalationConfig) -> None:
     """Operator, otomatik tetiklenen alarmi sonradan onaylayabilir (Human-on-the-Loop)."""
     policy = EscalationPolicy(config, sink=FieldAlarmDispatcher())

@@ -4,6 +4,7 @@
 // action for auto-dispatched alerts.
 const store = useAnalysisStore()
 const ackNote = ref('')
+const pendingReviewNote = ref('')
 
 const isUnknownRisk = computed(() => store.report?.risk_status === 'unknown' || store.report?.risk_score == null)
 const tone = computed(() => (isUnknownRisk.value ? 'unknown' : riskTone(store.report?.risk_level)))
@@ -33,6 +34,32 @@ const headline = computed(() => {
       class="rounded-md border border-slate-500/50 bg-slate-500/10 px-4 py-2.5 text-sm font-medium text-slate-300 flex items-center gap-2"
     >
       ⚠️ Risk değerlendirilemedi — analiz güvenilir bir karar üretemedi. Manuel inceleme gerekli.
+    </div>
+
+    <!-- Human-on-the-Loop: pending_review - risk_status belirsiz VEYA deterministik
+         (RuleEngine) kanit yokken hicbir otomatik islem/alarm yapilmadi; operatorun
+         ACIK kararini bekler (bkz. src/decision/escalation.py). -->
+    <div
+      v-if="store.needsHumanReview"
+      class="rounded-md border border-amber-500/50 bg-amber-500/10 px-4 py-2.5 text-sm font-medium text-amber-300 flex flex-col gap-2"
+    >
+      <div class="flex items-center gap-2">
+        🧑‍✈️ Operatör onayı bekleniyor — bu durumda hiçbir otomatik bildirim/alarm tetiklenmedi.
+      </div>
+      <p v-if="store.report?.risk_explanation" class="text-xs font-normal text-amber-200/80">
+        {{ store.report.risk_explanation }}
+      </p>
+      <div class="flex flex-col sm:flex-row gap-2 mt-1">
+        <input v-model="pendingReviewNote" class="field-input" placeholder="Karar notu (opsiyonel)" />
+        <button
+          class="btn-primary shrink-0"
+          :disabled="store.manualAlert.state === 'pending'"
+          @click="store.triggerManualAlert(pendingReviewNote)"
+        >Saha Alarmını Manuel Tetikle</button>
+      </div>
+      <p v-if="store.manualAlert.message" class="text-xs" :class="store.manualAlert.state === 'error' ? 'text-risk-crit' : 'text-risk-low'">
+        {{ store.manualAlert.message }}
+      </p>
     </div>
 
     <div class="card p-5 flex flex-col md:flex-row md:items-center gap-5">

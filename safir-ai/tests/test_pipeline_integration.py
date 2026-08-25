@@ -503,6 +503,12 @@ def test_rule_engine_has_no_matches_falls_back_to_llm_agent_decision(
 
     assert report.risk_score == 42
     assert report.risk_level == "orta"
+    # 2026-08-25 (Human-on-the-Loop siklastirma): skor NOTIFY esigini gecse bile,
+    # HICBIR RuleEngine kaniti yoksa (skor tamamen LLM'in kendi tahmini) otomatik
+    # bildirim/alarm YAPILMAZ - PENDING_REVIEW'e dusulur, operator karari gerekir.
+    assert report.escalation_tier == "pending_review"
+    assert report.auto_dispatched is False
+    assert report.alert_id is None
 
 
 # ------------------------------------------------------------------
@@ -682,7 +688,13 @@ def test_pipeline_produces_degraded_report_when_vlm_fails(
     # Is "error" ile cokmedi; rapor uretildi ve hata operatore gorunur.
     assert report is not None
     assert "[HATA]" in report.natural_language_summary
-    assert report.escalation_tier in {"monitor", "notify", "alarm"}
+    # 2026-08-25: degraded/belirsiz durumlarda artik sessizce monitor/notify'a
+    # DUSULMEZ - operatorun ACIK karari beklenen PENDING_REVIEW'e gider (bkz.
+    # EscalationPolicy.evaluate P0 duzeltmesi).
+    assert report.escalation_tier in {"monitor", "notify", "alarm", "pending_review"}
+    if report.risk_status == "unknown":
+        assert report.escalation_tier == "pending_review"
+        assert report.auto_dispatched is False
 
 
 def test_record_feedback_delegates_to_event_history(

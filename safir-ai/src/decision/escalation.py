@@ -8,9 +8,26 @@ alarmini OTOMATIK tetikler. Operator, alarmi engellemek icin degil; sonradan
 DENETLEMEK/GERI ALMAK icin devrededir (Human-on-the-Loop).
 
 Kademeler:
-    MONITOR (dusuk)          -> yalnizca kaydet, izlemeye devam et.
-    NOTIFY  (orta)           -> kaydet + yumusak bildirim.
-    ALARM   (yuksek/kritik)  -> saha alarmini OTOMATIK tetikle (operator onayi beklemez).
+    MONITOR         (dusuk)                          -> yalnizca kaydet, izlemeye devam et.
+    NOTIFY          (orta, RuleEngine-dogrulanmis)    -> kaydet + yumusak bildirim.
+    ALARM           (yuksek/kritik, RuleEngine-dogrulanmis) -> saha alarmini OTOMATIK tetikle.
+    PENDING_REVIEW  (belirsiz VEYA deterministik kanitsiz) -> OTOMATIK ISLEM YAPILMAZ,
+                    operatorun ACIK kararini bekler (bkz. asagida).
+
+2026-08-25 (PENDING_REVIEW - dar kapsamli, BLOKE EDEN insan-onayi kapisi):
+Yukaridaki "bloke edici kapi kaldirildi" karari HALA gecerlidir - gercek,
+RuleEngine-dogrulanmis (deterministik kanitli) yuksek/kritik risk durumlarinda
+saha alarmi HALA OTOMATIK/gecikmesiz tetiklenir (bir yangin/gaz kacagi
+senaryosunda operator onayini beklemek, yanlis pozitiften daha tehlikelidir).
+Ancak IKI DAR senaryoda tam tersi gecerlidir - otomatik islem/alarm YERINE
+operatorun ACIK bir karar vermesi (onayla/geri cevir/manuel alarm) beklenir:
+1. `risk_status != "assessed"` (Agent muhakemesi basarisiz oldu - sayisal bir
+   risk skoru bile YOK).
+2. Risk skoru NOTIFY/ALARM esigine ulasti AMA HICBIR deterministik (RuleEngine)
+   kanit yok - skor tamamen Agent'in (LLM) kendi taslak tahminine dayaniyor.
+Bu iki durumda "otomatik olarak dusuk risk say" (sessiz MONITOR) veya "otomatik
+alarm tetikle" (dogrulanmamis veriyle) ASLA yapilmaz - ikisi de yanlis
+yonlendirme riski tasir.
 """
 
 from __future__ import annotations
@@ -34,6 +51,9 @@ class EscalationTier(str, Enum):
     MONITOR = "monitor"
     NOTIFY = "notify"
     ALARM = "alarm"
+    PENDING_REVIEW = "pending_review"
+    """Otomatik islem/alarm YAPILMAZ - operatorun ACIK karari (onay/geri cevirme/
+    manuel alarm) beklenir. Bkz. modul dokustringi 2026-08-25 notu."""
 
 
 @dataclass
@@ -213,8 +233,12 @@ class FieldAlarmDispatcher:
 class EscalationPolicy:
     """Risk skorunu OTOMATIK olarak bir `EscalationTier`e cevirir ve gerekirse alarmi tetikler.
 
-    Bloke edici bir operator kapisi YOKTUR: `evaluate` cagrildiginda, yuksek/
-    kritik risk icin alarm dogrudan `AlarmSink.dispatch` ile tetiklenir.
+    GERCEK (RuleEngine-dogrulanmis) yuksek/kritik risk icin bloke edici bir
+    operator kapisi YOKTUR: alarm dogrudan `AlarmSink.dispatch` ile OTOMATIK
+    tetiklenir. Yalnizca DAR iki senaryoda (`risk_status="unknown"` VEYA
+    deterministik kanit yok) bloke eden bir kapi VARDIR - `PENDING_REVIEW`
+    (bkz. modul dokustringi 2026-08-25 notu): bu durumda otomatik islem/alarm
+    YAPILMAZ, operatorun ACIK karari beklenir.
     """
 
     def __init__(self, config: EscalationConfig, sink: Optional[AlarmSink] = None) -> None:
@@ -255,14 +279,24 @@ class EscalationPolicy:
         recommended_action: str,
         summary: str,
         risk_status: str = "assessed",
+        has_deterministic_backing: bool = True,
     ) -> EscalationDecision:
-        """Kademeyi belirler ve ALARM kademesinde saha alarmini OTOMATIK tetikler.
+        """Kademeyi belirler ve ALARM kademesinde (deterministik kanit VARSA) saha alarmini OTOMATIK tetikler.
 
         `risk_status != "assessed"` (guvenilir bir karar uretilemedi) durumunda,
-        sayisal esik karsilastirmasi HIC yapilmaz: dogrudan `NOTIFY` kademesine
-        dusulur (operator incelemesi icin yumusak sinyal) ve alarm OTOMATIK
-        tetiklenmez. `unknown -> MONITOR` (sessizce dusuk risk kabul etme) veya
-        `unknown -> ALARM` (sayisal olmayan veriyle otomatik alarm) ASLA yapilmaz.
+        sayisal esik karsilastirmasi HIC yapilmaz: dogrudan `PENDING_REVIEW`
+        kademesine dusulur - operatorun ACIK karari (onay/geri cevirme/manuel
+        alarm) BEKLENIR, hicbir otomatik islem/alarm YAPILMAZ. `unknown ->
+        MONITOR` (sessizce dusuk risk kabul etme) veya `unknown -> ALARM`
+        (sayisal olmayan veriyle otomatik alarm) ASLA yapilmaz.
+
+        `has_deterministic_backing=False` (RuleEngine hicbir kural eslestirmedi,
+        risk_score TAMAMEN Agent'in/LLM'in kendi taslak tahmini) durumunda da
+        AYNI mantik gecerlidir: skor NOTIFY/ALARM esigine ulassa BILE otomatik
+        islem/alarm YAPILMAZ, `PENDING_REVIEW`e dusulur - dogrulanmamis, tek
+        kaynakli (LLM-only) bir tahminle gercek bir saha alarmi/bildirimi
+        OTOMATIK tetiklenmez. Dusuk risk (`MONITOR`) icin bu kisitlama
+        UYGULANMAZ - dusuk riskte operatoru meshgul etmenin faydasi yoktur.
 
         Args:
             risk_score: 0-100 arasi risk skoru; risk_status="unknown" ise None olabilir.
@@ -270,19 +304,35 @@ class EscalationPolicy:
             recommended_action: Alarma iliştirilecek birincil aksiyon onerisi.
             summary: Alarma iliştirilecek kisa durum ozeti.
             risk_status: `assessed` | `unknown` (bkz. `AgentDecision.risk_status`).
+            has_deterministic_backing: Nihai risk_score'un RuleEngine tarafindan
+                dogrulanmis en az bir `RuleMatch`e dayanip dayanmadigi (bkz.
+                `RiskProvenance.rule_ids`). `True` (varsayilan) = mevcut/eski
+                davranis (geriye-uyumluluk icin).
 
         Returns:
             Secilen kademe, otomatik tetiklenip tetiklenmedigi ve (varsa) `alert_id`.
         """
         if risk_status != "assessed" or risk_score is None:
             return EscalationDecision(
-                tier=EscalationTier.NOTIFY,
+                tier=EscalationTier.PENDING_REVIEW,
                 auto_dispatched=False,
                 alert_id=None,
-                reason="Risk durumu belirsiz — analiz guvenilir sekilde tamamlanamadi; manuel inceleme gerekli.",
+                reason="Risk durumu belirsiz — analiz guvenilir sekilde tamamlanamadi; operator karari gerekli.",
             )
 
         tier = self.classify(risk_score)
+
+        if tier is not EscalationTier.MONITOR and not has_deterministic_backing:
+            return EscalationDecision(
+                tier=EscalationTier.PENDING_REVIEW,
+                auto_dispatched=False,
+                alert_id=None,
+                reason=(
+                    f"Risk skoru {risk_score} {tier.value} esigine ulasti ama HICBIR deterministik "
+                    "(RuleEngine) kanit yok - skor tamamen Agent'in kendi tahminine dayaniyor; "
+                    "otomatik islem/alarm YAPILMADI, operator karari gerekli."
+                ),
+            )
 
         if tier is EscalationTier.ALARM:
             alert_id = self._sink.dispatch(

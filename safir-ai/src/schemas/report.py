@@ -391,7 +391,14 @@ class SafirReport(BaseModel):
         ),
     )
     escalation_tier: Optional[str] = Field(
-        default=None, description="Otomatik eskalasyon kademesi: monitor | notify | alarm."
+        default=None,
+        description=(
+            "Otomatik eskalasyon kademesi: monitor | notify | alarm | pending_review. "
+            "pending_review (2026-08-25): risk_status belirsiz VEYA nihai risk_score "
+            "hicbir deterministik (RuleEngine) kanit tasimiyorsa (bkz. RiskProvenance."
+            "rule_ids) - hicbir otomatik bildirim/alarm YAPILMAZ, operatorun ACIK "
+            "karari (manuel alarm/geri cevirme) beklenir."
+        ),
     )
     auto_dispatched: bool = Field(
         default=False, description="Saha alarminin operator onayi beklemeden otomatik tetiklenip tetiklenmedigi."

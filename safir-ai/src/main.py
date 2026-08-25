@@ -976,7 +976,7 @@ class SafirPipeline:
         )
         _emit("decision_final", {"decision": decision, "risk_provenance": risk_provenance})
 
-        escalation = self.stage_escalate(decision, vlm_response)
+        escalation = self.stage_escalate(decision, vlm_response, risk_provenance)
         _emit("escalation", {"escalation": escalation})
 
         report = self.build_report(
@@ -1230,14 +1230,24 @@ class SafirPipeline:
             decision.risk_status = "assessed"
         return decision, risk_provenance
 
-    def stage_escalate(self, decision, vlm_response: VLMResponse):
-        """06: Otomatik eskalasyon -> `EscalationDecision` (yuksek/kritikte alarm otomatik tetiklenir)."""
+    def stage_escalate(self, decision, vlm_response: VLMResponse, risk_provenance: Optional[RiskProvenance] = None):
+        """06: Otomatik eskalasyon -> `EscalationDecision`.
+
+        GERCEK, RuleEngine-dogrulanmis (bkz. `risk_provenance.rule_ids`)
+        yuksek/kritik risk otomatik olarak alarm tetikler. `risk_provenance`
+        verilmezse (orn. eski cagiran kod) VEYA `rule_ids` bossa, deterministik
+        kanit YOK sayilir - bu durumda (dusuk risk haricinde) otomatik islem/
+        alarm YAPILMAZ, `PENDING_REVIEW`e dusulur (bkz. `EscalationPolicy.
+        evaluate` docstring'i).
+        """
+        has_deterministic_backing = bool(risk_provenance and risk_provenance.rule_ids)
         escalation = self._escalation.evaluate(
             risk_score=decision.risk_score,
             risk_level=decision.risk_level,
             recommended_action=decision.recommended_action,
             summary=decision.summary or vlm_response.description,
             risk_status=decision.risk_status,
+            has_deterministic_backing=has_deterministic_backing,
         )
         logger.info(
             "Otomatik eskalasyon: kademe=%s otomatik_tetik=%s alert_id=%s (%s)",

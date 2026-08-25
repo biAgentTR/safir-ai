@@ -120,7 +120,9 @@ class _RecordingSink:
         raise NotImplementedError
 
 
-def test_escalation_unknown_status_forces_notify_never_alarm_or_silent_monitor() -> None:
+def test_escalation_unknown_status_forces_pending_review_never_alarm_or_silent_monitor() -> None:
+    """2026-08-25 (Human-on-the-Loop siklastirma): belirsiz durum artik sessizce NOTIFY'a
+    DEGIL, operatorun ACIK karari beklenen PENDING_REVIEW'e duser (bkz. escalation.py)."""
     config = EscalationConfig(notify_score=26, auto_alarm_score=51)
     sink = _RecordingSink()
     policy = EscalationPolicy(config, sink=sink)
@@ -133,7 +135,7 @@ def test_escalation_unknown_status_forces_notify_never_alarm_or_silent_monitor()
         risk_status="unknown",
     )
 
-    assert decision.tier is EscalationTier.NOTIFY
+    assert decision.tier is EscalationTier.PENDING_REVIEW
     assert decision.auto_dispatched is False
     assert decision.alert_id is None
     assert sink.dispatched == []  # ASLA otomatik alarm tetiklenmez
@@ -275,7 +277,7 @@ def test_pipeline_agent_failure_yields_unknown_report_end_to_end(mock_pipeline_a
     result = polled["result"]
     assert result["risk_score"] is None
     assert result["risk_status"] == "unknown"
-    assert result["escalation_tier"] == "notify"  # ASLA otomatik alarm/monitor degil
+    assert result["escalation_tier"] == "pending_review"  # ASLA otomatik alarm/monitor degil
     assert result["auto_dispatched"] is False
 
 

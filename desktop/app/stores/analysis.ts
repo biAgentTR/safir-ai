@@ -133,6 +133,13 @@ export const useAnalysisStore = defineStore('analysis', {
     hasAutoAlert(): boolean {
       return !!(this.report && this.report.auto_dispatched && this.report.alert_id)
     },
+    /** Human-on-the-Loop (2026-08-25): risk_status belirsiz VEYA deterministik
+     * (RuleEngine) kanit yokken hicbir otomatik islem/alarm yapilmadi - operatorun
+     * ACIK karari (manuel alarm / geri cevirme) bekleniyor. Bkz. `EscalationPolicy.
+     * evaluate` (backend, src/decision/escalation.py). */
+    needsHumanReview(): boolean {
+      return !!this.report && this.report.escalation_tier === 'pending_review'
+    },
   },
 
   actions: {

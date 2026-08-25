@@ -79,7 +79,7 @@ export interface SamplerStats {
 }
 
 export type RiskLevel = 'dusuk' | 'orta' | 'yuksek' | 'kritik' | 'unknown'
-export type EscalationTier = 'monitor' | 'notify' | 'alarm'
+export type EscalationTier = 'monitor' | 'notify' | 'alarm' | 'pending_review'
 /**
  * 'assessed': risk_score/risk_level guvenilir sekilde hesaplandi (0 dahil gecerli deger).
  * 'unknown': VLM/LLM/ajan karar zincirinde hata olustu; risk_score=null, ASLA dusuk risk
@@ -97,6 +97,9 @@ export interface SafirReport {
   risk_score: number | null
   risk_level: RiskLevel | string
   risk_status: RiskStatus | string
+  /** 'rule_engine' | 'agent' | 'unknown' - bkz. src/main.py::build_report. */
+  risk_source?: string | null
+  risk_explanation?: string | null
   recommended_action: string
   actions: string[]
   detected_event_types: string[]
