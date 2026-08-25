@@ -326,6 +326,7 @@ memory:
     base_url: "https://evren-llmapi.ssyz.org.tr/v1"
     api_key_env: "EVREN_API_KEY"
     normalize_embeddings: true
+    max_batch_tokens: 7500             # EVREN bge-m3-embed istek basina azami 8192 token kabul eder; guvenlik payli hedef (bkz. src/rag/embedding_providers.py)
   qdrant:
     url: "https://evren-vektor.ssyz.org.tr"   # takima tahsis edilmis izole Qdrant orneği (dokumantasyon SS 11)
     api_key_env: "EVREN_QDRANT_KEY"

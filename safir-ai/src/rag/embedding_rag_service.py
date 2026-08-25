@@ -554,6 +554,7 @@ class EmbeddingRAGService:
             output_dimensionality=embedding_config.output_dimensionality,
             base_url=embedding_config.base_url,
             api_key_env=embedding_config.api_key_env,
+            max_batch_tokens=embedding_config.max_batch_tokens,
         )
         self._dimension = self._provider.dimension
 

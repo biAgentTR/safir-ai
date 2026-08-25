@@ -368,6 +368,12 @@ class EmbeddingConfig(BaseModel):
     normalize_embeddings: bool = True
     base_url: Optional[str] = None      # yalnizca provider="evren" icin (EVREN taban adresi)
     api_key_env: Optional[str] = None   # yalnizca provider="evren" icin (orn. "EVREN_API_KEY")
+    max_batch_tokens: Optional[int] = None
+    """`embed_documents()`in her `embeddings.create()` istegi icin hedefleyecegi
+    azami TAHMINI toplam giris token butcesi (bkz. `EvrenEmbeddingProvider`
+    modul dokustringi - EVREN `bge-m3-embed` istek basina azami 8192 token
+    kabul eder). `None` ise saglayicinin kendi guvenli varsayilani (7000)
+    kullanilir; bu deger `_MAX_CONTEXT_TOKENS`in (8192) UZERINE CIKMAMALIDIR."""
 
 
 class QdrantMemoryConfig(BaseModel):
