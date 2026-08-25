@@ -831,7 +831,19 @@ class SafirPipeline:
         # 07 - Olay Analizi Katmani (T008-T012): Context Builder ile LangGraph
         # Ajani arasindaki ara katman. `RetrieverTool`, `rag_service` None
         # olsa bile guvenlidir (mock veriye duser).
-        self._event_engine = EventEngine()
+        # 2026-08-25 (kucuk-LLM fallback siniflandirici, bkz. event_engine.py
+        # modul dokustringi): EventEngine'in `classifier`i, `05 LangGraph
+        # Ajani`nin KENDI LLM istemcisinden AYRI, dedike bir `LLMClient`
+        # (ayni "llm-fast" EVREN uc noktasi) - yalnizca structured+keyword
+        # yolunun HER IKISI de basarisiz oldugu SON CARE durumda cagrilir.
+        # Mock LLM modunda (`use_mock_llm=True`) HIC enjekte edilmez -
+        # `MockLLMClient` siniflandirma JSON'u URETMEZ (RISK_SKORU formatinda
+        # sabit bir karar dondurur), bu yuzden fallback devre disi birakilir
+        # ve davranis eski (genel_gozlem'e duser) haliyle AYNI kalir.
+        event_classifier_llm = (
+            get_llm_client(config.llm, use_mock=False) if not config.app.use_mock_llm else None
+        )
+        self._event_engine = EventEngine(classifier=event_classifier_llm)
         self._temporal_reasoner = TemporalReasoner(relation_window_sec=DEFAULT_RELATION_WINDOW_SEC)
         # 2026-08-25: RuleEngine ARTIK hicbir RAG/AG cagrisi yapmaz (retriever
         # kaldirildi) - tamamen yerel, deterministik event_type -> kisa mevzuat

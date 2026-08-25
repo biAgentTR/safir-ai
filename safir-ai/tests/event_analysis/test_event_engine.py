@@ -83,6 +83,114 @@ def test_falls_back_to_genel_gozlem_when_no_keyword_matches() -> None:
     assert events[0].matched_keywords == []
 
 
+# --- 2026-08-25: kucuk-LLM fallback siniflandirici (structured + keyword ikisi de basarisiz oldugunda) ---
+
+
+class _FakeClassifierResponse:
+    def __init__(self, content: str) -> None:
+        self.content = content
+
+
+class _FakeClassifier:
+    """`invoke_json(messages) -> AIMessage-benzeri` sozlesmesine uyan, gercek LLM'e bagli olmayan test cifti."""
+
+    def __init__(self, response_text: str | None = None, raise_exc: Exception | None = None) -> None:
+        self.response_text = response_text
+        self.raise_exc = raise_exc
+        self.calls: list[list] = []
+
+    def invoke_json(self, messages):
+        self.calls.append(messages)
+        if self.raise_exc is not None:
+            raise self.raise_exc
+        return _FakeClassifierResponse(self.response_text or "")
+
+
+def test_llm_fallback_not_invoked_when_classifier_is_none() -> None:
+    """`classifier=None` (varsayilan): davranis eskisiyle BIREBIR AYNI - genel_gozlem'e duser."""
+    events = EventEngine(classifier=None).detect(_input("Sahada normal calisma gozlemlendi."))
+
+    assert len(events) == 1
+    assert events[0].event_type == EventType.GENEL_GOZLEM.value
+
+
+def test_llm_fallback_not_invoked_when_keyword_match_already_succeeded() -> None:
+    """Birincil/ikincil yol ZATEN basariliysa (anahtar kelime eslesti), LLM fallback HIC CAGRILMAZ."""
+    classifier = _FakeClassifier(response_text='{"event_type": "genel_gozlem", "confidence": 0.9, "reason": "x"}')
+    events = EventEngine(classifier=classifier).detect(_input("Forklift yaya gecidine yaklasiyor."))
+
+    assert events[0].event_type == EventType.ARAC_YAYA_YAKINLIGI.value
+    assert classifier.calls == []
+
+
+def test_llm_fallback_classifies_event_that_keyword_matching_missed() -> None:
+    """Anahtar kelime eslesmesi BULAMADIGI (esanlamli/dolayli ifade) ama LLM'in dogru
+    kategoriyi tespit ettigi bir gozlem - fallback DEVREYE GIRER ve genel_gozlem'e DUSMEZ."""
+    classifier = _FakeClassifier(
+        response_text='{"event_type": "kkd_ihlali", "confidence": 0.72, "reason": "Personel koruyucu ekipman kullanmiyor."}'
+    )
+    events = EventEngine(classifier=classifier).detect(
+        _input("Personel, standart is guvenligi ekipmanlari olmadan sahada dolasiyor.")
+    )
+
+    assert len(events) == 1
+    assert events[0].event_type == EventType.KKD_IHLALI.value
+    assert events[0].confidence == pytest.approx(0.72)
+    assert events[0].source_model.endswith("+llm_fallback_classifier")
+    assert len(classifier.calls) == 1
+
+
+def test_llm_fallback_genel_gozlem_verdict_is_honored() -> None:
+    """LLM'in KENDISI 'genel_gozlem' derse (gercekten riskli bir sey yok), bu da GECERLI bir sonuctur."""
+    classifier = _FakeClassifier(
+        response_text='{"event_type": "genel_gozlem", "confidence": 0.95, "reason": "Rutin, risksiz gozlem."}'
+    )
+    events = EventEngine(classifier=classifier).detect(_input("Sahada personel rutin islerini yapiyor."))
+
+    assert len(events) == 1
+    assert events[0].event_type == EventType.GENEL_GOZLEM.value
+    assert events[0].source_model.endswith("+llm_fallback_classifier")
+
+
+def test_llm_fallback_invalid_category_falls_back_to_genel_gozlem_without_crashing() -> None:
+    """LLM gecersiz/uydurma bir kategori donerse (`_VALID_EVENT_TYPES`de yoksa), sessizce eski davranisa (genel_gozlem) duser."""
+    classifier = _FakeClassifier(response_text='{"event_type": "uydurma_kategori", "confidence": 0.9, "reason": "x"}')
+    events = EventEngine(classifier=classifier).detect(_input("Belirsiz bir durum."))
+
+    assert len(events) == 1
+    assert events[0].event_type == EventType.GENEL_GOZLEM.value
+    assert events[0].source_model == "test-vlm"  # LLM fallback SUFFIX'i eklenmedi (kullanilmadi)
+
+
+def test_llm_fallback_malformed_json_falls_back_to_genel_gozlem_without_crashing() -> None:
+    classifier = _FakeClassifier(response_text="bu gecerli bir JSON degil")
+    events = EventEngine(classifier=classifier).detect(_input("Belirsiz bir durum."))
+
+    assert len(events) == 1
+    assert events[0].event_type == EventType.GENEL_GOZLEM.value
+
+
+def test_llm_fallback_call_failure_falls_back_to_genel_gozlem_without_crashing() -> None:
+    """Siniflandirici cagrisi (ag hatasi vb.) PATLARSA, pipeline COKMEZ - guvenli fallback."""
+    classifier = _FakeClassifier(raise_exc=RuntimeError("ag hatasi (simulasyon)"))
+    events = EventEngine(classifier=classifier).detect(_input("Belirsiz bir durum."))
+
+    assert len(events) == 1
+    assert events[0].event_type == EventType.GENEL_GOZLEM.value
+
+
+def test_llm_fallback_extracts_canonical_keywords_for_matched_category() -> None:
+    """LLM'in siniflandirdigi kategori icin, metinden canonical anahtar kelimeler cikarilir
+    (RuleEngine kombinasyon kurallari / semantik RAG sorgusu icin - bos KALMAMALI)."""
+    classifier = _FakeClassifier(
+        response_text='{"event_type": "yangin_duman", "confidence": 0.6, "reason": "x"}'
+    )
+    events = EventEngine(classifier=classifier).detect(_input("Ortamda hafif bir yanik kokusu var."))
+
+    assert events[0].event_type == EventType.YANGIN_DUMAN.value
+    assert "yanik kokusu" in events[0].matched_keywords
+
+
 def test_all_detections_preserve_timestamp_and_source_model() -> None:
     events = EventEngine().detect(_input("Forklift yaya gecidine yaklasiyor.", timestamp=99.9))
 

@@ -36,12 +36,31 @@ degerlendirildi:
    (-) `05` katmani zaten ayni metni LLM ile degerlendiriyor; bu adimda
        ikinci bir LLM cagrisi maliyeti karsiliksiz kalir.
 
-Karar: kural tabanli yaklasim secildi (yukaridaki (+) gerekceleriyle).
-`EventEngine.__init__`'teki `classifier` parametresi, ileride dusuk-guven
-tespitlerini iyilestirmek icin `src.vlm.llm_client.LLMClient` ile ayni
-`invoke(messages) -> AIMessage` sozlesmesine sahip opsiyonel bir siniflandirici
-enjekte etme imkani birakir; varsayilan `None` ile devre disidir ve `vlm/`
-katmanina hicbir bagimlilik eklemez.
+Karar: kural tabanli yaklasim secildi (yukaridaki (+) gerekceleriyle) ANCAK
+sartname acikca "statik, yalnizca kural tabanli cozumler dusuk puanlanacaktir"
+der - bu yuzden SAF kural-tabanli tasarim TEK BASINA yeterli degildir.
+
+2026-08-25 (kucuk-LLM FALLBACK siniflandirici - T008 P1): `EventEngine.
+__init__`teki `classifier` parametresi (daha once "ileride" icin ayrilmis,
+KULLANILMAYAN bir genisletme noktasiydi) artik AKTIF: birincil (VLM
+structured) VE ikincil (anahtar-kelime) yol HER IKISI de basarisiz olup
+hicbir kategori bulamadiginda - yani sistem `genel_gozlem`e dusmek UZERE
+oldugunda - bu SON ADIMDA, kucuk/hizli bir LLM'e ("llm-fast", `src.vlm.
+llm_client.LLMClient` ile ayni `invoke_json(messages) -> AIMessage`
+sozlesmesi) TEK bir siniflandirma sorusu sorulur (bkz. `src/prompts/
+event_classifier_prompts.py`, `_classify_with_llm_fallback`). Boylece:
+- Hizli/deterministik/ucretsiz yol (structured + keyword) HER ZAMAN
+  ONCELIKLIDIR - bu LLM cagrisi yalnizca "hicbiri calismadi" durumunda,
+  YANI EN NADIR yolda tetiklenir (gecikme/maliyet minimal).
+- "Kural motoru %100 emin olamazsa otonom karar al" mantigi somutlasir -
+  sartnamenin "Ajanin akil yurutme yetenegi" kriterine katki saglar.
+- `classifier=None` (varsayilan, orn. mock-LLM modunda `main.py` bunu HIC
+  enjekte etmez) ile davranis TAMAMEN ESKISI GIBI kalir - genel_gozlem'e
+  duser; bu OPSIYONEL bir zenginlestirmedir, ZORUNLU bir bagimlilik degil.
+- Siniflandirici cagrisi BASARISIZ olursa (ag hatasi, bozuk JSON, gecersiz
+  kategori) sessizce/CRASH ETMEDEN eski (genel_gozlem) davranisa duser -
+  bu SON CARE bir zenginlestirmedir, pipeline'in GUVENILIRLIGINI ASLA
+  riske ATMAZ.
 
 T014 - Olumsuzlama tespiti (ve sinirlari)
 -------------------------------------------
@@ -78,13 +97,21 @@ NLP kutuphanesi) gerekir.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any, Dict, List, Optional
 
+from langchain_core.messages import HumanMessage, SystemMessage
+
 from src.event_analysis.schemas import DetectedEvent, EventEngineInput, EventType
+from src.prompts import EVENT_CLASSIFIER_SYSTEM_PROMPT, build_event_classifier_user_prompt
 
 logger = logging.getLogger(__name__)
+
+_LLM_FALLBACK_SOURCE_SUFFIX = "+llm_fallback_classifier"
+"""`DetectedEvent.source_model`e eklenen ek - bu olayin yapisal/keyword yolu
+DEGIL, kucuk-LLM geri-dususu ile siniflandirildigini izlenebilir kilar."""
 
 _KEYWORD_RULES: Dict[EventType, List[str]] = {
     EventType.DUSME_RISKI: [
@@ -243,11 +270,14 @@ class EventEngine:
         """EventEngine'i opsiyonel bir siniflandirici ve guven esigiyle baslatir.
 
         Args:
-            classifier: `invoke(messages) -> AIMessage` sozlesmesine sahip
-                opsiyonel bir LLM istemcisi (orn. `src.vlm.llm_client.LLMClient`
-                veya `MockLLMClient`). Su an tespit mantiginda kullanilmaz;
-                ileride dusuk-guven tespitlerini iyilestirmek icin ayrilmis
-                bir genisletme noktasidir.
+            classifier: `invoke_json(messages) -> AIMessage` sozlesmesine
+                sahip opsiyonel bir LLM istemcisi (orn. `src.vlm.llm_client.
+                LLMClient`, gercek "llm-fast" EVREN uc noktasina baglanir).
+                Yalnizca birincil (VLM structured) VE ikincil (anahtar-kelime)
+                yol HER IKISI de basarisiz oldugunda, SON CARE siniflandirma
+                icin cagrilir (bkz. modul dokustringi 2026-08-25 notu).
+                `None` (varsayilan) ile fallback TAMAMEN DEVRE DISIDIR -
+                davranis eski (genel_gozlem'e duser) haliyle AYNI kalir.
             min_confidence: Bu esigin altindaki tespitler `detect()`
                 ciktisindan elenir (varsayilan 0.0: hicbiri elenmez).
         """
@@ -312,17 +342,21 @@ class EventEngine:
             )
 
         if not detections:
-            detections.append(
-                DetectedEvent(
-                    event_name=EventType.GENEL_GOZLEM.value,
-                    event_type=EventType.GENEL_GOZLEM.value,
-                    description=engine_input.vlm_description,
-                    timestamp=engine_input.timestamp,
-                    confidence=0.0,
-                    matched_keywords=[],
-                    source_model=engine_input.source_model,
+            fallback_event = self._classify_with_llm_fallback(engine_input) if self._classifier is not None else None
+            if fallback_event is not None:
+                detections.append(fallback_event)
+            else:
+                detections.append(
+                    DetectedEvent(
+                        event_name=EventType.GENEL_GOZLEM.value,
+                        event_type=EventType.GENEL_GOZLEM.value,
+                        description=engine_input.vlm_description,
+                        timestamp=engine_input.timestamp,
+                        confidence=0.0,
+                        matched_keywords=[],
+                        source_model=engine_input.source_model,
+                    )
                 )
-            )
 
         detections.sort(key=lambda event: event.confidence, reverse=True)
         logger.debug(
@@ -423,6 +457,65 @@ class EventEngine:
                 )
             )
         return detections
+
+    def _classify_with_llm_fallback(self, engine_input: EventEngineInput) -> Optional[DetectedEvent]:
+        """SON CARE: birincil (structured) VE ikincil (anahtar-kelime) yol basarisiz oldugunda kucuk bir LLM'e siniflandirma sorar.
+
+        Bkz. modul dokustringi 2026-08-25 notu. Bu metod HICBIR ISTISNA
+        YAYMAZ - herhangi bir hata (ag, JSON, gecersiz kategori) `None`
+        dondurur; cagiran (`detect`) bunu eski (genel_gozlem) davranisina
+        guvenli sekilde geri duser.
+
+        Args:
+            engine_input: Structured VE keyword yolunun HER IKISININ de
+                basarisiz oldugu cagriya ait girdi.
+
+        Returns:
+            LLM gecerli bir kategori + gerekce donsurse bir `DetectedEvent`;
+            cagri basarisiz olursa/gecersiz kategori donerse `None`.
+        """
+        try:
+            messages = [
+                SystemMessage(content=EVENT_CLASSIFIER_SYSTEM_PROMPT),
+                HumanMessage(content=build_event_classifier_user_prompt(engine_input.vlm_description)),
+            ]
+            response = self._classifier.invoke_json(messages)
+            raw_text = (response.content or "").strip()
+            match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+            payload = json.loads(match.group(0) if match else raw_text)
+
+            event_type_raw = str(payload.get("event_type", "")).strip().lower()
+            if event_type_raw not in _VALID_EVENT_TYPES:
+                logger.warning(
+                    "EventEngine LLM fallback: gecersiz/bilinmeyen kategori dondurdu (%r); genel_gozlem'e duseliyor.",
+                    event_type_raw,
+                )
+                return None
+
+            confidence = self._coerce_confidence(payload.get("confidence"), default=0.3)
+            reason = str(payload.get("reason") or "").strip()
+        except Exception:  # noqa: BLE001 - fallback best-effort'tur, ASLA pipeline'i KESMEZ
+            logger.exception("EventEngine LLM fallback siniflandirmasi basarisiz; genel_gozlem'e duseliyor.")
+            return None
+
+        event_type = EventType(event_type_raw)
+        keywords = self._extract_keywords_for_type(event_type_raw, engine_input.vlm_description)
+        logger.info(
+            "EventEngine LLM fallback: t=%.2f -> %s (confidence=%.2f, gerekce=%s)",
+            engine_input.timestamp,
+            event_type_raw,
+            confidence,
+            reason or "(yok)",
+        )
+        return DetectedEvent(
+            event_name=event_type.value,
+            event_type=event_type.value,
+            description=engine_input.vlm_description,
+            timestamp=engine_input.timestamp,
+            confidence=confidence,
+            matched_keywords=keywords,
+            source_model=f"{engine_input.source_model}{_LLM_FALLBACK_SOURCE_SUFFIX}",
+        )
 
     @staticmethod
     def _coerce_risk_hint(value: Any) -> Optional[int]:
