@@ -403,6 +403,19 @@ llm:
       extra_body:                    # yukaridaki NOT: enable_thinking ACIKCA GONDERILMEZSE model
         chat_template_kwargs:        # dusunme moduna girip tum max_new_tokens butcesini gizli
           enable_thinking: false     # akil yurutme tokenlarina harcayabilir, goruen content BOS kalir
+    evren_large:                     # Model hiyerarsisi (mentor eleştirisi, SS 6): yalnizca NIHAI
+      provider: "evren"              # karar sentezi icin kullanilir (bkz. asagidaki `decision_model`);
+      model_name: "llm-large"        # arac-secimi/JSON-uretimi donguleri HALA `evren` (llm-fast) kullanir.
+      base_url: "https://evren-llmapi.ssyz.org.tr/v1"
+      api_key_env: "EVREN_API_KEY"
+      max_new_tokens: 1024
+      temperature: 0.1
+      extra_body:                    # ayni SS 3.2 notu llm-large icin de gecerlidir - model buyuklugunden
+        chat_template_kwargs:        # BAGIMSIZ bir EVREN-genelinde bulgu (bkz. yukaridaki NOT); bu yuzden
+          enable_thinking: false     # burada da acikca kapatilir.
+  decision_model: "evren_large"      # "uzun akil yurutme zincirleri ve otonom karar anlari" icin (SS 6)
+                                      # nihai JSON karari BU modelle sentezlenir; `active_model` ile AYNI
+                                      # yapilirsa (veya bu satir silinirse) hiyerarsi devre disi kalir.
 
 agent:
   max_iterations: 6                  # LangGraph durum makinesinin maksimum dongu sayisi

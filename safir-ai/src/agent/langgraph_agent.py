@@ -5,6 +5,22 @@ makinesi; zenginlestirilmis baglami alir, gerektiginde `Dynamic Tool
 Router` uzerinden sql_tool/retriever_tool/timeline_tool araclarini cagirir
 ve sonunda 0-100 arasi bir risk skoru ile karar/aksiyon onerisi ureten
 `AgentDecision` dondurur.
+
+Model hiyerarsisi (mentor eleştirisi: EVREN dokumantasyonu SS 6, "her gorev
+icin buyuk modeli kullanmayin, hiyerarsi kurun")
+----------------------------------------------------------------------------
+`reasoning`/`tools` dugumleri (arac secimi/cagirma, JSON uretimi) HER ZAMAN
+`llm.active_model`i ("hizli" model, `self._llm`, araclara BAGLI) kullanir -
+EVREN dokumantasyonuna gore bu gorevlerde buyuk modelle olculebilir bir fark
+yoktur (bkz. `configs/config.yaml` `llm.models.evren` yorumu). Dongu
+bittiginde (arac cagrisi kalmadi veya iterasyon siniri asildi), `decision`
+dugumu - eger `llm.decision_model` yapilandirilmissa - TEK bir ek cagriyla
+"buyuk"/otonom-karar modeline (`self._decision_llm`, ARACSIZ - bu asamada
+artik arac cagrisi beklenmez) gecer ve nihai JSON kararini SENTEZLER; bu,
+"uzun akil yurutme zincirleri ve otonom karar anlari" icin daha guclu bir
+modele ROUTE eden canli bir LangGraph dugumudur. `decision_model`
+yapilandirilmamissa (varsayilan), `decision` dugumu ONCEKI gibi bir gecis
+(no-op) kalir - davranis/cagri sayisi BIREBIR AYNI.
 """
 
 from __future__ import annotations
@@ -23,7 +39,7 @@ from langgraph.graph.message import add_messages
 from src.agent.tools import build_tool_registry
 from src.rag.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
-from src.prompts import AGENT_SYSTEM_PROMPT, build_agent_user_prompt
+from src.prompts import AGENT_SYSTEM_PROMPT, DECISION_SYNTHESIS_INSTRUCTION, build_agent_user_prompt
 from src.prompts.agent_prompts import AGENT_OUTPUT_SCHEMA_HINT
 from src.utils.config_loader import AgentConfig, LLMConfig
 from src.vlm.factory import get_llm_client
@@ -82,9 +98,12 @@ class SafirAgent:
     """LangGraph tabanli durum makinesi uzerinde calisan risk muhakeme ajani.
 
     Dugumler:
-        reasoning  -> LLM'i (Qwen3/Gemma3) mevcut mesaj gecmisiyle cagirir.
+        reasoning  -> "Hizli" LLM'i (`llm.active_model`) mevcut mesaj
+                      gecmisiyle cagirir (arac secimi/JSON uretimi).
         tools      -> LLM'in istedigi arac cagrilarini yurutur.
-        decision   -> LLM'in son yanitindan risk skoru/seviyesi/aksiyonu cikarir.
+        decision   -> `llm.decision_model` yapilandirilmissa "buyuk" modelle
+                      TEK bir nihai karar-sentezi cagrisi yapar (bkz. modul
+                      dokustringi "Model hiyerarsisi"); aksi halde no-op gecistir.
 
     Kenarlar:
         reasoning -> tools     (arac cagrisi istendiginde)
@@ -120,9 +139,40 @@ class SafirAgent:
             event_store, rag_service, agent_config.tools
         )
         self._llm = get_llm_client(llm_config, use_mock=use_mock_llm).bind_tools(self._tools)
+        self._decision_llm = self._build_decision_llm(llm_config, use_mock_llm)
 
         self._tools_by_name = {tool.name: tool for tool in self._tools}
         self._graph = self._build_graph()
+
+    @staticmethod
+    def _build_decision_llm(llm_config: LLMConfig, use_mock_llm: bool):
+        """`llm.decision_model` yapilandirilmissa, nihai karar sentezi icin ARACSIZ bir istemci kurar.
+
+        Bkz. modul dokustringi "Model hiyerarsisi". `decision_model`
+        tanimsiz/`active_model` ile ayniysa `None` doner - `_decision_node`
+        bunu "hiyerarsi devre disi, no-op gecis" olarak yorumlar (davranis
+        ONCEKI haliyle BIREBIR AYNI kalir, EK BIR API CAGRISI YAPILMAZ).
+
+        Args:
+            llm_config: `configs/config.yaml` icindeki `llm` blogu.
+            use_mock_llm: `True` ise (GPU'suz mod) `decision_model` icin de
+                gercek vLLM/EVREN'e baglanmadan `MockLLMClient` kurulur.
+
+        Returns:
+            Araclara BAGLANMAMIS bir LLM istemcisi veya `None`.
+        """
+        decision_model = llm_config.decision_model
+        if not decision_model or decision_model == llm_config.active_model:
+            return None
+        if decision_model not in llm_config.models:
+            logger.warning(
+                "SafirAgent: llm.decision_model='%s' llm.models icinde tanimli degil; "
+                "model hiyerarsisi devre disi, tek-model davranisina donuluyor.",
+                decision_model,
+            )
+            return None
+        decision_llm_config = llm_config.model_copy(update={"active_model": decision_model})
+        return get_llm_client(decision_llm_config, use_mock=use_mock_llm)
 
     @property
     def model_name(self) -> str:
@@ -206,15 +256,28 @@ class SafirAgent:
         return {"messages": tool_messages, "iteration": state["iteration"]}
 
     def _decision_node(self, state: AgentState) -> AgentState:
-        """Son LLM yanitindan risk skoru, seviyesi ve aksiyon onerisini cikarir.
+        """Hiyerarsi yapilandirilmissa, "buyuk" modelle TEK bir nihai karar-sentezi cagrisi yapar.
+
+        `self._decision_llm is None` (varsayilan, hiyerarsi yapilandirilmamis)
+        ise ONCEKI davranisla BIREBIR AYNI: hicbir sey yapmaz, son `reasoning`
+        yanitinin icerigi `run()` tarafindan dogrudan nihai karar olarak
+        ayristirilir. Yapilandirilmissa: dongu boyunca biriken TUM mesaj
+        gecmisi (arac sonuclari dahil) + `DECISION_SYNTHESIS_INSTRUCTION`
+        ile "buyuk" modele TEK bir ek (ARACSIZ) cagri yapilir; bu yanit
+        `run()`in ayristiracagi nihai mesaj olur.
 
         Args:
-            state: Mevcut ajan durumu.
+            state: Mevcut ajan durumu (tool-routing dongusu tamamlanmis).
 
         Returns:
-            Degisiklik yapilmamis durum (karar, `run` metodunda ayrica cozumlenir).
+            `self._decision_llm is None` ise degisiklik yapilmamis durum;
+            aksi halde "buyuk" modelin nihai karar mesajiyla guncellenmis durum.
         """
-        return state
+        if self._decision_llm is None:
+            return state
+        synthesis_prompt = HumanMessage(content=DECISION_SYNTHESIS_INSTRUCTION)
+        response: AIMessage = self._decision_llm.invoke(list(state["messages"]) + [synthesis_prompt])
+        return {"messages": [response], "iteration": state["iteration"]}
 
     def _route_after_reasoning(self, state: AgentState) -> str:
         """Muhakeme dugumunden sonra arac mi yoksa karar mi calisacagini belirler.
@@ -326,7 +389,11 @@ class SafirAgent:
         logger.info("Ajan ciktisi gecerli JSON degil; JSON-modu ile yeniden deneniyor.")
         try:
             retry_messages = list(messages) + [HumanMessage(content=_JSON_RETRY_INSTRUCTION)]
-            response = self._llm.invoke_json(retry_messages)
+            # Nihai karari fiilen KIM uretmisse (hiyerarsi aktifse "buyuk"
+            # decision_llm, degilse hizli self._llm) retry de AYNI modelle
+            # yapilir - farkli bir modele sessizce gecmek TUTARSIZ olurdu.
+            retry_llm = self._decision_llm or self._llm
+            response = retry_llm.invoke_json(retry_messages)
             content = response.content or ""
             if self._extract_json(content) is not None:
                 return content

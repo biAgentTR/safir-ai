@@ -48,12 +48,20 @@ def test_verification_tool_reports_regulation_support_and_precedent() -> None:
 
 
 def test_guided_json_retry_recovers_non_json_output(safir_config) -> None:
-    """Serbest cikti gecerli JSON degilse, JSON-modu (invoke_json) ile kurtarilmali."""
+    """Serbest cikti gecerli JSON degilse, JSON-modu (invoke_json) ile kurtarilmali.
+
+    NOT: `safir_config`teki (gercek config.yaml) `llm.decision_model` model
+    hiyerarsisini ACIK tutar (bkz. `SafirAgent._decision_node`/modul
+    dokustringi "Model hiyerarsisi") - bu durumda nihai mesaji fiilen
+    `_decision_llm` uretir/retry de ONUNLA yapilir, `_llm` (hizli/arac-
+    secim modeli) DEGIL. Bu yuzden burada `_decision_llm` sahtelenir.
+    """
     agent = SafirAgent(
         llm_config=safir_config.llm, agent_config=safir_config.agent, use_mock_llm=True
     )
+    assert agent._decision_llm is not None  # hiyerarsi safir_config'te aktif
     calls = {"json": 0}
-    agent._llm.invoke = lambda messages: AIMessage(content="JSON vermeyen serbest metin.", tool_calls=[])
+    agent._decision_llm.invoke = lambda messages: AIMessage(content="JSON vermeyen serbest metin.", tool_calls=[])
 
     def _fake_json(messages):
         calls["json"] += 1
@@ -62,7 +70,7 @@ def test_guided_json_retry_recovers_non_json_output(safir_config) -> None:
             tool_calls=[],
         )
 
-    agent._llm.invoke_json = _fake_json
+    agent._decision_llm.invoke_json = _fake_json
     decision = agent.run("## Gozlem\ntest")
 
     assert calls["json"] == 1
@@ -82,6 +90,43 @@ def test_guided_json_retry_skipped_when_output_already_json(safir_config) -> Non
         return AIMessage(content="{}", tool_calls=[])
 
     agent._llm.invoke_json = _fake_json
+    if agent._decision_llm is not None:
+        agent._decision_llm.invoke_json = _fake_json
     # Mock LLM zaten gecerli JSON dondurur -> retry tetiklenmemeli.
     agent.run("## Gozlem\ntest")
     assert calls["json"] == 0
+
+
+def test_decision_model_hierarchy_routes_final_synthesis_to_decision_llm(safir_config) -> None:
+    """`llm.decision_model` yapilandirilmissa, nihai JSON `_decision_llm`den gelmeli - `_llm`in
+    (hizli/arac-secim) icerigi ONEMSIZDIR (mentor eleştirisi: model hiyerarsisi)."""
+    agent = SafirAgent(
+        llm_config=safir_config.llm, agent_config=safir_config.agent, use_mock_llm=True
+    )
+    assert agent._decision_llm is not None
+    assert agent._decision_llm is not agent._llm
+
+    # Hizli model (_llm) tamamen ILGISIZ bir metin dondurse bile, nihai karar
+    # DECISION_LLM'in ciktisindan gelmelidir.
+    agent._llm.invoke = lambda messages: AIMessage(content="tool cagrisi yok, ilgisiz metin", tool_calls=[])
+    agent._decision_llm.invoke = lambda messages: AIMessage(
+        content='{"summary":"buyuk model karari","events":[],"risk_score":42,"risk_level":"orta","actions":["izle"]}',
+        tool_calls=[],
+    )
+
+    decision = agent.run("## Gozlem\ntest")
+    assert decision.risk_score == 42
+    assert decision.summary == "buyuk model karari"
+
+
+def test_decision_model_unset_keeps_single_model_behavior(safir_config) -> None:
+    """`decision_model=None`/`active_model` ile ayniysa hiyerarsi devre disi - `_decision_llm is None`
+    ve nihai karar dogrudan `_llm`in son yanitindan gelir (davranis ONCEKI haliyle AYNI)."""
+    single_model_llm_config = safir_config.llm.model_copy(update={"decision_model": None})
+    agent = SafirAgent(
+        llm_config=single_model_llm_config, agent_config=safir_config.agent, use_mock_llm=True
+    )
+    assert agent._decision_llm is None
+
+    decision = agent.run("## Gozlem\ntest")
+    assert isinstance(decision.risk_score, int)

@@ -349,6 +349,17 @@ class LLMConfig(BaseModel):
 
     active_model: str
     models: Dict[str, VLLMEndpointConfig]
+    decision_model: Optional[str] = None
+    """Model HIYERARSISI (mentor eleştirisi: "her gorev icin buyuk modeli
+    kullanmayin, hiyerarsi kurun" - EVREN dokumantasyonu SS 6). `active_model`
+    (`self._llm`, arac-secimi/JSON-uretimi/tool-routing icin "hizli" model,
+    bkz. `SafirAgent`) TUM muhakeme donguleri boyunca DEGISMEDEN kullanilir;
+    yalnizca dongu bittiginde (arac cagrisi kalmadi/iterasyon siniri asildi)
+    tek bir "nihai karar sentezi" cagrisi icin BURADA belirtilen model
+    ("buyuk"/otonom karar modeli) devreye girer - `models` icindeki bir
+    anahtar olmali. `None` (varsayilan) veya `active_model` ile AYNIysa
+    hiyerarsi DEVRE DISIDIR - davranis/cagri sayisi ONCEKI haliyle BIREBIR
+    AYNI kalir (bkz. `SafirAgent._build_decision_llm`)."""
 
     def active_endpoint(self) -> VLLMEndpointConfig:
         """Config icinde secilen aktif LLM'in baglanti bilgisini dondurur."""

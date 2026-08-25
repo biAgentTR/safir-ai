@@ -128,6 +128,22 @@ _FEW_SHOT_EXAMPLE = (
 )
 
 
+# Model hiyerarsisi (mentor eleştirisi: EVREN dokumantasyonu SS 6, "her gorev
+# icin buyuk modeli kullanmayin"): arac-secimi/muhakeme donguleri "hizli"
+# modelle (bkz. SafirAgent.__init__ -> self._llm) yurutulur; dongu bittiginde
+# (artik arac cagrisi istenmiyor) TEK bir ek cagriyla "buyuk"/otonom-karar
+# modeline (SafirAgent._decision_llm) gecilir - bu istem, o son cagriya
+# eklenir ve modele SIMDI toplanan TUM kanitla nihai JSON karari SENTEZLEMESI
+# gerektigini acikca belirtir (bkz. SafirAgent._decision_node).
+DECISION_SYNTHESIS_INSTRUCTION = (
+    "Artik ek arac cagrisi YAPMA. Yukarida toplanan TUM kanit ve arac "
+    "sonuclariyla NIHAI karari SENTEZLE. Bu, en onemli/otonom karar anidir - "
+    "dikkatli ve tutarli muhakeme et. SADECE gecerli bir JSON nesnesi yaz "
+    "(baska hicbir metin ekleme, kod blogu isaretleyicisi kullanma). Sema:\n"
+    f"{AGENT_OUTPUT_SCHEMA_HINT}"
+)
+
+
 def build_agent_user_prompt(context_block: str) -> str:
     """Zenginlestirilmis baglami, ornek ve nihai talimatla saran kullanici istemini uretir.
 
@@ -146,4 +162,9 @@ def build_agent_user_prompt(context_block: str) -> str:
     )
 
 
-__all__ = ["AGENT_SYSTEM_PROMPT", "AGENT_OUTPUT_SCHEMA_HINT", "build_agent_user_prompt"]
+__all__ = [
+    "AGENT_SYSTEM_PROMPT",
+    "AGENT_OUTPUT_SCHEMA_HINT",
+    "DECISION_SYNTHESIS_INSTRUCTION",
+    "build_agent_user_prompt",
+]
