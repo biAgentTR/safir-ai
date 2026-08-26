@@ -3,13 +3,17 @@
 // "coming soon" placeholders. Reports is a dedicated report center (list of
 // completed analyses -> single-document report view), distinct from History
 // (the full analysis run log, including running/failed/queued).
+//
+// The two analysis modes are independent systems (see useAnalysisMode.ts) —
+// the rail shows only the nav for the currently active mode. Switching mode
+// is done via the ModeSwitcher in AppTopbar, not from here.
 interface NavItem {
   label: string
   to: string
   icon: string
 }
 
-const items: NavItem[] = [
+const lowBudgetItems: NavItem[] = [
   { label: 'Genel Bakış', to: '/', icon: '▤' },
   { label: 'Yeni Analiz', to: '/new-analysis', icon: '＋' },
   { label: 'Geçmiş', to: '/history', icon: '≡' },
@@ -17,6 +21,13 @@ const items: NavItem[] = [
   { label: 'SAFİR Asistan', to: '/assistant', icon: '◆' },
   { label: 'Sistem Verileri', to: '/system', icon: '⛁' },
 ]
+
+const vlmDirectItems: NavItem[] = [
+  { label: 'VLM Direct Analiz', to: '/vlm-direct', icon: '◆' },
+]
+
+const { mode } = useAnalysisMode()
+const items = computed(() => (mode.value === 'vlm_direct' ? vlmDirectItems : lowBudgetItems))
 
 // Brief welcome overlay on panel switch (PanelTransition.vue, mounted in the
 // layout). Only fires for an actual panel change — clicking the panel
