@@ -4,26 +4,36 @@
 // completed analyses -> single-document report view), distinct from History
 // (the full analysis run log, including running/failed/queued).
 //
-// The two analysis modes are independent systems (see useAnalysisMode.ts) —
-// the rail shows only the nav for the currently active mode. Switching mode
-// is done via the ModeSwitcher in AppTopbar, not from here.
+// The two analysis modes are independent systems (see useAnalysisMode.ts),
+// but Geçmiş/Raporlar/SAFİR Asistan/Sistem Verileri are mode-agnostic — they
+// read the same backend regardless of which mode produced an analysis — so
+// both modes' nav includes them. Only the primary landing screen differs
+// (VLM Direct Analiz vs. Genel Bakış/Yeni Analiz). Switching mode is done via
+// the ModeSwitcher in AppTopbar, not from here.
 interface NavItem {
   label: string
   to: string
   glyph: string
 }
 
-const lowBudgetItems: NavItem[] = [
-  { label: 'Genel Bakış', to: '/', glyph: '▤' },
-  { label: 'Yeni Analiz', to: '/new-analysis', glyph: '＋' },
+const sharedItems: NavItem[] = [
   { label: 'Geçmiş', to: '/history', glyph: '≡' },
   { label: 'Raporlar', to: '/reports', glyph: '▦' },
   { label: 'SAFİR Asistan', to: '/assistant', glyph: '◆' },
   { label: 'Sistem Verileri', to: '/system', glyph: '⛁' },
 ]
 
+const lowBudgetItems: NavItem[] = [
+  { label: 'Genel Bakış', to: '/', glyph: '▤' },
+  { label: 'Yeni Analiz', to: '/new-analysis', glyph: '＋' },
+  ...sharedItems,
+]
+
 const vlmDirectItems: NavItem[] = [
-  { label: 'VLM Direct Analiz', to: '/vlm-direct', glyph: '◆' },
+  { label: 'VLM Direct Analiz', to: '/vlm-direct', glyph: '▤' },
+  { label: 'Genel Bakış', to: '/', glyph: '◈' },
+  { label: 'Yeni Analiz', to: '/new-analysis', glyph: '＋' },
+  ...sharedItems,
 ]
 
 const { mode } = useAnalysisMode()

@@ -1,13 +1,12 @@
 /**
- * Mock data for the VLM Direct Analysis dashboard.
+ * Placeholder generator for the VLM Direct Analysis dashboard.
  *
- * There is no live VLM-direct backend yet (unlike the low-budget mode, whose
- * dashboard is wired to the real FastAPI backend via useSafirApi). This
- * generates a plausible, deterministic result set scaled to whatever video
- * duration the operator actually uploads, purely so the UI/UX can be built
- * and reviewed now. Every component below reads events/summary through this
- * composable's return shape — swapping this for a real API composable later
- * (e.g. useVlmApi) requires no changes to the components themselves.
+ * The dashboard itself is wired to the REAL backend (see pages/vlm-direct/
+ * index.vue + useVlmDirectEvents.ts) — this only fills the screen with a
+ * plausible, deterministic preview BEFORE the operator has run a real
+ * analysis, so the empty dashboard doesn't look broken. The summary/count
+ * helpers below (`summarize`, `riskLevelCounts`, `eventTypeCounts`) are
+ * shared with the real data path since both operate on the same VlmEvent[] shape.
  */
 import type { VlmEvent, VlmAnalysisSummary, VlmRiskLevel } from '~/types/vlm'
 

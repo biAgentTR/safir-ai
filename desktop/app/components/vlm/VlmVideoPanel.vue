@@ -1,8 +1,15 @@
 <script setup lang="ts">
-// Main video panel for VLM Direct mode: the operator's uploaded video, a
-// native <video> element, and a custom timeline strip beneath it with red
-// markers at every VLM-flagged risky timestamp. Clicking a marker (or an
-// event elsewhere on the page, via activeSeek) seeks the video there.
+// Main video panel for VLM Direct mode: the operator's chosen video, a
+// native <video> element, and a custom timeline strip beneath it with
+// risk-colored markers at every VLM-flagged timestamp. Clicking a marker (or
+// an event elsewhere on the page, via activeEventId) seeks the video there.
+//
+// File selection itself is NOT handled here: the backend needs a real local
+// filesystem path (POST /analyze/jobs video_source), not a browser `File`
+// object, so the parent page owns the Tauri file dialog (same pattern as
+// pages/new-analysis.vue) and just hands this component a playable `videoUrl`
+// (a converted asset:// URL) plus the display `fileName`. This component only
+// asks the parent to open that picker via 'pick-file'.
 import type { VlmEvent, VlmRiskLevel } from '~/types/vlm'
 
 const props = defineProps<{
@@ -15,22 +22,13 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'file-selected', file: File): void
+  (e: 'pick-file'): void
   (e: 'time-update', t: number): void
   (e: 'duration-change', d: number): void
   (e: 'select-event', id: string): void
 }>()
 
 const videoEl = ref<HTMLVideoElement | null>(null)
-const fileInput = ref<HTMLInputElement | null>(null)
-
-function pickFile() {
-  fileInput.value?.click()
-}
-function onFileChange(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0]
-  if (file) emit('file-selected', file)
-}
 
 function onLoadedMetadata() {
   if (videoEl.value) emit('duration-change', videoEl.value.duration)
@@ -87,9 +85,8 @@ const progressPct = computed(() => markerPct(props.currentTime))
       <h3 class="text-sm font-semibold text-slate-100">Video</h3>
       <div class="flex items-center gap-2">
         <span v-if="fileName" class="text-xs text-slate-500 truncate max-w-[14rem]">{{ fileName }}</span>
-        <input ref="fileInput" type="file" accept="video/*" class="hidden" @change="onFileChange" />
-        <button type="button" class="btn-ghost !py-1.5 !px-2.5 text-xs" @click="pickFile">
-          <span aria-hidden="true">⤒</span> {{ videoUrl ? 'Videoyu Değiştir' : 'Video Yükle' }}
+        <button type="button" class="btn-ghost !py-1.5 !px-2.5 text-xs" @click="emit('pick-file')">
+          <span aria-hidden="true">⤒</span> {{ fileName ? 'Videoyu Değiştir' : 'Video Seç' }}
         </button>
       </div>
     </div>
@@ -105,10 +102,13 @@ const progressPct = computed(() => markerPct(props.currentTime))
         @loadedmetadata="onLoadedMetadata"
         @timeupdate="onTimeUpdate"
       />
+      <div v-else-if="fileName" class="text-center px-6">
+        <p class="text-sm text-slate-400">Video önizlemesi bu ortamda kullanılamıyor; analiz seçilen dosya üzerinden devam eder.</p>
+      </div>
       <div v-else class="text-center px-6">
         <div class="text-4xl mb-3 text-slate-600" aria-hidden="true">▶</div>
-        <p class="text-sm text-slate-400">Analiz için bir video yükleyin.</p>
-        <button type="button" class="btn-primary mt-3" @click="pickFile">Video Yükle</button>
+        <p class="text-sm text-slate-400">Analiz için bir video seçin.</p>
+        <button type="button" class="btn-primary mt-3" @click="emit('pick-file')">Video Seç</button>
       </div>
     </div>
 
