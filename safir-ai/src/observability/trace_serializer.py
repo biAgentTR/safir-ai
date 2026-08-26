@@ -132,7 +132,17 @@ def serialize_sampler(
     burada "event_groups"/"representative_frames" YOKTUR - esik-gecmis TUM
     evidence kareleri (kumeleme VLM katmaninda yapilir) tek bir kronolojik
     listede sunulur.
+
+    Video-tabanli bir VLM (EVREN) aktifken bu asama TAMAMEN ATLANIR (bkz.
+    `src/main.py::run`, `BaseVLM.requires_frame_sampling`) - `sampler_payload["skipped"]`
+    bunu isaretler; ciktisi hicbir zaman kullanilmayacagi icin "0 kare"
+    gibi YANILTICI bir sonuc yerine, atlanma nedenini ACIKCA soyleyen bir
+    "completed" (basarisiz DEGIL, kasitli) olay uretilir.
     """
+    if sampler_payload.get("skipped"):
+        summary = "Atlandı — VLM videoyu doğrudan analiz ediyor (kare örneklemeye gerek yok)"
+        return summary, {"stats": {}, "evidence_frames": [], "skipped": True}, {}, "completed", None
+
     evidence_frames = sampler_payload.get("evidence_frames", []) or []
     stats = sampler_payload.get("stats")
 

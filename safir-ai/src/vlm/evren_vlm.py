@@ -111,6 +111,11 @@ def _report(on_progress: Optional[VlmProgressCallback], **fields: Any) -> None:
 class EvrenVLM(BaseVLM):
     """TEKNOFEST EVREN yarisma servisinin video-tabanli VLM ucunu kullanan implementasyon."""
 
+    # Video DOGRUDAN gonderilir (bkz. `analyze_video`) - Adaptive Frame
+    # Sampler'in ciktisi bu saglayicida HICBIR ZAMAN VLM girdisi olarak
+    # kullanilmaz (bkz. `BaseVLM.requires_frame_sampling` dokustringi).
+    requires_frame_sampling = False
+
     def analyze_video(
         self,
         video_source: str,

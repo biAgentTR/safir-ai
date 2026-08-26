@@ -176,6 +176,8 @@ export interface EvidenceFrameRef {
 export interface SamplerStageData {
   stats: Partial<SamplerStats>
   evidence_frames: EvidenceFrameRef[]
+  /** true when the active VLM is video-based (EVREN) and this stage was intentionally skipped — see BaseVLM.requires_frame_sampling. */
+  skipped?: boolean
 }
 
 /** A single VLM-clustered event from EVENTS_JSON (src/prompts/vlm_prompts.py). */

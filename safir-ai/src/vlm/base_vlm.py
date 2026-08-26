@@ -194,6 +194,21 @@ class BaseVLM(ABC):
     calismasini saglar.
     """
 
+    #: Bu VLM'in GERCEK girdisi Adaptive Frame Sampler'in urettigi evidence
+    #: kareleri mi (`QwenVLM`/`GemmaVLM` - frame-tabanli, `analyze_evidence`
+    #: bu karelerin GORUNTULERINI dogrudan model payload'ina gomer), yoksa
+    #: videoyu KENDISI dogrudan mi analiz ediyor (`EvrenVLM` - `analyze_video`,
+    #: sampler kareleri yalnizca arayuz PARITESI icin alinir, HICBIR ZAMAN
+    #: modele gonderilmez). `SafirPipeline.run()` bunu okuyup video-tabanli
+    #: saglayicilarda TUM Adaptive Frame Sampler asamasini (CPU'da video
+    #: uzunluguyla orantili suren, ~saniyeler-dakikalar mertebesinde bir
+    #: on-isleme) ATLAR - calistirilsa bile ciktisi (evidence_frames) bu
+    #: saglayicilarda ASLA VLM girdisi olarak KULLANILMIYORDU (bkz.
+    #: `EvrenVLM.analyze_video`in `del evidence_frames`i), yani calistirmak
+    #: saf zaman kaybiydi. Varsayilan `True` (frame-tabanli, GERIYE-DONUK
+    #: UYUMLU - mevcut/gelecek frame-tabanli saglayicilar dokunulmadan calisir).
+    requires_frame_sampling: bool = True
+
     def __init__(self, endpoint: VLLMEndpointConfig) -> None:
         """BaseVLM'i vLLM baglanti bilgileriyle baslatir.
 

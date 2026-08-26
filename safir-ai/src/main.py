@@ -949,10 +949,24 @@ class SafirPipeline:
         # Her asama, GERCEK production metoduna delege edilir; boylece hem run()
         # tek cagriyla calisir, hem de Jupyter demo bu metotlari tek tek cagirip
         # her asamanin gercek ciktisini gosterebilir (implementasyon kopyalanmaz).
-        sampler, evidence_frames = self.stage_sample(
-            video_source, sample_fps_override, min_change_threshold_override
-        )
-        _emit("sampler", {"evidence_frames": evidence_frames, "stats": sampler.last_run_stats})
+        #
+        # Video-tabanli bir VLM (EVREN) aktifken Adaptive Frame Sampler
+        # TAMAMEN ATLANIR: ciktisi (evidence_frames) bu saglayicilarda ZATEN
+        # VLM girdisi olarak KULLANILMIYORDU (bkz. `BaseVLM.requires_frame_
+        # sampling` dokustringi, `EvrenVLM.analyze_video`in `del evidence_
+        # frames`i) - calistirmak, videonun HER native karesini CPU'da tarayan
+        # (uzunlukla orantili, ölçülen: 75.6s'lik bir video icin 92.8s) saf bir
+        # zaman kaybiydi, hicbir raporlanan degeri ETKILEMIYORDU. Frame-tabanli
+        # saglayicilarda (qwen/gemma) davranis DEGISMEDI.
+        if getattr(self._vlm, "requires_frame_sampling", True):
+            sampler, evidence_frames = self.stage_sample(
+                video_source, sample_fps_override, min_change_threshold_override
+            )
+            _emit("sampler", {"evidence_frames": evidence_frames, "stats": sampler.last_run_stats})
+        else:
+            sampler = None
+            evidence_frames = []
+            _emit("sampler", {"evidence_frames": evidence_frames, "stats": None, "skipped": True})
 
         if on_stage:
             on_stage(*STAGE_VLM)
@@ -1518,7 +1532,11 @@ class SafirPipeline:
                     gpu_savings_ratio_pct=sampler.last_run_stats.eliminated_ratio_pct,
                     elapsed_sec=sampler.last_run_stats.elapsed_sec,
                 )
-                if sampler.last_run_stats
+                # `sampler` video-tabanli bir VLM (EVREN) aktifken `None`dir
+                # (bkz. `run()` - bu asama TAMAMEN ATLANIR); "0" gibi
+                # YANILTICI istatistik UYDURMAK yerine dogru sekilde `None`
+                # ("N/A") kalir.
+                if sampler is not None and sampler.last_run_stats
                 else None
             ),
             vlm_model=vlm_response.model_name,

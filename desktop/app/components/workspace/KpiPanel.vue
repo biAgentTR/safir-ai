@@ -7,11 +7,16 @@ import type { SamplerStageData } from '~/types/api'
 const store = useAnalysisStore()
 
 // Prefer the final report's sampler_stats; fall back to the live sampler trace.
+// When the active VLM is video-based (EVREN) the sampler stage is skipped
+// entirely (see BaseVLM.requires_frame_sampling) — its stats are an empty
+// object in that case, not real data, so treat it as "no stats" rather than
+// rendering a misleading all-zero KPI strip.
 const stats = computed(() => {
   const rep = store.report?.sampler_stats
   if (rep) return rep
   const s = store.eventForStage('sampler')?.data as SamplerStageData | undefined
-  return s?.stats
+  if (!s || s.skipped) return undefined
+  return s.stats
 })
 
 const msPerFrame = computed(() => {

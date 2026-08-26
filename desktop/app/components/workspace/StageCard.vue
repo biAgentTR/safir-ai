@@ -114,7 +114,10 @@ function ms(v: number | null): string {
 
     <template v-else>
       <!-- ============ SAMPLER ============ -->
-      <div v-if="sampler" class="space-y-5">
+      <div v-if="sampler?.skipped" class="rounded-md border border-edge bg-surface-2/60 px-4 py-3 text-sm text-slate-300">
+        Bu aşama atlandı — aktif VLM (EVREN) videoyu doğrudan analiz ediyor, kare örneklemeye gerek yok.
+      </div>
+      <div v-else-if="sampler" class="space-y-5">
         <div class="grid grid-cols-3 sm:grid-cols-6 gap-3">
           <MetricCell label="Taranan" :value="sampler.stats.total_frames_scanned ?? 0" />
           <MetricCell label="Değerlendirilen" :value="sampler.stats.sampled_frames_evaluated ?? 0" />
