@@ -3,11 +3,20 @@
 @tailwind utilities;
 
 /*
- * SAFIR design tokens — one semantic palette, two renderings (dark / light).
- * Dark is tuned for a video-analysis / operations-room screen; light is a
- * genuine daylight palette (deepened accent + risk colors for AA contrast
- * on white), not a mechanical inversion of dark. Every token is a Tailwind
- * `rgb(var(--x) / <alpha-value>)` triplet — see tailwind.config.ts.
+ * SAFİR design tokens — "industrial command center", not a SaaS/AI-chat
+ * dashboard. One semantic palette, two renderings (dark / light).
+ *
+ * Deliberate choices vs. a generic AI-template look:
+ * - Near-black graphite background (not navy/indigo-tinted).
+ * - Brand/interactive accent is a controlled steel-teal — NOT the
+ *   blue/purple hue every "AI powered" SaaS dashboard defaults to. `info`
+ *   is a separate, sparingly-used blue reserved for neutral content tags.
+ * - Risk semantics stay exactly as specified: crit=red, warning=amber,
+ *   normal=green, info=blue — never repurposed for decoration.
+ * - Every color below resolves through a CSS custom property (see
+ *   tailwind.config.ts) so the same class names (bg-surface-1, text-slate-400,
+ *   text-risk-crit, bg-accent, text-info, ...) render correctly in both
+ *   themes without any call site needing a `dark:` variant.
  *
  * Precedence: :root (dark, the historical default) is overridden by
  * `prefers-color-scheme: light` for users who never chose explicitly, and
@@ -18,20 +27,27 @@
 :root {
   color-scheme: dark;
 
-  /* surfaces */
-  --c-bg: 11 15 20;
-  --c-surface-1: 15 20 27;
-  --c-surface-2: 21 28 38;
-  --c-surface-3: 28 37 49;
-  --c-edge: 38 48 61;
+  /* surfaces — near-black graphite, not blue/navy-tinted */
+  --c-bg: 9 11 14;
+  --c-surface-1: 14 17 21;
+  --c-surface-2: 19 23 29;
+  --c-surface-3: 26 31 39;
+  --c-edge: 34 40 49;
+  --c-edge-strong: 51 59 71;
 
-  /* accent + semantic status */
-  --c-accent: 59 130 246;
-  --c-accent-soft: 30 58 95;
+  /* brand/interactive accent — steel-teal (deliberately not AI-blue/purple) */
+  --c-accent: 20 184 166;
+  --c-accent-soft: 11 43 41;
+
+  /* informational blue — reserved for neutral content tags, never interactive */
+  --c-info: 59 130 246;
+  --c-info-soft: 26 41 66;
+
+  /* semantic status */
   --c-risk-low: 34 197 94;
-  --c-risk-mid: 234 179 8;
-  --c-risk-high: 249 115 22;
-  --c-risk-crit: 239 68 68;
+  --c-risk-mid: 217 158 20;
+  --c-risk-high: 234 88 12;
+  --c-risk-crit: 220 38 38;
 
   /* text ramp (replaces Tailwind's static slate-100..700 app-wide) */
   --c-slate-100: 241 245 249;
@@ -52,9 +68,14 @@
     --c-surface-2: 241 243 246;
     --c-surface-3: 230 233 238;
     --c-edge: 214 219 227;
+    --c-edge-strong: 191 198 209;
 
-    --c-accent: 37 99 235;
-    --c-accent-soft: 219 234 254;
+    --c-accent: 13 148 136;
+    --c-accent-soft: 219 240 238;
+
+    --c-info: 37 99 235;
+    --c-info-soft: 219 234 254;
+
     --c-risk-low: 22 163 74;
     --c-risk-mid: 161 98 7;
     --c-risk-high: 194 65 12;
@@ -78,9 +99,14 @@
   --c-surface-2: 241 243 246;
   --c-surface-3: 230 233 238;
   --c-edge: 214 219 227;
+  --c-edge-strong: 191 198 209;
 
-  --c-accent: 37 99 235;
-  --c-accent-soft: 219 234 254;
+  --c-accent: 13 148 136;
+  --c-accent-soft: 219 240 238;
+
+  --c-info: 37 99 235;
+  --c-info-soft: 219 234 254;
+
   --c-risk-low: 22 163 74;
   --c-risk-mid: 161 98 7;
   --c-risk-high: 194 65 12;
@@ -98,18 +124,23 @@
 :root[data-theme='dark'] {
   color-scheme: dark;
 
-  --c-bg: 11 15 20;
-  --c-surface-1: 15 20 27;
-  --c-surface-2: 21 28 38;
-  --c-surface-3: 28 37 49;
-  --c-edge: 38 48 61;
+  --c-bg: 9 11 14;
+  --c-surface-1: 14 17 21;
+  --c-surface-2: 19 23 29;
+  --c-surface-3: 26 31 39;
+  --c-edge: 34 40 49;
+  --c-edge-strong: 51 59 71;
 
-  --c-accent: 59 130 246;
-  --c-accent-soft: 30 58 95;
+  --c-accent: 20 184 166;
+  --c-accent-soft: 11 43 41;
+
+  --c-info: 59 130 246;
+  --c-info-soft: 26 41 66;
+
   --c-risk-low: 34 197 94;
-  --c-risk-mid: 234 179 8;
-  --c-risk-high: 249 115 22;
-  --c-risk-crit: 239 68 68;
+  --c-risk-mid: 217 158 20;
+  --c-risk-high: 234 88 12;
+  --c-risk-crit: 220 38 38;
 
   --c-slate-100: 241 245 249;
   --c-slate-200: 226 232 240;
@@ -163,8 +194,22 @@ body {
 }
 
 @layer components {
+  /* ---- surfaces ---- */
   .card {
-    @apply bg-surface-1 border border-edge rounded-lg;
+    @apply bg-surface-1 border border-edge rounded-md;
+  }
+
+  /* Full-bleed panel with a heavier top rule — used for the operator-facing
+     status band (RiskSummary) instead of a floating rounded card, so the
+     single most important reading on screen doesn't look like just another
+     tile among many. */
+  .panel-band {
+    @apply bg-surface-1 border border-edge border-t-2 rounded-md;
+  }
+
+  /* ---- typography ---- */
+  .eyebrow {
+    @apply text-[10.5px] font-semibold uppercase tracking-[0.09em] text-slate-500;
   }
   .field-label {
     @apply block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1;
@@ -172,17 +217,79 @@ body {
   .field-input {
     @apply w-full bg-surface-2 border border-edge rounded-md px-3 py-2 text-sm
            text-slate-100 placeholder:text-slate-500
-           focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent;
+           focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent
+           transition-colors duration-150;
   }
+
+  /* ---- buttons ---- */
   .btn-primary {
     @apply inline-flex items-center justify-center gap-2 rounded-md bg-accent
            px-4 py-2 text-sm font-medium text-white
-           hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed
-           transition-colors;
+           hover:brightness-110 active:brightness-95 disabled:opacity-50 disabled:cursor-not-allowed
+           transition-[filter] duration-150;
   }
   .btn-ghost {
     @apply inline-flex items-center justify-center gap-2 rounded-md border border-edge
-           bg-surface-2 px-3 py-2 text-sm text-slate-300 hover:bg-surface-3
-           transition-colors;
+           bg-surface-2 px-3 py-2 text-sm text-slate-300 hover:bg-surface-3 hover:border-edge-strong
+           disabled:opacity-50 disabled:cursor-not-allowed
+           transition-colors duration-150;
+  }
+
+  /* ---- status badges: one small, consistent pill family used for every
+     status/risk/action tag across the app (replaces ad-hoc inline classes) ---- */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wide border;
+  }
+  .badge-crit {
+    @apply badge text-risk-crit bg-risk-crit/10 border-risk-crit/30;
+  }
+  .badge-high {
+    @apply badge text-risk-high bg-risk-high/10 border-risk-high/30;
+  }
+  .badge-mid {
+    @apply badge text-risk-mid bg-risk-mid/10 border-risk-mid/30;
+  }
+  .badge-low {
+    @apply badge text-risk-low bg-risk-low/10 border-risk-low/30;
+  }
+  .badge-info {
+    @apply badge text-info bg-info/10 border-info/30;
+  }
+  .badge-neutral {
+    @apply badge text-slate-400 bg-surface-2 border-edge;
+  }
+  .badge-accent {
+    @apply badge text-accent bg-accent/10 border-accent/30;
+  }
+
+  /* ---- live/status dot (topbar health, running indicators) ---- */
+  .status-dot {
+    @apply inline-block w-2 h-2 rounded-full shrink-0;
+  }
+
+  /* ---- dense operational table (Genel Bakış, Geçmiş, Sistem Verileri) ---- */
+  .op-table {
+    @apply w-full text-sm border-collapse;
+  }
+  .op-table thead th {
+    @apply text-left eyebrow py-2 pr-3 border-b border-edge font-semibold;
+  }
+  .op-table tbody tr {
+    @apply border-b border-edge/70 transition-colors duration-150;
+  }
+  .op-table tbody tr[data-clickable] {
+    @apply cursor-pointer hover:bg-surface-2/70;
+  }
+  .op-table td {
+    @apply py-2.5 pr-3 align-middle;
+  }
+
+  /* ---- instrument strip: a single-row KPI band with vertical dividers
+     instead of N separate boxed cards (Genel Bakış status strip, KpiPanel) ---- */
+  .instrument-strip {
+    @apply flex flex-wrap bg-surface-1 border border-edge rounded-md divide-x divide-edge;
+  }
+  .instrument-cell {
+    @apply flex-1 min-w-[7rem] px-4 py-3;
   }
 }

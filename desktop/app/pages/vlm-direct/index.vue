@@ -42,13 +42,12 @@ function onSelectEvent(id: string) {
   <div class="max-w-7xl mx-auto px-6 py-6">
     <div class="mb-5 flex flex-wrap items-start justify-between gap-4">
       <div>
-        <h2 class="text-xl font-semibold text-slate-100">VLM Direct Analysis</h2>
+        <h2 class="text-xl font-bold tracking-tight text-slate-100">VLM Direct Analysis</h2>
         <p class="mt-1 text-sm text-slate-500">Video doğrudan görsel-dil modeline gönderilerek analiz edilir.</p>
       </div>
     </div>
 
-    <div class="mb-5 rounded-md border border-accent/30 bg-accent-soft/40 px-4 py-2.5 text-xs text-slate-300 flex items-center gap-2">
-      <span class="text-accent" aria-hidden="true">ⓘ</span>
+    <div class="mb-5 rounded-md border border-info/30 bg-info/10 px-4 py-2.5 text-xs text-slate-300">
       Bu ekran örnek/mock analiz verisiyle çalışıyor. Gerçek VLM entegrasyonu tamamlandığında bileşenler canlı sonuçlara bağlanacak.
     </div>
 

@@ -13,22 +13,22 @@ const scoreTone = computed(() => riskTone(
 </script>
 
 <template>
-  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-    <div class="card px-4 py-3">
-      <div class="text-[11px] uppercase tracking-wide text-slate-500">Video Süresi</div>
-      <div class="mt-1 text-xl font-semibold text-slate-100">{{ durationSeconds ? mmss(durationSeconds) : '—' }}</div>
+  <div class="instrument-strip">
+    <div class="instrument-cell">
+      <div class="eyebrow">Video Süresi</div>
+      <div class="mt-1 text-xl font-bold text-slate-100 tabular-nums font-mono">{{ durationSeconds ? mmss(durationSeconds) : '—' }}</div>
     </div>
-    <div class="card px-4 py-3">
-      <div class="text-[11px] uppercase tracking-wide text-slate-500">Tespit Edilen Olay</div>
-      <div class="mt-1 text-xl font-semibold text-slate-100">{{ summary.totalEvents }}</div>
+    <div class="instrument-cell">
+      <div class="eyebrow">Tespit Edilen Olay</div>
+      <div class="mt-1 text-xl font-bold text-slate-100 tabular-nums">{{ summary.totalEvents }}</div>
     </div>
-    <div class="card px-4 py-3">
-      <div class="text-[11px] uppercase tracking-wide text-slate-500">Kritik Olay</div>
-      <div class="mt-1 text-xl font-semibold" :class="summary.criticalEvents ? 'text-risk-crit' : 'text-slate-100'">{{ summary.criticalEvents }}</div>
+    <div class="instrument-cell">
+      <div class="eyebrow">Kritik Olay</div>
+      <div class="mt-1 text-xl font-bold tabular-nums" :class="summary.criticalEvents ? 'text-risk-crit' : 'text-slate-100'">{{ summary.criticalEvents }}</div>
     </div>
-    <div class="card px-4 py-3">
-      <div class="text-[11px] uppercase tracking-wide text-slate-500">Genel Risk Skoru</div>
-      <div class="mt-1 text-xl font-semibold" :class="RISK_TEXT[scoreTone]">{{ summary.totalEvents ? summary.overallRiskScore : '—' }}</div>
+    <div class="instrument-cell">
+      <div class="eyebrow">Genel Risk Skoru</div>
+      <div class="mt-1 text-xl font-bold tabular-nums" :class="RISK_TEXT[scoreTone]">{{ summary.totalEvents ? summary.overallRiskScore : '—' }}</div>
     </div>
   </div>
 </template>

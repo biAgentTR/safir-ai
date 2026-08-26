@@ -437,8 +437,8 @@ onBeforeUnmount(() => askStream.stop())
 <template>
   <div class="max-w-6xl mx-auto px-6 py-8">
     <div class="mb-5">
-      <h2 class="text-xl font-semibold text-slate-100">SAFİR Asistan</h2>
-      <p class="mt-1 text-sm text-slate-500">Analiz sonuçları ve ilgili mevzuat hakkında SAFİR'e soru sorun.</p>
+      <h2 class="text-xl font-bold tracking-tight text-slate-100">SAFİR Asistan</h2>
+      <p class="mt-1 text-sm text-slate-500">Analiz sonuçları ve ilgili mevzuat hakkında karar destek sorguları — kalıcı sohbet geçmişiyle.</p>
     </div>
 
     <div v-if="backendHealth === 'offline'" class="mb-4 rounded-md border border-risk-crit/40 bg-risk-crit/10 px-4 py-2.5 text-sm text-risk-crit">
@@ -567,7 +567,6 @@ onBeforeUnmount(() => askStream.stop())
               :key="note.id"
               class="flex items-start gap-2 bg-surface-2 border border-edge rounded-md px-2.5 py-2 text-xs"
             >
-              <span class="shrink-0 text-slate-500">📝</span>
               <div class="min-w-0 flex-1">
                 <div v-if="note.label" class="text-slate-300 font-medium">{{ note.label }}</div>
                 <div class="text-slate-400 whitespace-pre-line break-words">{{ note.content }}</div>
@@ -588,7 +587,6 @@ onBeforeUnmount(() => askStream.stop())
               :key="doc.document_id"
               class="flex items-start gap-2 bg-surface-2 border border-edge rounded-md px-2.5 py-2 text-xs"
             >
-              <span class="shrink-0 text-slate-500">📄</span>
               <div class="min-w-0 flex-1">
                 <div class="text-slate-300 font-medium truncate">{{ doc.filename }}</div>
                 <div class="text-slate-500">
@@ -634,17 +632,16 @@ onBeforeUnmount(() => askStream.stop())
             >{{ s }}</button>
           </div>
         </div>
-        <div v-else ref="messageListEl" class="flex-1 overflow-y-auto space-y-3 pr-1" @scroll="onMessageListScroll">
-          <div v-for="m in messages" :key="m.id" class="flex" :class="m.role === 'user' ? 'justify-end' : 'justify-start'">
-            <div
-              class="max-w-[75%] rounded-md border px-3 py-2 text-sm leading-relaxed whitespace-pre-line break-words"
-              :class="m.role === 'user'
-                ? 'bg-accent/10 border-accent/30 text-slate-100'
-                : 'bg-surface-2 border-edge text-slate-100'"
-            >
-              <span v-if="m.pending && !m.content" class="text-slate-500">SAFİR yanıtı oluşturuyor…</span>
-              <span v-else>{{ m.content }}</span>
-            </div>
+        <div v-else ref="messageListEl" class="flex-1 overflow-y-auto space-y-2.5 pr-1" @scroll="onMessageListScroll">
+          <div
+            v-for="m in messages"
+            :key="m.id"
+            class="relative rounded-md border-l-2 pl-3 pr-3 py-2 text-sm leading-relaxed whitespace-pre-line break-words"
+            :class="m.role === 'user' ? 'border-l-slate-600 bg-surface-2/40' : 'border-l-accent bg-surface-2'"
+          >
+            <div class="eyebrow mb-0.5" :class="m.role === 'user' ? 'text-slate-500' : 'text-accent'">{{ m.role === 'user' ? 'Operatör' : 'SAFİR' }}</div>
+            <span v-if="m.pending && !m.content" class="text-slate-500">yanıt oluşturuluyor…</span>
+            <span v-else class="text-slate-100">{{ m.content }}</span>
           </div>
         </div>
 
@@ -678,7 +675,7 @@ onBeforeUnmount(() => askStream.stop())
 
         <!-- video-QA göstergesi (EVREN prefix-cache follow-up, HER ZAMAN aktif) -->
         <p v-if="activeJobId" class="mt-3 text-[11px] text-slate-600 flex items-center gap-1.5">
-          <span>🎥</span> Sorular önce doğrudan videoya sorulur (bulunamazsa özet metne döner).
+          Sorular önce doğrudan videoya sorulur (bulunamazsa özet metne döner).
         </p>
 
         <!-- giris -->

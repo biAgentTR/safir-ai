@@ -131,11 +131,11 @@ function openJob(h: HistoryListItem) {
   router.push(`/workspace/${h.job_id}?history=1`)
 }
 
-const statusMeta: Record<string, { label: string; tone: string }> = {
-  completed: { label: 'Tamamlandı', tone: 'text-risk-low' },
-  running: { label: 'Devam ediyor', tone: 'text-accent' },
-  queued: { label: 'Kuyrukta', tone: 'text-slate-400' },
-  failed: { label: 'Başarısız', tone: 'text-risk-crit' },
+const statusMeta: Record<string, { label: string; tone: string; badge: string }> = {
+  completed: { label: 'Tamamlandı', tone: 'text-risk-low', badge: 'badge-low' },
+  running: { label: 'Devam ediyor', tone: 'text-accent', badge: 'badge-accent' },
+  queued: { label: 'Kuyrukta', tone: 'text-slate-400', badge: 'badge-neutral' },
+  failed: { label: 'Başarısız', tone: 'text-risk-crit', badge: 'badge-crit' },
 }
 
 // ---- fullscreen operation mode ----
@@ -193,7 +193,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
     <!-- header: title, quick action, search + filters -->
     <div class="mb-5 flex flex-wrap items-start justify-between gap-4">
       <div>
-        <h2 class="text-xl font-semibold text-slate-100">Genel Bakış</h2>
+        <h2 class="text-xl font-bold tracking-tight text-slate-100">Genel Bakış</h2>
         <p class="mt-1 text-sm text-slate-500">Saha analizlerinin ve kritik olayların operasyon özeti.</p>
       </div>
       <div class="flex items-center gap-2 shrink-0">
@@ -201,34 +201,31 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           <span aria-hidden="true">{{ isFullscreen ? '⤡' : '⤢' }}</span>
           <span class="hidden md:inline">{{ isFullscreen ? 'Tam Ekrandan Çık' : 'Tam Ekran' }}</span>
         </button>
-        <NuxtLink to="/new-analysis" class="btn-primary"><span aria-hidden="true">＋</span> Yeni Analiz</NuxtLink>
+        <NuxtLink to="/new-analysis" class="btn-primary">Yeni Analiz</NuxtLink>
       </div>
     </div>
 
     <!-- critical / high-risk attention section — top priority, decision-relevant -->
     <section v-if="criticalRecent.length" class="mb-6" aria-label="Dikkat gerektiren son analizler">
-      <h3 class="text-xs font-semibold uppercase tracking-wide text-risk-crit mb-2">DİKKAT GEREKTİREN SON ANALİZLER</h3>
-      <div class="space-y-2">
+      <h3 class="eyebrow text-risk-crit mb-2">Dikkat Gerektiren Son Analizler</h3>
+      <div class="card divide-y divide-edge overflow-hidden">
         <button
           v-for="h in criticalRecent"
           :key="h.job_id"
           type="button"
-          class="w-full text-left rounded-md border px-4 py-3 flex items-center gap-4 transition-colors"
-          :class="riskTone(h.risk_level) === 'crit'
-            ? 'border-risk-crit/40 bg-risk-crit/10 hover:bg-risk-crit/15'
-            : 'border-risk-high/40 bg-risk-high/10 hover:bg-risk-high/15'"
+          class="relative w-full text-left pl-4 pr-4 py-3 flex items-center gap-4 transition-colors hover:bg-surface-2/70"
           @click="openJob(h)"
         >
-          <span class="text-lg shrink-0" :class="RISK_TEXT[riskTone(h.risk_level)]" aria-hidden="true">⚠</span>
+          <span class="absolute inset-y-0 left-0 w-1" :class="RISK_BG[riskTone(h.risk_level)]" aria-hidden="true" />
           <div class="min-w-0 flex-1">
             <div class="text-sm text-slate-100 truncate">{{ basename(h.video_source) }}</div>
-            <div class="text-xs text-slate-400 truncate mt-0.5">{{ h.summary || 'Özet yok' }}</div>
+            <div class="text-xs text-slate-500 truncate mt-0.5">{{ h.summary || 'Özet yok' }}</div>
           </div>
-          <div class="text-right shrink-0">
-            <div class="text-lg font-bold" :class="RISK_TEXT[riskTone(h.risk_level)]">{{ h.risk_score }}</div>
-            <div class="text-[10px] uppercase tracking-wide" :class="RISK_TEXT[riskTone(h.risk_level)]">{{ trUpper(h.risk_level) }}</div>
+          <span class="badge shrink-0" :class="riskTone(h.risk_level) === 'crit' ? 'badge-crit' : 'badge-high'">{{ trUpper(h.risk_level) }}</span>
+          <div class="text-right shrink-0 w-10">
+            <div class="text-lg font-bold tabular-nums" :class="RISK_TEXT[riskTone(h.risk_level)]">{{ h.risk_score }}</div>
           </div>
-          <span class="text-xs text-slate-500 shrink-0 w-16 text-right">{{ fmtRelative(h.created_at) }}</span>
+          <span class="text-xs text-slate-500 shrink-0 w-16 text-right font-mono">{{ fmtRelative(h.created_at) }}</span>
         </button>
       </div>
     </section>
@@ -240,24 +237,24 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         <span class="text-sm text-risk-crit flex-1">{{ overviewError }}</span>
         <button class="btn-ghost shrink-0" @click="loadOverview">Tekrar dene</button>
       </div>
-      <div v-else-if="overview" class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div class="card px-4 py-3">
-          <div class="text-[11px] uppercase tracking-wide text-slate-500">TOPLAM ANALİZ</div>
-          <div class="mt-1 text-xl font-semibold text-slate-100">{{ overview.totals.total_analyses }}</div>
+      <div v-else-if="overview" class="instrument-strip">
+        <div class="instrument-cell">
+          <div class="eyebrow">Toplam Analiz</div>
+          <div class="mt-1 text-xl font-bold text-slate-100 tabular-nums">{{ overview.totals.total_analyses }}</div>
         </div>
-        <div class="card px-4 py-3">
-          <div class="text-[11px] uppercase tracking-wide text-slate-500">Devam Eden</div>
-          <div class="mt-1 text-xl font-semibold" :class="runningCount ? 'text-accent' : 'text-slate-100'">
+        <div class="instrument-cell">
+          <div class="eyebrow">Devam Eden</div>
+          <div class="mt-1 text-xl font-bold tabular-nums" :class="runningCount ? 'text-accent' : 'text-slate-100'">
             {{ overview.totals.running_or_queued_analyses }}
           </div>
         </div>
-        <div class="card px-4 py-3">
-          <div class="text-[11px] uppercase tracking-wide text-slate-500">Tamamlanan</div>
-          <div class="mt-1 text-xl font-semibold text-risk-low">{{ overview.totals.completed_analyses }}</div>
+        <div class="instrument-cell">
+          <div class="eyebrow">Tamamlanan</div>
+          <div class="mt-1 text-xl font-bold text-risk-low tabular-nums">{{ overview.totals.completed_analyses }}</div>
         </div>
-        <div class="card px-4 py-3">
-          <div class="text-[11px] uppercase tracking-wide text-slate-500">Başarısız</div>
-          <div class="mt-1 text-xl font-semibold" :class="overview.totals.failed_analyses ? 'text-risk-crit' : 'text-slate-100'">
+        <div class="instrument-cell">
+          <div class="eyebrow">Başarısız</div>
+          <div class="mt-1 text-xl font-bold tabular-nums" :class="overview.totals.failed_analyses ? 'text-risk-crit' : 'text-slate-100'">
             {{ overview.totals.failed_analyses }}
           </div>
         </div>
@@ -268,7 +265,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
     <div class="grid grid-cols-1 gap-5">
       <section class="card p-5" aria-label="Son analizler">
         <div class="flex flex-wrap items-center gap-2 mb-4">
-          <h3 class="text-sm font-semibold text-slate-100 mr-auto">Son Analizler</h3>
+          <h3 class="text-sm font-bold tracking-wide text-slate-100 mr-auto">Son Analizler</h3>
           <label class="sr-only" for="dashboard-search">Analizlerde ara</label>
           <input
             id="dashboard-search"
@@ -326,27 +323,34 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         </div>
 
         <!-- results -->
-        <ul v-else class="divide-y divide-edge">
-          <li v-for="h in filteredHistory" :key="h.job_id">
-            <button type="button" class="w-full text-left py-2.5 flex items-center gap-3 hover:bg-surface-2/60 -mx-2 px-2 rounded-md transition-colors" @click="openJob(h)">
-              <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-2">
-                  <span class="text-sm text-slate-100 truncate">{{ basename(h.video_source) }}</span>
-                  <span class="text-[11px]" :class="statusMeta[h.status]?.tone ?? 'text-slate-400'">{{ statusMeta[h.status]?.label ?? h.status }}</span>
-                </div>
-                <div class="text-xs text-slate-500 truncate mt-0.5">{{ h.summary || 'Özet yok' }} · {{ fmtDateTime(h.created_at) }}</div>
-              </div>
-              <div class="text-right shrink-0 w-20">
-                <template v-if="h.risk_status === 'unknown' || h.risk_score == null">
-                  <span class="text-sm text-slate-500">Belirsiz</span>
-                </template>
-                <template v-else>
-                  <span class="text-sm font-semibold" :class="RISK_TEXT[riskTone(h.risk_level)]">{{ h.risk_score }} · {{ h.risk_level }}</span>
-                </template>
-              </div>
-            </button>
-          </li>
-        </ul>
+        <div v-else class="overflow-x-auto -mx-1">
+          <table class="op-table">
+            <thead>
+              <tr>
+                <th>Kaynak / Özet</th>
+                <th>Durum</th>
+                <th>Zaman</th>
+                <th class="text-right">Risk</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="h in filteredHistory" :key="h.job_id" data-clickable @click="openJob(h)">
+                <td class="min-w-0 max-w-0 w-full">
+                  <div class="text-sm text-slate-100 truncate">{{ basename(h.video_source) }}</div>
+                  <div class="text-xs text-slate-500 truncate mt-0.5">{{ h.summary || 'Özet yok' }}</div>
+                </td>
+                <td class="whitespace-nowrap">
+                  <span class="badge" :class="statusMeta[h.status]?.badge ?? 'badge-neutral'">{{ statusMeta[h.status]?.label ?? h.status }}</span>
+                </td>
+                <td class="whitespace-nowrap font-mono text-xs text-slate-500">{{ fmtDateTime(h.created_at) }}</td>
+                <td class="whitespace-nowrap text-right">
+                  <span v-if="h.risk_status === 'unknown' || h.risk_score == null" class="text-sm text-slate-500">Belirsiz</span>
+                  <span v-else class="text-sm font-bold tabular-nums" :class="RISK_TEXT[riskTone(h.risk_level)]">{{ h.risk_score }} <span class="font-normal text-xs uppercase tracking-wide">{{ h.risk_level }}</span></span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
 
         <p class="mt-4 text-[11px] text-slate-600">Kısayollar: <kbd class="font-mono">/</kbd> ara · <kbd class="font-mono">n</kbd> yeni analiz · <kbd class="font-mono">f</kbd> tam ekran · <kbd class="font-mono">r</kbd> yenile</p>
       </section>

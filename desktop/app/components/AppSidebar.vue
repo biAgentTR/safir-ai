@@ -10,20 +10,20 @@
 interface NavItem {
   label: string
   to: string
-  icon: string
+  glyph: string
 }
 
 const lowBudgetItems: NavItem[] = [
-  { label: 'Genel Bakış', to: '/', icon: '▤' },
-  { label: 'Yeni Analiz', to: '/new-analysis', icon: '＋' },
-  { label: 'Geçmiş', to: '/history', icon: '≡' },
-  { label: 'Raporlar', to: '/reports', icon: '▦' },
-  { label: 'SAFİR Asistan', to: '/assistant', icon: '◆' },
-  { label: 'Sistem Verileri', to: '/system', icon: '⛁' },
+  { label: 'Genel Bakış', to: '/', glyph: '▤' },
+  { label: 'Yeni Analiz', to: '/new-analysis', glyph: '＋' },
+  { label: 'Geçmiş', to: '/history', glyph: '≡' },
+  { label: 'Raporlar', to: '/reports', glyph: '▦' },
+  { label: 'SAFİR Asistan', to: '/assistant', glyph: '◆' },
+  { label: 'Sistem Verileri', to: '/system', glyph: '⛁' },
 ]
 
 const vlmDirectItems: NavItem[] = [
-  { label: 'VLM Direct Analiz', to: '/vlm-direct', icon: '◆' },
+  { label: 'VLM Direct Analiz', to: '/vlm-direct', glyph: '◆' },
 ]
 
 const { mode } = useAnalysisMode()
@@ -42,28 +42,31 @@ function onNavClick(to: string) {
 
 <template>
   <aside class="w-56 shrink-0 bg-surface-1 border-r border-edge flex flex-col">
-    <div class="h-14 flex items-center gap-2 px-4 border-b border-edge">
-      <img src="~/assets/images/logo.png" alt="SAFİR" class="w-7 h-7 object-contain shrink-0" />
-      <span class="text-lg font-semibold tracking-[0.2em] text-slate-100">SAFİR</span>
+    <div class="h-14 flex items-center gap-2.5 px-4 border-b border-edge">
+      <img src="~/assets/images/logo.png" alt="SAFİR" class="w-6 h-6 object-contain shrink-0" />
+      <div class="min-w-0">
+        <div class="text-sm font-bold tracking-[0.24em] text-slate-100 leading-none">SAFİR</div>
+        <div class="text-[9px] tracking-wide text-slate-600 leading-none mt-1">SAHA ANALİZ SİSTEMİ</div>
+      </div>
     </div>
 
-    <nav class="flex-1 px-2 py-3 space-y-1">
+    <nav class="flex-1 px-2 py-3 space-y-0.5">
       <NuxtLink
         v-for="item in items"
         :key="item.to"
         :to="item.to"
-        class="group flex items-center gap-3 rounded-md px-3 py-2 text-sm text-slate-300 hover:bg-surface-2 transition-colors"
-        active-class="bg-accent-soft text-white"
+        class="group relative flex items-center gap-3 rounded-md pl-3 pr-3 py-2 text-sm text-slate-400 border-l-2 border-transparent hover:text-slate-200 hover:bg-surface-2/70 transition-colors duration-150"
+        active-class="!border-accent !text-slate-100 bg-surface-2"
         @click="onNavClick(item.to)"
       >
-        <span class="w-4 text-center text-slate-400 group-hover:text-slate-200">{{ item.icon }}</span>
+        <span class="w-4 text-center text-slate-600 group-hover:text-slate-400 [.router-link-active_&]:text-accent">{{ item.glyph }}</span>
         <span>{{ item.label }}</span>
       </NuxtLink>
     </nav>
 
-    <div class="px-4 py-3 border-t border-edge text-[11px] text-slate-500">
-      <div>TEKNOFEST 2026</div>
-      <div class="text-slate-600">Saha Analiz ve Farkındalık İçin Yapay Zekâ Destekli Karar Sistemi</div>
+    <div class="px-4 py-3 border-t border-edge text-[10px] leading-relaxed text-slate-600">
+      <div class="text-slate-500 tracking-wide">TEKNOFEST 2026</div>
+      <div>Saha Analiz ve Farkındalık İçin Yapay Zekâ Destekli Karar Sistemi</div>
     </div>
   </aside>
 </template>

@@ -63,22 +63,19 @@ onBeforeUnmount(() => stream.stop())
     <div class="flex items-center gap-4">
       <NuxtLink :to="isHistory ? '/history' : '/new-analysis'" class="btn-ghost">← {{ isHistory ? 'Geçmiş' : 'Yeni' }}</NuxtLink>
       <div class="min-w-0">
-        <div class="text-[11px] uppercase tracking-wide text-slate-500">İŞ KİMLİĞİ</div>
+        <div class="eyebrow">İş Kimliği</div>
         <div class="font-mono text-sm text-slate-300 truncate">{{ jobId }}</div>
       </div>
       <div class="ml-auto flex items-center gap-4 text-sm">
         <!-- HISTORY badge -->
-        <span
-          v-if="isHistory"
-          class="text-[11px] px-2 py-0.5 rounded border border-edge bg-surface-2 text-slate-300 uppercase tracking-wide"
-        >GEÇMİŞ ANALİZ</span>
+        <span v-if="isHistory" class="badge-neutral">Geçmiş Analiz</span>
         <div class="flex items-center gap-2">
-          <span class="w-2 h-2 rounded-full" :class="running ? 'bg-accent animate-pulse' : overall === 'done' ? 'bg-risk-low' : overall === 'error' ? 'bg-risk-crit' : 'bg-slate-600'" />
-          <span class="uppercase tracking-wide text-xs" :class="running ? 'text-accent' : 'text-slate-300'">
-            {{ running ? 'ANALİZ ÇALIŞIYOR' : overall === 'done' ? 'TAMAMLANDI' : overall === 'error' ? 'HATA' : 'KUYRUKTA' }}
+          <span class="status-dot" :class="running ? 'bg-accent animate-pulse' : overall === 'done' ? 'bg-risk-low' : overall === 'error' ? 'bg-risk-crit' : 'bg-slate-600'" />
+          <span class="uppercase tracking-wide text-xs font-semibold" :class="running ? 'text-accent' : 'text-slate-300'">
+            {{ running ? 'Analiz Çalışıyor' : overall === 'done' ? 'Tamamlandı' : overall === 'error' ? 'Hata' : 'Kuyrukta' }}
           </span>
         </div>
-        <span v-if="!isHistory" class="text-xs text-slate-500">{{ connLabel }} · {{ store.completedCount }}/7</span>
+        <span v-if="!isHistory" class="text-xs text-slate-500 font-mono">{{ connLabel }} · {{ store.completedCount }}/7</span>
       </div>
     </div>
 

@@ -64,7 +64,7 @@ async function submit() {
   <div class="max-w-3xl mx-auto px-6 py-8">
     <form class="card p-6 space-y-6" @submit.prevent="submit">
       <div>
-        <h2 class="text-lg font-semibold text-slate-100">Yeni Analiz</h2>
+        <h2 class="text-lg font-bold tracking-tight text-slate-100">Yeni Analiz</h2>
         <p class="mt-1 text-sm text-slate-500">
           Kaynağı ve parametreleri belirleyip analizi başlatın. İstek doğrudan
           <code class="text-slate-400">POST /analyze/jobs</code> uç noktasına gider.

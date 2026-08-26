@@ -27,10 +27,22 @@ export default <Partial<Config>>{
           2: token('--c-surface-2'),
           3: token('--c-surface-3'),
         },
-        edge: token('--c-edge'),
+        edge: {
+          DEFAULT: token('--c-edge'),
+          strong: token('--c-edge-strong'),
+        },
+        // Brand/interactive accent — a controlled steel-teal, deliberately NOT
+        // the generic blue/purple "AI SaaS" hue. Buttons, active nav, focus
+        // rings, links, progress. See main.css for the actual values.
         accent: {
           DEFAULT: token('--c-accent'),
           soft: token('--c-accent-soft'),
+        },
+        // Semantic "informational" blue — reserved for neutral info tags/
+        // banners (never for interactive elements — that's `accent` above).
+        info: {
+          DEFAULT: token('--c-info'),
+          soft: token('--c-info-soft'),
         },
         risk: {
           low: token('--c-risk-low'),
@@ -52,6 +64,14 @@ export default <Partial<Config>>{
       },
       fontFamily: {
         mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+      },
+      // Tightened, deliberately un-"bubbly" radius scale — an industrial
+      // control surface reads sharper than a consumer SaaS app. Overriding
+      // these two keys retunes every existing rounded-md/rounded-lg call
+      // site app-wide with no per-component edits.
+      borderRadius: {
+        md: '5px',
+        lg: '7px',
       },
     },
   },

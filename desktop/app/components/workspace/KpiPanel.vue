@@ -25,12 +25,30 @@ const evidenceCount = computed(
 </script>
 
 <template>
-  <div v-if="stats" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-    <MetricCell label="Taranan Kare" :value="stats.total_frames_scanned ?? 0" />
-    <MetricCell label="Değerlendirilen Kare" :value="stats.sampled_frames_evaluated ?? 0" />
-    <MetricCell label="Kanıt Karesi" :value="evidenceCount" />
-    <MetricCell label="GPU Tasarrufu" :value="`%${(stats.gpu_savings_ratio_pct ?? 0).toFixed?.(1) ?? stats.gpu_savings_ratio_pct}`" />
-    <MetricCell label="Süre" :value="`${(stats.elapsed_sec ?? 0)}s`" />
-    <MetricCell label="ms / kare" :value="msPerFrame.toFixed(1)" />
+  <div v-if="stats" class="instrument-strip">
+    <div class="instrument-cell">
+      <div class="eyebrow">Taranan Kare</div>
+      <div class="mt-0.5 text-lg font-semibold text-slate-100 tabular-nums">{{ stats.total_frames_scanned ?? 0 }}</div>
+    </div>
+    <div class="instrument-cell">
+      <div class="eyebrow">Değerlendirilen</div>
+      <div class="mt-0.5 text-lg font-semibold text-slate-100 tabular-nums">{{ stats.sampled_frames_evaluated ?? 0 }}</div>
+    </div>
+    <div class="instrument-cell">
+      <div class="eyebrow">Kanıt Karesi</div>
+      <div class="mt-0.5 text-lg font-semibold text-slate-100 tabular-nums">{{ evidenceCount }}</div>
+    </div>
+    <div class="instrument-cell">
+      <div class="eyebrow">GPU Tasarrufu</div>
+      <div class="mt-0.5 text-lg font-semibold text-accent tabular-nums">%{{ (stats.gpu_savings_ratio_pct ?? 0).toFixed?.(1) ?? stats.gpu_savings_ratio_pct }}</div>
+    </div>
+    <div class="instrument-cell">
+      <div class="eyebrow">Süre</div>
+      <div class="mt-0.5 text-lg font-semibold text-slate-100 tabular-nums font-mono">{{ stats.elapsed_sec ?? 0 }}s</div>
+    </div>
+    <div class="instrument-cell">
+      <div class="eyebrow">ms / Kare</div>
+      <div class="mt-0.5 text-lg font-semibold text-slate-100 tabular-nums font-mono">{{ msPerFrame.toFixed(1) }}</div>
+    </div>
   </div>
 </template>

@@ -178,7 +178,7 @@ onMounted(() => {
 <template>
   <div class="max-w-6xl mx-auto px-6 py-8">
     <div class="mb-5">
-      <h2 class="text-xl font-semibold text-slate-100">Sistem Verileri</h2>
+      <h2 class="text-xl font-bold tracking-tight text-slate-100">Sistem Verileri</h2>
       <p class="mt-1 text-sm text-slate-500">
         SAFİR'in kalıcı olarak sakladığı gerçek veriler — salt okunur. SQL çalıştırma veya veri değiştirme imkanı yoktur.
       </p>

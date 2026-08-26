@@ -52,7 +52,7 @@ onMounted(() => load(true))
   <div class="max-w-5xl mx-auto px-6 py-8">
     <div class="flex items-center justify-between mb-5">
       <div>
-        <h2 class="text-xl font-semibold text-slate-100">Raporlar</h2>
+        <h2 class="text-xl font-bold tracking-tight text-slate-100">Raporlar</h2>
         <p class="text-sm text-slate-500 mt-1">Tamamlanmış analizlerin raporları — özet, risk, zaman çizelgesi, kanıt kareleri ve dışa aktarma tek ekranda.</p>
       </div>
       <NuxtLink to="/history" class="btn-ghost">Tüm Geçmiş →</NuxtLink>

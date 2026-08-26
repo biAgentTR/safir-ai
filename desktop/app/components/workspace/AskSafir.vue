@@ -84,8 +84,11 @@ function useSuggestion(s: string) {
     <div class="flex items-center gap-2 mb-3">
       <h3 class="text-sm font-semibold text-slate-100 tracking-wide">SAFİR'e Sor</h3>
       <span class="text-[11px] text-slate-500">— analiz &amp; İSG mevzuatı bağlamlı asistan</span>
-      <span v-if="jobId" class="ml-auto flex items-center gap-1.5 text-[10px] font-mono text-slate-600">
-        <span title="Sorular önce doğrudan videoya sorulur (EVREN önbellekleme avantajı)">🎥</span>
+      <span
+        v-if="jobId"
+        class="ml-auto text-[10px] font-mono text-slate-600"
+        title="Sorular önce doğrudan videoya sorulur (EVREN önbellekleme avantajı)"
+      >
         job: {{ jobId.slice(0, 8) }}
       </span>
     </div>

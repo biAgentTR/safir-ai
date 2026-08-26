@@ -47,12 +47,12 @@ function url(id: string) {
         class="btn-ghost !border-risk-low/40 !text-risk-low"
         :disabled="store.feedback.state === 'pending'"
         @click="store.submitFeedback('true_positive')"
-      >✅ Doğru İhbar</button>
+      >Doğru İhbar</button>
       <button
         class="btn-ghost !border-risk-crit/40 !text-risk-crit"
         :disabled="store.feedback.state === 'pending'"
         @click="store.submitFeedback('false_positive')"
-      >❌ Yanlış Alarm</button>
+      >Yanlış Alarm</button>
       <span
         v-if="store.feedback.message"
         class="text-xs"

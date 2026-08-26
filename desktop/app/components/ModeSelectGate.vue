@@ -45,7 +45,7 @@ const options: { mode: AnalysisMode; title: string; blurb: string; points: strin
     <div class="w-full max-w-3xl">
       <div class="text-center mb-8">
         <img src="~/assets/images/logo.png" alt="SAFİR" class="w-14 h-14 object-contain mx-auto mb-4" />
-        <h1 class="text-2xl font-semibold text-slate-100">Analiz Modu Seç</h1>
+        <h1 class="text-2xl font-bold tracking-tight text-slate-100">Analiz Modu Seç</h1>
         <p class="mt-2 text-sm text-slate-500 max-w-md mx-auto">
           Bu seçimi istediğiniz zaman uygulama içinden (üst çubuktaki mod anahtarından) değiştirebilirsiniz.
         </p>

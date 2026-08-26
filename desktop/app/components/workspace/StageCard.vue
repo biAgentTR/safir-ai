@@ -316,8 +316,8 @@ function ms(v: number | null): string {
 
       <!-- ============ DECISION (Agent'in TASLAK önerisi — resmi risk_score DEĞİL) ============ -->
       <div v-else-if="decision" class="space-y-5">
-        <div class="rounded-md border border-accent/30 bg-accent/10 px-3 py-2 text-xs text-slate-300">
-          🤖 Bu, Agent'ın (LLM) ürettiği <span class="font-medium">taslak öneridir</span> (backend'de
+        <div class="rounded-md border border-info/30 bg-info/10 px-3 py-2 text-xs text-slate-300">
+          Bu, Agent'ın (LLM) ürettiği <span class="font-medium">taslak öneridir</span> (backend'de
           <code class="text-slate-200">llm_proposed_score</code> olarak saklanır) — SAFİR'in
           <span class="font-medium">resmi, deterministik risk kararı DEĞİLDİR</span>. Nihai
           <code class="text-slate-200">risk_score</code>/<code class="text-slate-200">risk_level</code>,

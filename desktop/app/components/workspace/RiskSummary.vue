@@ -16,24 +16,38 @@ const headline = computed(() => {
   if (t === 'mid') return 'ORTA RİSK'
   return 'DÜŞÜK RİSK'
 })
+
+// Tone-colored top rule on the status band. Built from the same CSS custom
+// properties as the Tailwind risk-* classes (see main.css) via inline style —
+// deliberately NOT a dynamically-built Tailwind class name, which the JIT
+// content scanner can't see (it only picks up literal class strings).
+const RISK_VAR: Record<string, string> = {
+  low: '--c-risk-low',
+  mid: '--c-risk-mid',
+  high: '--c-risk-high',
+  crit: '--c-risk-crit',
+  unknown: '--c-slate-500',
+}
+const bandBorderStyle = computed(() => ({ borderTopColor: `rgb(var(${RISK_VAR[tone.value]}))` }))
 </script>
 
 <template>
-  <div v-if="store.report" class="space-y-3">
-    <!-- critical flashing banner (>=70), mirrors Streamlit -->
+  <div v-if="store.report" class="space-y-2.5">
+    <!-- critical banner (>=70) — a controlled pulse on the accent bar only, not the whole block -->
     <div
       v-if="store.isCritical"
-      class="rounded-md border border-risk-crit/50 bg-risk-crit/15 px-4 py-2.5 text-sm font-medium text-risk-crit flex items-center gap-2 animate-pulse"
+      class="relative overflow-hidden rounded-md border border-risk-crit/40 bg-risk-crit/10 pl-4 pr-4 py-2.5 text-sm font-medium text-risk-crit flex items-center gap-2"
     >
-      🚨 KRİTİK RİSK TESPİT EDİLDİ — otomatik saha alarmı tetiklendi.
+      <span class="absolute inset-y-0 left-0 w-1 bg-risk-crit animate-pulse motion-reduce:animate-none" />
+      KRİTİK RİSK TESPİT EDİLDİ — otomatik saha alarmı tetiklendi.
     </div>
 
     <!-- unknown-risk banner: analysis failed to produce a reliable decision -->
     <div
       v-if="isUnknownRisk"
-      class="rounded-md border border-slate-500/50 bg-slate-500/10 px-4 py-2.5 text-sm font-medium text-slate-300 flex items-center gap-2"
+      class="rounded-md border border-slate-600/50 bg-slate-500/10 px-4 py-2.5 text-sm font-medium text-slate-300"
     >
-      ⚠️ Risk değerlendirilemedi — analiz güvenilir bir karar üretemedi. Manuel inceleme gerekli.
+      Risk değerlendirilemedi — analiz güvenilir bir karar üretemedi. Manuel inceleme gerekli.
     </div>
 
     <!-- Human-on-the-Loop: pending_review - risk_status belirsiz VEYA deterministik
@@ -41,12 +55,10 @@ const headline = computed(() => {
          ACIK kararini bekler (bkz. src/decision/escalation.py). -->
     <div
       v-if="store.needsHumanReview"
-      class="rounded-md border border-amber-500/50 bg-amber-500/10 px-4 py-2.5 text-sm font-medium text-amber-300 flex flex-col gap-2"
+      class="rounded-md border border-risk-mid/40 bg-risk-mid/10 px-4 py-2.5 text-sm font-medium text-risk-mid flex flex-col gap-2"
     >
-      <div class="flex items-center gap-2">
-        🧑‍✈️ Operatör onayı bekleniyor — bu durumda hiçbir otomatik bildirim/alarm tetiklenmedi.
-      </div>
-      <p v-if="store.report?.risk_explanation" class="text-xs font-normal text-amber-200/80">
+      <div>Operatör onayı bekleniyor — bu durumda hiçbir otomatik bildirim/alarm tetiklenmedi.</div>
+      <p v-if="store.report?.risk_explanation" class="text-xs font-normal text-slate-400">
         {{ store.report.risk_explanation }}
       </p>
       <div class="flex flex-col sm:flex-row gap-2 mt-1">
@@ -62,15 +74,16 @@ const headline = computed(() => {
       </p>
     </div>
 
-    <div class="card p-5 flex flex-col md:flex-row md:items-center gap-5">
+    <!-- primary status band: the #1 thing an operator must read in 2-3s -->
+    <div class="panel-band p-5 flex flex-col md:flex-row md:items-stretch gap-5" :style="bandBorderStyle">
       <div class="flex items-center gap-5">
-        <div class="text-center">
-          <div class="text-5xl font-bold leading-none" :class="RISK_TEXT[tone]">{{ isUnknownRisk ? '—' : store.report.risk_score }}</div>
-          <div class="mt-1 text-xs text-slate-500">{{ isUnknownRisk ? 'belirsiz' : '/ 100' }}</div>
+        <div class="text-center shrink-0 w-20">
+          <div class="text-5xl font-bold leading-none tabular-nums" :class="RISK_TEXT[tone]">{{ isUnknownRisk ? '—' : store.report.risk_score }}</div>
+          <div class="mt-1 text-[11px] uppercase tracking-wide text-slate-500">{{ isUnknownRisk ? 'belirsiz' : '/ 100' }}</div>
         </div>
-        <div>
-          <div class="text-lg font-semibold tracking-wide" :class="RISK_TEXT[tone]">{{ headline }}</div>
-          <div class="text-sm text-slate-400 mt-0.5">{{ store.report.risk_level }}</div>
+        <div class="border-l border-edge pl-5">
+          <div class="text-lg font-bold tracking-wide" :class="RISK_TEXT[tone]">{{ headline }}</div>
+          <div class="text-xs uppercase tracking-wide text-slate-500 mt-0.5">{{ store.report.risk_level }}</div>
           <p class="mt-2 text-sm text-slate-300 max-w-xl">
             {{ store.report.recommended_action || 'Operatör değerlendirmesi önerilir.' }}
           </p>
@@ -78,15 +91,16 @@ const headline = computed(() => {
       </div>
 
       <!-- acknowledge (only for auto-dispatched alerts) -->
-      <div v-if="store.hasAutoAlert" class="md:ml-auto md:w-72 shrink-0 space-y-2">
-        <div class="text-[11px] text-slate-500 font-mono truncate">alert_id: {{ store.report.alert_id }}</div>
+      <div v-if="store.hasAutoAlert" class="md:ml-auto md:w-72 shrink-0 md:border-l md:border-edge md:pl-5 space-y-2">
+        <div class="eyebrow">Uyarı Kimliği</div>
+        <div class="text-xs text-slate-500 font-mono truncate -mt-1">{{ store.report.alert_id }}</div>
         <input v-model="ackNote" class="field-input" placeholder="Operatör denetim notu (opsiyonel)" />
         <button
           class="btn-primary w-full"
           :disabled="store.ack.state === 'pending' || store.ack.state === 'ok'"
           @click="store.acknowledgeAlert(ackNote)"
         >
-          {{ store.ack.state === 'ok' ? '✓ Onaylandı' : store.ack.state === 'pending' ? 'Gönderiliyor…' : '👁 Alarmı Denetle / Onayla' }}
+          {{ store.ack.state === 'ok' ? '✓ Onaylandı' : store.ack.state === 'pending' ? 'Gönderiliyor…' : 'Alarmı Denetle / Onayla' }}
         </button>
         <p v-if="store.ack.message" class="text-xs" :class="store.ack.state === 'error' ? 'text-risk-crit' : 'text-risk-low'">
           {{ store.ack.message }}
