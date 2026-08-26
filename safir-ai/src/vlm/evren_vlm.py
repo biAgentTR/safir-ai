@@ -66,6 +66,16 @@ logger = logging.getLogger(__name__)
 # (aksi halde baglanti modelden ONCE kesilir, sonuc GORUNTULENEMEZ).
 _EVREN_VIDEO_TIMEOUT_SEC = 1800.0
 
+# Teshis (2026-08-26): tek bir float timeout httpx'te connect/write/read/pool
+# asamalarinin HEPSINE ayni deger olarak uygulanir - bu, "EVREN gercekten
+# meşgul/yavas" ile "baglanti hic kurulamadi/agda bir sorun var" durumlarini
+# AYIRT EDILEMEZ hale getirir (ikisi de operatore ayni "sessiz 30 dakika"
+# gibi gorunur). Connect/pool KISA tutulur (baglanti kurulamiyorsa saniyeler
+# icinde HATA verir, 30 dakika beklemez); write/read UZUN kalir (buyuk video
+# gövdesinin yuklenmesi VE EVREN'in fiilen uzun surebilen isleme suresi icin
+# - dokumantasyonun izin verdigi tam butce).
+_EVREN_VIDEO_TIMEOUT = httpx.Timeout(connect=20.0, write=_EVREN_VIDEO_TIMEOUT_SEC, read=_EVREN_VIDEO_TIMEOUT_SEC, pool=20.0)
+
 _VIDEO_MODE_NOTE = (
     "\n\nNOT: Bu istekte ayri evidence kareleri YOKTUR; tek bir video "
     "dogrudan gonderilmektedir. `evidence_ids` alanini bu nedenle HER ZAMAN "
@@ -173,16 +183,31 @@ class EvrenVLM(BaseVLM):
         }
         apply_extra_body(payload, self._endpoint.extra_body)
         logger.info(
-            "EVREN VLM video cagrisi yapiliyor: video=%s model=%s", video_path, self.model_name
+            "EVREN VLM video cagrisi yapiliyor: video=%s model=%s video_b64_mb=%.1f",
+            video_path,
+            self.model_name,
+            len(video_b64) / (1024 * 1024),
         )
 
         started_at = time.perf_counter()
-        response = httpx.post(
-            f"{self.base_url}/chat/completions",
-            json=payload,
-            headers=self._endpoint.auth_headers(),
-            timeout=_EVREN_VIDEO_TIMEOUT_SEC,
-        )
+        try:
+            response = httpx.post(
+                f"{self.base_url}/chat/completions",
+                json=payload,
+                headers=self._endpoint.auth_headers(),
+                timeout=_EVREN_VIDEO_TIMEOUT,
+            )
+        except httpx.HTTPError as exc:
+            elapsed = time.perf_counter() - started_at
+            logger.error(
+                "EVREN VLM video cagrisi basarisiz (video=%s, %.1fs sonra): %s",
+                video_path,
+                elapsed,
+                exc,
+            )
+            raise
+        elapsed = time.perf_counter() - started_at
+        logger.info("EVREN VLM video cagrisi tamamlandi: video=%s sure=%.1fs", video_path, elapsed)
         response.raise_for_status()
         data = response.json()
         try:
@@ -321,11 +346,24 @@ class EvrenVLM(BaseVLM):
         apply_extra_body(payload, self._endpoint.extra_body)
         logger.info("EVREN video-QA cagrisi yapiliyor: video=%s model=%s", video_source, self.model_name)
 
-        response = httpx.post(
-            f"{self.base_url}/chat/completions",
-            json=payload,
-            headers=self._endpoint.auth_headers(),
-            timeout=_EVREN_VIDEO_TIMEOUT_SEC,
+        started_at = time.perf_counter()
+        try:
+            response = httpx.post(
+                f"{self.base_url}/chat/completions",
+                json=payload,
+                headers=self._endpoint.auth_headers(),
+                timeout=_EVREN_VIDEO_TIMEOUT,
+            )
+        except httpx.HTTPError as exc:
+            elapsed = time.perf_counter() - started_at
+            logger.error(
+                "EVREN video-QA cagrisi basarisiz (video=%s, %.1fs sonra): %s", video_source, elapsed, exc
+            )
+            raise
+        logger.info(
+            "EVREN video-QA cagrisi tamamlandi: video=%s sure=%.1fs",
+            video_source,
+            time.perf_counter() - started_at,
         )
         response.raise_for_status()
         data = response.json()
