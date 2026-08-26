@@ -201,6 +201,30 @@ export interface VlmStageData {
   vlm_status: string
 }
 
+/**
+ * Step-by-step VLM progress (src/vlm/evren_vlm.py::VlmProgressCallback via
+ * src/main.py::run's _on_vlm_progress). Emitted as one or more `status:
+ * "running"` trace events on the SAME "vlm" stage key, BEFORE the final
+ * `VlmStageData` "completed"/"failed" event — e.g. while EVREN splits a long
+ * video into chunks and sends each one separately. `phase` drives which
+ * other fields are present; treat unknown phases as "still working" (the
+ * `summary` string is always safe to show regardless).
+ */
+export interface VlmProgressData {
+  progress: {
+    phase: 'chunking' | 'chunk_start' | 'chunk_done' | 'chunk_failed' | string
+    total_chunks?: number
+    chunk_index?: number
+    range_label?: string | null
+    elapsed_sec?: number
+    video_mb?: number
+    error?: string
+  }
+}
+
+/** The "vlm" stage's trace `data` is either a progress tick or the final result — narrow on `'progress' in data`. */
+export type VlmStageEventData = VlmStageData | VlmProgressData
+
 /** decision stage — NOTE: raw_response is intentionally absent server-side. */
 export interface Decision {
   risk_score: number | null

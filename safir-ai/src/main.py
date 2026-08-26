@@ -83,6 +83,12 @@ OnStageCallback = Callable[[str, int, int], None]
 # (orn. Jupyter demo), pipeline davranisini DEGISTIRMEZ. Varsayilan None -> sifir maliyet.
 TraceCallback = Callable[[str, Dict[str, object]], None]
 
+# `stage_vlm` icin ADIM-ADIM (video parcalanirken/gonderilirken) ilerleme
+# kancasi - bkz. `src/vlm/evren_vlm.py::VlmProgressCallback`. `run()` bunu
+# `TraceCallback`e (stage="vlm", status="running") baglayarak operatore
+# canli gorunurluk saglar; varsayilan None -> sifir maliyet.
+VlmProgressCallback = Callable[[Dict[str, object]], None]
+
 # `TemporalEvent.end_timestamp`i bu pipeline cagrisinin `latest_timestamp`ina
 # esitlerken kullanilan tolerans (kayan nokta karsilastirmasi icin).
 _CURRENT_CALL_TIMESTAMP_TOLERANCE = 1e-6
@@ -951,7 +957,16 @@ class SafirPipeline:
         if on_stage:
             on_stage(*STAGE_VLM)
 
-        vlm_response = self.stage_vlm(video_source, evidence_frames, user_prompt)
+        def _on_vlm_progress(progress: Dict[str, object]) -> None:
+            # Ayni "vlm" asama anahtarinda, status="running" ile BIRDEN FAZLA
+            # trace olayi yayinlanir (nihai "completed" olayindan ONCE) -
+            # `PipelineTraceCollector`/SSE/`JobState.trace_events` bunu zaten
+            # DESTEKLER (bir asama icin tek olay ZORUNLULUGU yoktur); operator
+            # video parcalara bolunup gonderilirken ADIM ADIM ilerlemeyi
+            # (ör. "Parca 1/2 gonderiliyor") canli gorur.
+            _emit("vlm", {"progress": progress})
+
+        vlm_response = self.stage_vlm(video_source, evidence_frames, user_prompt, on_progress=_on_vlm_progress)
         _emit("vlm", {"vlm_response": vlm_response, "evidence_frames": evidence_frames, "user_prompt": user_prompt})
 
         if on_stage:
@@ -1063,7 +1078,11 @@ class SafirPipeline:
         return sampler, evidence_frames
 
     def stage_vlm(
-        self, video_source: str, evidence_frames: List[EvidenceFrame], user_prompt: str
+        self,
+        video_source: str,
+        evidence_frames: List[EvidenceFrame],
+        user_prompt: str,
+        on_progress: Optional[VlmProgressCallback] = None,
     ) -> VLMResponse:
         """03: VLM gorsel anlama + OLAY KUMELEME - video DOGRUDAN VLM'e gonderilir.
 
@@ -1074,9 +1093,25 @@ class SafirPipeline:
         `stage_events`e tasinir - VLM girdisi olarak KULLANILMAZ. VLM
         cagrisi basarisiz olursa eski (geriye-donuk uyumlu) `[HATA]` degrade
         formatina dusulur; risk ASLA `0`/basarili gibi yorumlanmaz.
+
+        Args:
+            on_progress: Opsiyonel adim-adim ilerleme kancasi (`EvrenVLM`nin
+                video-parcalama/gonderim ilerlemesini rapor eder - bkz.
+                `src/vlm/evren_vlm.py::VlmProgressCallback`); `run()` bunu
+                pipeline'in GERCEK trace/SSE kancasina baglar, boylece
+                operator video parcalanip gonderilirken ADIM ADIM ilerlemeyi
+                (Jenerik `PipelineTimeline`/`StageCard` uzerinden) canli gorur.
+                Yalnizca `analyze_video` implemente eden saglayicilarda (EVREN)
+                etkilidir; digerleri sessizce yok sayar (`getattr` ile guvenli cagri).
         """
         try:
-            response = self._vlm.analyze_video(video_source, evidence_frames, prompt=user_prompt)
+            analyze = getattr(self._vlm, "analyze_video")
+            try:
+                response = analyze(video_source, evidence_frames, prompt=user_prompt, on_progress=on_progress)
+            except TypeError:
+                # Geriye-donuk uyumluluk: `on_progress` desteklemeyen bir
+                # implementasyon (ör. testlerdeki eski sahte/mock VLM).
+                response = analyze(video_source, evidence_frames, prompt=user_prompt)
         except Exception as exc:  # noqa: BLE001 - beklenmedik hata da degraded rapora tasinir
             logger.exception("VLM video analizi basarisiz; degraded raporla devam ediliyor.")
             return VLMResponse(

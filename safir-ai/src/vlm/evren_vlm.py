@@ -44,7 +44,7 @@ from __future__ import annotations
 import base64
 import logging
 import time
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 
@@ -90,11 +90,33 @@ def _format_mmss(seconds: float) -> str:
     return f"{total // 60:02d}:{total % 60:02d}"
 
 
+# Video analizi sirasinda ADIM ADIM (kullaniciya gosterilebilir) ilerleme
+# bildirimi - "video parcalara ayrilirken/gonderilirken hicbir sey
+# gorunmuyor" geri bildiriminin dogrudan cevabi. `on_progress`, `stage_vlm`
+# (src/main.py) tarafindan pipeline'in GERCEK trace/SSE kancasina baglanir;
+# burasi (src/vlm) trace/JobState kavramindan TAMAMEN habersizdir - yalnizca
+# duz bir dict callback'i cagirir (ayri katman sorumluluk ayrimi korunur).
+# `phase` degerleri: "chunking" (video parcalara bolunuyor) | "chunk_start"
+# (bir parca EVREN'e gonderiliyor) | "chunk_done" (parca basarili) |
+# "chunk_failed" (parca basarisiz, digerleri devam eder).
+VlmProgressCallback = Callable[[Dict[str, Any]], None]
+
+
+def _report(on_progress: Optional[VlmProgressCallback], **fields: Any) -> None:
+    """`on_progress` verilmisse cagirir; verilmemisse sessizce no-op (varsayilan davranis DEGISMEZ)."""
+    if on_progress is not None:
+        on_progress(fields)
+
+
 class EvrenVLM(BaseVLM):
     """TEKNOFEST EVREN yarisma servisinin video-tabanli VLM ucunu kullanan implementasyon."""
 
     def analyze_video(
-        self, video_source: str, evidence_frames: List[EvidenceFrame], prompt: str
+        self,
+        video_source: str,
+        evidence_frames: List[EvidenceFrame],
+        prompt: str,
+        on_progress: Optional[VlmProgressCallback] = None,
     ) -> VLMResponse:
         """Videoyu EVREN'e gonderip olay kumeleme + Turkce gozlem uretir (gerekirse parcalara bolerek).
 
@@ -106,6 +128,9 @@ class EvrenVLM(BaseVLM):
                 icin alinir; gercek EVREN cagrisinda KULLANILMAZ (EVREN
                 videoyu kendisi analiz eder, sampler kareleri gerekmez).
             prompt: Analiz odagini belirten kullanici istemi.
+            on_progress: Opsiyonel adim-adim ilerleme bildirimi (bkz. modul
+                seviyesi `VlmProgressCallback` dokustringi). `None` ise
+                (varsayilan) davranis TAMAMEN degismez.
 
         Returns:
             EVREN tarafindan uretilen, kumelenmis olaylari ve dogal dil
@@ -127,29 +152,42 @@ class EvrenVLM(BaseVLM):
 
         chunk_duration_sec = getattr(self._endpoint, "chunk_duration_sec", None) or 0.0
         if chunk_duration_sec <= 0:
-            return self._send_single_video(video_source, prompt)
+            return self._send_single_video(video_source, prompt, on_progress, 1, 1)
 
         chunks = split_video_into_chunks(video_source, chunk_duration_sec)
         if len(chunks) == 1:
-            return self._send_single_video(video_source, prompt)
+            return self._send_single_video(video_source, prompt, on_progress, 1, 1)
 
+        _report(on_progress, phase="chunking", total_chunks=len(chunks))
         logger.info(
             "EVREN VLM: video %d parcaya bolundu (chunk_duration_sec=%.1f), her parca AYRI istekte gonderilecek.",
             len(chunks),
             chunk_duration_sec,
         )
         try:
-            return self._analyze_video_chunks(chunks, prompt)
+            return self._analyze_video_chunks(chunks, prompt, on_progress)
         finally:
             cleanup_chunks(chunks)
 
-    def _send_single_video(self, video_path: str, prompt: str) -> VLMResponse:
+    def _send_single_video(
+        self,
+        video_path: str,
+        prompt: str,
+        on_progress: Optional[VlmProgressCallback] = None,
+        chunk_index: int = 1,
+        total_chunks: int = 1,
+        range_label: Optional[str] = None,
+    ) -> VLMResponse:
         """Tek bir video dosyasini (TAM veya bir parcasini) DOGRUDAN, tek istekte EVREN'e gonderir.
 
         Args:
             video_path: Gonderilecek `.mp4` dosyasinin yolu (tam video veya
                 `video_chunker`in urettigi bir parca).
             prompt: Analiz odagini belirten kullanici istemi.
+            on_progress: Bkz. `analyze_video`. `chunk_index`/`total_chunks`/
+                `range_label`, bu tekil istegin genel video icindeki yerini
+                (kullanici arayuzunde "Parca 1/2" gibi gosterilmek uzere)
+                bildirir - tek-istekli (bolunmemis) videoda 1/1'dir.
 
         Returns:
             Bu tekil istegin `VLMResponse`i - `structured_events`teki
@@ -182,11 +220,20 @@ class EvrenVLM(BaseVLM):
             "temperature": self._endpoint.temperature,
         }
         apply_extra_body(payload, self._endpoint.extra_body)
+        video_b64_mb = len(video_b64) / (1024 * 1024)
         logger.info(
             "EVREN VLM video cagrisi yapiliyor: video=%s model=%s video_b64_mb=%.1f",
             video_path,
             self.model_name,
-            len(video_b64) / (1024 * 1024),
+            video_b64_mb,
+        )
+        _report(
+            on_progress,
+            phase="chunk_start",
+            chunk_index=chunk_index,
+            total_chunks=total_chunks,
+            range_label=range_label,
+            video_mb=round(video_b64_mb, 1),
         )
 
         started_at = time.perf_counter()
@@ -205,9 +252,26 @@ class EvrenVLM(BaseVLM):
                 elapsed,
                 exc,
             )
+            _report(
+                on_progress,
+                phase="chunk_failed",
+                chunk_index=chunk_index,
+                total_chunks=total_chunks,
+                range_label=range_label,
+                elapsed_sec=round(elapsed, 1),
+                error=str(exc),
+            )
             raise
         elapsed = time.perf_counter() - started_at
         logger.info("EVREN VLM video cagrisi tamamlandi: video=%s sure=%.1fs", video_path, elapsed)
+        _report(
+            on_progress,
+            phase="chunk_done",
+            chunk_index=chunk_index,
+            total_chunks=total_chunks,
+            range_label=range_label,
+            elapsed_sec=round(elapsed, 1),
+        )
         response.raise_for_status()
         data = response.json()
         try:
@@ -226,7 +290,9 @@ class EvrenVLM(BaseVLM):
             structured_events=structured_events,
         )
 
-    def _analyze_video_chunks(self, chunks: List[VideoChunk], prompt: str) -> VLMResponse:
+    def _analyze_video_chunks(
+        self, chunks: List[VideoChunk], prompt: str, on_progress: Optional[VlmProgressCallback] = None
+    ) -> VLMResponse:
         """Her video parcasini SIRAYLA, AYRI bir istekte gonderir ve sonuclari zaman-kaydirmasiyla birlestirir.
 
         Parcalar SIRAYLA (paralel DEGIL) gonderilir - EVREN uzerinde ayni
@@ -257,7 +323,14 @@ class EvrenVLM(BaseVLM):
         for chunk in chunks:
             label = f"[{_format_mmss(chunk.start_offset_sec)}-{_format_mmss(chunk.end_offset_sec)}]"
             try:
-                response = self._send_single_video(chunk.path, prompt)
+                response = self._send_single_video(
+                    chunk.path,
+                    prompt,
+                    on_progress=on_progress,
+                    chunk_index=chunk.index + 1,
+                    total_chunks=len(chunks),
+                    range_label=label,
+                )
             except Exception as exc:  # noqa: BLE001 - bir parcanin hatasi digerlerine YAYILMAZ
                 logger.exception(
                     "EVREN VLM: video parcasi basarisiz (index=%d, %s); diger parcalar etkilenmeyecek.",

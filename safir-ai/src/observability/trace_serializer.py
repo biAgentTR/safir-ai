@@ -182,10 +182,56 @@ def serialize_sampler(
     return summary, data, frames, "completed", None
 
 
+_VLM_PROGRESS_SUMMARY: Dict[str, str] = {
+    "chunking": "Video {total_chunks} parçaya bölünüyor",
+    "chunk_start": "Parça {chunk_index}/{total_chunks} gönderiliyor {range_label}",
+    "chunk_done": "Parça {chunk_index}/{total_chunks} tamamlandı {range_label} ({elapsed_sec:.0f}s)",
+    "chunk_failed": "Parça {chunk_index}/{total_chunks} başarısız {range_label} ({elapsed_sec:.0f}s)",
+}
+
+
+def _summarize_vlm_progress(progress: Dict[str, Any]) -> str:
+    """Adim-adim VLM ilerleme olayi icin kisa, kullaniciya-gosterilebilir Turkce ozet uretir.
+
+    `stage_vlm`in `on_progress` kancasindan gelen ham `dict`i (bkz.
+    `src/vlm/evren_vlm.py::VlmProgressCallback`) bicimlendirir; bilinmeyen bir
+    `phase` icin (gelecekte eklenebilecek yeni bir faz) HAM veriyi UYDURMADAN
+    genel bir "işleniyor" metnine duser - operatore YANLIS/eksik bir sayi
+    gostermek yerine.
+    """
+    phase = progress.get("phase", "")
+    template = _VLM_PROGRESS_SUMMARY.get(phase)
+    if template is None:
+        return "VLM analizi işleniyor"
+    fields = {
+        "total_chunks": progress.get("total_chunks", "?"),
+        "chunk_index": progress.get("chunk_index", "?"),
+        "range_label": progress.get("range_label") or "",
+        "elapsed_sec": progress.get("elapsed_sec") or 0.0,
+    }
+    try:
+        return template.format(**fields).strip()
+    except (KeyError, ValueError):
+        return "VLM analizi işleniyor"
+
+
 def serialize_vlm(
     payload: Dict[str, Any], job_id: str
 ) -> Tuple[str, Dict[str, Any], Dict[str, bytes], str, Optional[str]]:
-    """`vlm` emit'ini guvenli alanlarla serialize eder (raw HTTP/tam sistem promptu UYDURULMAZ)."""
+    """`vlm` emit'ini guvenli alanlarla serialize eder (raw HTTP/tam sistem promptu UYDURULMAZ).
+
+    Ara "adim-adim ilerleme" emit'leri (bkz. `src/main.py::run`in `_on_vlm_progress`
+    kancasi) `payload["progress"]` tasir - nihai `vlm_response` HENUZ YOKTUR,
+    bu yuzden asagidaki normal (tamamlanmis) yol calismadan ONCE ayriliyor.
+    Bu olaylar HER ZAMAN `status="running"` doner - operator video parcalanip
+    gonderilirken canli ilerleme gorur, ama bu heniz stage'in NIHAI sonucu
+    degildir (asil "completed"/"failed" olay, `vlm_response` geldiginde AYRICA
+    ve HER ZAMAN yayinlanir).
+    """
+    if "progress" in payload:
+        progress = payload["progress"] or {}
+        return _summarize_vlm_progress(progress), {"progress": progress}, {}, "running", None
+
     vr = payload["vlm_response"]
     evidence_frames = payload.get("evidence_frames", []) or []
     # `status` (bkz. `VLMResponse`/`stage_vlm`), metin-tabanli `[HATA]` on-eki

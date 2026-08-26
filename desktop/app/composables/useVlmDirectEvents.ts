@@ -14,7 +14,7 @@
  * timestamp+description, no per-event type/score) when it isn't — e.g. a
  * degraded run, or an older persisted analysis without a stored trace.
  */
-import type { SafirReport, TimelineEntry, TraceEvent, VlmStageData } from '~/types/api'
+import type { SafirReport, TimelineEntry, TraceEvent, VlmStageEventData } from '~/types/api'
 import type { VlmEvent, VlmRiskLevel } from '~/types/vlm'
 
 function riskLevelFromScore(score: number | null | undefined): VlmRiskLevel {
@@ -31,10 +31,11 @@ function toConfidencePct(confidence: number | null | undefined): number {
 }
 
 export function mapVlmDirectEvents(
-  vlmStage: TraceEvent<VlmStageData> | undefined,
+  vlmStage: TraceEvent<VlmStageEventData> | undefined,
   report: SafirReport | null,
 ): VlmEvent[] {
-  const structured = vlmStage?.data?.structured_events
+  const data = vlmStage?.data
+  const structured = data && !('progress' in data) ? data.structured_events : undefined
   if (structured?.length) {
     return structured
       .map((e, i) => ({

@@ -12,7 +12,7 @@
 // is the existing assumption those pages already make.
 import { generateMockEvents, summarize, riskLevelCounts, eventTypeCounts } from '~/composables/useVlmMockData'
 import { mapVlmDirectEvents } from '~/composables/useVlmDirectEvents'
-import type { VlmStageData, TraceEvent } from '~/types/api'
+import type { VlmStageEventData, TraceEvent } from '~/types/api'
 
 const store = useAnalysisStore()
 const stream = useAnalysisStream()
@@ -101,7 +101,14 @@ const statusLabel = computed(() => {
 // trace) or the report timeline as a fallback — see useVlmDirectEvents.ts.
 // Before any analysis has been run, a small mock preview keeps the empty
 // dashboard from looking broken/blank. ----
-const vlmStage = computed(() => store.eventForStage('vlm') as TraceEvent<VlmStageData> | undefined)
+const vlmStage = computed(() => store.eventForStage('vlm') as TraceEvent<VlmStageEventData> | undefined)
+// Step-by-step VLM progress (video chunking/sending) — same trace data the
+// low-budget Workspace's StageCard shows, surfaced here too since this
+// dashboard has no pipeline-stage rail of its own to show it in otherwise.
+const vlmProgress = computed(() => {
+  const d = vlmStage.value?.data
+  return d && 'progress' in d ? d.progress : null
+})
 const realEvents = computed(() => mapVlmDirectEvents(vlmStage.value, store.report))
 const hasRealAnalysis = computed(() => store.jobId != null)
 const previewEvents = computed(() => generateMockEvents(180))
@@ -160,6 +167,15 @@ const typeCounts = computed(() => eventTypeCounts(events.value))
     </div>
     <p v-if="submitError" class="-mt-3 mb-5 text-sm text-risk-crit">{{ submitError }}</p>
     <p v-if="store.status === 'error'" class="-mt-3 mb-5 text-sm text-risk-crit">Analiz tamamlanamadı{{ store.error ? `: ${store.error}` : '.' }}</p>
+
+    <!-- step-by-step VLM progress (video parçalanıyor/gönderiliyor) — bkz. StageCard.vue'daki eşdeğeri -->
+    <div v-if="vlmProgress" class="mb-5 rounded-md border border-accent/30 bg-accent/10 px-4 py-3 flex items-center gap-3">
+      <span class="inline-block w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin shrink-0 motion-reduce:animate-none" />
+      <span class="text-sm text-slate-100 flex-1">{{ vlmStage?.summary }}</span>
+      <span v-if="vlmProgress.total_chunks && vlmProgress.total_chunks > 1" class="text-xs font-mono text-slate-400 shrink-0">
+        {{ vlmProgress.chunk_index ?? '—' }} / {{ vlmProgress.total_chunks }}
+      </span>
+    </div>
 
     <div class="mb-5">
       <VlmStatCards :summary="summary" :duration-seconds="effectiveDuration" />

@@ -10,7 +10,9 @@ import type {
   ReportStageData,
   SamplerStageData,
   TraceStage,
+  VlmProgressData,
   VlmStageData,
+  VlmStageEventData,
 } from '~/types/api'
 
 const store = useAnalysisStore()
@@ -35,7 +37,18 @@ function frameUrl(id: string): string {
 // typed views of the payload (data is Record<string, unknown> -> narrow per stage)
 const view = <T,>(s: TraceStage): T | null => (stage.value === s ? (ev.value?.data as unknown as T) : null)
 const sampler = computed(() => view<SamplerStageData>('sampler'))
-const vlm = computed(() => view<VlmStageData>('vlm'))
+const vlmEvent = computed(() => view<VlmStageEventData>('vlm'))
+// The "vlm" stage carries one or more step-by-step progress ticks (video
+// chunking/sending, status="running") BEFORE its final "completed"/"failed"
+// result — see types/api.ts VlmProgressData. Narrow on 'progress' in data.
+const vlmProgress = computed(() => {
+  const d = vlmEvent.value
+  return d && 'progress' in d ? (d as VlmProgressData).progress : null
+})
+const vlm = computed(() => {
+  const d = vlmEvent.value
+  return d && !('progress' in d) ? (d as VlmStageData) : null
+})
 const events = computed(() => view<EventsStageData>('events'))
 const ragSecurity = computed(() => view<RagSecurityStageData>('rag_security'))
 const decision = computed(() => view<Decision>('decision'))
@@ -130,6 +143,31 @@ function ms(v: number | null): string {
           </div>
         </div>
 
+      </div>
+
+      <!-- ============ VLM: step-by-step progress (video chunking/sending, still running) ============ -->
+      <div v-else-if="vlmProgress" class="space-y-4">
+        <div class="rounded-md border border-accent/30 bg-accent/10 px-4 py-3 flex items-center gap-3">
+          <span class="inline-block w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin shrink-0 motion-reduce:animate-none" />
+          <span class="text-sm text-slate-100">{{ ev?.summary }}</span>
+        </div>
+        <div v-if="vlmProgress.total_chunks && vlmProgress.total_chunks > 1" class="space-y-1.5">
+          <div class="flex justify-between text-xs text-slate-500">
+            <span>Video parçaları</span>
+            <span class="font-mono">{{ vlmProgress.chunk_index ?? '—' }} / {{ vlmProgress.total_chunks }}</span>
+          </div>
+          <div class="h-1.5 rounded-full bg-surface-2 overflow-hidden">
+            <div
+              class="h-full bg-accent transition-[width] duration-300"
+              :style="{ width: `${Math.min(100, ((vlmProgress.chunk_index ?? 0) / vlmProgress.total_chunks) * 100)}%` }"
+            />
+          </div>
+        </div>
+        <div v-if="vlmProgress.video_mb" class="text-xs text-slate-500">Yük boyutu (base64): ~{{ vlmProgress.video_mb }} MB</div>
+        <p class="text-xs text-slate-600">
+          EVREN video analizi uzun sürebilir (dokümantasyona göre parça başına birkaç dakikaya kadar) — bu adım
+          sırasında bağlantı canlı tutulur, sonuç geldiğinde bu panel otomatik güncellenir.
+        </p>
       </div>
 
       <!-- ============ VLM ============ -->
