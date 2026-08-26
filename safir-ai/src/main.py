@@ -29,7 +29,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
+from typing import Any, Callable, Deque, Dict, List, Literal, Optional, Tuple
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -54,14 +54,13 @@ from src.memory.context_builder import ContextBuilder
 from src.memory.conversation_store import ConversationStore
 from src.memory import document_extraction
 from src.rag.embedding_rag_service import EmbeddingRAGService
-from src.rag.reranker import EvrenReranker
 from src.memory.event_store import EventStore
 from src.sampler.adaptive_sampler import EvidenceFrame, sampler_from_config
 from src.security.prompt_injection_guard import build_prompt_injection_guard
 
 from src.schemas.report import EventSummary, EvidenceFrameOut, RagContext, SafirReport, SamplerStats, TimelineEntry
 from src.utils.config_loader import SafirConfig, load_config
-from src.vlm.base_vlm import VLMResponse
+from src.vlm.base_vlm import BaseVLM, VLMResponse
 from src.vlm.factory import get_llm_client, get_vlm_client
 
 logging.basicConfig(level=logging.INFO)
@@ -381,6 +380,14 @@ class AnalyzeRequest(BaseModel):
 
     video_source: str
     user_prompt: str = "Sahnede riskli bir durum var mi degerlendir."
+    analysis_mode: Literal["vlm_direct", "low_budget"] = "vlm_direct"
+    """Operator panelindeki iki BAGIMSIZ analiz sistemi (bkz. `useAnalysisMode.ts`):
+    "vlm_direct" video kaynagini DOGRUDAN, TEK istekte VLM'e gonderir (`vlm.
+    active_model`, ör. EVREN "vlm"); "low_budget" Adaptive Frame Sampler'i
+    calistirip urettigi kareleri `vlm.frames_model`e (ör. EVREN "llm-large",
+    <=2 goruntu/istek) gonderir (bkz. `SafirPipeline.run`/`stage_vlm`).
+    Varsayilan "vlm_direct" - eski istemciler (bu alani hic gondermeyen)
+    davranisi TAMAMEN AYNI kalir."""
     sample_fps: Optional[int] = Field(
         default=None, ge=1, le=10, description="Operator panelinden gelen ornekleme FPS override'i (1-10)."
     )
@@ -810,27 +817,49 @@ class SafirPipeline:
         """
         self._config = config
         self._default_sample_fps = config.sampler.sample_fps
-        self._vlm = get_vlm_client(config.vlm, use_mock=config.app.use_mock_vlm)
+        # 2026-08-26 (IKI BAGIMSIZ ANALIZ MODU): operator panelindeki "VLM
+        # Direct"/"Dusuk Butceli" secimi ONCEDEN sadece GORSELDI - her iki UI
+        # modu da AYNI (tek) `self._vlm`i kullaniyordu (`config.vlm.
+        # active_model`). Artik `AnalyzeRequest.analysis_mode` ile GERCEKTEN
+        # secilen iki AYRI, BAGIMSIZ `BaseVLM` orneği kuruluyor - `run()`/
+        # `stage_vlm` bu ikisinden HANGISININ kullanilacagina `analysis_mode`a
+        # gore karar verir (bkz. asagidaki metotlar).
+        #
+        # Mock modda (`use_mock_vlm=true`) BILEREK TEK bir `MockVLMClient`
+        # orneği hem `_vlm_video` hem `_vlm_frames` icin PAYLASILIR (iki AYRI
+        # `MockVLMClient()` cagrisi YAPILMAZ): mock istemcinin `analyze_video`/
+        # `analyze_evidence`/`requires_frame_sampling`i test tarafindan
+        # monkeypatch'lenebilir kalmasi icin - `self._vlm` (asagida) geriye-
+        # donuk uyumluluk icin bu paylasilan orneğe (gercek moddaysa
+        # `_vlm_video`ya) isaret eder (bkz. `tests/test_pipeline_integration.py`
+        # gibi `pipeline._vlm`i DOGRUDAN patch'leyen testler).
+        if config.app.use_mock_vlm:
+            shared_mock_vlm = get_vlm_client(config.vlm, use_mock=True)
+            self._vlm_video = shared_mock_vlm
+            self._vlm_frames = shared_mock_vlm
+        else:
+            self._vlm_video = get_vlm_client(config.vlm, use_mock=False)
+            self._vlm_frames = get_vlm_client(
+                config.vlm.model_copy(update={"active_model": config.vlm.frames_model}),
+                use_mock=False,
+            )
+        self._vlm = self._vlm_video
         self._event_store = EventStore(config.memory.sqlite)
-        # 2026-08-25 (EVREN MIGRASYONU): EVREN LLM-as-judge (`EvrenReranker`,
-        # bkz. `src/rag/reranker.py` modul dokustringi), production
-        # default'unda AKTIF - EVREN'in OpenAI-uyumlu LLM ucunu ("llm-fast")
-        # kullanir, EVREN'in dedike rerank ucunu KULLANMAZ (dokumantasyon
-        # SS 10, getirme kalitesini dusurdugunu gostermektedir). Sadece
-        # deterministic relevance gate'ten GECMIS ("accepted") adaylari
-        # YENIDEN SIRALAR - gate'in KENDISINI BYPASS ETMEZ. EVREN cagrisi
-        # basarisiz olursa `EmbeddingRAGService.query()` KONTROLLU sekilde
-        # deterministic relevance siralamasina duser (bkz.
-        # `RagQueryTelemetry.cross_encoder_status`), pipeline COKMEZ.
+        # 2026-08-26 (RERANK KALDIRILDI): EVREN dokumantasyonu (SS 10), saf
+        # yogun getirmenin (R@1=0.95) HER reranking varyantindan (hibrit,
+        # dedike rerank ucu, LLM-as-judge) daha iyi performans gosterdigini,
+        # yeniden siralamanin R@1'i 0.55'e kadar DUSURDUGUNU acikca
+        # gostermektedir ve "yeniden siralama adiminin eklenmemesini"
+        # ONERMEKTEDIR. Bu yuzden `EvrenReranker` (LLM-as-judge, bkz.
+        # `src/rag/reranker.py`) ARTIK cagrilmiyor - `cross_encoder=None`
+        # ile `EmbeddingRAGService`, gate'ten GECMIS adaylari SADECE
+        # deterministic relevance skoruna (embedding + lexical/keyword/
+        # metadata/phrase agirlikli toplam) gore sunar; ekstra bir LLM
+        # cagrisi/ag bagimliligi/gecikme eklenmez.
         self._rag_service = EmbeddingRAGService(
             config.memory.embedding,
             config.memory.qdrant,
             config.memory.reranker,
-            cross_encoder=EvrenReranker(
-                model_name=config.memory.reranker.model_name,
-                base_url=config.memory.reranker.base_url,
-                api_key_env=config.memory.reranker.api_key_env,
-            ),
         )
         self._rag_service.seed_default_regulations()
         # Prompt Injection Guard (bkz. src/security/prompt_injection_guard.py):
@@ -903,6 +932,7 @@ class SafirPipeline:
         sample_fps_override: Optional[int] = None,
         min_change_threshold_override: Optional[float] = None,
         trace: Optional[TraceCallback] = None,
+        analysis_mode: str = "vlm_direct",
     ) -> SafirReport:
         """Video kaynagindan nihai `SafirReport`'a kadar tum pipeline'i calistirir.
 
@@ -920,6 +950,11 @@ class SafirPipeline:
                 ornekleme FPS degeri; verilmezse config degeri kullanilir.
             min_change_threshold_override: Operator panelindeki slider'dan
                 gelen hassasiyet esigi; verilmezse config degeri kullanilir.
+            analysis_mode: `"vlm_direct"` (varsayilan) veya `"low_budget"`
+                (bkz. `AnalyzeRequest.analysis_mode` dokustringi) - hangi
+                `BaseVLM` orneğinin (`self._vlm_video`/`self._vlm_frames`)
+                kullanilacagini VE sampler'in calistirilip calistirilmayacagini
+                belirler.
 
         Returns:
             Doga dil ozeti, risk skoru/seviyesi, kanit kareleri, ilgili
@@ -952,13 +987,16 @@ class SafirPipeline:
         #
         # Video-tabanli bir VLM (EVREN) aktifken Adaptive Frame Sampler
         # TAMAMEN ATLANIR: ciktisi (evidence_frames) bu saglayicilarda ZATEN
-        # VLM girdisi olarak KULLANILMIYORDU (bkz. `BaseVLM.requires_frame_
+        # VLM girdisi olarak KULLANILMAZ (bkz. `BaseVLM.requires_frame_
         # sampling` dokustringi, `EvrenVLM.analyze_video`in `del evidence_
         # frames`i) - calistirmak, videonun HER native karesini CPU'da tarayan
         # (uzunlukla orantili, ölçülen: 75.6s'lik bir video icin 92.8s) saf bir
-        # zaman kaybiydi, hicbir raporlanan degeri ETKILEMIYORDU. Frame-tabanli
-        # saglayicilarda (qwen/gemma) davranis DEGISMEDI.
-        if getattr(self._vlm, "requires_frame_sampling", True):
+        # zaman kaybi olur, hicbir raporlanan degeri ETKILEMEZ. `analysis_mode`
+        # burada da belirleyicidir: "vlm_direct" -> `self._vlm_video`
+        # (`requires_frame_sampling=False`, sampler ATLANIR); "low_budget" ->
+        # `self._vlm_frames` (`requires_frame_sampling=True`, sampler CALISIR).
+        active_vlm = self._vlm_video if analysis_mode == "vlm_direct" else self._vlm_frames
+        if getattr(active_vlm, "requires_frame_sampling", True):
             sampler, evidence_frames = self.stage_sample(
                 video_source, sample_fps_override, min_change_threshold_override
             )
@@ -980,8 +1018,27 @@ class SafirPipeline:
             # (ör. "Parca 1/2 gonderiliyor") canli gorur.
             _emit("vlm", {"progress": progress})
 
-        vlm_response = self.stage_vlm(video_source, evidence_frames, user_prompt, on_progress=_on_vlm_progress)
+        vlm_response = self.stage_vlm(
+            video_source, evidence_frames, user_prompt, on_progress=_on_vlm_progress, analysis_mode=analysis_mode
+        )
         _emit("vlm", {"vlm_response": vlm_response, "evidence_frames": evidence_frames, "user_prompt": user_prompt})
+
+        # 2026-08-26 ("Analiz Hattı" surekliligi): VLM Direct modunda ("sampler"
+        # asamasi baslangicta "skipped" olarak isaretlenir, yukarida) video
+        # parcalama BILGISI (kac parcaya bolundu, CUDA/CPU, sureler) YALNIZCA
+        # `stage_vlm` TAMAMLANDIKTAN SONRA bilinir (bkz. `EvrenVLM.analyze_video`
+        # -> `VLMResponse.chunking_summary`). Operator VLM Direct kullaniciysa
+        # "Kare Örnekleme" karti tamamlanma SONRASI da (canli GORUNUMDE veya
+        # Gecmis'ten tekrar acildiginda) BOS/jenerik bir cumlede KALMASIN diye
+        # (bkz. mentor/operator eleştirisi: "analiz hattı frontend'de kopuk
+        # oluyor"), "sampler" asamasi BURADA ikinci (GUNCELLENMIS, KALICI)
+        # bir olayla YENIDEN yayinlanir - `PipelineTraceCollector` bunu normal
+        # sekilde `trace_events`e ekler, History'ye AYNI mekanizmayla kaydedilir.
+        if getattr(vlm_response, "chunking_summary", None):
+            _emit(
+                "sampler",
+                {"evidence_frames": [], "stats": None, "skipped": True, "chunking": vlm_response.chunking_summary},
+            )
 
         if on_stage:
             on_stage(*STAGE_AGENT)
@@ -1097,29 +1154,54 @@ class SafirPipeline:
         evidence_frames: List[EvidenceFrame],
         user_prompt: str,
         on_progress: Optional[VlmProgressCallback] = None,
+        analysis_mode: str = "vlm_direct",
     ) -> VLMResponse:
-        """03: VLM gorsel anlama + OLAY KUMELEME - video DOGRUDAN VLM'e gonderilir.
+        """03: VLM gorsel anlama + OLAY KUMELEME.
 
-        Video, sampler'in urettigi evidence kareleri (resim) parcalanip
-        VLM'e coklu istek olarak GONDERILMEZ: `self._vlm.analyze_video` ile
-        video kaynagi TEK bir istekte, dogrudan gonderilir (bkz. `EvrenVLM`).
-        `evidence_frames` yalnizca `evidence_ids`/zaman damgasi baglami icin
-        `stage_events`e tasinir - VLM girdisi olarak KULLANILMAZ. VLM
-        cagrisi basarisiz olursa eski (geriye-donuk uyumlu) `[HATA]` degrade
-        formatina dusulur; risk ASLA `0`/basarili gibi yorumlanmaz.
+        `analysis_mode`e gore (bkz. `AnalyzeRequest.analysis_mode`
+        dokustringi, `run()`daki AYNI secim) iki AYRI, birbirinden BAGIMSIZ
+        `BaseVLM` orneği/yola dallanir - biri DEGISTIRILDIGINDE digeri
+        ETKILENMEZ:
+
+        - `"vlm_direct"` (varsayilan - `self._vlm_video`, EVREN icin
+          `EvrenVLM`/model="vlm"): video DOGRUDAN, TEK istekte gonderilir
+          (bkz. `_stage_vlm_video`). `evidence_frames` yalnizca
+          `evidence_ids`/zaman damgasi baglami icin `stage_events`e tasinir -
+          VLM girdisi olarak KULLANILMAZ.
+        - `"low_budget"` (`self._vlm_frames`, EVREN icin `EvrenFramesVLM`/
+          model="llm-large"): sampler'in urettigi evidence kareleri
+          `vlm.batch_size` buyuklugunde batch'lere bolunup HER batch AYRI bir
+          istekte gonderilir, birden fazla batch varsa TEK bir reconciliation
+          cagrisiyla global olay listesine birlestirilir (bkz.
+          `_stage_vlm_frames`).
+
+        Her iki yolda da VLM cagrisi basarisiz olursa eski (geriye-donuk
+        uyumlu) `[HATA]` degrade formatina dusulur; risk ASLA `0`/basarili
+        gibi yorumlanmaz.
 
         Args:
             on_progress: Opsiyonel adim-adim ilerleme kancasi (`EvrenVLM`nin
                 video-parcalama/gonderim ilerlemesini rapor eder - bkz.
-                `src/vlm/evren_vlm.py::VlmProgressCallback`); `run()` bunu
-                pipeline'in GERCEK trace/SSE kancasina baglar, boylece
-                operator video parcalanip gonderilirken ADIM ADIM ilerlemeyi
-                (Jenerik `PipelineTimeline`/`StageCard` uzerinden) canli gorur.
-                Yalnizca `analyze_video` implemente eden saglayicilarda (EVREN)
-                etkilidir; digerleri sessizce yok sayar (`getattr` ile guvenli cagri).
+                `src/vlm/evren_vlm.py::VlmProgressCallback`); yalnizca video
+                yolunda (`_stage_vlm_video`) etkilidir.
+            analysis_mode: `"vlm_direct"` (varsayilan) veya `"low_budget"`.
         """
+        vlm = self._vlm_video if analysis_mode == "vlm_direct" else self._vlm_frames
+        if getattr(vlm, "requires_frame_sampling", True):
+            return self._stage_vlm_frames(vlm, evidence_frames, user_prompt)
+        return self._stage_vlm_video(vlm, video_source, evidence_frames, user_prompt, on_progress)
+
+    def _stage_vlm_video(
+        self,
+        vlm: BaseVLM,
+        video_source: str,
+        evidence_frames: List[EvidenceFrame],
+        user_prompt: str,
+        on_progress: Optional[VlmProgressCallback] = None,
+    ) -> VLMResponse:
+        """VLM Direct yolu (DEGISMEDI): video kaynagi TEK bir istekte, dogrudan VLM'e gonderilir."""
         try:
-            analyze = getattr(self._vlm, "analyze_video")
+            analyze = getattr(vlm, "analyze_video")
             try:
                 response = analyze(video_source, evidence_frames, prompt=user_prompt, on_progress=on_progress)
             except TypeError:
@@ -1130,7 +1212,7 @@ class SafirPipeline:
             logger.exception("VLM video analizi basarisiz; degraded raporla devam ediliyor.")
             return VLMResponse(
                 description=f"[HATA] VLM analizi yapilamadi ({exc}). Manuel inceleme gerekli.",
-                model_name=getattr(self._vlm, "model_name", "unknown"),
+                model_name=getattr(vlm, "model_name", "unknown"),
                 frame_count=len(evidence_frames),
                 latency_ms=0.0,
                 structured_events=[],
@@ -1139,6 +1221,44 @@ class SafirPipeline:
 
         response.evidence_ids = [ef.evidence_id for ef in evidence_frames]
         return response
+
+    def _stage_vlm_frames(self, vlm: BaseVLM, evidence_frames: List[EvidenceFrame], user_prompt: str) -> VLMResponse:
+        """Dusuk butceli yol: evidence kareleri `vlm.batch_size` buyuklugunde batch'lere bolunup analiz edilir.
+
+        `BaseVLM.analyze_evidence_batched` ile kronolojik, kayipsiz batch'lere
+        bolunur (bir batch'in basarisiz olmasi digerlerini ETKILEMEZ, hicbir
+        evidence kaybolmaz); birden fazla batch uretildiyse
+        `BaseVLM.reconcile_events` ile TEK bir global olay listesine
+        birlestirilir (tek batch zaten globaldir, ekstra cagri YAPILMAZ).
+        `EvrenFramesVLM` icin `vlm.batch_size` EVREN dokumantasyonunun
+        (SS 7.5) istek basina azami 2 goruntu kuralina uymak zorundadir -
+        bu, `configs/config.yaml` sorumlulugundadir (`EvrenFramesVLM.
+        analyze_evidence` yanlis ayarlanirsa ACIKCA hata verir).
+        """
+        if not evidence_frames:
+            return VLMResponse(
+                description="[HATA] Kare-tabanli VLM analizi icin evidence karesi uretilemedi.",
+                model_name=getattr(vlm, "model_name", "unknown"),
+                frame_count=0,
+                latency_ms=0.0,
+                structured_events=[],
+                status="failed",
+            )
+        try:
+            batch_responses = vlm.analyze_evidence_batched(
+                evidence_frames, user_prompt, batch_size=self._config.vlm.batch_size
+            )
+            return vlm.reconcile_events(batch_responses, user_prompt)
+        except Exception as exc:  # noqa: BLE001 - beklenmedik hata da degraded rapora tasinir
+            logger.exception("Kare-tabanli VLM analizi basarisiz; degraded raporla devam ediliyor.")
+            return VLMResponse(
+                description=f"[HATA] VLM analizi yapilamadi ({exc}). Manuel inceleme gerekli.",
+                model_name=getattr(vlm, "model_name", "unknown"),
+                frame_count=len(evidence_frames),
+                latency_ms=0.0,
+                structured_events=[],
+                status="failed",
+            )
 
     def stage_events(self, vlm_response: VLMResponse, evidence_frames: List[EvidenceFrame]):
         """07: EventEngine -> buffer/budama -> TemporalReasoner -> RuleEngine.
@@ -1749,6 +1869,7 @@ def _run_job(
     user_prompt: str,
     sample_fps_override: Optional[int] = None,
     min_change_threshold_override: Optional[float] = None,
+    analysis_mode: str = "vlm_direct",
 ) -> None:
     """Arka plan thread'inde pipeline'i calistirip `JobState`'i gunceller.
 
@@ -1758,6 +1879,7 @@ def _run_job(
         user_prompt: Ajanin odaklanmasi istenen kullanici istemi.
         sample_fps_override: Operator panelinden gelen ornekleme FPS override'i.
         min_change_threshold_override: Operator panelinden gelen hassasiyet esigi override'i.
+        analysis_mode: `AnalyzeRequest.analysis_mode` ("vlm_direct"/"low_budget").
     """
 
     def on_stage(stage_name: str, step: int, total: int) -> None:
@@ -1803,6 +1925,7 @@ def _run_job(
             sample_fps_override=sample_fps_override,
             min_change_threshold_override=min_change_threshold_override,
             trace=trace_collector,
+            analysis_mode=analysis_mode,
         )
         with _jobs_lock:
             job = _jobs[job_id]
@@ -1858,6 +1981,30 @@ def _run_job(
             )
 
 
+@app.on_event("startup")
+def _warmup_evren_models_on_startup() -> None:
+    """Her uygulama baslangicinda `scripts/model_warmup.py::warmup_all_models`i BIR KEZ calistirir.
+
+    Amac, EVREN'in fiilen kullanilan dort model takma adinda (`vlm`,
+    `llm-fast`, `llm-large`, `bge-m3-embed`) "soguk" olmasindan kaynaklanan
+    ilk-istek gecikmesini, operatorun GERCEK ilk analizinden ONCE absorbe
+    etmektir (bkz. `scripts/model_warmup.py` modul dokustringi). Isinma
+    BASARISIZ olursa (ag hatasi, eksik `EVREN_API_KEY`, vb.) uygulama
+    BASLAMAYA DEVAM EDER - bu yalnizca gozlemlenebilirlik/latency-onleme
+    icindir, bir davranis KAPISI DEGILDIR (mock modda dahi calisir ama
+    gercek EVREN cagrisi yapamayacagi icin ACIKCA basarisiz loglanir).
+    """
+    try:
+        from scripts.model_warmup import warmup_all_models
+
+        report = warmup_all_models(load_config())
+        for r in report.results:
+            level = logging.INFO if r.ok else logging.WARNING
+            logger.log(level, "Model isinma: %s (%s) -> %s (%.0fms) %s", r.model_alias, r.role, "OK" if r.ok else "HATA", r.latency_ms, r.detail)
+    except Exception:  # noqa: BLE001 - isinma ASLA uygulama baslangicini engellemez
+        logger.exception("Model isinma basarisiz oldu; uygulama yine de baslatiliyor.")
+
+
 @app.get("/health")
 def health() -> dict:
     """Servisin ayakta oldugunu bildiren basit saglik kontrolu uc noktasi."""
@@ -1890,6 +2037,7 @@ def analyze(request: AnalyzeRequest) -> SafirReport:
             request.user_prompt,
             sample_fps_override=request.sample_fps,
             min_change_threshold_override=request.min_change_threshold,
+            analysis_mode=request.analysis_mode,
         )
     except Exception as exc:  # noqa: BLE001 - API tuketicisine anlamli hata donmek icin
         logger.exception("Analiz pipeline hatasi")
@@ -1932,6 +2080,7 @@ def create_analyze_job(request: AnalyzeRequest) -> AnalyzeJobResponse:
             request.user_prompt,
             request.sample_fps,
             request.min_change_threshold,
+            request.analysis_mode,
         ),
         daemon=True,
     )

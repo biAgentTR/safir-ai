@@ -157,11 +157,27 @@ class EvrenVLM(BaseVLM):
 
         chunk_duration_sec = getattr(self._endpoint, "chunk_duration_sec", None) or 0.0
         if chunk_duration_sec <= 0:
-            return self._send_single_video(video_source, prompt, on_progress, 1, 1)
+            response = self._send_single_video(video_source, prompt, on_progress, 1, 1)
+            response.chunking_summary = {
+                "total_chunks": 1,
+                "encoder": "none",
+                "chunk_duration_sec": None,
+                "video_duration_sec": None,
+                "per_chunk_elapsed_sec": [round(response.latency_ms / 1000, 1)],
+            }
+            return response
 
         chunks = split_video_into_chunks(video_source, chunk_duration_sec)
         if len(chunks) == 1:
-            return self._send_single_video(video_source, prompt, on_progress, 1, 1)
+            response = self._send_single_video(video_source, prompt, on_progress, 1, 1)
+            response.chunking_summary = {
+                "total_chunks": 1,
+                "encoder": chunks[0].encoder,
+                "chunk_duration_sec": chunk_duration_sec,
+                "video_duration_sec": round(chunks[0].end_offset_sec, 1) or None,
+                "per_chunk_elapsed_sec": [round(response.latency_ms / 1000, 1)],
+            }
+            return response
 
         _report(on_progress, phase="chunking", total_chunks=len(chunks))
         logger.info(
@@ -324,6 +340,7 @@ class EvrenVLM(BaseVLM):
         description_parts: List[str] = []
         total_latency_ms = 0.0
         succeeded_count = 0
+        per_chunk_elapsed_sec: List[Optional[float]] = []
 
         for chunk in chunks:
             label = f"[{_format_mmss(chunk.start_offset_sec)}-{_format_mmss(chunk.end_offset_sec)}]"
@@ -343,10 +360,12 @@ class EvrenVLM(BaseVLM):
                     label,
                 )
                 description_parts.append(f"{label} [ANALYSIS_FAILED] Bu parca icin VLM analizi basarisiz: {exc}")
+                per_chunk_elapsed_sec.append(None)
                 continue
 
             succeeded_count += 1
             total_latency_ms += response.latency_ms
+            per_chunk_elapsed_sec.append(round(response.latency_ms / 1000, 1))
             description_parts.append(f"{label} {response.description}".strip())
             for event in response.structured_events:
                 shifted = dict(event)
@@ -368,6 +387,13 @@ class EvrenVLM(BaseVLM):
             frame_count=0,
             latency_ms=total_latency_ms,
             structured_events=merged_events,
+            chunking_summary={
+                "total_chunks": len(chunks),
+                "encoder": chunks[0].encoder,
+                "chunk_duration_sec": chunks[0].end_offset_sec - chunks[0].start_offset_sec,
+                "video_duration_sec": round(chunks[-1].end_offset_sec, 1),
+                "per_chunk_elapsed_sec": per_chunk_elapsed_sec,
+            },
         )
 
     def answer_video_question(self, video_source: str, question: str, analysis_summary: str) -> str:
@@ -465,6 +491,76 @@ class EvrenVLM(BaseVLM):
             "EvrenVLM frame-tabanli analyze_evidence'i desteklemez; production akisi "
             "SafirPipeline.stage_vlm uzerinden analyze_video(video_source, evidence_frames, prompt) kullanir."
         )
+
+    def health_check(self) -> bool:
+        """EVREN uc noktasinin (models listesi) erisilebilir olup olmadigini kontrol eder."""
+        return self.health_check_impl()
+
+
+# EVREN dokumantasyonu SS 5/7.3/7.5: "vlm" modeli GORUNTU KABUL ETMEZ (goruntu
+# gonderilirse HTTP 400 "At most 0 image(s) may be provided"); goruntu/kare
+# girdisi icin "llm-fast"/"llm-large" onerilir, ve bu modeller istek basina EN
+# FAZLA 2 goruntu kabul eder. `EvrenVLM.analyze_video` (yukarida) videoyu
+# DOGRUDAN "vlm"e gonderen ana (varsayilan) yoldur; asagidaki `EvrenFramesVLM`
+# bunun YANINDA duran, AYRI bir aktif-model secenegidir (`configs/config.yaml`
+# -> `vlm.active_model: "evren_frames"`) - "dusuk butceli" (kare-tabanli,
+# Adaptive Frame Sampler ciktisini KULLANAN) analiz katmani icindir; video-
+# dogrudan yol (`vlm.active_model: "evren"`) bundan HICBIR SEKILDE ETKILENMEZ.
+_EVREN_FRAMES_MODEL_NAME = "llm-large"
+_EVREN_FRAMES_MAX_IMAGES_PER_REQUEST = 2
+
+
+class EvrenFramesVLM(BaseVLM):
+    """EVREN'in kare-tabanli (dusuk butceli) yolu: Adaptive Frame Sampler'in urettigi
+
+    evidence karelerini (goruntu), istek basina EN FAZLA 2 kareyle "llm-large"
+    modeline gonderir (bkz. modul-seviyesi NOT, dokumantasyon SS 7.5 tablosu -
+    goruntu/kare girdisi + "en fazla 2 goruntu" siniri ACIKCA "llm-large" icin
+    olculmustur). `EvrenVLM` (video-dogrudan, model="vlm") ile PAYLASILAN kod
+    yalnizca ortak HTTP/JSON-ayristirma altyapisidir (`BaseVLM.
+    _build_chat_payload`/`_post_chat_completion` - `QwenVLM`/`GemmaVLM` ile
+    AYNI ortak yol); video-ozel metotlar (`analyze_video`/
+    `answer_video_question`) burada KASITLI olarak IMPLEMENTE EDILMEZ - bu
+    sinifin evidence_frames disinda bir video baglami yoktur.
+    """
+
+    requires_frame_sampling = True
+
+    def analyze_evidence(self, evidence_frames: List[EvidenceFrame], prompt: str) -> VLMResponse:
+        """Verilen (en fazla 2 kareli) batch'i TEK istekte "llm-large"a gonderir.
+
+        Cagiran taraf (`SafirPipeline._stage_vlm_frames` ->
+        `BaseVLM.analyze_evidence_batched`) `configs/config.yaml ->
+        vlm.batch_size` (2 olmalidir) buyuklugunde batch'ler halinde cagirir;
+        bu metot kendisi de boyutu DOGRULAR - yanlislikla daha buyuk bir
+        batch verilirse (ör. `vlm.batch_size` yanlis ayarlanmissa) SESSIZCE
+        kirpmak yerine ACIKCA hata verir (EVREN dogrudan HTTP 400 donerdi;
+        burada daha erken ve daha acik bir hata tercih edilir).
+
+        Args:
+            evidence_frames: Bu istege dahil edilecek evidence kareleri (1-2 adet).
+            prompt: Kullanici/istem metni.
+
+        Returns:
+            `VLMResponse` (kumelenmis olaylar + dogal dil aciklama).
+
+        Raises:
+            ValueError: `evidence_frames` bos veya 2'den fazla kare icerirse.
+            RuntimeError: EVREN cagrisi basarisiz olursa veya yanit gecersizse
+                (bkz. `BaseVLM._post_chat_completion`).
+        """
+        if not evidence_frames:
+            raise ValueError("EvrenFramesVLM.analyze_evidence: evidence_frames bos olamaz.")
+        if len(evidence_frames) > _EVREN_FRAMES_MAX_IMAGES_PER_REQUEST:
+            raise ValueError(
+                f"EvrenFramesVLM: istek basina en fazla {_EVREN_FRAMES_MAX_IMAGES_PER_REQUEST} "
+                f"goruntu kabul edilir (EVREN dokumantasyonu SS 7.5); {len(evidence_frames)} kare "
+                f"verildi. configs/config.yaml -> vlm.batch_size <= "
+                f"{_EVREN_FRAMES_MAX_IMAGES_PER_REQUEST} olmalidir."
+            )
+        payload = self._build_chat_payload(evidence_frames, prompt)
+        payload["model"] = _EVREN_FRAMES_MODEL_NAME
+        return self._post_chat_completion(payload)
 
     def health_check(self) -> bool:
         """EVREN uc noktasinin (models listesi) erisilebilir olup olmadigini kontrol eder."""

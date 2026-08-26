@@ -55,6 +55,19 @@ class VLMClient(BaseVLM):
         self._delegate = VLMFactory.create(vlm_config)
         super().__init__(vlm_config.active_endpoint())
 
+    @property
+    def requires_frame_sampling(self) -> bool:
+        """Devredilen gercek VLM implementasyonunun degerini yansitir.
+
+        `BaseVLM.requires_frame_sampling` sinif-duzeyinde sabit `True`dur;
+        bu override olmadan `SafirPipeline.run()`, `VLMClient` sarmalayicisi
+        arkasindaki `EvrenVLM` icin bile her zaman `True` gorur ve video-tabanli
+        saglayicilarda ATLANMASI gereken Adaptive Frame Sampler asamasini
+        (video uzunluguyla orantili, ~saniyeler-dakikalar suren bir CPU
+        on-islemesini) gereksiz yere calistirir.
+        """
+        return self._delegate.requires_frame_sampling
+
     def analyze_evidence(self, evidence_frames: List[EvidenceFrame], prompt: str) -> VLMResponse:
         """Cagriyi, config'te secilen gercek VLM implementasyonuna devreder.
 

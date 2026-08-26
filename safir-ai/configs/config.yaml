@@ -287,8 +287,19 @@ sampler:
 #   gerekmez. `EVREN_API_KEY` ortam degiskeni tanimli olmalidir (bkz. .env).
 # =============================================================================
 vlm:
-  active_model: "evren"              # qwen | gemma | evren  (VLMFactory tarafindan okunur) — AKTIF: evren
-  batch_size: 40                     # Yalnizca frame-tabanli (qwen/gemma) saglayicilarda kullanilir; evren video-tabanli calisir (bkz. src/vlm/evren_vlm.py)
+  # 2026-08-26 (IKI BAGIMSIZ ANALIZ MODU): operator panelindeki "VLM Direct" /
+  # "Dusuk Butceli" secimi ARTIK backend'e `AnalyzeRequest.analysis_mode` ile
+  # GERCEKTEN iletilir (bkz. src/main.py::SafirPipeline.run/stage_vlm) -
+  # ONCEDEN her iki UI modu da AYNI `active_model`i kullaniyordu (mod secimi
+  # yalnizca GORSELDI). Iki mod ARTIK iki AYRI VLM orneğiyle calisir:
+  #   - "vlm_direct" -> `active_model` (asagida, video-dogrudan, TEK istekte tum video)
+  #   - "low_budget"  -> `frames_model` (asagida, kare-tabanli, en fazla `batch_size` goruntu/istek)
+  active_model: "evren"              # qwen | gemma | evren | evren_frames  (VLMFactory tarafindan okunur) — VLM Direct modu icin
+  frames_model: "evren_frames"       # qwen | gemma | evren | evren_frames  — Dusuk Butceli (kare-tabanli) modu icin; varsayilan: llm-large, <=2 goruntu/istek
+  batch_size: 2                      # Kare-tabanli (dusuk butceli) saglayicilarda TEK istege dahil edilecek azami evidence karesi sayisi.
+                                      # `evren_frames` (asagida) EVREN dokumantasyonu SS 7.5 geregi istek basina EN FAZLA 2 goruntu kabul eder -
+                                      # bu deger 2'nin UZERINE CIKARILMAMALIDIR (EvrenFramesVLM.analyze_evidence aksi halde ACIKCA hata verir).
+                                      # `evren` (video-dogrudan, VLM Direct) bu degerden HICBIR SEKILDE ETKILENMEZ.
   models:
     qwen:
       model_name: "Qwen/Qwen3.5-9B"   # native gorsel destekli; 32 GB'de vLLM FP8 ile
@@ -317,6 +328,23 @@ vlm:
                                       # bolunmeli"), bu sureden UZUN videolar otomatik olarak ardisik 60s'lik
                                       # parcalara bolunup HER parca AYRI istekte gonderilir (bkz.
                                       # src/vlm/video_chunker.py, src/vlm/evren_vlm.py::EvrenVLM._analyze_video_chunks)
+    evren_frames:                   # DUSUK BUTCELI (kare-tabanli) EVREN yolu - `vlm.frames_model` ile secilir
+                                      # (bkz. asagida `SafirPipeline`in kullandigi `VLMConfig.frames_model` alani);
+                                      # video-dogrudan `evren` girdisinden BAGIMSIZDIR. Adaptive Frame Sampler'in
+                                      # urettigi evidence kareleri (goruntu), yukaridaki `batch_size` (2) kadarlik
+                                      # gruplar halinde bu uc noktaya gonderilir (bkz. src/vlm/evren_vlm.py::
+                                      # EvrenFramesVLM - model adi kodda "llm-large" olarak SABITLENMISTIR,
+                                      # dokumantasyon SS 7.5 tablosu: "en fazla 2 goruntu" siniri ACIKCA
+                                      # "llm-large" icin olculmustur).
+      provider: "evren"
+      model_name: "llm-large"         # bkz. yukaridaki NOT - EvrenFramesVLM bu alani DOGRULAMA icin kullanir, HTTP istegi hep "llm-large" ile gider
+      base_url: "https://evren-llmapi.ssyz.org.tr/v1"
+      api_key_env: "EVREN_API_KEY"
+      max_new_tokens: 1024
+      temperature: 0.1
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false      # bkz. asagidaki llm.active_model=evren NOTU - ayni tuzak goruntu isteklerinde de gecerlidir
 
 # -----------------------------------------------------------------------------
 # 04 - Hibrit Bellek ve Baglam Olusturucu - EVREN Embedding + Qdrant
@@ -345,12 +373,17 @@ memory:
     candidate_k: 20
     top_k: 5
     score_threshold: 0.10              # relevance_score'un ALTINDAKI sonuclar ELENIR (0 sonuc GECERLIDIR)
-    # asagidaki provider/model_name/api_key_env/base_url, 3. asama (opsiyonel,
-    # deterministik gate'ten GECMIS adaylari YENIDEN siralayan) AI reranker
-    # icindir - EVREN'in OpenAI-uyumlu LLM ucunu "LLM-as-judge" olarak
-    # kullanir (bkz. src/rag/reranker.py::EvrenReranker); EVREN'in dedike
-    # rerank ucunu (model="rerank") KULLANMAZ (dokumantasyon SS 10, getirme
-    # kalitesini dusurdugunu gostermektedir).
+    # 2026-08-26 (RERANK KALDIRILDI): asagidaki provider/model_name/api_key_env/
+    # base_url, opsiyonel 3. asama AI reranker'i (EVREN'i "LLM-as-judge" olarak
+    # kullanan `src/rag/reranker.py::EvrenReranker`) yapilandirirdi - ARTIK
+    # `src/main.py::SafirPipeline` tarafindan OKUNMUYOR/CAGRILMIYOR. EVREN
+    # dokumantasyonu (SS 10), saf yogun getirmenin (R@1=0.95) HER reranking
+    # varyantindan (dedike rerank ucu DAHIL, LLM-as-judge DAHIL) daha iyi
+    # performans gosterdigini olcumle kanitlamaktadir - "yeniden siralama
+    # adiminin eklenmemesi" onerilir. `EvrenReranker` sinifi SILINMEDI (bkz.
+    # proje kurallari: KULLANILMAYAN saglayicilar kaldirilmaz, devre disi
+    # birakilir), yalnizca `main.py`deki cagri kaldirildi. Asagidaki alanlar
+    # yalnizca BELGE/gecmis amaclidir, hicbir etkileri yoktur.
     provider: "evren"
     model_name: "llm-fast"
     base_url: "https://evren-llmapi.ssyz.org.tr/v1"

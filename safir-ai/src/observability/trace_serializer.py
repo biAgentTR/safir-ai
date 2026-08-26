@@ -140,6 +140,24 @@ def serialize_sampler(
     "completed" (basarisiz DEGIL, kasitli) olay uretilir.
     """
     if sampler_payload.get("skipped"):
+        chunking = sampler_payload.get("chunking")
+        if chunking:
+            total_chunks = chunking.get("total_chunks", 1)
+            encoder = chunking.get("encoder")
+            encoder_label = {"cuda": "GPU/CUDA", "cpu": "CPU", "opencv": "CPU (OpenCV)", "none": "bölünmeden"}.get(
+                encoder, encoder
+            )
+            if total_chunks > 1:
+                summary = f"Video {total_chunks} parçaya bölündü ({encoder_label}) — her parça VLM'e ayrı gönderildi"
+            else:
+                summary = f"Video TEK istekte VLM'e gönderildi ({encoder_label})"
+            return (
+                summary,
+                {"stats": {}, "evidence_frames": [], "skipped": True, "chunking": chunking},
+                {},
+                "completed",
+                None,
+            )
         summary = "Atlandı — VLM videoyu doğrudan analiz ediyor (kare örneklemeye gerek yok)"
         return summary, {"stats": {}, "evidence_frames": [], "skipped": True}, {}, "completed", None
 

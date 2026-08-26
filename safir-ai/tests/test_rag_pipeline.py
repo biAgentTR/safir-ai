@@ -688,22 +688,24 @@ def test_embedding_rag_service_cross_encoder_defaults_to_none_for_isolated_use()
     assert service._cross_encoder is None  # noqa: SLF001 - varsayilan devre-disi durumu dogrudan dogrular
 
 
-def test_production_pipeline_instantiates_an_evren_reranker_by_default() -> None:
-    """CROSS_ENCODER_STATUS = PRODUCTION - `SafirPipeline.__init__`, `EmbeddingRAGService`i kurarken GERCEK bir `EvrenReranker` GECER.
+def test_production_pipeline_does_not_instantiate_a_reranker_by_default() -> None:
+    """CROSS_ENCODER_STATUS = KALDIRILDI - `SafirPipeline.__init__`, `EmbeddingRAGService`i `cross_encoder` GECMEDEN kurar.
 
-    2026-08-25 EVREN MIGRASYONU: production default'u `LocalCrossEncoderReranker`
-    (TAMAMEN lokal) DEGIL, EVREN'in LLM ucunu "LLM-as-judge" kullanan
-    `EvrenReranker`dir (bkz. `src/rag/reranker.py`) - `LocalCrossEncoderReranker`
-    sinifi KALDIRILMADI (standalone/benchmark icin durur), yalnizca
-    production wiring'i DEGISTI.
+    2026-08-26 (RERANK KALDIRILDI): EVREN dokumantasyonu (SS 10), saf yogun
+    getirmenin (R@1=0.95) HER reranking varyantindan (dedike rerank ucu DAHIL,
+    LLM-as-judge DAHIL - Sekil 3 "Yogun + yeniden siralama" R@1=0.55) daha iyi
+    performans gosterdigini olcumle kanitlamaktadir; bu yuzden onceki
+    `EvrenReranker` (LLM-as-judge, bkz. `src/rag/reranker.py`) wiring'i
+    `SafirPipeline.__init__`den KALDIRILDI - `EvrenReranker` sinifi SILINMEDI
+    (standalone/benchmark icin durur), yalnizca production wiring'i DEGISTI.
     """
     import inspect
 
     import src.main as main_module
 
     source = inspect.getsource(main_module)
-    assert "cross_encoder=EvrenReranker(" in source
-    assert "from src.rag.reranker import EvrenReranker" in source
+    assert "cross_encoder=EvrenReranker(" not in source
+    assert "from src.rag.reranker import EvrenReranker" not in source
     # eski Gemini/Groq LLM-as-judge reranker'lar KALDIRILDI - hicbir yerde cagrilmiyor.
     assert "GeminiReranker" not in source
     assert "GroqReranker" not in source

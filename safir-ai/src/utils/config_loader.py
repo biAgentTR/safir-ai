@@ -326,6 +326,16 @@ class VLMConfig(BaseModel):
     """Aktif VLM secimini ve tum VLM tanimlarini tutar (Factory Pattern icin)."""
 
     active_model: str
+    """"VLM Direct" analiz modu (`AnalyzeRequest.analysis_mode="vlm_direct"`) icin
+    kullanilacak model anahtari (bkz. `models`) - video DOGRUDAN, TEK istekte gonderilir."""
+
+    frames_model: str = "evren_frames"
+    """"Dusuk Butceli" (kare-tabanli) analiz modu (`AnalyzeRequest.analysis_mode=
+    "low_budget"`) icin kullanilacak model anahtari (bkz. `models`) - Adaptive
+    Frame Sampler'in urettigi evidence kareleri `batch_size` kadarlik gruplar
+    halinde gonderilir. `active_model`den BAGIMSIZDIR - iki mod AYNI ANDA,
+    AYRI `BaseVLM` orneklerinden calisir (bkz. `SafirPipeline.__init__`)."""
+
     models: Dict[str, VLLMEndpointConfig]
     batch_size: int = 40
     """`SafirPipeline.stage_vlm` icinde TEK bir VLM istegine dahil edilecek

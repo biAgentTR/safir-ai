@@ -25,7 +25,7 @@ import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -126,6 +126,13 @@ class VLMResponse:
     evidence_ids: List[str] = field(default_factory=list)
     """Bu yanitin kapsadigi (gonderilen) `EvidenceFrame.evidence_id` degerleri
     (bkz. `analyze_evidence_batched`); tek-cagri (eski/agrege) yanitlarda bos olabilir."""
+    chunking_summary: Optional[Dict[str, Any]] = None
+    """YALNIZCA video-dogrudan (`EvrenVLM.analyze_video`) yolunda doldurulur:
+    `{"total_chunks", "encoder", "chunk_duration_sec", "video_duration_sec",
+    "per_chunk_elapsed_sec"}` - operator paneline "Video Parçalama" asamasini
+    (bkz. `src/main.py::SafirPipeline.run`, `configs/config.yaml ->
+    vlm.models.evren.chunk_duration_sec`) GORUNUR/KALICI kilmak icindir.
+    Diger tum saglayicilarda/yollarda `None` kalir."""
 
 
 # VLM ciktisinin sonundaki makine-okunur olay blogunu yakalar:
