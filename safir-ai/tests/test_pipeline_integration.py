@@ -28,6 +28,7 @@ import pytest
 
 from src.event_analysis.schemas import TemporalEvent
 from src.main import SafirPipeline
+from src.rag.embedding_rag_service import MockEmbeddingRAGService
 from src.utils.config_loader import SafirConfig
 from src.vlm.base_vlm import VLMResponse
 
@@ -199,9 +200,31 @@ def pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SafirPipeline:
     """Gercek `SafirPipeline.__init__`i, yalnizca `EmbeddingRAGService`yi sahteyle degistirerek calistirir."""
     fake_rag_service = _FakeRagService()
     monkeypatch.setattr("src.main.EmbeddingRAGService", lambda *args, **kwargs: fake_rag_service)
+    # `_build_test_config` sets both mock flags True -> SafirPipeline.__init__
+    # takes the MockEmbeddingRAGService branch (see main.py), NOT
+    # EmbeddingRAGService - patch that symbol too so this fixture's fully
+    # controllable `_FakeRagService` is actually the one constructed.
+    monkeypatch.setattr("src.main.MockEmbeddingRAGService", lambda *args, **kwargs: fake_rag_service)
 
     config = _build_test_config(tmp_path)
     return SafirPipeline(config)
+
+
+def test_full_mock_mode_constructs_without_qdrant_or_api_keys(tmp_path: Path) -> None:
+    """Bug regresyonu (2026-08-27): `use_mock_vlm`+`use_mock_llm` ikisi de True iken
+    `SafirPipeline.__init__`, gercek Qdrant/EVREN kimlik bilgisi GEREKTIRMEDEN
+    (hicbir monkeypatch/env degiskeni OLMADAN) kurulabilmelidir - configs/
+    config.yaml'in GELISTIRME/TEST yorumundaki ("harici hicbir sey gerekmez")
+    vaadinin gercekten dogru oldugunu dogrular. Onceden `EmbeddingRAGService.
+    __init__` KOSULSUZ gercek bir Qdrant istemcisi kurdugu icin bu,
+    `EVREN_QDRANT_KEY` olmadan `ConfigurationError` ile PATLIYORDU."""
+    config = _build_test_config(tmp_path)
+    pipeline = SafirPipeline(config)
+    assert isinstance(pipeline._rag_service, MockEmbeddingRAGService)
+    # Gercek retrieval calisiyor mu (ag/Qdrant olmadan) - en azindan bir
+    # sorgu, istisna firlatmadan bir sonuc listesi donmeli.
+    results = pipeline._rag_service.query("Yuksekte calisirken hangi ekipmanlar zorunlu?")
+    assert isinstance(results, list)
 
 
 def test_pipeline_wires_event_analysis_dependencies(pipeline: SafirPipeline) -> None:
@@ -611,6 +634,7 @@ def test_regulation_match_presence_bounded_effect_on_deterministic_risk(
         fake_rag = _FakeRagService()
         fake_rag.query = lambda question, top_k=None, keywords=None: (fake_rag.queries.append(question), rag_query_result)[1]
         monkeypatch.setattr("src.main.EmbeddingRAGService", lambda *a, **k: fake_rag)
+        monkeypatch.setattr("src.main.MockEmbeddingRAGService", lambda *a, **k: fake_rag)
         config = _build_test_config(tmp_path / "pipeline_state")
         return SafirPipeline(config)
 

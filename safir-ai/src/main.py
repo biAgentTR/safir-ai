@@ -53,7 +53,7 @@ from src.memory.analysis_store import AnalysisStore
 from src.memory.context_builder import ContextBuilder
 from src.memory.conversation_store import ConversationStore
 from src.memory import document_extraction
-from src.rag.embedding_rag_service import EmbeddingRAGService
+from src.rag.embedding_rag_service import EmbeddingRAGService, MockEmbeddingRAGService
 from src.memory.event_store import EventStore
 from src.sampler.adaptive_sampler import EvidenceFrame, sampler_from_config
 from src.security.prompt_injection_guard import build_prompt_injection_guard
@@ -856,11 +856,23 @@ class SafirPipeline:
         # deterministic relevance skoruna (embedding + lexical/keyword/
         # metadata/phrase agirlikli toplam) gore sunar; ekstra bir LLM
         # cagrisi/ag bagimliligi/gecikme eklenmez.
-        self._rag_service = EmbeddingRAGService(
-            config.memory.embedding,
-            config.memory.qdrant,
-            config.memory.reranker,
-        )
+        # Bug duzeltmesi (2026-08-27): `EmbeddingRAGService.__init__` her zaman
+        # GERCEK bir Qdrant istemcisi kurar - `use_mock_vlm`/`use_mock_llm`den
+        # BAGIMSIZDI, bu yuzden GELISTIRME/TEST yorumunun ("harici hicbir sey
+        # gerekmez", bkz. configs/config.yaml ~satir 283) aksine, yalnizca
+        # mock modda calistirmak bile `EVREN_QDRANT_KEY` olmadan pipeline
+        # KURULUSUNDA `ConfigurationError` ile patliyordu. Her iki mock
+        # bayragi da acikken (belgelenen TEK desteklenen "harici bagimlilik
+        # yok" kombinasyonu) sahte, ag-bagimsiz `MockEmbeddingRAGService`
+        # kullanilir (bkz. o sinifin dokustringi).
+        if config.app.use_mock_vlm and config.app.use_mock_llm:
+            self._rag_service = MockEmbeddingRAGService()
+        else:
+            self._rag_service = EmbeddingRAGService(
+                config.memory.embedding,
+                config.memory.qdrant,
+                config.memory.reranker,
+            )
         self._rag_service.seed_default_regulations()
         # Prompt Injection Guard (bkz. src/security/prompt_injection_guard.py):
         # `guard.enabled=false` ise `self._guard=None` -> ContextBuilder davranisi

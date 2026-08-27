@@ -43,6 +43,9 @@ class _FakeRAG:
 def mock_pipeline(monkeypatch, tmp_path):
     """Mock VLM/LLM + sahte RAG pipeline + izole (tmp) AnalysisStore."""
     monkeypatch.setattr(main, "EmbeddingRAGService", lambda *a, **k: _FakeRAG())
+    # cfg sets both mock flags True -> SafirPipeline takes the
+    # MockEmbeddingRAGService branch (see main.py), not EmbeddingRAGService.
+    monkeypatch.setattr(main, "MockEmbeddingRAGService", lambda *a, **k: _FakeRAG())
     base = main.load_config()
     cfg = base.model_copy(update={"app": base.app.model_copy(update={"use_mock_vlm": True, "use_mock_llm": True})})
     monkeypatch.setattr(main, "_pipeline", main.SafirPipeline(cfg))

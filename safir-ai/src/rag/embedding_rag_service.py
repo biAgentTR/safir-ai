@@ -1214,6 +1214,101 @@ class EmbeddingRAGService:
         logger.info("KB index manifest persisted: %s (%d dokuman)", self._meta_collection_name, chunk_count)
 
 
+class MockEmbeddingRAGService:
+    """Ag/GPU-bagimsiz sahte RAG servisi - `app.use_mock_vlm` + `app.use_mock_llm`
+    ikisi de `true` iken `SafirPipeline.__init__` tarafindan gercek
+    `EmbeddingRAGService` YERINE kullanilir (bkz. `src/main.py`).
+
+    KOK NEDEN (duzeltilen bug): gercek `EmbeddingRAGService`, KURULUSTA
+    (`__init__`) her zaman gercek bir Qdrant istemcisi kurar - bu,
+    `use_mock_vlm`/`use_mock_llm` `true` olsa BILE degismiyordu, cunku RAG
+    hicbir mock bayragiyla GECILMIYORDU. Sonuc: `configs/config.yaml`'in
+    GELISTIRME/TEST yorumundaki ("harici hicbir sey gerekmez") vaadin aksine,
+    yalnizca mock modda calistirmak bile `EVREN_QDRANT_KEY` olmadan
+    `ConfigurationError` ile pipeline kurulusunda PATLIYORDU.
+
+    Bu sinif, cagiran kodun (ContextBuilder/tools.py/main.py) beklegi asgari
+    sozlesmeyi (`seed_default_regulations`, `query`, `get_last_query_telemetry`,
+    `relevance_weights`) HICBIR ag/Qdrant/embedding modeli olmadan, basit bir
+    alt-dizge (substring) eslesmesiyle `DEFAULT_ISG_REGULATIONS` (8 maddelik
+    placeholder) uzerinde karsilar - gercek servisin retrieval KALITESINI
+    TAKLIT ETMEYE calismaz, yalnizca ajanin/rapor akisinin GPU'suz/anahtarsiz
+    uctan uca calismasini saglar.
+    """
+
+    def __init__(self) -> None:
+        self._relevance_weights = RelevanceWeights()
+        self._last_query_telemetry: Optional[RagQueryTelemetry] = None
+
+    @property
+    def relevance_weights(self) -> RelevanceWeights:
+        return self._relevance_weights
+
+    def seed_default_regulations(self) -> None:
+        return None
+
+    def query(
+        self, question: str, top_k: Optional[int] = None, keywords: Optional[List[str]] = None
+    ) -> List[RetrievedDocument]:
+        """Basit alt-dizge eslesmesiyle `DEFAULT_ISG_REGULATIONS`den en alakali maddeleri dondurur.
+
+        Gercek servisin embedding/Qdrant/deterministic-reranker zincirinin
+        YERINE GECMEZ - yalnizca (soru + keywords) icindeki 4+ karakterlik
+        kelimelerden kacinin ilgili madde metninde GECTIGINI sayar; hic
+        eslesme yoksa BOS LISTE doner (gercek serviste oldugu gibi, rastgele
+        bir sonuc UYDURULMAZ).
+        """
+        started = time.perf_counter()
+        limit = top_k or 3
+        needle_words = {
+            w for term in ([question] + list(keywords or [])) if term for w in term.lower().split() if len(w) > 3
+        }
+        scored = []
+        for idx, text in enumerate(DEFAULT_ISG_REGULATIONS):
+            text_lower = text.lower()
+            hits = sum(1 for w in needle_words if w in text_lower)
+            if hits:
+                scored.append((hits, idx, text))
+        scored.sort(key=lambda t: (-t[0], t[1]))
+
+        docs = [
+            RetrievedDocument(
+                text=text,
+                embedding_score=1.0,
+                relevance_score=1.0,
+                document_title="[MOCK] ISG Mevzuati (placeholder - use_mock_vlm+use_mock_llm)",
+                source_verified=False,
+                relevance_status="accepted",
+                relevance_reason="mock alt-dizge eslesmesi (gercek retrieval degil)",
+            )
+            for _hits, _idx, text in scored[:limit]
+        ]
+        total_latency_ms = round((time.perf_counter() - started) * 1000.0, 1)
+        self._last_query_telemetry = RagQueryTelemetry(
+            query=question,
+            candidate_count=len(DEFAULT_ISG_REGULATIONS),
+            final_count=len(docs),
+            zero_result=len(docs) == 0,
+            retrieval_status="relevance_scored" if docs else "insufficient_evidence",
+            threshold=None,
+            embedding_latency_ms=0.0,
+            rerank_latency_ms=0.0,
+            total_latency_ms=total_latency_ms,
+            avg_embedding_score=1.0 if docs else None,
+            avg_relevance_score=1.0 if docs else None,
+            corpus_source="fallback_placeholder",
+            cross_encoder_status="disabled",
+            results=[],
+        )
+        return docs
+
+    def search_laws(self, query: str, top_k: Optional[int] = None) -> List[RetrievedDocument]:
+        return self.query(query, top_k)
+
+    def get_last_query_telemetry(self) -> Optional[RagQueryTelemetry]:
+        return self._last_query_telemetry
+
+
 # Modul 3 spesifikasyonundaki isim: ayni sinifa isaret eden alias (geriye
 # donuk uyumluluk icin `EmbeddingRAGService` adi da tum cagiran kodda aynen
 # kullanilmaya devam eder).
