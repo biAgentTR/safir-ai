@@ -819,12 +819,21 @@ def _extract_vlm_direct_evidence_frames(
     (bkz. `SafirPipeline.run` yorumu) - dolayisiyla `_select_report_evidence_
     frames` her zaman BOS doner (eslesecek `EvidenceFrame` yok). EVREN'in
     donusu (`structured_events`) da hicbir kare goruntusu icermez, yalnizca
-    zaman damgasi/aciklama tasir. Bu yuzden HER VLM olayi icin, o olayin orta
-    noktasina (`start_time`/`end_time` ortalamasi) `cv2.VideoCapture` ile
-    ATLANARAK tek bir kare gercekten yakalanir ve JPEG/base64'e kodlanir -
-    boylece rapor/PDF/HTML/JSON kanit karesi olarak GERCEK, o olaya ait bir
+    zaman damgasi/aciklama tasir. Bu yuzden HER VLM olayi icin, `cv2.
+    VideoCapture` ile videoda dogrudan o saniyeye ATLANARAK tek bir kare
+    gercekten yakalanir (ffmpeg KULLANILMAZ - kare cikarimi tamamen OpenCV
+    ile, ek bir surec/CLI cagrisi olmadan yapilir) ve JPEG/base64'e kodlanir
+    - boylece rapor/PDF/HTML/JSON kanit karesi olarak GERCEK, o olaya ait bir
     goruntu icerir (onceki, dusuk-butceli sisteme ait sampler kareleri
     DEGIL).
+
+    Hangi saniye? Olayin ORTALAMASI/orta noktasi DEGIL - `start_time`in
+    KENDISI: VLM prompt'u (`src/prompts/vlm_prompts.py`, "Olay zaman
+    damgasini HER ZAMAN olayin ILK BASLADIGI saniyeye (start_time) gore ver")
+    modele HER olay icin zaman damgasini olayin GERCEKTEN basladigi ani
+    bildirmesini talimatlandirir; bu yuzden kanit karesi de modelin
+    raporladigi O TAM saniyeden alinir - rapordaki metnin ("Başlangıç: MM:SS")
+    anlattigi anla, gosterilen goruntu BIREBIR eslesir.
 
     Canli yayin (RTSP) kaynaklarinda veya kare yakalanamayan durumlarda o
     olay sessizce atlanir (rapor cokusu yerine eksik kanit karesi tercih
@@ -839,9 +848,7 @@ def _extract_vlm_direct_evidence_frames(
     try:
         report_frames: List[EvidenceFrameOut] = []
         for ev in structured_events:
-            start = float(ev.get("start_time") or 0.0)
-            end = float(ev.get("end_time") or start)
-            timestamp_sec = (start + end) / 2.0
+            timestamp_sec = float(ev.get("start_time") or 0.0)
             cap.set(cv2.CAP_PROP_POS_MSEC, timestamp_sec * 1000.0)
             ok, frame = cap.read()
             if not ok or frame is None:
