@@ -11,6 +11,7 @@ import type { Config } from 'tailwindcss'
 const token = (name: string) => `rgb(var(${name}) / <alpha-value>)`
 
 export default <Partial<Config>>{
+  darkMode: 'class',
   content: [
     './app/components/**/*.{vue,ts}',
     './app/layouts/**/*.vue',

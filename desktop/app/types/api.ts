@@ -87,6 +87,19 @@ export type EscalationTier = 'monitor' | 'notify' | 'alarm' | 'pending_review'
  */
 export type RiskStatus = 'assessed' | 'unknown'
 
+/**
+ * A mock action tool the 05 LangGraph Agent actually CALLED (tool_call), not
+ * just a text suggestion in `actions` — see src/agent/tools.py:
+ * notify_health_team_tool / dispatch_security_tool / trigger_area_lockdown_tool.
+ * `args`/`result` shape depends on which tool was called.
+ */
+export interface TriggeredMockAction {
+  /** 'notify_health_team_tool' | 'dispatch_security_tool' | 'trigger_area_lockdown_tool' (bkz. yukarisi). */
+  tool: string
+  args: Record<string, unknown>
+  result: string
+}
+
 /** src/schemas/report.py: SafirReport (the polling `result`). */
 export interface SafirReport {
   event_id?: number | null
@@ -102,6 +115,8 @@ export interface SafirReport {
   risk_explanation?: string | null
   recommended_action: string
   actions: string[]
+  /** Ajanın gerçekten çağırdığı mock aksiyon araçları (bkz. TriggeredMockAction). */
+  triggered_mock_actions?: TriggeredMockAction[]
   detected_event_types: string[]
   timeline: TimelineEntry[]
   evidence_frames: EvidenceFrameOut[]
@@ -236,6 +251,8 @@ export interface Decision {
   recommended_action: string
   actions: string[]
   events: unknown[]
+  /** Ajanın bu çalışmada gerçekten çağırdığı mock aksiyon araçları (bkz. TriggeredMockAction). */
+  triggered_mock_actions?: TriggeredMockAction[]
 }
 
 export interface Escalation {

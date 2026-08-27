@@ -474,6 +474,7 @@ agent:
     retriever_tool_enabled: true
     timeline_tool_enabled: true
     verification_tool_enabled: true
+    mock_action_tools_enabled: true    # notify_health_team_tool / dispatch_security_tool / trigger_area_lockdown_tool
 
 # -----------------------------------------------------------------------------
 # Otomatik Eskalasyon (Human-on-the-Loop) - bloke edici operator kapisi YOK

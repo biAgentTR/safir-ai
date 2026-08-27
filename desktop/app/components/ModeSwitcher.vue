@@ -1,42 +1,52 @@
 <script setup lang="ts">
 // Compact segmented control for switching between the two independent
-// analysis modes without closing the app. Lives in AppTopbar. Switching
-// navigates to that mode's landing page (AppSidebar's nav updates to match).
+// analysis modes with skeleton loaders & smooth animated pill.
 import type { AnalysisMode } from '~/composables/useAnalysisMode'
 
-const { mode, setMode } = useAnalysisMode()
-const router = useRouter()
+const { mode, setMode, isModeSwitching } = useAnalysisMode()
+const { goToSection } = useSectionNav()
 
 function switchTo(next: AnalysisMode) {
   if (mode.value === next) return
   setMode(next)
-  router.push(next === 'vlm_direct' ? '/vlm-direct' : '/')
+  setTimeout(() => {
+    goToSection(next === 'vlm_direct' ? 'vlm-direct' : 'yeni-analiz')
+  }, 80)
 }
 </script>
 
 <template>
-  <div class="inline-flex items-center rounded-md border border-edge bg-surface-2 p-0.5 text-xs" role="tablist" aria-label="Analiz modu">
+  <div class="relative inline-flex items-center rounded-lg border border-edge/80 bg-surface-2 p-0.5 text-xs shadow-inner select-none" role="tablist" aria-label="Analiz modu">
+    <!-- Animated Active Background Pill -->
+    <div
+      class="absolute top-0.5 bottom-0.5 w-[calc(50%-2px)] rounded-md bg-surface-3 border border-edge-strong shadow-sm transition-transform duration-250 ease-out"
+      :style="{
+        transform: mode === 'vlm_direct' ? 'translateX(calc(100% + 2px))' : 'translateX(0px)',
+        transitionTimingFunction: 'cubic-bezier(0.16, 1, 0.3, 1)'
+      }"
+    />
+
     <button
       type="button"
       role="tab"
       :aria-selected="mode === 'low_budget'"
-      class="px-2.5 py-1 rounded transition-colors"
-      :class="mode === 'low_budget' ? 'bg-accent text-white' : 'text-slate-400 hover:text-slate-200'"
-      title="Düşük Bütçeli Analiz"
+      class="relative z-10 px-3 py-1 rounded-md transition-colors duration-150 text-center font-medium"
+      :class="mode === 'low_budget' ? 'text-slate-100' : 'text-slate-400 hover:text-slate-200'"
+      title="Lite Analiz (Kare Örnekleme)"
       @click="switchTo('low_budget')"
     >
-      Düşük Bütçeli
+      Lite
     </button>
     <button
       type="button"
       role="tab"
       :aria-selected="mode === 'vlm_direct'"
-      class="px-2.5 py-1 rounded transition-colors"
-      :class="mode === 'vlm_direct' ? 'bg-accent text-white' : 'text-slate-400 hover:text-slate-200'"
-      title="VLM Direct Analysis"
+      class="relative z-10 px-3 py-1 rounded-md transition-colors duration-150 text-center font-medium"
+      :class="mode === 'vlm_direct' ? 'text-slate-100' : 'text-slate-400 hover:text-slate-200'"
+      title="Direct Analiz (Doğrudan VLM)"
       @click="switchTo('vlm_direct')"
     >
-      VLM Direct
+      Direct
     </button>
   </div>
 </template>

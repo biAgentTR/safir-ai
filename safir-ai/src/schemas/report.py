@@ -292,6 +292,17 @@ class SafirReport(BaseModel):
     actions: List[str] = Field(
         default_factory=list, description="Operatore yonelik somut aksiyon onerileri listesi (sartname 'actions')."
     )
+    triggered_mock_actions: List[Dict[str, object]] = Field(
+        default_factory=list,
+        description=(
+            "05 LangGraph Agent'in bu calismada GERCEKTEN cagirdigi mock aksiyon araclari "
+            "(notify_health_team_tool/dispatch_security_tool/trigger_area_lockdown_tool - bkz. "
+            "`src/agent/tools.py`). `actions`teki metin onerilerinden FARKLIDIR: buradaki her oge "
+            "ajanin bir arac-cagrisi (tool_call) olarak DISA VURDUGU, somut bir aksiyonu temsil eder "
+            "(sartname: 'mock fonksiyonlarin ajanin araclari olarak basariyla kullanilmasi'). Her "
+            "oge {'tool', 'args', 'result'} anahtarlarini icerir; hicbir mock arac cagrilmadiysa bos."
+        ),
+    )
     onset_timestamp_str: Optional[str] = Field(
         default=None, description="Olayin/kazanin ILK BAŞLADIGI kareden alinan zaman damgasi (MM:SS)."
     )

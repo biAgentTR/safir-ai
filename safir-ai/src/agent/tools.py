@@ -1,11 +1,29 @@
 """05 - Dynamic Tool Router: ajanin dinamik olarak cagirabilecegi araclar.
 
-Bu modul, `Reasoning Agent`in baglama gore yonlendirdigi uc mock/taslak araci
-tanimlar: gecmis olay sorgulama (SQL Tool), zamansal cizelgeleme (Timeline
-Tool) ve ISG/operasyonel mevzuat aramasi (`retriever_tool`, Embedding & RAG
-Katmani uzerinden). Araclar, gercek `EventStore`/`EmbeddingRAGService`
-bagimliliklari verilmezse bile calisabilen mock veriye duser; boylece iskelet
-bagimsiz test edilebilir.
+Bu modul, `Reasoning Agent`in baglama gore yonlendirdigi araclari tanimlar:
+gecmis olay sorgulama (SQL Tool), zamansal cizelgeleme (Timeline Tool),
+ISG/operasyonel mevzuat aramasi (`retriever_tool`, Embedding & RAG Katmani
+uzerinden) ve bir risk iddiasini capraz-dogrulayan `verification_tool`.
+Bunlarin hepsi ic/salt-okuma araclardir - ajanin baglamini zenginlestirir
+ama disariya hicbir eylem tetiklemez.
+
+Ayrica, sartnamenin acikca istedigi "mock fonksiyonlarin ajanin araclari
+olarak kullanilmasi" gereksinimini karsilayan UC MOCK AKSIYON ARACI da
+burada tanimlanir (bkz. `MOCK_ACTION_TOOL_NAMES`): `notify_health_team_tool`,
+`dispatch_security_tool`, `trigger_area_lockdown_tool`. Bunlar, yukaridaki
+sorgu araclarindan farkli olarak, ajanin SAHADA bir eylemi (saglik ekibi
+bilgilendirme, guvenlik bildirimi, alan tahliye/kilitleme) SIMULE ETMEK icin
+kendi karariyla cagirdigi araclardir - gercek bir dis sisteme baglanmazlar
+(adlarindan da anlasilacagi gibi mock'tur), yalnizca loglayip bir onay/kayit
+metni dondururler. Bilincli olarak `EscalationPolicy`den (`src/decision/
+escalation.py`) AYRIDIR: EscalationPolicy, risk skoruna gore OTOMATIK ve
+deterministik olarak saha alarmini tetikler (ajanin bir karari degildir);
+bu mock araclar ise ajanin KENDI muhakemesiyle, bir aksiyon onerisini somut
+bir arac-cagrisi olarak da disa vurmasini saglar (bkz. `SafirAgent`'in sistem
+istemindeki "Mock Aksiyon Araclari" politikasi).
+
+Araclar, gercek `EventStore`/`EmbeddingRAGService` bagimliliklari verilmezse
+bile calisabilen mock veriye duser; boylece iskelet bagimsiz test edilebilir.
 """
 
 from __future__ import annotations
@@ -304,6 +322,131 @@ class TimelineTool:
         )
 
 
+class NotifyHealthTeamToolInput(BaseModel):
+    """`notify_health_team_tool` icin girdi semasi."""
+
+    event_id: str = Field(description="Ilgili olayin kimligi veya kisa tanimi (orn. 'dusme_00:18').")
+    urgency: str = Field(description="Aciliyet seviyesi: 'dusuk' | 'orta' | 'yuksek' | 'kritik'.")
+    note: Optional[str] = Field(default=None, description="Saglik ekibine iletilecek kisa ek not (varsa).")
+
+
+class NotifyHealthTeamTool:
+    """Saglik ekibini olay hakkinda bilgilendiren MOCK aksiyon araci.
+
+    Gercek bir dispatch/SMS/telsiz sistemine baglanmaz - sartnamenin istedigi
+    "mock fonksiyon" desenini karsilar: ajan, yaralanma/dusme/bilinc kaybi gibi
+    bir gozlemde bu araci KENDI karariyla cagirabilir; sonuc, ajanin mesaj
+    gecmisine bir `ToolMessage` olarak doner ve `SafirAgent.run()` tarafindan
+    `AgentDecision.triggered_mock_actions`e toplanip rapora tasinir (bkz.
+    `main.py::build_report`, `SafirReport.triggered_mock_actions`).
+    """
+
+    def run(self, event_id: str, urgency: str, note: Optional[str] = None) -> str:
+        """Aracin mock cagrisini yapar ve dogal dil bir onay/kayit metni dondurur."""
+        logger.warning(
+            "MOCK AKSIYON: saglik ekibi bilgilendirildi (event_id=%s, urgency=%s, note=%s)",
+            event_id,
+            urgency,
+            note or "-",
+        )
+        return (
+            f"[MOCK] Saglik ekibi bilgilendirildi. Olay: {event_id}, aciliyet: {urgency}."
+            + (f" Not: {note}" if note else "")
+        )
+
+    def as_langchain_tool(self) -> StructuredTool:
+        """Bu araci LangGraph/LangChain ajanina baglanabilecek `StructuredTool`'a cevirir."""
+        return StructuredTool.from_function(
+            func=self.run,
+            name="notify_health_team_tool",
+            description=(
+                "MOCK arac: yaralanma, dusme, bilinc kaybi gibi saglikla ilgili acil bir gozlem "
+                "oldugunda saglik ekibini bilgilendirir. Gercek bir dis sisteme baglanmaz "
+                "(simule edilmis saha aksiyonu); cagrilmasi rapora islenir."
+            ),
+            args_schema=NotifyHealthTeamToolInput,
+        )
+
+
+class DispatchSecurityToolInput(BaseModel):
+    """`dispatch_security_tool` icin girdi semasi."""
+
+    zone: str = Field(description="Guvenlik ekibinin yonlendirilecegi saha/bolge tanimi.")
+    reason: str = Field(description="Yonlendirme gerekcesi (dogal dil, orn. 'yetkisiz erisim').")
+
+
+class DispatchSecurityTool:
+    """Guvenlik ekibini bir bolgeye yonlendiren MOCK aksiyon araci.
+
+    Bkz. `NotifyHealthTeamTool` docstring'i - ayni mock desen: gercek bir dis
+    sisteme baglanmaz, ajanin kendi karariyla (orn. yetkisiz erisim, ekipman
+    kaybi, guvenlik ihlali gozlemlerinde) cagirabilecegi simule edilmis bir
+    saha eylemidir.
+    """
+
+    def run(self, zone: str, reason: str) -> str:
+        """Aracin mock cagrisini yapar ve dogal dil bir onay/kayit metni dondurur."""
+        logger.warning("MOCK AKSIYON: guvenlik ekibi yonlendirildi (zone=%s, reason=%s)", zone, reason)
+        return f"[MOCK] Guvenlik ekibi '{zone}' bolgesine yonlendirildi. Gerekce: {reason}"
+
+    def as_langchain_tool(self) -> StructuredTool:
+        """Bu araci LangGraph/LangChain ajanina baglanabilecek `StructuredTool`'a cevirir."""
+        return StructuredTool.from_function(
+            func=self.run,
+            name="dispatch_security_tool",
+            description=(
+                "MOCK arac: yetkisiz erisim, guvenlik ihlali veya fiziksel mudahale gerektiren bir "
+                "gozlem oldugunda guvenlik ekibini belirtilen bolgeye yonlendirir. Gercek bir dis "
+                "sisteme baglanmaz (simule edilmis saha aksiyonu); cagrilmasi rapora islenir."
+            ),
+            args_schema=DispatchSecurityToolInput,
+        )
+
+
+class TriggerAreaLockdownToolInput(BaseModel):
+    """`trigger_area_lockdown_tool` icin girdi semasi."""
+
+    zone: str = Field(description="Tahliye edilecek/kilitlenecek saha/bolge tanimi.")
+    reason: str = Field(description="Kilitleme gerekcesi (dogal dil, orn. 'yangin/patlama riski').")
+
+
+class TriggerAreaLockdownTool:
+    """Bir bolgeyi tahliye/kilitleme sinyali veren MOCK aksiyon araci (en agir kademe).
+
+    Bkz. `NotifyHealthTeamTool` docstring'i - ayni mock desen. Bu, uc mock
+    aksiyon aracinin en agir olanidir; ajan yalnizca aktif yangin/patlama/gaz
+    kacagi gibi HAYATI tehlike gozlemlerinde bu araci cagirmalidir (bkz.
+    `AGENT_SYSTEM_PROMPT`daki "Mock Aksiyon Araclari" politikasi).
+    """
+
+    def run(self, zone: str, reason: str) -> str:
+        """Aracin mock cagrisini yapar ve dogal dil bir onay/kayit metni dondurur."""
+        logger.warning("MOCK AKSIYON: alan kilitleme/tahliye tetiklendi (zone=%s, reason=%s)", zone, reason)
+        return f"[MOCK] '{zone}' bolgesi icin tahliye/kilitleme sinyali verildi. Gerekce: {reason}"
+
+    def as_langchain_tool(self) -> StructuredTool:
+        """Bu araci LangGraph/LangChain ajanina baglanabilecek `StructuredTool`'a cevirir."""
+        return StructuredTool.from_function(
+            func=self.run,
+            name="trigger_area_lockdown_tool",
+            description=(
+                "MOCK arac: aktif yangin, patlama, gaz kacagi gibi HAYATI tehlike icin bir "
+                "bolgenin tahliyesini/kilitlenmesini tetikler (en agir mock aksiyon kademesi). "
+                "Gercek bir dis sisteme baglanmaz (simule edilmis saha aksiyonu); cagrilmasi rapora islenir."
+            ),
+            args_schema=TriggerAreaLockdownToolInput,
+        )
+
+
+# Yukaridaki uc mock aksiyon aracinin adlari - `SafirAgent.run()` bu kumeyi
+# kullanarak, hangi arac cagrilarinin (sql/retriever/timeline/verification
+# gibi ic sorgu araclarindan farkli olarak) `AgentDecision.triggered_mock_actions`e
+# toplanacagini belirler.
+MOCK_ACTION_TOOL_NAMES = frozenset(
+    {"notify_health_team_tool", "dispatch_security_tool", "trigger_area_lockdown_tool"}
+)
+
+
 def build_tool_registry(
     event_store: Optional[EventStore] = None,
     rag_service: Optional[EmbeddingRAGService] = None,
@@ -316,9 +459,10 @@ def build_tool_registry(
         rag_service: retriever/verification araclarinin kullanacagi Embedding & RAG servisi.
         tools_config: `configs/config.yaml` icindeki `agent.tools` blogu
             (`AgentToolsConfig`). `None` verilirse geriye-uyum icin TUM araclar
-            (verification dahil) kurulur; verilirse yalnizca `*_enabled=true`
-            olanlar eklenir. `rag_tool_enabled` ile `retriever_tool_enabled`
-            ayni RAG aracina isaret eder (herhangi biri true ise eklenir).
+            (verification + mock aksiyon araclari dahil) kurulur; verilirse
+            yalnizca `*_enabled=true` olanlar eklenir. `rag_tool_enabled` ile
+            `retriever_tool_enabled` ayni RAG aracina isaret eder (herhangi
+            biri true ise eklenir).
 
     Returns:
         LangGraph ajanina dogrudan baglanabilecek `StructuredTool` listesi.
@@ -336,4 +480,8 @@ def build_tool_registry(
         tools.append(TimelineTool(event_store).as_langchain_tool())
     if _enabled("verification_tool_enabled"):
         tools.append(VerificationTool(event_store, rag_service).as_langchain_tool())
+    if _enabled("mock_action_tools_enabled"):
+        tools.append(NotifyHealthTeamTool().as_langchain_tool())
+        tools.append(DispatchSecurityTool().as_langchain_tool())
+        tools.append(TriggerAreaLockdownTool().as_langchain_tool())
     return tools

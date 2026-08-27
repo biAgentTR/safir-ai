@@ -255,11 +255,22 @@ export const useAnalysisStore = defineStore('analysis', {
       }
     },
 
+    /**
+     * Fire-and-forget from the caller (never awaited/cancelled directly), so
+     * without the this.jobId checks below, resetJob() (e.g. "start a new VLM
+     * Direct analysis" from Ana Sayfa) does NOT stop this loop — a moment
+     * later its next tick calls applyStatus() with the OLD job's status and
+     * silently clobbers the fresh reset (the operator sees the just-finished
+     * analysis' "ANALİZ ÇALIŞIYOR" state reappear instead of a clean form).
+     * Bail out as soon as this.jobId no longer matches the job we're polling.
+     */
     async pollUntilDone(jobId: string, intervalMs = 500, timeoutMs = 120_000) {
       const api = useSafirApi()
       const deadline = Date.now() + timeoutMs
       while (Date.now() < deadline) {
+        if (this.jobId !== jobId) return
         const s = await api.getJob(jobId)
+        if (this.jobId !== jobId) return
         this.applyStatus(s)
         if (s.status === 'done' || s.status === 'error') return
         await new Promise((r) => setTimeout(r, intervalMs))

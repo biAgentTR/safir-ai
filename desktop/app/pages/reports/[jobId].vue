@@ -11,6 +11,7 @@ const route = useRoute()
 const jobId = computed(() => String(route.params.jobId))
 
 const store = useAnalysisStore()
+const { goToSection } = useSectionNav()
 
 onMounted(async () => {
   await store.loadHistory(jobId.value)
@@ -31,7 +32,7 @@ function basename(src: string | null | undefined): string {
   <div class="px-6 py-8 max-w-4xl mx-auto space-y-6">
     <!-- header -->
     <div class="flex items-center gap-4">
-      <NuxtLink to="/reports" class="btn-ghost">← Raporlar</NuxtLink>
+      <button type="button" class="btn-ghost" @click="goToSection('raporlar')">← Raporlar</button>
       <div class="min-w-0">
         <h2 class="text-lg font-semibold text-slate-100 truncate">{{ basename(store.lastRequest?.video_source) }}</h2>
         <div class="text-[11px] text-slate-500 font-mono">{{ jobId.slice(0, 8) }}</div>

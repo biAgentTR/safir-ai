@@ -490,6 +490,11 @@ class AgentToolsConfig(BaseModel):
     retriever_tool_enabled: bool
     timeline_tool_enabled: bool
     verification_tool_enabled: bool
+    mock_action_tools_enabled: bool = True
+    """notify_health_team_tool/dispatch_security_tool/trigger_area_lockdown_tool
+    (bkz. `src/agent/tools.py::MOCK_ACTION_TOOL_NAMES`) - ajanin sahada bir
+    eylemi simule etmek icin kendi karariyla cagirabilecegi mock araclar
+    (sartname: "mock fonksiyonlarin ajanin araclari olarak kullanilmasi")."""
 
 
 class AgentConfig(BaseModel):

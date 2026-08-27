@@ -36,7 +36,7 @@ from langchain_core.tools import StructuredTool
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
-from src.agent.tools import build_tool_registry
+from src.agent.tools import MOCK_ACTION_TOOL_NAMES, build_tool_registry
 from src.rag.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
 from src.prompts import AGENT_SYSTEM_PROMPT, DECISION_SYNTHESIS_INSTRUCTION, build_agent_user_prompt
@@ -92,6 +92,16 @@ class AgentDecision:
     onset_timestamp: Optional[str] = None
     safe_timestamps: List[str] = field(default_factory=list)
     incident_timestamps: List[str] = field(default_factory=list)
+    triggered_mock_actions: List[Dict[str, Any]] = field(default_factory=list)
+    """Ajanin bu calisma sirasinda GERCEKTEN cagirdigi mock aksiyon araclari
+    (`notify_health_team_tool`/`dispatch_security_tool`/`trigger_area_lockdown_tool`
+    - bkz. `src/agent/tools.py::MOCK_ACTION_TOOL_NAMES`). Her oge
+    `{"tool": <arac adi>, "args": {...}, "result": <arac ciktisi>}` bicimindedir.
+    Bu, sartnamenin "mock fonksiyonlarin ajanin araclari olarak BASARIYLA
+    KULLANILMASI" gereksinimini somut/denetlenebilir kilar (bkz. `main.py::
+    build_report`, `SafirReport.triggered_mock_actions`) - sql/retriever/
+    timeline/verification gibi ic sorgu araclarindan farkli olarak burada
+    ayrica izlenir, cunku bunlar disariya bir "eylem" temsil eder."""
 
 
 class SafirAgent:
@@ -350,7 +360,48 @@ class SafirAgent:
         if self._use_json_mode and self._extract_json(final_text) is None:
             final_text = self._guided_json_retry(final_state["messages"], final_text)
 
-        return self._parse_decision(final_text)
+        decision = self._parse_decision(final_text)
+        decision.triggered_mock_actions = self._extract_triggered_mock_actions(final_state["messages"])
+        return decision
+
+    @staticmethod
+    def _extract_triggered_mock_actions(messages: Sequence[BaseMessage]) -> List[Dict[str, Any]]:
+        """Bu calistirmada GERCEKTEN cagirilan mock aksiyon araclarini (varsa) toplar.
+
+        `_tools_node` her arac cagrisi icin bir `ToolMessage` uretir
+        (`tool_call_id` ile eslesir) - burada yalnizca adi `MOCK_ACTION_TOOL_NAMES`
+        icinde olan cagrilar (sql/retriever/timeline/verification gibi ic
+        sorgu araclari HARIC) secilip ajanin cagirdigi arac adi/argumanlari ve
+        arac ciktisiyla birlikte dondurulur (bkz. `AgentDecision.
+        triggered_mock_actions` docstring'i).
+
+        Args:
+            messages: `self._graph.invoke(...)` sonrasi biriken tam mesaj gecmisi.
+
+        Returns:
+            `{"tool", "args", "result"}` sozlukleri listesi (cagri sirasiyla);
+            hic mock aksiyon araci cagrilmadiysa bos liste.
+        """
+        tool_results: Dict[str, str] = {
+            msg.tool_call_id: str(msg.content)
+            for msg in messages
+            if isinstance(msg, ToolMessage)
+        }
+        triggered: List[Dict[str, Any]] = []
+        for msg in messages:
+            if not isinstance(msg, AIMessage):
+                continue
+            for call in getattr(msg, "tool_calls", None) or []:
+                if call.get("name") not in MOCK_ACTION_TOOL_NAMES:
+                    continue
+                triggered.append(
+                    {
+                        "tool": call["name"],
+                        "args": call.get("args", {}),
+                        "result": tool_results.get(call.get("id"), ""),
+                    }
+                )
+        return triggered
 
     def _degraded_decision(self, error: str) -> AgentDecision:
         """Muhakeme hatasinda operatoru manuel incelemeye yonlendiren guvenli karar.

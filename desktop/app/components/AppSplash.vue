@@ -1,34 +1,44 @@
 <script setup lang="ts">
-// First-launch welcome overlay: covers the shell until the initial backend
-// health probe resolves, so the app doesn't cold-open on a bare, empty frame.
-// A short minimum display time avoids a one-frame flash when the backend is
-// already warm and the probe resolves almost instantly.
-//
-// hasShownOnce is shared app-wide (useState) so this only ever blocks on the
-// TRUE cold boot — this component remounts every time the operator navigates
-// back to Genel Bakış (it lives on that page), and without this guard it
-// would re-run its own 700ms minimum display each time, stacking with
-// PanelTransition's sidebar-switch overlay (usePanelTransition.ts).
+// First-launch welcome overlay: covers the shell briefly on cold boot.
+// Enforces a strict max timeout so the splash screen NEVER gets stuck on a black frame.
+
 const { state } = useBackendHealth()
 const hasShownOnce = useState<boolean>('app-splash-shown-once', () => false)
+const isDismissed = ref(false)
 
-const minTimeElapsed = ref(false)
-let timer: ReturnType<typeof setTimeout> | null = null
+let minTimer: ReturnType<typeof setTimeout> | null = null
+let maxTimer: ReturnType<typeof setTimeout> | null = null
+
 onMounted(() => {
-  if (hasShownOnce.value) return
-  timer = setTimeout(() => {
-    minTimeElapsed.value = true
-  }, 700)
+  if (hasShownOnce.value) {
+    isDismissed.value = true
+    return
+  }
+
+  // Hard safety timeout: Dismiss splash screen after at most 800ms regardless of backend state
+  maxTimer = setTimeout(() => {
+    isDismissed.value = true
+    hasShownOnce.value = true
+  }, 800)
 })
+
+watch(state, (newState) => {
+  if (newState !== 'checking' && !isDismissed.value) {
+    minTimer = setTimeout(() => {
+      isDismissed.value = true
+      hasShownOnce.value = true
+    }, 400)
+  }
+})
+
 onBeforeUnmount(() => {
-  if (timer) clearTimeout(timer)
+  if (minTimer) clearTimeout(minTimer)
+  if (maxTimer) clearTimeout(maxTimer)
 })
 
 const visible = computed(() => {
-  if (hasShownOnce.value) return false
-  const resolved = state.value !== 'checking' && minTimeElapsed.value
-  if (resolved) hasShownOnce.value = true
-  return !resolved
+  if (hasShownOnce.value || isDismissed.value) return false
+  return true
 })
 </script>
 

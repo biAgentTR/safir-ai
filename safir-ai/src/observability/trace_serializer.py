@@ -487,6 +487,7 @@ def serialize_decision(
         "recommended_action": d.recommended_action,
         "actions": d.actions,
         "events": d.events,
+        "triggered_mock_actions": getattr(d, "triggered_mock_actions", []),
     }
     if risk_status == "unknown" or d.risk_score is None:
         summary = "Risk BELIRSIZ (analiz guvenilir sekilde tamamlanamadi)"

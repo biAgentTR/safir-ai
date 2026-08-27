@@ -12,6 +12,7 @@ const store = useAnalysisStore()
 const stream = useAnalysisStream()
 const { maybeAlarm } = useAlarm()
 const { state: backendHealth } = useBackendHealth()
+const { goToSection } = useSectionNav()
 
 type Tab = 'evidence' | 'timeline' | 'report'
 const tab = ref<Tab>('report')
@@ -61,7 +62,7 @@ onBeforeUnmount(() => stream.stop())
   <div class="px-6 py-5 space-y-5 max-w-[1500px] mx-auto">
     <!-- header -->
     <div class="flex items-center gap-4">
-      <NuxtLink :to="isHistory ? '/history' : '/new-analysis'" class="btn-ghost">← {{ isHistory ? 'Geçmiş' : 'Yeni' }}</NuxtLink>
+      <button type="button" class="btn-ghost" @click="goToSection(isHistory ? 'gecmis' : 'yeni-analiz')">← {{ isHistory ? 'Geçmiş' : 'Yeni' }}</button>
       <div class="min-w-0">
         <div class="eyebrow">İş Kimliği</div>
         <div class="font-mono text-sm text-slate-300 truncate">{{ jobId }}</div>

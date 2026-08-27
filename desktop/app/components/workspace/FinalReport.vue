@@ -40,6 +40,18 @@ function doExportHtml() {
 function doExportPdf() {
   if (r.value) runExport('pdf', () => exportPdf(store.jobId, r.value as NonNullable<typeof r.value>))
 }
+
+// notify_health_team_tool/dispatch_security_tool/trigger_area_lockdown_tool
+// (src/agent/tools.py) — sabit, insan-okunur Türkçe etiketler; bilinmeyen bir
+// arac adi gelirse adin kendisi fallback olarak kalır.
+const MOCK_ACTION_LABELS: Record<string, string> = {
+  notify_health_team_tool: 'Sağlık Ekibi Bilgilendirildi',
+  dispatch_security_tool: 'Güvenlik Ekibi Yönlendirildi',
+  trigger_area_lockdown_tool: 'Alan Tahliye/Kilitleme Tetiklendi',
+}
+function mockActionLabel(tool: string): string {
+  return MOCK_ACTION_LABELS[tool] ?? tool
+}
 </script>
 
 <template>
@@ -66,6 +78,19 @@ function doExportPdf() {
             <li v-for="(a, i) in r.actions" :key="i">{{ a }}</li>
           </ol>
           <p v-else class="text-sm text-slate-400">{{ r.recommended_action || '—' }}</p>
+        </div>
+        <div v-if="r.triggered_mock_actions?.length">
+          <div class="field-label">Ajanın Çağırdığı Mock Aksiyon Araçları</div>
+          <ul class="space-y-1.5">
+            <li
+              v-for="(t, i) in r.triggered_mock_actions"
+              :key="i"
+              class="rounded-md border border-accent/30 bg-accent/10 px-3 py-2 text-xs text-slate-200"
+            >
+              <span class="font-mono text-accent">{{ mockActionLabel(t.tool) }}</span>
+              <span class="text-slate-400"> — {{ t.result }}</span>
+            </li>
+          </ul>
         </div>
       </section>
 

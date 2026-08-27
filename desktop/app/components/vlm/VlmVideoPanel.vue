@@ -107,8 +107,8 @@ const progressPct = computed(() => markerPct(props.currentTime))
       </div>
       <div v-else class="text-center px-6">
         <div class="text-4xl mb-3 text-slate-600" aria-hidden="true">▶</div>
-        <p class="text-sm text-slate-400">Analiz için bir video seçin.</p>
-        <button type="button" class="btn-primary mt-3" @click="emit('pick-file')">Video Seç</button>
+        <p class="text-sm text-slate-400">Video seçtikten sonra burada oynatılacaktır.</p>
+        <p class="mt-1 text-xs text-slate-600">Yukarıdaki "Video Seç" ile bir dosya seçin.</p>
       </div>
     </div>
 
