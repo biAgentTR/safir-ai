@@ -8,6 +8,10 @@ import type { HistoryListItem } from '~/types/api'
 const api = useSafirApi()
 const router = useRouter()
 const { goToSection } = useSectionNav()
+const { mode } = useAnalysisMode()
+// Yeni Analiz (the low_budget form) isn't mounted in vlm_direct mode — its
+// own composer lives in the VLM Direct Analiz section instead. See pages/index.vue.
+const newAnalysisSectionId = computed(() => (mode.value === 'vlm_direct' ? 'vlm-direct' : 'yeni-analiz'))
 
 const items = ref<HistoryListItem[]>([])
 const loading = ref(true)
@@ -74,7 +78,7 @@ onMounted(() => load(true))
     <!-- truly empty: no more pages left AND nothing completed found -->
     <div v-else-if="!reports.length && done" class="card p-10 text-center">
       <p class="text-sm text-slate-400">Henüz tamamlanmış bir rapor yok.</p>
-      <button type="button" class="btn-primary mt-4 inline-flex" @click="goToSection('yeni-analiz')">İlk analizi başlat</button>
+      <button type="button" class="btn-primary mt-4 inline-flex" @click="goToSection(newAnalysisSectionId)">İlk analizi başlat</button>
     </div>
 
     <!-- loaded page(s) had no completed analyses yet, but more pages remain -->

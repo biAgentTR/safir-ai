@@ -16,7 +16,11 @@ const { mode } = useAnalysisMode()
     <!-- VLM Direct mode's own dashboard is its own section, right after Ana Sayfa when active -->
     <VlmDirectSection v-if="mode === 'vlm_direct'" />
 
-    <NewAnalysisSection />
+    <!-- Yeni Analiz is the low_budget pipeline's OWN submission form (sample_fps,
+         min_change_threshold, ...) — irrelevant in vlm_direct mode, which has its
+         own composer inside VlmDirectSection above. Mounting it there just left
+         an unrelated form sitting right under the VLM Direct results. -->
+    <NewAnalysisSection v-if="mode === 'low_budget'" />
     <HistorySection />
     <ReportsSection />
     <AssistantSection />
