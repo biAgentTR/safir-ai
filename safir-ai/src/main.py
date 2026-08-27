@@ -1502,20 +1502,26 @@ class SafirPipeline:
         return self._agent.run(prompt_block)
 
     def stage_finalize_risk(self, decision, rule_matches, temporal_events=None, semantic_rag_sources=None):
-        """07c: RISK ENGINE V2 - `RuleEngine`+kanit-tabanli matematiksel modelin (`risk_model.py`) kararini nihai risk kaynagi olarak uygular.
+        """07c: RISK ENGINE V2.1 - deterministik (RuleEngine+`risk_model.py`) skor ile Agent'in taslak skorunun ORTALAMASINI nihai risk olarak uygular.
 
-        Mimari karar: VLM ve `05 LangGraph Agent`taki LLM risk KARARI vermez,
-        yalnizca gozlem/ozet uretir (bu taslak, `RiskProvenance.llm_proposed_score`
-        olarak izlenir - final skoru ASLA BELIRLEMEZ). Nihai `risk_score`/
-        `risk_level`, `RuleEngine.evaluate(...)` ciktisindan (`rule_matches`)
-        VE mevcut diger yapilandirilmis kanittan (`temporal_events`,
-        `semantic_rag_sources`) `resolve_deterministic_risk_with_provenance`
-        ile matematiksel olarak turetilir (bkz. `src/event_analysis/risk_model.py`).
-        Bu cagriya ait HICBIR kural eslesmediyse (`rule_matches` bos veya
-        taninmayan siddette), LLM Agent'in karari (`decision.risk_score`/
-        `risk_level`/`risk_status`) DEGISTIRILMEDEN korunur - boylece
-        deterministik sinyal yokken sistem sessizce "dusuk risk" UYDURMAZ,
-        LLM'in (varsa) degerlendirmesine ya da "unknown" durumuna duser.
+        Mimari karar (2026-08-27 guncellemesi - kullanici talebi): VLM ve
+        `05 LangGraph Agent`taki LLM tek basina risk KARARI vermez, ama
+        kendi taslak tahmini (`RiskProvenance.llm_proposed_score`) ARTIK
+        nihai skora KATKIDA BULUNUR - `RuleEngine.evaluate(...)` ciktisindan
+        (`rule_matches`) VE mevcut diger yapilandirilmis kanittan
+        (`temporal_events`, `semantic_rag_sources`) turetilen deterministik
+        skor ile ORTALAMASI alinir (bkz. `risk_resolver._pick_provenance`).
+        Deterministik deger, blended degerden BAGIMSIZ olarak
+        `RiskProvenance.deterministic_score`/`deterministic_level` alanlarinda
+        AYRICA saklanir - iki deger operatore/rapora AYRI AYRI gosterilir.
+        Kritik bir fiziksel tehlike icin guvenlik tabani (bkz.
+        `risk_model._CRITICAL_HAZARD_FLOOR`) devredeyse, ortalama bu tabanin
+        ALTINA DUSURULMEZ. Bu cagriya ait HICBIR kural eslesmediyse
+        (`rule_matches` bos veya taninmayan siddette), LLM Agent'in karari
+        (`decision.risk_score`/`risk_level`/`risk_status`) DEGISTIRILMEDEN
+        korunur - boylece deterministik sinyal yokken sistem sessizce
+        "dusuk risk" UYDURMAZ, LLM'in (varsa) degerlendirmesine ya da
+        "unknown" durumuna duser.
 
         Onemli guvenlik istisnasi: `decision.risk_status == "unknown"` ise
         (05 LangGraph Agent muhakemesi TAMAMEN basarisiz oldu, bkz.
@@ -1567,11 +1573,28 @@ class SafirPipeline:
         kanit YOK sayilir - bu durumda (dusuk risk haricinde) otomatik islem/
         alarm YAPILMAZ, `PENDING_REVIEW`e dusulur (bkz. `EscalationPolicy.
         evaluate` docstring'i).
+
+        RISK ENGINE V2.1 (2026-08-27) guvenlik notu: `report.risk_score`
+        (operatore GOSTERILEN nihai deger) artik deterministik skorla Agent'in
+        taslak skorunun ORTALAMASIDIR (bkz. `risk_resolver.py`) - ama OTOMATIK
+        alarm tetikleme KARARI kasitli olarak BUNU KULLANMAZ: Agent'in dusuk
+        (yanlis/naif) bir taslak tahmini, ZATEN RuleEngine tarafindan
+        dogrulanmis kritik bir fiziksel tehlikenin otomatik alarmini
+        ORTALAMA yoluyla SESSIZCE BASTIRAMAZ. Bu yuzden mumkunse
+        `risk_provenance.deterministic_score/deterministic_level` (HAM,
+        Agent'ten bagimsiz deger) kullanilir; yalnizca hicbir deterministik
+        kural eslesmediyse (`deterministic_score is None`) Agent'in kendi
+        (blended'a esit) degerine dusulur.
         """
         has_deterministic_backing = bool(risk_provenance and risk_provenance.rule_ids)
+        escalation_score = decision.risk_score
+        escalation_level = decision.risk_level
+        if risk_provenance is not None and risk_provenance.deterministic_score is not None:
+            escalation_score = risk_provenance.deterministic_score
+            escalation_level = risk_provenance.deterministic_level
         escalation = self._escalation.evaluate(
-            risk_score=decision.risk_score,
-            risk_level=decision.risk_level,
+            risk_score=escalation_score,
+            risk_level=escalation_level,
             recommended_action=decision.recommended_action,
             summary=decision.summary or vlm_response.description,
             risk_status=decision.risk_status,
@@ -1751,6 +1774,8 @@ class SafirPipeline:
             risk_features=risk_provenance.features,
             risk_feature_contributions=risk_provenance.feature_contributions,
             llm_proposed_score=risk_provenance.llm_proposed_score,
+            deterministic_score=risk_provenance.deterministic_score,
+            deterministic_level=risk_provenance.deterministic_level,
             cross_encoder_status=cross_encoder_status,
             relevance_weights=relevance_weights,
             relevance_threshold=relevance_threshold,

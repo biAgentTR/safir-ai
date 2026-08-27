@@ -29,6 +29,13 @@ const RISK_VAR: Record<string, string> = {
   unknown: '--c-slate-500',
 }
 const bandBorderStyle = computed(() => ({ borderTopColor: `rgb(var(${RISK_VAR[tone.value]}))` }))
+
+// Şartname "Açıklanabilir Çıktı" gerekliliği: nihai risk skoru, deterministik
+// (RuleEngine + risk_model) skor ile Ajan'ın (LLM) taslak skorunun ortalaması
+// olarak hesaplanır — her iki bileşen de operatöre AYRI AYRI gösterilir.
+const hasRiskBreakdown = computed(
+  () => store.report?.deterministic_score != null || store.report?.llm_proposed_score != null,
+)
 </script>
 
 <template>
@@ -106,6 +113,39 @@ const bandBorderStyle = computed(() => ({ borderTopColor: `rgb(var(${RISK_VAR[to
           {{ store.ack.message }}
         </p>
       </div>
+    </div>
+
+    <!-- Risk doğruluğu / hesaplama şeffaflığı: deterministik (RuleEngine) skor
+         ile Ajan'ın (LLM) taslak skoru AYRI AYRI gösterilir; nihai skor bu
+         ikisinin ortalamasıdır (bkz. src/event_analysis/risk_resolver.py). -->
+    <div v-if="hasRiskBreakdown" class="card p-4">
+      <div class="eyebrow mb-2">Risk Doğruluğu — Hesaplama Detayı</div>
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+        <div class="rounded-md border border-edge bg-panel/40 p-3">
+          <div class="text-[11px] uppercase tracking-wide text-slate-500">Deterministik Skor</div>
+          <div class="mt-1 text-xl font-bold tabular-nums text-slate-200">
+            {{ store.report?.deterministic_score ?? '—' }}<span class="text-xs text-slate-500"> / 100</span>
+          </div>
+          <div class="text-xs text-slate-500 mt-0.5">{{ store.report?.deterministic_level ?? '—' }} (RuleEngine)</div>
+        </div>
+        <div class="rounded-md border border-edge bg-panel/40 p-3">
+          <div class="text-[11px] uppercase tracking-wide text-slate-500">Ajan (LLM) Taslak Skoru</div>
+          <div class="mt-1 text-xl font-bold tabular-nums text-slate-200">
+            {{ store.report?.llm_proposed_score ?? '—' }}<span class="text-xs text-slate-500"> / 100</span>
+          </div>
+          <div class="text-xs text-slate-500 mt-0.5">Doğrulanmamış taslak tahmin</div>
+        </div>
+        <div class="rounded-md border p-3" :class="RISK_TEXT[tone]" :style="{ borderColor: `rgb(var(${RISK_VAR[tone]}) / 0.4)` }">
+          <div class="text-[11px] uppercase tracking-wide opacity-70">Nihai (Ortalama) Skor</div>
+          <div class="mt-1 text-xl font-bold tabular-nums">
+            {{ store.report?.risk_score ?? '—' }}<span class="text-xs opacity-70"> / 100</span>
+          </div>
+          <div class="text-xs opacity-70 mt-0.5">{{ store.report?.risk_level ?? '—' }}</div>
+        </div>
+      </div>
+      <p v-if="store.report?.risk_explanation" class="mt-3 text-xs text-slate-400">
+        {{ store.report.risk_explanation }}
+      </p>
     </div>
   </div>
 </template>

@@ -113,6 +113,12 @@ export interface SafirReport {
   /** 'rule_engine' | 'agent' | 'unknown' - bkz. src/main.py::build_report. */
   risk_source?: string | null
   risk_explanation?: string | null
+  /** Agent'in (LLM) kendi taslak risk skoru — bkz. RiskProvenance.llm_proposed_score. */
+  llm_proposed_score?: number | null
+  /** SADECE RuleEngine + risk_model formülünden türemiş, Agent'ten BAĞIMSIZ skor. */
+  deterministic_score?: number | null
+  /** deterministic_score'a karşılık gelen risk seviyesi. */
+  deterministic_level?: string | null
   recommended_action: string
   actions: string[]
   /** Ajanın gerçekten çağırdığı mock aksiyon araçları (bkz. TriggeredMockAction). */

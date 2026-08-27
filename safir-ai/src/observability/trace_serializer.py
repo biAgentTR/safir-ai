@@ -527,6 +527,8 @@ def serialize_decision_final(
             "feature_values": provenance.features,
             "feature_contributions": provenance.feature_contributions,
             "llm_proposed_score": provenance.llm_proposed_score,
+            "deterministic_score": provenance.deterministic_score,
+            "deterministic_level": provenance.deterministic_level,
             "regulatory_evidence_ids": provenance.regulatory_evidence_ids,
         }
 
@@ -541,12 +543,13 @@ def serialize_decision_final(
         summary = "Nihai risk BELIRSIZ (analiz guvenilir sekilde tamamlanamadi)"
     elif provenance_data and provenance_data["risk_source"] == "rule_engine":
         llm_bit = (
-            f", Agent'in taslak tahmini={provenance_data['llm_proposed_score']} (DIKKATE ALINMADI)"
+            f", deterministik={provenance_data['deterministic_score']}/100 + "
+            f"Agent taslagi={provenance_data['llm_proposed_score']}/100 -> ORTALAMA"
             if provenance_data.get("llm_proposed_score") is not None
-            else ""
+            else f", deterministik={provenance_data['deterministic_score']}/100 (Agent taslagi yok)"
         )
         summary = (
-            f"NIHAI (authoritative) risk: {d.risk_level.upper()} ({d.risk_score}/100, "
+            f"NIHAI (blended) risk: {d.risk_level.upper()} ({d.risk_score}/100, "
             f"scoring_method={provenance_data.get('scoring_method')}) "
             f"- kaynak: RuleEngine [{', '.join(provenance_data['rule_ids'])}]{llm_bit}"
         )
