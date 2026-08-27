@@ -6,6 +6,7 @@
 
 <template>
   <div class="h-full flex bg-surface-0">
+    <BackgroundScene />
     <AppSidebar />
     <div class="flex-1 min-w-0 flex flex-col">
       <AppTopbar />

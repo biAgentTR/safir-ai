@@ -40,6 +40,7 @@ const dot = computed(() => ({
         />
         <span class="text-slate-400 font-mono tracking-tight">{{ label }}</span>
       </div>
+      <NuxtLink to="/admin/login" class="btn-ghost !py-1.5 !px-2.5 text-xs">Yönetici Girişi</NuxtLink>
       <ThemeToggle />
     </div>
   </header>
