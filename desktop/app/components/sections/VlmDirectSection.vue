@@ -161,28 +161,46 @@ const processingLog = ref<VlmLogEntry[]>([])
 watch(vlmProgress, (p) => {
   if (!p) return
   const id = `${p.phase}-${p.chunk_index ?? 0}-${processingLog.value.length}`
-  if (p.phase === 'chunking' && p.total_chunks && p.total_chunks > 1) {
-    // yeni bir chunking basladi (ör. yeni analiz) - eski bildirimi/günlüğü temizle
+  // KRITIK: kisa/tek-parcali videolarda (`total_chunks === 1`, ör. ~20-30s'lik
+  // bir klip) backend `phase="chunking"` olayini HIC yaymaz (bkz. evren_vlm.py
+  // `analyze_video` - bu olay yalnizca video GERCEKTEN birden fazla parcaya
+  // bolunduyse yayinlanir) - ama `chunk_start`/`chunk_done` HER ZAMAN
+  // (chunk_index=1, total_chunks=1 ile de) yayinlanir. Önceki mantık
+  // "tamamlandı" bildirimini yalnızca `total_chunks > 1` iken tetikliyordu -
+  // bu yüzden en yaygın durumda (tek parçalı, kısa klip) operatör HİÇBİR
+  // "bitti" bildirimi GÖRMÜYORDU. Artık `total_chunks > 1` şartı YOK -
+  // tek/çok parça FARK ETMEKSİZİN her zaman tetiklenir.
+  if ((p.phase === 'chunking' || (p.phase === 'chunk_start' && p.chunk_index === 1))) {
+    // yeni bir video-gönderimi basladi (ör. yeni analiz) - eski bildirimi/günlüğü temizle
     chunkingDoneNotice.value = null
+    processingLog.value = []
+  }
+  if (p.phase === 'chunking' && p.total_chunks) {
     processingLog.value = [{ id, text: `Video ${p.total_chunks} parçaya bölünüyor ve EVREN'e gönderiliyor…`, tone: 'info' }]
   } else if (p.phase === 'chunk_start') {
+    const label = p.total_chunks && p.total_chunks > 1 ? `Parça ${p.chunk_index}/${p.total_chunks}` : 'Video'
     processingLog.value = [
-      { id, text: `Parça ${p.chunk_index}/${p.total_chunks ?? '?'} gönderiliyor${p.video_mb ? ` (~${p.video_mb} MB)` : ''}…`, tone: 'info' },
+      { id, text: `${label} EVREN'e gönderiliyor${p.video_mb ? ` (~${p.video_mb} MB)` : ''}…`, tone: 'info' },
       ...processingLog.value,
     ]
   } else if (p.phase === 'chunk_done') {
+    const label = p.total_chunks && p.total_chunks > 1 ? `Parça ${p.chunk_index}/${p.total_chunks}` : 'Video'
     processingLog.value = [
-      { id, text: `Parça ${p.chunk_index}/${p.total_chunks ?? '?'} tamamlandı${p.elapsed_sec != null ? ` (${p.elapsed_sec}s)` : ''}.`, tone: 'success' },
+      { id, text: `${label} işlendi${p.elapsed_sec != null ? ` (${p.elapsed_sec}s)` : ''}.`, tone: 'success' },
       ...processingLog.value,
     ]
-    if (p.total_chunks && p.total_chunks > 1 && p.chunk_index === p.total_chunks) {
-      chunkingDoneNotice.value = `Video ${p.total_chunks} parçaya bölünüp tamamı EVREN'e gönderildi.`
+    if (p.total_chunks && p.chunk_index === p.total_chunks) {
+      chunkingDoneNotice.value =
+        p.total_chunks > 1
+          ? `Video ${p.total_chunks} parçaya bölünüp tamamı EVREN'e gönderildi, sonuç işleniyor…`
+          : `Video EVREN'e gönderildi ve işlendi, sonuç hazırlanıyor…`
       if (chunkingDoneTimer) clearTimeout(chunkingDoneTimer)
       chunkingDoneTimer = setTimeout(() => (chunkingDoneNotice.value = null), 8000)
     }
   } else if (p.phase === 'chunk_failed') {
+    const label = p.total_chunks && p.total_chunks > 1 ? `Parça ${p.chunk_index}/${p.total_chunks}` : 'Video'
     processingLog.value = [
-      { id, text: `Parça ${p.chunk_index}/${p.total_chunks ?? '?'} başarısız: ${p.error ?? 'bilinmeyen hata'}`, tone: 'error' },
+      { id, text: `${label} gönderimi başarısız: ${p.error ?? 'bilinmeyen hata'}`, tone: 'error' },
       ...processingLog.value,
     ]
   }
@@ -363,11 +381,14 @@ async function doExportPdf() {
           @export-pdf="doExportPdf"
         />
 
-        <!-- Kalıcı işlem günlüğü: "chunk başladı/bitti" TÜM adımları, üstteki
-             geçici banner kaybolduktan SONRA da geriye dönük görülebilsin. -->
-        <div v-if="processingLog.length" class="card p-4">
+        <!-- Kalıcı işlem günlüğü: "video gönderildi mi/gitti mi/hâlâ sürüyor mu"
+             sorusuna HER ZAMAN net bir cevap versin diye "Analizi Başlat"a
+             basılır basılmaz (ilk SSE tıkı gelmeden ÖNCE bile) görünür olur;
+             "chunk başladı/bitti" TÜM adımları, üstteki geçici banner
+             kaybolduktan SONRA da geriye dönük görülebilir. -->
+        <div v-if="processingLog.length || store.isRunning" class="card p-4">
           <h3 class="text-sm font-semibold text-slate-100 mb-3">İşlem Günlüğü</h3>
-          <ul class="space-y-1.5 max-h-56 overflow-y-auto">
+          <ul v-if="processingLog.length" class="space-y-1.5 max-h-56 overflow-y-auto">
             <li
               v-for="entry in processingLog"
               :key="entry.id"
@@ -378,6 +399,10 @@ async function doExportPdf() {
               <span>{{ entry.text }}</span>
             </li>
           </ul>
+          <p v-else class="text-xs text-slate-400 flex items-center gap-2">
+            <span class="inline-block w-3 h-3 border-2 border-accent border-t-transparent rounded-full animate-spin shrink-0 motion-reduce:animate-none" />
+            Analiz başlatıldı, video EVREN'e gönderiliyor…
+          </p>
         </div>
 
         <!-- VLM'in ham, tam çıktısı — event listesindeki kısaltılmış açıklamanın
