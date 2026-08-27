@@ -77,10 +77,23 @@ _EVREN_VIDEO_TIMEOUT_SEC = 1800.0
 _EVREN_VIDEO_TIMEOUT = httpx.Timeout(connect=20.0, write=_EVREN_VIDEO_TIMEOUT_SEC, read=_EVREN_VIDEO_TIMEOUT_SEC, pool=20.0)
 
 _VIDEO_MODE_NOTE = (
-    "\n\nNOT: Bu istekte ayri evidence kareleri YOKTUR; tek bir video "
-    "dogrudan gonderilmektedir. `evidence_ids` alanini bu nedenle HER ZAMAN "
-    "BOS LISTE ([]) birak; `start_time`/`end_time` videonun basindan "
-    "itibaren saniye cinsinden GERCEK zaman damgalari olmalidir."
+    "\n\nNOT (VIDEO-DOGRUDAN MOD): Yukaridaki istemde bahsedilen ayri, "
+    "etiketli 'evidence kareleri' bu istekte YOKTUR - sana tek, surekli bir "
+    "video dogrudan gonderilmektedir; kare kare ayri zaman etiketi "
+    "SAGLANMAMISTIR. `evidence_ids` alanini bu nedenle HER ZAMAN BOS LISTE "
+    "([]) birak.\n"
+    "`start_time`/`end_time`, videonun basindan (00:00) itibaren SANIYE "
+    "CINSINDEN GERCEK zaman damgalari olmalidir - bunlari TAHMIN ETMEK "
+    "SENIN gorevindir, sana hazir bir zaman bilgisi VERILMEZ. Bu, bir VLM "
+    "icin en hataya acik adimdir; bu yuzden ozellikle DIKKATLI ol:\n"
+    "- Zamani, videoyu ZIHNINDE sabit bir hizda oynatiyormus gibi TAKIP ET; "
+    "sahnedeki somut degisim anlarini (bir hareketin baslamasi, bir "
+    "nesnenin ortaya cikmasi/kaybolmasi, ani bir durum degisikligi) kendi "
+    "ic saatinle ILISKILENDIR.\n"
+    "- KESIN bir saniyeden EMIN DEGILSEN, TEK bir yanlis saniye vermektense "
+    "start_time/end_time araligini 1-2 saniye GENISLETEREK ver - yanlis "
+    "kesinlik, dogru ama biraz genis bir araliktan DAHA KOTUDUR.\n"
+    "- Video suresini (bilgin varsa) asan veya negatif bir zaman ASLA verme."
 )
 
 
