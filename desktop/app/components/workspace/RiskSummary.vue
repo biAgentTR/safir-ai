@@ -48,6 +48,7 @@ const FEATURE_LABELS: Record<string, string> = {
   protection_gap: 'Koruma Boşluğu',
   rule_support: 'Kural Desteği',
   regulatory_support: 'Mevzuat Desteği',
+  hazard_escalation: 'Tehlike İlerleme Kademesi',
 }
 const featureRows = computed(() => {
   const features = store.report?.risk_features
