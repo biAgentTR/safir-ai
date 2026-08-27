@@ -11,6 +11,7 @@ olarak saglanir; `/analyze` ise tek seferlik senkron kullanim icin korunur.
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime
 import json
 import logging
@@ -30,6 +31,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Literal, Optional, Tuple
+
+import cv2
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -806,6 +809,64 @@ def _select_report_evidence_frames(
     return report_frames
 
 
+def _extract_vlm_direct_evidence_frames(
+    video_source: str, structured_events: List[Dict[str, object]], jpeg_quality: int = 85
+) -> List[EvidenceFrameOut]:
+    """VLM Direct icin kanit karelerini, Adaptive Frame Sampler'DAN BAGIMSIZ,
+    dogrudan kaynak videodan uretir.
+
+    VLM Direct modunda (`analysis_mode="vlm_direct"`) sampler hic calismaz
+    (bkz. `SafirPipeline.run` yorumu) - dolayisiyla `_select_report_evidence_
+    frames` her zaman BOS doner (eslesecek `EvidenceFrame` yok). EVREN'in
+    donusu (`structured_events`) da hicbir kare goruntusu icermez, yalnizca
+    zaman damgasi/aciklama tasir. Bu yuzden HER VLM olayi icin, o olayin orta
+    noktasina (`start_time`/`end_time` ortalamasi) `cv2.VideoCapture` ile
+    ATLANARAK tek bir kare gercekten yakalanir ve JPEG/base64'e kodlanir -
+    boylece rapor/PDF/HTML/JSON kanit karesi olarak GERCEK, o olaya ait bir
+    goruntu icerir (onceki, dusuk-butceli sisteme ait sampler kareleri
+    DEGIL).
+
+    Canli yayin (RTSP) kaynaklarinda veya kare yakalanamayan durumlarda o
+    olay sessizce atlanir (rapor cokusu yerine eksik kanit karesi tercih
+    edilir).
+    """
+    if not structured_events:
+        return []
+    cap = cv2.VideoCapture(video_source)
+    if not cap.isOpened():
+        logger.warning("VLM Direct kanit karesi uretilemedi: video acilamadi (%s)", video_source)
+        return []
+    try:
+        report_frames: List[EvidenceFrameOut] = []
+        for ev in structured_events:
+            start = float(ev.get("start_time") or 0.0)
+            end = float(ev.get("end_time") or start)
+            timestamp_sec = (start + end) / 2.0
+            cap.set(cv2.CAP_PROP_POS_MSEC, timestamp_sec * 1000.0)
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            ok, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
+            if not ok:
+                continue
+            base64_str = base64.b64encode(buffer.tobytes()).decode("utf-8")
+            minutes, seconds = divmod(int(timestamp_sec), 60)
+            report_frames.append(
+                EvidenceFrameOut(
+                    event_id=str(ev.get("event_id", "")),
+                    timestamp_sec=round(timestamp_sec, 2),
+                    timestamp_str=f"{minutes:02d}:{seconds:02d}",
+                    change_score=0.0,
+                    base64_image=f"data:image/jpeg;base64,{base64_str}",
+                    saved_path=None,
+                    is_fallback=False,
+                )
+            )
+        return report_frames
+    finally:
+        cap.release()
+
+
 class SafirPipeline:
     """Tum SAFIR katmanlarini tek bir uctan uca akista birlestiren orkestrator."""
 
@@ -1035,6 +1096,19 @@ class SafirPipeline:
         )
         _emit("vlm", {"vlm_response": vlm_response, "evidence_frames": evidence_frames, "user_prompt": user_prompt})
 
+        # VLM Direct'te sampler hic calismadigi (evidence_frames=[]) icin
+        # kanit karesi burada, dogrudan kaynak videodan uretilir - bkz.
+        # `_extract_vlm_direct_evidence_frames` dokustringi.
+        vlm_direct_evidence_frames = (
+            _extract_vlm_direct_evidence_frames(video_source, vlm_response.structured_events)
+            # `evidence_frames` bossa sampler GERCEKTEN atlandi (bkz. yukarida) -
+            # yalnizca o zaman devreye girer; sampler CALISTIYSA (ör. mock/test
+            # ortaminda paylasilan istemcinin `requires_frame_sampling=True`
+            # kalmasi durumunda) sampler'in ZATEN GERCEK olan kareleri korunur.
+            if analysis_mode == "vlm_direct" and not evidence_frames
+            else None
+        )
+
         # 2026-08-26 ("Analiz Hattı" surekliligi): VLM Direct modunda ("sampler"
         # asamasi baslangicta "skipped" olarak isaretlenir, yukarida) video
         # parcalama BILGISI (kac parcaya bolundu, CUDA/CPU, sureler) YALNIZCA
@@ -1116,6 +1190,7 @@ class SafirPipeline:
             latest_timestamp=latest_timestamp,
             detected_events=detected_events,
             risk_provenance=risk_provenance,
+            precomputed_evidence_frames=vlm_direct_evidence_frames,
         )
         logger.info(
             "SAFIR pipeline tamamlandi: video=%s risk=%s(%s) status=%s sure=%.3fs",
@@ -1480,8 +1555,16 @@ class SafirPipeline:
         latest_timestamp: float,
         detected_events: Optional[List[DetectedEvent]] = None,
         risk_provenance: Optional[RiskProvenance] = None,
+        precomputed_evidence_frames: Optional[List[EvidenceFrameOut]] = None,
     ) -> SafirReport:
         """06-07: Olay kaydi (EventBuilder/History/Store) + nihai `SafirReport` insasi.
+
+        `precomputed_evidence_frames`: verilirse (VLM Direct - bkz. `run()`
+        icindeki `_extract_vlm_direct_evidence_frames` cagrisi), rapordaki
+        `evidence_frames` alani ICIN DOGRUDAN kullanilir; `_select_report_
+        evidence_frames`in sampler-tabanli eslesmesi (dusuk-butceli sistem
+        icin, `evidence_frames` sampler ciktisindan) ATLANIR - VLM Direct'te
+        sampler hic calismadigindan bu eslesme ZATEN her zaman bos donerdi.
 
         `risk_provenance`: verilmezse (orn. Jupyter demo'da `build_report`
         dogrudan/tek basina cagrilirsa) `rule_matches`/`temporal_events`/
@@ -1652,7 +1735,11 @@ class SafirPipeline:
             timeline=[
                 TimelineEntry(timestamp=e["timestamp"], description=e["description"]) for e in timeline
             ],
-            evidence_frames=_select_report_evidence_frames(vlm_response, evidence_frames),
+            evidence_frames=(
+                precomputed_evidence_frames
+                if precomputed_evidence_frames is not None
+                else _select_report_evidence_frames(vlm_response, evidence_frames)
+            ),
             relevant_regulations=relevant_regulations,
             semantic_rag_sources=semantic_rag_sources,
             unverified_references=unverified_references,
