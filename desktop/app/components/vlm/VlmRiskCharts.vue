@@ -8,6 +8,11 @@ import type { VlmRiskLevel } from '~/types/vlm'
 const props = defineProps<{
   riskCounts: Record<VlmRiskLevel, number>
   typeCounts: { type: string; count: number }[]
+  reportReady?: boolean
+}>()
+
+const emit = defineEmits<{
+  (e: 'export-json' | 'export-html' | 'export-pdf'): void
 }>()
 
 const RISK_LABEL: Record<VlmRiskLevel, string> = { crit: 'Kritik', high: 'Yüksek', mid: 'Orta', low: 'Düşük' }
@@ -43,6 +48,31 @@ const maxTypeCount = computed(() => Math.max(1, ...props.typeCounts.map((t) => t
           </div>
           <span class="w-5 shrink-0 text-right text-xs font-mono text-slate-400">{{ t.count }}</span>
         </div>
+      </div>
+
+      <div class="mt-4 pt-3 border-t border-edge flex flex-wrap items-center gap-2">
+        <span class="text-[11px] text-slate-500">Rapor:</span>
+        <button
+          type="button"
+          class="btn-ghost text-xs px-2 py-1"
+          :disabled="!reportReady"
+          :title="reportReady ? 'JSON raporu indir ve altta görüntüle' : 'Rapor henüz hazır değil'"
+          @click="emit('export-json')"
+        >JSON</button>
+        <button
+          type="button"
+          class="btn-ghost text-xs px-2 py-1"
+          :disabled="!reportReady"
+          :title="reportReady ? 'HTML raporu indir' : 'Rapor henüz hazır değil'"
+          @click="emit('export-html')"
+        >HTML</button>
+        <button
+          type="button"
+          class="btn-ghost text-xs px-2 py-1"
+          :disabled="!reportReady"
+          :title="reportReady ? 'PDF raporu indir' : 'Rapor henüz hazır değil'"
+          @click="emit('export-pdf')"
+        >PDF</button>
       </div>
     </div>
   </div>

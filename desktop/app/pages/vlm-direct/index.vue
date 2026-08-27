@@ -126,6 +126,35 @@ const effectiveDuration = computed(() => {
 const summary = computed(() => summarize(events.value))
 const riskCounts = computed(() => riskLevelCounts(events.value))
 const typeCounts = computed(() => eventTypeCounts(events.value))
+
+// ---- report export (Olay Türü Dağılımı panel) — JSON/HTML/PDF from the
+// same SafirReport backing Workspace's FinalReport.vue (useReportExport.ts).
+// Clicking JSON additionally opens the raw report below the dashboard. ----
+const { exportJson, exportHtml, exportPdf } = useReportExport()
+const reportReady = computed(() => !!store.report)
+const showJsonReport = ref(false)
+const reportExportError = ref<string | null>(null)
+
+function doExportJson() {
+  if (!store.report) return
+  reportExportError.value = null
+  exportJson(store.report)
+  showJsonReport.value = true
+}
+function doExportHtml() {
+  if (!store.report) return
+  reportExportError.value = null
+  exportHtml(store.report)
+}
+async function doExportPdf() {
+  if (!store.report) return
+  reportExportError.value = null
+  try {
+    await exportPdf(store.jobId, store.report)
+  } catch (e: unknown) {
+    reportExportError.value = e instanceof Error ? e.message : 'PDF dışa aktarılamadı.'
+  }
+}
 </script>
 
 <template>
@@ -197,12 +226,30 @@ const typeCounts = computed(() => eventTypeCounts(events.value))
         />
       </div>
       <div class="lg:col-span-1">
-        <VlmRiskCharts :risk-counts="riskCounts" :type-counts="typeCounts" />
+        <VlmRiskCharts
+          :risk-counts="riskCounts"
+          :type-counts="typeCounts"
+          :report-ready="reportReady"
+          @export-json="doExportJson"
+          @export-html="doExportHtml"
+          @export-pdf="doExportPdf"
+        />
       </div>
     </div>
+    <p v-if="reportExportError" class="mt-2 text-xs text-risk-crit">{{ reportExportError }}</p>
 
     <div class="mt-5">
       <VlmEventList :events="events" :active-event-id="activeEventId" @select="onSelectEvent" />
+    </div>
+
+    <!-- nihai JSON raporu — "Olay Türü Dağılımı" panelindeki JSON düğmesine
+         basılınca burada, dashboard'un altında açılır (dosya da indirilir). -->
+    <div v-if="showJsonReport && store.report" class="mt-5 card p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-sm font-semibold text-slate-100">Nihai JSON Raporu</h3>
+        <button type="button" class="btn-ghost text-xs px-2 py-1" @click="showJsonReport = false">Kapat</button>
+      </div>
+      <pre class="text-[11px] font-mono text-slate-400 bg-surface-2 border border-edge rounded-md p-3 max-h-96 overflow-auto">{{ JSON.stringify(store.report, null, 2) }}</pre>
     </div>
 
     <!-- Ask SAFİR — same mode-agnostic contextual assistant as the low-budget
