@@ -119,6 +119,15 @@ export interface SafirReport {
   deterministic_score?: number | null
   /** deterministic_score'a karşılık gelen risk seviyesi. */
   deterministic_level?: string | null
+  /** Nihai risk_level'i belirleyen RuleMatch(ler)in rule_id'leri. */
+  contributing_rule_ids?: string[]
+  /** Nihai skoru üreten matematiksel modelin kimliği (örn. 'safir_evidence_weighted_v2'). */
+  scoring_method?: string | null
+  /** 8 normalize edilmiş (0.0-1.0) feature: severity/likelihood/exposure/duration/
+   *  recurrence/protection_gap/rule_support/regulatory_support. null = ölçülemedi. */
+  risk_features?: Record<string, number | null> | null
+  /** Skora giden ara çarpım adımları (base_risk + *_factor + raw_score). */
+  risk_feature_contributions?: Record<string, number> | null
   recommended_action: string
   actions: string[]
   /** Ajanın gerçekten çağırdığı mock aksiyon araçları (bkz. TriggeredMockAction). */
