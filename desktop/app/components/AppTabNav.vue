@@ -1,10 +1,15 @@
 <script setup lang="ts">
 // Horizontal, scroll-synced tab bar — replaces the old vertical AppSidebar.
-// All 6 (or 7, VLM Direct mode) panels now live stacked as sections on the
-// single hub page ('/', see pages/index.vue + components/sections/*). This
-// bar just tells you which section you're scrolled to, and clicking a tab
-// scrolls you there (navigating to '/' first if you're elsewhere — e.g. from
-// a workspace/report detail page).
+// All panels now live stacked as sections on the single hub page ('/', see
+// pages/index.vue + components/sections/*). This bar just tells you which
+// section you're scrolled to, and clicking a tab scrolls you there
+// (navigating to '/' first if you're elsewhere — e.g. from a workspace/report
+// detail page).
+//
+// "Yeni Analiz" deliberately has NO tab (removed from both modes' nav) — it's
+// still a real, mounted section (id="yeni-analiz"), just reached contextually
+// (the "Yeni Analiz" button in Geçmiş, "İlk analizi başlat" empty states)
+// instead of cluttering the main tab bar.
 interface TabItem {
   id: string
   label: string
@@ -18,13 +23,11 @@ const sharedItems: TabItem[] = [
 ]
 const lowBudgetItems: TabItem[] = [
   { id: 'ana-sayfa', label: 'Ana Sayfa' },
-  { id: 'yeni-analiz', label: 'Yeni Analiz' },
   ...sharedItems,
 ]
 const vlmDirectItems: TabItem[] = [
   { id: 'ana-sayfa', label: 'Ana Sayfa' },
   { id: 'vlm-direct', label: 'VLM Direct Analiz' },
-  { id: 'yeni-analiz', label: 'Yeni Analiz' },
   ...sharedItems,
 ]
 
