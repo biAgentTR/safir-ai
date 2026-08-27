@@ -3,24 +3,34 @@
 // Purely navigational (no forms, no data tables): a stable "home" the
 // operator can always scroll/tab back to, distinct from the old Genel
 // Bakış dashboard (removed) and from Yeni Analiz's actual submission form.
+// "Yeni Analiz" deliberately has no card here — it's still there as its own
+// tab, just not surfaced from the home screen.
 const { mode } = useAnalysisMode()
+const { requestNewAnalysis } = useVlmDirectReset()
 
 interface QuickLink {
   href: string
   label: string
   blurb: string
   glyph: string
+  /** VLM Direct's card should start a fresh analysis every time, not just scroll to whatever's left on screen. */
+  onClick?: () => void
 }
 
 const links = computed<QuickLink[]>(() => {
   const base: QuickLink[] = [
-    { href: '/#yeni-analiz', label: 'Yeni Analiz', blurb: 'Video seçin, ne aranacağını yazın, analizi başlatın.', glyph: '＋' },
     { href: '/#gecmis', label: 'Geçmiş', blurb: 'Daha önce çalıştırılmış tüm analizler.', glyph: '≡' },
     { href: '/#raporlar', label: 'Raporlar', blurb: 'Tamamlanmış analizlerin risk raporları.', glyph: '▦' },
     { href: '/#asistan', label: 'SAFİR Asistan', blurb: 'Analizler ve mevzuat hakkında soru sorun.', glyph: '◆' },
   ]
   if (mode.value === 'vlm_direct') {
-    base.unshift({ href: '/#vlm-direct', label: 'VLM Direct Analiz', blurb: 'Video doğrudan görsel-dil modeline gönderilir.', glyph: '▤' })
+    base.unshift({
+      href: '/#vlm-direct',
+      label: 'VLM Direct Analiz',
+      blurb: 'Video doğrudan görsel-dil modeline gönderilir.',
+      glyph: '▤',
+      onClick: requestNewAnalysis,
+    })
   }
   return base
 })
@@ -52,6 +62,7 @@ const links = computed<QuickLink[]>(() => {
           :key="l.href"
           :to="l.href"
           class="glass-panel rounded-lg p-4 flex items-start gap-3 hover:border-accent/60 hover:bg-surface-2/40 transition-colors"
+          @click="l.onClick?.()"
         >
           <span class="w-9 h-9 rounded-md bg-accent-soft text-accent flex items-center justify-center text-lg shrink-0" aria-hidden="true">{{ l.glyph }}</span>
           <span class="min-w-0">

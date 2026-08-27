@@ -17,8 +17,8 @@ import type { VlmStageEventData, TraceEvent } from '~/types/api'
 const store = useAnalysisStore()
 const stream = useAnalysisStream()
 const { state: backendHealth } = useBackendHealth()
+const { trigger: newAnalysisTrigger } = useVlmDirectReset()
 
-onMounted(() => store.resetJob())
 onBeforeUnmount(() => stream.stop())
 
 // ---- video source: a REAL local filesystem path (Tauri dialog), same
@@ -69,6 +69,28 @@ function onSelectEvent(id: string) {
 // ---- analysis lifecycle ----
 const submitError = ref<string | null>(null)
 const canSubmit = computed(() => !!videoPath.value && !store.submitting && !store.isRunning)
+
+// Full reset — clears everything, including the video/prompt/results left
+// from a previous run, not just the store's job. Runs on first mount and
+// every time Ana Sayfa's "VLM Direct Analiz" card is clicked again (see
+// composables/useVlmDirectReset.ts — this component stays mounted across
+// hash navigations, it never remounts on its own).
+function resetForNewAnalysis() {
+  stream.stop()
+  store.resetJob()
+  videoPath.value = ''
+  videoUrl.value = null
+  fileName.value = null
+  userPrompt.value = 'Sahnede riskli bir durum var mi degerlendir.'
+  duration.value = 0
+  currentTime.value = 0
+  activeEventId.value = null
+  submitError.value = null
+}
+onMounted(resetForNewAnalysis)
+watch(newAnalysisTrigger, (v) => {
+  if (v > 0) resetForNewAnalysis()
+})
 
 async function startAnalysis() {
   if (!canSubmit.value) return
