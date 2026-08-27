@@ -26,6 +26,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 import re
 import threading
 import time
+import urllib.parse
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -2543,10 +2544,24 @@ def get_history_report_pdf(job_id: str) -> Response:
 
     video_name = str(report_dict.get("video_source") or job_id)
     video_name = video_name.replace("/", "_").replace("\\", "_")
+    filename = f"safir_report_{video_name}.pdf"
+    # HTTP baslik degerleri Latin-1 ile SINIRLIDIR (Starlette/ASGI bunu
+    # dogrudan encode eder) - video adi Turkce karakter icerirse (ör. "ı",
+    # "ş", "ğ") bu ASLA Latin-1'e sigmaz ve `UnicodeEncodeError` ile 500
+    # dondurur (indirme TAMAMEN basarisiz olur). RFC 6266/5987 cozumu: ASCII
+    # bir yedek `filename` (Turkce karakterler duz ASCII'ye indirgenir) +
+    # tam-sadakatli, yuzde-kodlanmis bir `filename*` birlikte verilir; Latin-1
+    # sinirini asan hicbir karakter dogrudan baslikta YER ALMAZ.
+    ascii_filename = filename.encode("ascii", "replace").decode("ascii")
+    encoded_filename = urllib.parse.quote(filename)
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="safir_report_{video_name}.pdf"'},
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{encoded_filename}'
+            )
+        },
     )
 
 
