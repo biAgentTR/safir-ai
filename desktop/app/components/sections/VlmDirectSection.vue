@@ -90,6 +90,7 @@ function resetForNewAnalysis() {
   exportPhase.json = 'idle'
   exportPhase.html = 'idle'
   exportPhase.pdf = 'idle'
+  chunkingDoneNotice.value = null
 }
 onMounted(resetForNewAnalysis)
 watch(newAnalysisTrigger, (v) => {
@@ -136,6 +137,26 @@ const vlmProgress = computed(() => {
   const d = vlmStage.value?.data
   return d && 'progress' in d ? d.progress : null
 })
+
+// "Video parçalanıyor/gönderiliyor" ilerleme kutusu SADECE aktif ilerleme
+// varken görünür - son parça gönderildiğinde bu kutu sessizce KAYBOLUYORDU,
+// operatöre "bitti" diye AYRI bir bildirim gitmiyordu. Son parçanın
+// `chunk_done` bilgisi geldiği an ayrı, kalıcı bir "tamamlandı" bandı
+// gösterip birkaç saniye sonra kendiliğinden kapatıyoruz.
+const chunkingDoneNotice = ref<string | null>(null)
+let chunkingDoneTimer: ReturnType<typeof setTimeout> | null = null
+watch(vlmProgress, (p) => {
+  if (!p) return
+  if (p.phase === 'chunking' && p.total_chunks && p.total_chunks > 1) {
+    // yeni bir chunking basladi (ör. yeni analiz) - eski bildirimi temizle
+    chunkingDoneNotice.value = null
+  } else if (p.phase === 'chunk_done' && p.total_chunks && p.total_chunks > 1 && p.chunk_index === p.total_chunks) {
+    chunkingDoneNotice.value = `Video ${p.total_chunks} parçaya bölünüp tamamı EVREN'e gönderildi.`
+    if (chunkingDoneTimer) clearTimeout(chunkingDoneTimer)
+    chunkingDoneTimer = setTimeout(() => (chunkingDoneNotice.value = null), 8000)
+  }
+})
+
 const events = computed(() => mapVlmDirectEvents(vlmStage.value, store.report))
 const hasRunAnalysis = computed(() => store.status === 'done' || store.status === 'error')
 
@@ -274,6 +295,10 @@ async function doExportPdf() {
       <span v-if="vlmProgress.total_chunks && vlmProgress.total_chunks > 1" class="text-xs font-mono text-slate-400 shrink-0">
         {{ vlmProgress.chunk_index ?? '—' }} / {{ vlmProgress.total_chunks }}
       </span>
+    </div>
+    <div v-if="chunkingDoneNotice" class="mb-5 rounded-md border border-risk-low/30 bg-risk-low/10 px-4 py-3 flex items-center gap-3 text-sm text-risk-low">
+      <span aria-hidden="true">✓</span>
+      <span class="flex-1">{{ chunkingDoneNotice }}</span>
     </div>
 
     <div class="mb-5">
