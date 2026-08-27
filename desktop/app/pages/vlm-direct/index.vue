@@ -10,7 +10,7 @@
 // Reuses the SAME Pinia analysis store / SSE stream as workspace/[jobId].vue
 // and new-analysis.vue — there is one active job at a time app-wide, which
 // is the existing assumption those pages already make.
-import { generateMockEvents, summarize, riskLevelCounts, eventTypeCounts } from '~/composables/useVlmMockData'
+import { summarize, riskLevelCounts, eventTypeCounts } from '~/composables/useVlmMockData'
 import { mapVlmDirectEvents } from '~/composables/useVlmDirectEvents'
 import type { VlmStageEventData, TraceEvent } from '~/types/api'
 
@@ -99,8 +99,9 @@ const statusLabel = computed(() => {
 
 // ---- real events, from the VLM stage's structured per-event data (SSE
 // trace) or the report timeline as a fallback — see useVlmDirectEvents.ts.
-// Before any analysis has been run, a small mock preview keeps the empty
-// dashboard from looking broken/blank. ----
+// No mock/placeholder data: before an analysis has run (or when it found
+// nothing) this is empty and the components below render their real empty
+// states instead of a fabricated preview. ----
 const vlmStage = computed(() => store.eventForStage('vlm') as TraceEvent<VlmStageEventData> | undefined)
 // Step-by-step VLM progress (video chunking/sending) — same trace data the
 // low-budget Workspace's StageCard shows, surfaced here too since this
@@ -109,10 +110,8 @@ const vlmProgress = computed(() => {
   const d = vlmStage.value?.data
   return d && 'progress' in d ? d.progress : null
 })
-const realEvents = computed(() => mapVlmDirectEvents(vlmStage.value, store.report))
-const hasRealAnalysis = computed(() => store.jobId != null)
-const previewEvents = computed(() => generateMockEvents(180))
-const events = computed(() => (hasRealAnalysis.value ? realEvents.value : previewEvents.value))
+const events = computed(() => mapVlmDirectEvents(vlmStage.value, store.report))
+const hasRunAnalysis = computed(() => store.status === 'done' || store.status === 'error')
 
 // Marker/timeline positioning needs SOME notion of video length even when
 // there's no real <video> preview (non-Tauri dev) — fall back to the
@@ -201,7 +200,11 @@ const typeCounts = computed(() => eventTypeCounts(events.value))
       </div>
     </div>
 
-    <div class="mt-5">
+    <div v-if="hasRunAnalysis && store.status === 'done' && !events.length" class="mt-5 card p-8 text-center">
+      <p class="text-sm font-semibold text-slate-200">Kritik olay tespit edilmedi</p>
+      <p class="mt-1 text-sm text-slate-500">Analiz tamamlandı. Bu videoda tanımlı güvenlik eşiklerini aşan bir olay bulunamadı.</p>
+    </div>
+    <div v-else class="mt-5">
       <VlmEventList :events="events" :active-event-id="activeEventId" @select="onSelectEvent" />
     </div>
 
