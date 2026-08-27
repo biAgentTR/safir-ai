@@ -26,11 +26,16 @@ function readStored(): AnalysisMode | null {
   return null
 }
 
+let switchTimer: ReturnType<typeof setTimeout> | null = null
+
 export function useAnalysisMode() {
   const mode = useState<AnalysisMode>('safir-analysis-mode', () => readStored() ?? 'low_budget')
   const hasChosen = useState<boolean>('safir-analysis-mode-chosen', () => readStored() !== null)
+  const isModeSwitching = useState<boolean>('safir-mode-switching', () => false)
 
   function setMode(next: AnalysisMode) {
+    if (mode.value === next) return
+    isModeSwitching.value = true
     mode.value = next
     hasChosen.value = true
     try {
@@ -38,7 +43,12 @@ export function useAnalysisMode() {
     } catch {
       // best-effort persistence only
     }
+
+    if (switchTimer) clearTimeout(switchTimer)
+    switchTimer = setTimeout(() => {
+      isModeSwitching.value = false
+    }, 600)
   }
 
-  return { mode, hasChosen, setMode }
+  return { mode, hasChosen, isModeSwitching, setMode }
 }

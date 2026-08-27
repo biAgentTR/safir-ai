@@ -17,19 +17,19 @@ function choose(mode: AnalysisMode) {
 const options: { mode: AnalysisMode; title: string; blurb: string; points: string[]; icon: string }[] = [
   {
     mode: 'low_budget',
-    title: 'Düşük Bütçeli Analiz',
-    blurb: 'Mevcut sampler/pipeline tabanlı sistem.',
+    title: 'Lite Analiz',
+    blurb: 'Uyarlanabilir kare örnekleme tabanlı hafif analiz sistemi.',
     points: [
-      'Uyarlanabilir kare örnekleme',
-      'Düşük donanım/bütçe gereksinimi',
-      'Bugüne kadar kullanılan analiz akışı',
+      'Uyarlanabilir kare örnekleme (Adaptive Sampler)',
+      'Düşük donanım ve kaynak gereksinimi',
+      'Hızlı ve optimize analiz akışı',
     ],
     icon: '▤',
   },
   {
     mode: 'vlm_direct',
-    title: 'VLM Direct Analysis',
-    blurb: 'Videonun doğrudan VLM’e gönderildiği gelişmiş analiz sistemi.',
+    title: 'Direct Analiz',
+    blurb: 'Videonun doğrudan görsel-dil modeline (VLM) aktarıldığı analiz sistemi.',
     points: [
       'Video doğrudan görsel-dil modeline gönderilir',
       'Zaman çizelgesi üzerinde işaretlenmiş riskli anlar',
@@ -41,7 +41,7 @@ const options: { mode: AnalysisMode; title: string; blurb: string; points: strin
 </script>
 
 <template>
-  <div class="h-full w-full flex flex-col items-center justify-center bg-surface-0 px-6 py-10 overflow-y-auto">
+  <div class="fixed inset-0 z-50 flex flex-col items-center justify-center bg-surface-0 px-6 py-10 overflow-y-auto">
     <div class="w-full max-w-3xl">
       <div class="text-center mb-8">
         <img src="~/assets/images/logo.png" alt="SAFİR" class="w-14 h-14 object-contain mx-auto mb-4" />

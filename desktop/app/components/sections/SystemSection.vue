@@ -247,7 +247,10 @@ onMounted(() => {
     </div>
 
     <!-- tabs -->
-    <div class="card">
+    <div class="card relative overflow-hidden shadow-2xl border-edge/90">
+      <!-- Top Luminous Hairline Accent -->
+      <div class="absolute inset-x-0 top-0 h-[2px] bg-gradient-to-r from-transparent via-accent/60 to-transparent" />
+
       <div class="flex items-center gap-1 border-b border-edge px-3 overflow-x-auto">
         <button
           v-for="t in TABS"

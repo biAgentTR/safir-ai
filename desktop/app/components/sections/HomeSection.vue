@@ -21,13 +21,13 @@ interface QuickLink {
 const links = computed<QuickLink[]>(() => {
   const base: QuickLink[] = [
     { id: 'gecmis', label: 'Geçmiş', blurb: 'Daha önce çalıştırılmış tüm analizler.', glyph: '≡' },
-    { id: 'raporlar', label: 'Raporlar', blurb: 'Tamamlanmış analizlerin risk raporları.', glyph: '▦' },
     { id: 'asistan', label: 'SAFİR Asistan', blurb: 'Analizler ve mevzuat hakkında soru sorun.', glyph: '◆' },
+    { id: 'raporlar', label: 'Raporlar', blurb: 'Tamamlanmış analizlerin risk raporları.', glyph: '▦' },
   ]
   if (mode.value === 'vlm_direct') {
     base.unshift({
       id: 'vlm-direct',
-      label: 'VLM Direct Analiz',
+      label: 'Direct Analiz',
       blurb: 'Video doğrudan görsel-dil modeline gönderilir.',
       glyph: '▤',
       onClick: requestNewAnalysis,
@@ -48,37 +48,41 @@ function onCardClick(l: QuickLink) {
 
 <template>
   <div id="ana-sayfa" class="scroll-mt-16 relative">
-    <div class="ambient-rings" aria-hidden="true">
-      <span class="ambient-ring ambient-ring-a" />
-      <span class="ambient-ring ambient-ring-b" />
-    </div>
-    <div class="grid-texture" aria-hidden="true" />
-
     <div class="relative max-w-4xl mx-auto px-6 py-16 sm:py-20 text-center">
-      <img src="~/assets/images/logo.png" alt="" class="w-12 h-12 object-contain mx-auto mb-5" />
-      <div class="eyebrow !text-accent mb-3">Yapay zekâ destekli operasyonel farkındalık</div>
-      <h1 class="text-3xl sm:text-4xl font-bold tracking-tight text-slate-100 leading-tight">
+      <!-- Hero Title Ambient Glow Aura -->
+      <div class="heading-glow-hero" />
+
+      <img src="~/assets/images/logo.png" alt="" class="w-12 h-12 object-contain mx-auto mb-5 relative z-10" />
+      <div class="eyebrow !text-accent mb-3 relative z-10">Yapay zekâ destekli operasyonel farkındalık</div>
+      <h1 class="text-3xl sm:text-4xl font-bold tracking-tight text-slate-100 leading-tight relative z-10">
         Görüntüyü izlemeyin.<br class="hidden sm:block" />
         Ne olduğunu anlayın.
       </h1>
-      <p class="mt-3 text-sm sm:text-base text-slate-400 max-w-xl mx-auto">
+      <p class="mt-3 text-sm sm:text-base text-slate-400 max-w-xl mx-auto relative z-10">
         SAFİR, saha kamerası görüntülerini analiz eder; kritik anları, riskleri ve uygulanabilir operatör
         aksiyonlarını saniyeler içinde çıkarır. Aşağıdan başlayın.
       </p>
 
-      <div class="mt-10 grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
+      <div class="mt-10 grid grid-cols-1 sm:grid-cols-2 gap-3.5 text-left relative z-10">
         <button
           v-for="l in links"
           :key="l.id"
           type="button"
-          class="glass-panel rounded-lg p-4 flex items-start gap-3 hover:border-accent/60 hover:bg-surface-2/40 transition-colors"
+          class="relative overflow-hidden group rounded-xl p-4.5 flex items-start justify-between gap-3.5 bg-surface-1/90 backdrop-blur-md border border-edge/80 hover:border-accent/60 shadow-lg hover:shadow-[0_12px_28px_-6px_rgba(20,184,166,0.18)] hover:-translate-y-0.5 transition-all duration-300 cursor-pointer text-left"
           @click="onCardClick(l)"
         >
-          <span class="w-9 h-9 rounded-md bg-accent-soft text-accent flex items-center justify-center text-lg shrink-0" aria-hidden="true">{{ l.glyph }}</span>
-          <span class="min-w-0">
-            <span class="block text-sm font-semibold text-slate-100">{{ l.label }}</span>
-            <span class="block mt-0.5 text-xs text-slate-500">{{ l.blurb }}</span>
-          </span>
+          <!-- Top Luminous Hairline Accent -->
+          <div class="absolute inset-x-0 top-0 h-[1.5px] bg-gradient-to-r from-transparent via-accent/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+
+          <div class="flex items-start gap-3.5 min-w-0">
+            <span class="w-10 h-10 rounded-lg bg-accent/15 border border-accent/30 text-accent flex items-center justify-center text-lg shrink-0 shadow-[0_0_12px_rgba(20,184,166,0.2)] group-hover:scale-105 group-hover:bg-accent/25 transition-all duration-200" aria-hidden="true">{{ l.glyph }}</span>
+            <span class="min-w-0">
+              <span class="block text-sm font-semibold text-slate-100 group-hover:text-accent transition-colors">{{ l.label }}</span>
+              <span class="block mt-0.5 text-xs text-slate-400 group-hover:text-slate-300 transition-colors leading-relaxed">{{ l.blurb }}</span>
+            </span>
+          </div>
+
+          <span class="text-xs text-slate-500 group-hover:text-accent group-hover:translate-x-1 transition-all duration-200 shrink-0 mt-0.5">→</span>
         </button>
       </div>
     </div>

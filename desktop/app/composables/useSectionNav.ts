@@ -14,18 +14,26 @@
 export function useSectionNav() {
   const route = useRoute()
   const router = useRouter()
+  const { setSlide } = useDrawerDeck()
 
   function prefersReducedMotion(): boolean {
     return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
   }
 
   function scrollToId(id: string) {
-    const el = document.getElementById(id)
+    const isDeck = ['gecmis', 'asistan', 'raporlar'].includes(id)
+    const targetId = isDeck ? 'triple-drawer-deck' : id
+    const el = document.getElementById(targetId) ?? document.getElementById(id)
     if (!el) return
+
     el.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' })
   }
 
   async function goToSection(id: string) {
+    if (['gecmis', 'asistan', 'raporlar'].includes(id)) {
+      setSlide(id as any)
+    }
+
     if (route.path !== '/') {
       await router.push({ path: '/', hash: `#${id}` })
       await nextTick()

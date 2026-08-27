@@ -151,12 +151,13 @@ const typeCounts = computed(() => eventTypeCounts(events.value))
 
 <template>
   <div id="vlm-direct" class="scroll-mt-16 max-w-7xl mx-auto px-6 py-6">
-    <div class="mb-5 flex flex-wrap items-start justify-between gap-4">
-      <div>
-        <h2 class="text-xl font-bold tracking-tight text-slate-100">VLM Direct Analysis</h2>
-        <p class="mt-1 text-sm text-slate-500">Video doğrudan görsel-dil modeline (EVREN) gönderilerek analiz edilir.</p>
-      </div>
-      <div v-if="statusLabel" class="flex items-center gap-2 text-xs shrink-0">
+    <div class="mb-6 text-center max-w-2xl mx-auto relative">
+      <!-- Title Ambient Glow Aura -->
+      <div class="heading-glow-section" />
+
+      <h2 class="text-2xl sm:text-3xl font-bold tracking-tight text-slate-100 relative z-10">Direct Analiz</h2>
+      <p class="mt-1.5 text-sm sm:text-base text-slate-400 relative z-10">Video doğrudan görsel-dil modeline (EVREN) gönderilerek analiz edilir.</p>
+      <div v-if="statusLabel" class="mt-3 inline-flex items-center gap-2 text-xs bg-surface-2 px-3 py-1 rounded-full border border-edge relative z-10">
         <span
           class="status-dot"
           :class="store.isRunning ? 'bg-accent animate-pulse' : store.status === 'done' ? 'bg-risk-low' : store.status === 'error' ? 'bg-risk-crit' : 'bg-slate-600'"
@@ -240,11 +241,5 @@ const typeCounts = computed(() => eventTypeCounts(events.value))
     <div v-else class="mt-5">
       <VlmEventList :events="events" :active-event-id="activeEventId" @select="onSelectEvent" />
     </div>
-
-    <!-- SAFİR'e Sor — collapsible right-side chat drawer about this video,
-         see components/vlm/VlmChatPanel.vue. Replaces the inline single-turn
-         AskSafir here; the Workspace (workspace/[jobId].vue) keeps its own
-         separate AskSafir untouched. -->
-    <VlmChatPanel :job-id="store.jobId" />
   </div>
 </template>

@@ -1,10 +1,51 @@
 <script setup lang="ts">
-// Top bar with a route-derived title and a live backend health indicator.
+// Top bar with route-derived title, section tabs, and status/auth controls.
 const { state, system } = useBackendHealth()
 const route = useRoute()
 const auth = useAuthStore()
 const { goToSection } = useSectionNav()
 onMounted(() => auth.init())
+
+const isHidden = ref(false)
+let lastScrollTop = 0
+const MIN_DELTA = 6
+
+function onScroll(e: Event) {
+  const el = e.target as HTMLElement | null
+  if (!el) return
+  const current = el.scrollTop
+
+  // Near the top of the page: always show
+  if (current <= 10) {
+    isHidden.value = false
+    lastScrollTop = current
+    return
+  }
+
+  const diff = current - lastScrollTop
+
+  if (diff > MIN_DELTA) {
+    // Scrolling down -> hide header
+    isHidden.value = true
+  } else if (diff < -MIN_DELTA) {
+    // Scrolling up -> reveal header
+    isHidden.value = false
+  }
+
+  lastScrollTop = current
+}
+
+onMounted(() => {
+  nextTick(() => {
+    const region = document.getElementById('app-scroll-region')
+    region?.addEventListener('scroll', onScroll, { passive: true })
+  })
+})
+
+onBeforeUnmount(() => {
+  const region = document.getElementById('app-scroll-region')
+  region?.removeEventListener('scroll', onScroll)
+})
 
 const initials = computed(() => {
   const name = auth.username ?? ''
@@ -12,21 +53,17 @@ const initials = computed(() => {
   return (parts[0]?.[0] ?? 'Y').toUpperCase() + (parts[1]?.[0] ?? '').toUpperCase()
 })
 
-// Most panels now live as scroll-synced sections on the hub ('/') — see
-// AppTabNav.vue, which shows which one you're on. Only routes that are
-// genuinely their own screen (a workspace run, a single report, admin login)
-// get their own title here.
 const title = computed(() => {
   const p = route.path
   if (p.startsWith('/workspace')) return 'Analiz Çalışma Alanı'
   if (p.startsWith('/reports/')) return 'Rapor Detayı'
-  if (p.startsWith('/admin/login')) return 'Yönetici Girişi'
+  if (p.startsWith('/admin/login')) return 'Giriş'
   return 'SAFİR'
 })
 
 const label = computed(() => {
-  if (state.value === 'online') return `Bağlı${system.value ? ` · ${system.value}` : ''}`
-  if (state.value === 'offline') return 'Arka Uca Ulaşılamıyor'
+  if (state.value === 'online') return 'Bağlı'
+  if (state.value === 'offline') return 'Çevrimdışı'
   return 'Kontrol Ediliyor'
 })
 const dot = computed(() => ({
@@ -37,22 +74,30 @@ const dot = computed(() => ({
 </script>
 
 <template>
-  <header class="h-14 shrink-0 bg-surface-1 border-b border-edge flex items-center px-5">
-    <h1 class="text-sm font-semibold tracking-wide text-slate-100">{{ title }}</h1>
-    <div class="ml-auto flex items-center gap-3">
-      <ModeSwitcher />
-      <div class="flex items-center gap-2 rounded-md border border-edge bg-surface-2 px-2.5 py-1.5 text-xs">
+  <header
+    class="fixed top-0 left-0 right-0 h-14 bg-surface-1/95 backdrop-blur-md border-b border-edge flex items-center px-5 gap-6 z-30 transition-transform duration-300 ease-out transform"
+    :class="isHidden ? '-translate-y-full' : 'translate-y-0 shadow-sm'"
+  >
+    <div class="flex items-center gap-6 h-full min-w-0">
+      <h1 class="text-sm font-semibold tracking-wide text-slate-100 shrink-0">SAFİR</h1>
+      <AppTabNav />
+    </div>
+
+    <div class="ml-auto flex items-center gap-3 shrink-0">
+      <!-- Live status indicator on the left side of topbar controls -->
+      <div class="flex items-center gap-1.5 pr-2 text-xs text-slate-400">
         <span
           class="status-dot"
-          :class="[dot, state === 'online' ? 'animate-pulse motion-reduce:animate-none' : '']"
+          :class="dot"
         />
-        <span class="text-slate-400 font-mono tracking-tight">{{ label }}</span>
+        <span class="font-normal">{{ label }}</span>
       </div>
+
+      <ModeSwitcher />
       <ThemeToggle />
 
-      <NuxtLink v-if="!auth.isAuthenticated" to="/admin/login" class="btn-ghost">
-        <span aria-hidden="true">🔒</span>
-        <span class="hidden md:inline">Yönetici girişi</span>
+      <NuxtLink v-if="!auth.isAuthenticated" to="/admin/login" class="btn-ghost !py-1.5 !px-3 text-xs">
+        <span>Giriş</span>
       </NuxtLink>
       <button
         v-else

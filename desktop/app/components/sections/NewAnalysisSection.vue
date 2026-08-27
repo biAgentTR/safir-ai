@@ -62,7 +62,10 @@ async function submit() {
 
 <template>
   <div id="yeni-analiz" class="scroll-mt-16 max-w-3xl mx-auto px-6 py-8">
-    <form class="card p-6 space-y-6" @submit.prevent="submit">
+    <form class="card p-6 space-y-6 relative overflow-hidden shadow-2xl border-edge/90 hover:border-accent/40 transition-all duration-300" @submit.prevent="submit">
+      <!-- Top Luminous Hairline Accent -->
+      <div class="absolute inset-x-0 top-0 h-[2px] bg-gradient-to-r from-transparent via-accent/60 to-transparent" />
+
       <div>
         <h2 class="text-lg font-bold tracking-tight text-slate-100">Yeni Analiz</h2>
         <p class="mt-1 text-sm text-slate-500">
@@ -72,19 +75,27 @@ async function submit() {
       </div>
 
       <!-- source mode toggle -->
-      <div class="flex gap-2">
+      <div class="inline-flex p-1 bg-surface-2 rounded-lg border border-edge gap-1">
         <button
           type="button"
-          class="btn-ghost"
-          :class="mode === 'file' ? 'ring-1 ring-accent text-white' : ''"
+          class="px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-all duration-150"
+          :class="
+            mode === 'file'
+              ? 'bg-accent text-white shadow-sm font-semibold'
+              : 'text-slate-400 hover:text-slate-100 hover:bg-surface-3'
+          "
           @click="mode = 'file'"
         >
           Video Dosyası
         </button>
         <button
           type="button"
-          class="btn-ghost"
-          :class="mode === 'stream' ? 'ring-1 ring-accent text-white' : ''"
+          class="px-4 py-2 rounded-md text-xs sm:text-sm font-medium transition-all duration-150"
+          :class="
+            mode === 'stream'
+              ? 'bg-accent text-white shadow-sm font-semibold'
+              : 'text-slate-400 hover:text-slate-100 hover:bg-surface-3'
+          "
           @click="mode = 'stream'"
         >
           RTSP / HTTP Akış

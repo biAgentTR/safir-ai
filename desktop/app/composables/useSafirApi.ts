@@ -44,7 +44,9 @@ export function useSafirApi() {
 
   /** GET /health -> { status, system } */
   async function health(): Promise<{ status: string; system: string }> {
-    return await $fetch<{ status: string; system: string }>(url('/health'))
+    return await $fetch<{ status: string; system: string }>(url('/health'), {
+      signal: AbortSignal.timeout(1500),
+    })
   }
 
   /** POST /analyze/jobs -> { job_id } */

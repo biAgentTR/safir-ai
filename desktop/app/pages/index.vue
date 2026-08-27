@@ -2,7 +2,8 @@
 // Hub page: mounts every panel as a scroll-anchored section (see
 // components/AppTabNav.vue for the tab bar that drives/reflects scroll
 // position, and components/sections/* for each panel's own logic).
-const { mode } = useAnalysisMode()
+const { mode, isModeSwitching } = useAnalysisMode()
+const analysisStore = useAnalysisStore()
 </script>
 
 <template>
@@ -13,17 +14,20 @@ const { mode } = useAnalysisMode()
     <!-- fixed landing section — always the first tab, regardless of mode -->
     <HomeSection />
 
-    <!-- VLM Direct mode's own dashboard is its own section, right after Ana Sayfa when active -->
-    <VlmDirectSection v-if="mode === 'vlm_direct'" />
+    <!-- Mode-specific pipeline dashboard with smooth crossfade and skeleton loader -->
+    <Transition name="mode-crossfade" mode="out-in">
+      <div v-if="isModeSwitching" :key="'skeleton-' + mode" class="w-full">
+        <ModeSkeletonLoader :mode="mode" />
+      </div>
+      <div v-else-if="mode === 'vlm_direct'" key="vlm_direct" class="w-full">
+        <VlmDirectSection />
+      </div>
+      <div v-else key="low_budget" class="w-full">
+        <NewAnalysisSection />
+      </div>
+    </Transition>
 
-    <!-- Yeni Analiz is the low_budget pipeline's OWN submission form (sample_fps,
-         min_change_threshold, ...) — irrelevant in vlm_direct mode, which has its
-         own composer inside VlmDirectSection above. Mounting it there just left
-         an unrelated form sitting right under the VLM Direct results. -->
-    <NewAnalysisSection v-if="mode === 'low_budget'" />
-    <HistorySection />
-    <ReportsSection />
-    <AssistantSection />
+    <TripleDrawerSection />
     <SystemSection />
 
     <!-- lets a short last section still scroll flush to the top of the viewport

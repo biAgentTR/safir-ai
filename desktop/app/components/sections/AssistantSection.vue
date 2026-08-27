@@ -62,6 +62,36 @@ function conversationTag(c: Conversation): string {
   return historyLabel(c.job_id) ?? 'Genel SAFİR'
 }
 
+const isContextDropdownOpen = ref(false)
+const contextDropdownRef = ref<HTMLElement | null>(null)
+
+function toggleContextDropdown() {
+  isContextDropdownOpen.value = !isContextDropdownOpen.value
+}
+
+function selectJob(jobId: string | null) {
+  selectedJobId.value = jobId
+  isContextDropdownOpen.value = false
+}
+
+const selectedJobLabel = computed(() => {
+  if (!selectedJobId.value) return 'Genel SAFİR'
+  return historyLabel(selectedJobId.value) || 'Genel SAFİR'
+})
+
+function onClickOutside(e: MouseEvent) {
+  if (contextDropdownRef.value && !contextDropdownRef.value.contains(e.target as Node)) {
+    isContextDropdownOpen.value = false
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('click', onClickOutside)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('click', onClickOutside)
+})
+
 const activeConversation = computed(() =>
   conversations.value.find((c) => c.conversation_id === activeConversationId.value) ?? null,
 )
@@ -435,19 +465,22 @@ onBeforeUnmount(() => askStream.stop())
 </script>
 
 <template>
-  <div id="asistan" class="scroll-mt-16 max-w-6xl mx-auto px-6 py-8">
-    <div class="mb-5">
-      <h2 class="text-xl font-bold tracking-tight text-slate-100">SAFİR Asistan</h2>
-      <p class="mt-1 text-sm text-slate-500">Analiz sonuçları ve ilgili mevzuat hakkında karar destek sorguları — kalıcı sohbet geçmişiyle.</p>
+  <div class="h-full flex flex-col justify-between">
+    <div class="mb-4">
+      <div class="flex items-center gap-2">
+        <span class="text-accent text-sm">◆</span>
+        <h2 class="text-lg font-bold tracking-tight text-slate-100">SAFİR Asistan</h2>
+      </div>
+      <p class="mt-0.5 text-xs text-slate-500">Analiz sonuçları ve mevzuat hakkında karar destek sorguları — kalıcı sohbet geçmişiyle.</p>
     </div>
 
-    <div v-if="backendHealth === 'offline'" class="mb-4 rounded-md border border-risk-crit/40 bg-risk-crit/10 px-4 py-2.5 text-sm text-risk-crit">
+    <div v-if="backendHealth === 'offline'" class="mb-3 rounded-md border border-risk-crit/40 bg-risk-crit/10 px-3 py-2 text-xs text-risk-crit">
       Arka uca ulaşılamıyor. SAFİR Asistan şu anda kullanılamayabilir.
     </div>
 
-    <div class="grid grid-cols-1 lg:grid-cols-[280px_minmax(0,1fr)] gap-5 items-start">
+    <div class="grid grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)] gap-5 items-start flex-1 min-h-[580px]">
       <!-- sohbet listesi -->
-      <div class="card p-3">
+      <div class="card p-3 flex flex-col justify-between">
         <button type="button" class="btn-primary w-full mb-3" @click="startNewChat">
           <span>＋</span> Yeni Sohbet
         </button>
@@ -463,7 +496,7 @@ onBeforeUnmount(() => askStream.stop())
         <div v-else-if="!conversations.length" class="text-sm text-slate-500 text-center py-6">
           Henüz sohbet yok.
         </div>
-        <div v-else class="space-y-1 max-h-[65vh] overflow-y-auto">
+        <div v-else class="space-y-1 max-h-[520px] overflow-y-auto">
           <button
             v-for="c in conversations"
             :key="c.conversation_id"
@@ -472,7 +505,7 @@ onBeforeUnmount(() => askStream.stop())
             :class="activeConversationId === c.conversation_id ? 'bg-surface-2 ring-1 ring-accent/40' : 'hover:bg-surface-2/60'"
             @click="openConversation(c.conversation_id)"
           >
-            <div class="text-sm text-slate-100 truncate">{{ c.title || 'Yeni sohbet' }}</div>
+            <div class="text-sm font-medium text-slate-100 truncate">{{ c.title || 'Yeni sohbet' }}</div>
             <div class="mt-0.5 flex items-center gap-2 text-[11px] text-slate-500">
               <span class="truncate">{{ conversationTag(c) }}</span>
               <span class="shrink-0">·</span>
@@ -483,22 +516,68 @@ onBeforeUnmount(() => askStream.stop())
       </div>
 
       <!-- aktif sohbet -->
-      <div class="card p-5 flex flex-col min-h-[65vh]">
+      <div class="card p-5 flex flex-col justify-between min-h-[580px]">
         <!-- bağlam göstergesi -->
-        <div class="flex items-center gap-2 pb-3 mb-3 border-b border-edge text-sm">
-          <span class="text-slate-500">Bağlam:</span>
+        <div class="flex items-center gap-2 pb-3 mb-3 border-b border-edge text-sm relative z-30">
+          <span class="text-slate-500 font-medium">Bağlam:</span>
           <template v-if="activeConversationId">
             <span class="text-slate-200">{{ contextDisplay }}</span>
             <span class="text-[11px] text-slate-600">(bu sohbet için sabit)</span>
           </template>
           <template v-else>
-            <select v-model="selectedJobId" class="field-input !w-auto !py-1 text-sm">
-              <option :value="null">Genel SAFİR</option>
-              <option v-for="h in historyItems" :key="h.job_id" :value="h.job_id">
-                {{ h.video_source ? h.video_source.split(/[\\/]/).pop() : h.job_id.slice(0, 8) }}
-              </option>
-            </select>
-            <span class="text-[11px] text-slate-600">İlk mesajla birlikte kesinleşir</span>
+            <!-- Smooth Animated Custom Context Selector -->
+            <div ref="contextDropdownRef" class="relative inline-block text-left">
+              <button
+                type="button"
+                class="field-input !w-auto !py-1.5 !px-3 text-sm flex items-center justify-between gap-3 font-medium bg-surface-2 hover:bg-surface-3 border border-edge hover:border-accent/40 rounded-lg shadow-sm transition-all duration-200 cursor-pointer"
+                :class="isContextDropdownOpen ? 'ring-1 ring-accent border-accent text-slate-100' : 'text-slate-200'"
+                @click.stop="toggleContextDropdown"
+              >
+                <span class="truncate max-w-[220px]">{{ selectedJobLabel }}</span>
+                <span
+                  class="text-xs text-slate-400 transition-transform duration-200"
+                  :class="isContextDropdownOpen ? 'rotate-180 text-accent' : ''"
+                >▾</span>
+              </button>
+
+              <Transition name="dropdown-slide">
+                <div
+                  v-if="isContextDropdownOpen"
+                  class="absolute left-0 top-full mt-1.5 w-64 rounded-xl bg-surface-1/95 backdrop-blur-md border border-edge shadow-2xl p-1.5 z-50 max-h-64 overflow-y-auto space-y-0.5 ring-1 ring-black/20"
+                >
+                  <button
+                    type="button"
+                    class="w-full text-left px-3 py-2 rounded-lg text-xs sm:text-sm font-medium flex items-center justify-between transition-colors"
+                    :class="selectedJobId === null ? 'bg-accent text-white shadow-sm' : 'text-slate-300 hover:bg-surface-2 hover:text-white'"
+                    @click="selectJob(null)"
+                  >
+                    <span class="flex items-center gap-2">
+                      <span class="text-xs opacity-75">✦</span>
+                      <span>Genel SAFİR</span>
+                    </span>
+                    <span v-if="selectedJobId === null" class="text-xs font-bold">✓</span>
+                  </button>
+
+                  <div v-if="historyItems.length" class="my-1 border-t border-edge/60" />
+
+                  <button
+                    v-for="h in historyItems"
+                    :key="h.job_id"
+                    type="button"
+                    class="w-full text-left px-3 py-2 rounded-lg text-xs sm:text-sm flex items-center justify-between transition-colors"
+                    :class="selectedJobId === h.job_id ? 'bg-accent text-white shadow-sm font-medium' : 'text-slate-300 hover:bg-surface-2 hover:text-white'"
+                    @click="selectJob(h.job_id)"
+                  >
+                    <span class="truncate pr-2">
+                      <span class="block truncate font-medium">{{ h.video_source ? h.video_source.split(/[\\/]/).pop() : h.job_id.slice(0, 8) }}</span>
+                      <span class="block text-[10px] opacity-60 font-mono">{{ fmtDate(h.created_at) }}</span>
+                    </span>
+                    <span v-if="selectedJobId === h.job_id" class="text-xs font-bold shrink-0">✓</span>
+                  </button>
+                </div>
+              </Transition>
+            </div>
+            <span class="text-[11px] text-slate-500">İlk mesajla birlikte kesinleşir</span>
           </template>
         </div>
 

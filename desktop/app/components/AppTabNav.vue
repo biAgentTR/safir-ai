@@ -1,33 +1,25 @@
 <script setup lang="ts">
-// Horizontal, scroll-synced tab bar — replaces the old vertical AppSidebar.
-// All panels now live stacked as sections on the single hub page ('/', see
-// pages/index.vue + components/sections/*). This bar just tells you which
-// section you're scrolled to, and clicking a tab scrolls you there
-// (navigating to '/' first if you're elsewhere — e.g. from a workspace/report
-// detail page).
-//
-// "Yeni Analiz" deliberately has NO tab (removed from both modes' nav) — it's
-// still a real, mounted section (id="yeni-analiz"), just reached contextually
-// (the "Yeni Analiz" button in Geçmiş, "İlk analizi başlat" empty states)
-// instead of cluttering the main tab bar.
+// Horizontal, scroll-synced tab bar that transforms into a sleek left-side
+// vertical floating dock when the operator scrolls down.
 interface TabItem {
   id: string
   label: string
+  icon: string
 }
 
 const sharedItems: TabItem[] = [
-  { id: 'gecmis', label: 'Geçmiş' },
-  { id: 'raporlar', label: 'Raporlar' },
-  { id: 'asistan', label: 'SAFİR Asistan' },
-  { id: 'sistem', label: 'Sistem Verileri' },
+  { id: 'gecmis', label: 'Geçmiş', icon: '≡' },
+  { id: 'asistan', label: 'SAFİR Asistan', icon: '◆' },
+  { id: 'raporlar', label: 'Raporlar', icon: '▦' },
+  { id: 'sistem', label: 'Sistem Verileri', icon: '⛁' },
 ]
 const lowBudgetItems: TabItem[] = [
-  { id: 'ana-sayfa', label: 'Ana Sayfa' },
+  { id: 'ana-sayfa', label: 'Ana Sayfa', icon: '▤' },
   ...sharedItems,
 ]
 const vlmDirectItems: TabItem[] = [
-  { id: 'ana-sayfa', label: 'Ana Sayfa' },
-  { id: 'vlm-direct', label: 'VLM Direct Analiz' },
+  { id: 'ana-sayfa', label: 'Ana Sayfa', icon: '▤' },
+  { id: 'vlm-direct', label: 'Direct', icon: '◆' },
   ...sharedItems,
 ]
 
@@ -38,10 +30,30 @@ const route = useRoute()
 const onHub = computed(() => route.path === '/')
 const activeId = ref<string | null>(null)
 const { scrollToId, goToSection } = useSectionNav()
+const { activeSlide, setSlide } = useDrawerDeck()
 
 function onTabClick(id: string) {
+  if (['gecmis', 'asistan', 'raporlar'].includes(id)) {
+    setSlide(id as any)
+  }
   if (onHub.value) activeId.value = id
   goToSection(id)
+}
+
+watch(activeSlide, (newVal) => {
+  if (['gecmis', 'asistan', 'raporlar'].includes(activeId.value ?? '')) {
+    activeId.value = newVal
+  }
+})
+
+// Scroll state: when scrolled down, the dock on the left activates
+const isScrolled = ref(false)
+const SCROLL_THRESHOLD = 60
+
+function onScroll(e: Event) {
+  const el = e.target as HTMLElement | null
+  if (!el) return
+  isScrolled.value = el.scrollTop > SCROLL_THRESHOLD
 }
 
 // ---- scroll-spy: highlight the tab for whichever section is at the top of
@@ -83,9 +95,17 @@ onMounted(() => {
   nextTick(() => {
     setupObserver()
     scrollToHash()
+    const region = document.getElementById('app-scroll-region')
+    region?.addEventListener('scroll', onScroll, { passive: true })
   })
 })
-onBeforeUnmount(teardownObserver)
+
+onBeforeUnmount(() => {
+  teardownObserver()
+  const region = document.getElementById('app-scroll-region')
+  region?.removeEventListener('scroll', onScroll)
+})
+
 watch([() => route.path, items], () => nextTick(setupObserver))
 watch(
   () => route.hash,
@@ -94,12 +114,13 @@ watch(
 </script>
 
 <template>
-  <nav class="h-11 shrink-0 bg-surface-1 border-b border-edge flex items-center px-2 overflow-x-auto" aria-label="Bölümler">
+  <!-- Topbar horizontal tab list -->
+  <nav class="h-full flex items-center gap-0.5 no-scrollbar shrink-0" aria-label="Bölümler">
     <button
       v-for="item in items"
       :key="item.id"
       type="button"
-      class="relative shrink-0 px-3.5 h-full text-sm whitespace-nowrap border-b-2 transition-colors duration-150"
+      class="relative shrink-0 px-3 h-14 flex items-center text-xs sm:text-sm whitespace-nowrap border-b-2 transition-colors duration-150"
       :class="
         onHub && activeId === item.id
           ? 'border-accent text-slate-100 font-medium'
@@ -111,4 +132,39 @@ watch(
       {{ item.label }}
     </button>
   </nav>
+
+  <!-- Left-side vertical floating dock on scroll down: tucked into edge, slides out on hover -->
+  <Teleport to="body">
+    <aside
+      v-if="onHub"
+      class="fixed left-0 top-1/2 -translate-y-1/2 z-40 flex items-center transition-all duration-300 ease-out transform group/dock"
+      :class="isScrolled ? 'translate-x-0 opacity-100' : '-translate-x-full opacity-0 pointer-events-none'"
+      aria-label="Sol hızlı menü"
+    >
+      <div
+        class="flex flex-col gap-1.5 p-1.5 pr-2 rounded-r-2xl border border-l-0 border-edge bg-surface-1/95 backdrop-blur-md shadow-2xl transition-transform duration-300 ease-out transform -translate-x-[calc(100%-14px)] group-hover/dock:translate-x-0"
+      >
+        <button
+          v-for="item in items"
+          :key="item.id"
+          type="button"
+          class="relative w-10 h-10 rounded-xl flex items-center justify-center text-sm transition-all duration-150 group/btn"
+          :class="
+            activeId === item.id
+              ? 'bg-accent text-white shadow-md'
+              : 'text-slate-400 hover:text-slate-100 hover:bg-surface-2'
+          "
+          :title="item.label"
+          :aria-label="item.label"
+          @click.stop="onTabClick(item.id)"
+        >
+          <span class="text-base font-semibold">{{ item.icon }}</span>
+          <!-- Individual tooltip on hovering this specific button only -->
+          <span class="pointer-events-none absolute left-full ml-3 px-2.5 py-1 rounded-md bg-surface-3 text-slate-100 text-xs font-medium whitespace-nowrap opacity-0 shadow-xl border border-edge transition-opacity duration-150 group-hover/btn:opacity-100 z-50">
+            {{ item.label }}
+          </span>
+        </button>
+      </div>
+    </aside>
+  </Teleport>
 </template>
