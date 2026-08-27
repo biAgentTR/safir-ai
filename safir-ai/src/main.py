@@ -1615,6 +1615,7 @@ class SafirPipeline:
             relevance_threshold=relevance_threshold,
             recommended_action=decision.recommended_action,
             actions=decision.actions,
+            triggered_mock_actions=getattr(decision, "triggered_mock_actions", []),
             onset_timestamp_str=getattr(decision, "onset_timestamp", None)
             or (f"{int(onset_timestamp // 60):02d}:{int(onset_timestamp % 60):02d}" if evidence_frames else None),
             safe_timestamps=getattr(decision, "safe_timestamps", []),

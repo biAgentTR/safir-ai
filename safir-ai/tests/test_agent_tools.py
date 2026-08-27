@@ -5,7 +5,7 @@ from __future__ import annotations
 from langchain_core.messages import AIMessage
 
 from src.agent.langgraph_agent import SafirAgent
-from src.agent.tools import VerificationTool, build_tool_registry
+from src.agent.tools import MOCK_ACTION_TOOL_NAMES, VerificationTool, build_tool_registry
 from src.utils.config_loader import AgentToolsConfig
 
 
@@ -16,6 +16,7 @@ def _tools_config(**overrides) -> AgentToolsConfig:
         retriever_tool_enabled=True,
         timeline_tool_enabled=True,
         verification_tool_enabled=True,
+        mock_action_tools_enabled=True,
     )
     base.update(overrides)
     return AgentToolsConfig(**base)
@@ -23,21 +24,32 @@ def _tools_config(**overrides) -> AgentToolsConfig:
 
 def test_build_tool_registry_honors_flags() -> None:
     names = {t.name for t in build_tool_registry(None, None, _tools_config())}
-    assert names == {"sql_tool", "retriever_tool", "timeline_tool", "verification_tool"}
+    assert names == {"sql_tool", "retriever_tool", "timeline_tool", "verification_tool"} | MOCK_ACTION_TOOL_NAMES
 
 
 def test_build_tool_registry_disables_flagged_off_tools() -> None:
     cfg = _tools_config(
-        timeline_tool_enabled=False, verification_tool_enabled=False, rag_tool_enabled=False, retriever_tool_enabled=False
+        timeline_tool_enabled=False,
+        verification_tool_enabled=False,
+        rag_tool_enabled=False,
+        retriever_tool_enabled=False,
+        mock_action_tools_enabled=False,
     )
     names = {t.name for t in build_tool_registry(None, None, cfg)}
     assert names == {"sql_tool"}
 
 
 def test_build_tool_registry_backward_compatible_without_config() -> None:
-    """tools_config verilmezse (geriye-uyum) tum araclar kurulur (verification dahil)."""
+    """tools_config verilmezse (geriye-uyum) tum araclar kurulur (verification + mock aksiyon araclari dahil)."""
     names = {t.name for t in build_tool_registry(None, None)}
     assert "verification_tool" in names
+    assert MOCK_ACTION_TOOL_NAMES <= names
+
+
+def test_build_tool_registry_mock_action_tools_can_be_disabled_alone() -> None:
+    cfg = _tools_config(mock_action_tools_enabled=False)
+    names = {t.name for t in build_tool_registry(None, None, cfg)}
+    assert names == {"sql_tool", "retriever_tool", "timeline_tool", "verification_tool"}
 
 
 def test_verification_tool_reports_regulation_support_and_precedent() -> None:
@@ -117,6 +129,52 @@ def test_decision_model_hierarchy_routes_final_synthesis_to_decision_llm(safir_c
     decision = agent.run("## Gozlem\ntest")
     assert decision.risk_score == 42
     assert decision.summary == "buyuk model karari"
+
+
+def test_run_collects_triggered_mock_actions(safir_config) -> None:
+    """Ajan bir mock aksiyon aracini (tool_call olarak) cagirirsa, bu `AgentDecision.
+    triggered_mock_actions`e toplanmali - sql/retriever/timeline/verification gibi ic
+    sorgu araclari BURAYA GIRMEMELI (sartname: 'mock fonksiyonlarin ajanin araclari
+    olarak basariyla kullanilmasi')."""
+    agent = SafirAgent(
+        llm_config=safir_config.llm, agent_config=safir_config.agent, use_mock_llm=True
+    )
+    call_count = {"n": 0}
+
+    def _fake_invoke(messages):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "notify_health_team_tool",
+                        "args": {"event_id": "dusme_00:18", "urgency": "kritik"},
+                        "id": "call_1",
+                    },
+                    {
+                        "name": "sql_tool",
+                        "args": {"query_type": "recent"},
+                        "id": "call_2",
+                    },
+                ],
+            )
+        return AIMessage(
+            content='{"summary":"s","events":[],"risk_score":90,"risk_level":"kritik","actions":["saglik ekibini cagir"]}',
+            tool_calls=[],
+        )
+
+    agent._llm.invoke = _fake_invoke
+    if agent._decision_llm is not None:
+        agent._decision_llm.invoke = _fake_invoke
+
+    decision = agent.run("## Gozlem\ntest")
+
+    assert len(decision.triggered_mock_actions) == 1
+    triggered = decision.triggered_mock_actions[0]
+    assert triggered["tool"] == "notify_health_team_tool"
+    assert triggered["args"] == {"event_id": "dusme_00:18", "urgency": "kritik"}
+    assert "Saglik ekibi bilgilendirildi" in triggered["result"]
 
 
 def test_decision_model_unset_keeps_single_model_behavior(safir_config) -> None:
