@@ -45,17 +45,28 @@ async function loadOverview() {
   }
 }
 
+// ---- sayfalama: her tabloda (Analizler/Konuşmalar) sayfa başına 20 kayıt ----
+const PAGE_SIZE = 20
+
 // ---- Analizler ----
 const analyses = ref<HistoryListItem[]>([])
 const analysesLoading = ref(true)
 const analysesError = ref<string | null>(null)
 const expandedJobId = ref<string | null>(null)
+const analysesPage = ref(1)
+
+const analysesTotalPages = computed(() => Math.max(1, Math.ceil(analyses.value.length / PAGE_SIZE)))
+const paginatedAnalyses = computed(() => {
+  const start = (analysesPage.value - 1) * PAGE_SIZE
+  return analyses.value.slice(start, start + PAGE_SIZE)
+})
 
 async function loadAnalyses() {
   analysesLoading.value = true
   analysesError.value = null
   try {
-    analyses.value = await api.getHistory(100)
+    analyses.value = await api.getHistory(500)
+    analysesPage.value = 1
   } catch (e) {
     analysesError.value = humanError(e, 'Analizler yüklenemedi.')
   } finally {
@@ -91,12 +102,20 @@ const expandedConversationId = ref<string | null>(null)
 const conversationDetail = ref<ConversationDetail | null>(null)
 const conversationDetailLoading = ref(false)
 const conversationDetailError = ref<string | null>(null)
+const conversationsPage = ref(1)
+
+const conversationsTotalPages = computed(() => Math.max(1, Math.ceil(conversations.value.length / PAGE_SIZE)))
+const paginatedConversations = computed(() => {
+  const start = (conversationsPage.value - 1) * PAGE_SIZE
+  return conversations.value.slice(start, start + PAGE_SIZE)
+})
 
 async function loadConversations() {
   conversationsLoading.value = true
   conversationsError.value = null
   try {
-    conversations.value = await api.getConversations(100)
+    conversations.value = await api.getConversations(500)
+    conversationsPage.value = 1
   } catch (e) {
     conversationsError.value = humanError(e, 'Konuşmalar yüklenemedi.')
   } finally {
@@ -288,7 +307,7 @@ onMounted(() => {
                 </tr>
               </thead>
               <tbody>
-                <template v-for="a in analyses" :key="a.job_id">
+                <template v-for="a in paginatedAnalyses" :key="a.job_id">
                   <tr
                     class="border-b border-edge/60 hover:bg-surface-2/60 cursor-pointer"
                     @click="toggleExpand(a.job_id)"
@@ -318,6 +337,24 @@ onMounted(() => {
               </tbody>
             </table>
           </div>
+          <div v-if="analysesTotalPages > 1" class="mt-3 pt-3 flex items-center justify-between border-t border-edge text-xs text-slate-500">
+            <span>Toplam {{ analyses.length }} analiz</span>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="px-2.5 py-1 rounded bg-surface-2 hover:bg-surface-3 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                :disabled="analysesPage <= 1"
+                @click="analysesPage--"
+              >❮ Önceki</button>
+              <span class="font-mono text-slate-400">{{ analysesPage }} / {{ analysesTotalPages }}</span>
+              <button
+                type="button"
+                class="px-2.5 py-1 rounded bg-surface-2 hover:bg-surface-3 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                :disabled="analysesPage >= analysesTotalPages"
+                @click="analysesPage++"
+              >Sonraki ❯</button>
+            </div>
+          </div>
         </div>
 
         <!-- Konuşmalar -->
@@ -340,7 +377,7 @@ onMounted(() => {
                 </tr>
               </thead>
               <tbody>
-                <template v-for="c in conversations" :key="c.conversation_id">
+                <template v-for="c in paginatedConversations" :key="c.conversation_id">
                   <tr
                     class="border-b border-edge/60 hover:bg-surface-2/60 cursor-pointer"
                     @click="toggleConversation(c.conversation_id)"
@@ -370,6 +407,24 @@ onMounted(() => {
                 </template>
               </tbody>
             </table>
+          </div>
+          <div v-if="conversationsTotalPages > 1" class="mt-3 pt-3 flex items-center justify-between border-t border-edge text-xs text-slate-500">
+            <span>Toplam {{ conversations.length }} sohbet</span>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="px-2.5 py-1 rounded bg-surface-2 hover:bg-surface-3 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                :disabled="conversationsPage <= 1"
+                @click="conversationsPage--"
+              >❮ Önceki</button>
+              <span class="font-mono text-slate-400">{{ conversationsPage }} / {{ conversationsTotalPages }}</span>
+              <button
+                type="button"
+                class="px-2.5 py-1 rounded bg-surface-2 hover:bg-surface-3 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                :disabled="conversationsPage >= conversationsTotalPages"
+                @click="conversationsPage++"
+              >Sonraki ❯</button>
+            </div>
           </div>
         </div>
 
