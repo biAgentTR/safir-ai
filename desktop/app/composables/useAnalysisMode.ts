@@ -3,7 +3,8 @@
  * operator is currently using.
  *
  * - 'low_budget': the existing sampler/pipeline dashboard (untouched).
- * - 'vlm_direct': the video-to-VLM direct analysis dashboard (/vlm-direct).
+ * - 'vlm_direct': the video-to-VLM direct analysis dashboard (#vlm-direct
+ *   section on the hub page).
  *
  * Persisted in localStorage so the choice survives a reload, and read
  * synchronously at first use (this app runs ssr:false / SPA, so the

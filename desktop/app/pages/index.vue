@@ -10,6 +10,7 @@ const api = useSafirApi()
 const router = useRouter()
 const { state: backendState } = useBackendHealth()
 const store = useAnalysisStore()
+const { mode } = useAnalysisMode()
 
 // ---- launch bar: bolt.new-style "start here" composer, the first thing the
 // operator sees. Same POST /analyze/jobs call as pages/new-analysis.vue's
@@ -199,7 +200,7 @@ function onKeydown(e: KeyboardEvent) {
     e.preventDefault()
     searchInput.value?.focus()
   } else if (e.key === 'n') {
-    router.push('/new-analysis')
+    document.getElementById('yeni-analiz')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   } else if (e.key === 'f') {
     toggleFullscreen()
   } else if (e.key === 'r') {
@@ -211,7 +212,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>
-  <div class="max-w-6xl mx-auto px-6 py-6">
+  <div>
+  <!-- VLM Direct mode's own dashboard is its own section, first when active -->
+  <VlmDirectSection v-if="mode === 'vlm_direct'" />
+
+  <div id="genel-bakis" class="scroll-mt-16 max-w-6xl mx-auto px-6 py-6">
     <!-- welcome overlay: only on Genel Bakış, shown until the first backend health probe resolves -->
     <AppSplash />
 
@@ -251,7 +256,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
           <span aria-hidden="true">{{ isFullscreen ? '⤡' : '⤢' }}</span>
           <span class="hidden md:inline">{{ isFullscreen ? 'Tam Ekrandan Çık' : 'Tam Ekran' }}</span>
         </button>
-        <NuxtLink to="/new-analysis" class="btn-primary">Yeni Analiz</NuxtLink>
+        <NuxtLink to="/#yeni-analiz" class="btn-primary">Yeni Analiz</NuxtLink>
       </div>
     </div>
 
@@ -363,7 +368,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         <!-- first-run: no analyses at all -->
         <div v-else-if="!history.length" class="py-10 text-center">
           <p class="text-sm text-slate-400">Henüz analiz yapılmadı.</p>
-          <NuxtLink to="/new-analysis" class="btn-primary mt-4 inline-flex">İlk analizi başlat</NuxtLink>
+          <NuxtLink to="/#yeni-analiz" class="btn-primary mt-4 inline-flex">İlk analizi başlat</NuxtLink>
         </div>
 
         <!-- empty filter/search result -->
@@ -405,5 +410,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
         <p class="mt-4 text-[11px] text-slate-600">Kısayollar: <kbd class="font-mono">/</kbd> ara · <kbd class="font-mono">n</kbd> yeni analiz · <kbd class="font-mono">f</kbd> tam ekran · <kbd class="font-mono">r</kbd> yenile</p>
       </section>
     </div>
+  </div>
+
+  <NewAnalysisSection />
+  <HistorySection />
+  <ReportsSection />
+  <AssistantSection />
+  <SystemSection />
+
+  <!-- lets a short last section still scroll flush to the top of the viewport
+       (browsers otherwise clamp at the end of the document) so the tab bar's
+       scroll-spy lands on it correctly — see AppTabNav.vue -->
+  <div class="h-[60vh]" aria-hidden="true" />
   </div>
 </template>

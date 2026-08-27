@@ -1,19 +1,16 @@
 <script setup lang="ts">
-// Desktop application shell: fixed navigation rail + top bar + scrollable main.
-// PanelTransition overlays just the main area (sidebar/topbar stay visible)
-// briefly when the operator switches sidebar panels — see AppSidebar.vue.
+// Desktop application shell: top bar + horizontal scroll-synced tab bar +
+// scrollable main. The tab bar (AppTabNav) and the section anchors it
+// targets live together — see pages/index.vue and components/sections/*.
 </script>
 
 <template>
-  <div class="h-full flex bg-surface-0">
+  <div class="h-full flex flex-col bg-surface-0">
     <BackgroundScene />
-    <AppSidebar />
-    <div class="flex-1 min-w-0 flex flex-col">
-      <AppTopbar />
-      <main class="relative flex-1 min-h-0 overflow-y-auto">
-        <slot />
-        <PanelTransition />
-      </main>
-    </div>
+    <AppTopbar />
+    <AppTabNav />
+    <main id="app-scroll-region" class="relative flex-1 min-h-0 overflow-y-auto">
+      <slot />
+    </main>
   </div>
 </template>

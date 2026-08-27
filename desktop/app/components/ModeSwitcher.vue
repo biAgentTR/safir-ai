@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Compact segmented control for switching between the two independent
 // analysis modes without closing the app. Lives in AppTopbar. Switching
-// navigates to that mode's landing page (AppSidebar's nav updates to match).
+// scrolls to that mode's landing section on the hub page (AppTabNav's tab
+// list updates to match — see useAnalysisMode.ts).
 import type { AnalysisMode } from '~/composables/useAnalysisMode'
 
 const { mode, setMode } = useAnalysisMode()
@@ -10,7 +11,7 @@ const router = useRouter()
 function switchTo(next: AnalysisMode) {
   if (mode.value === next) return
   setMode(next)
-  router.push(next === 'vlm_direct' ? '/vlm-direct' : '/')
+  router.push({ path: '/', hash: next === 'vlm_direct' ? '#vlm-direct' : '#genel-bakis' })
 }
 </script>
 

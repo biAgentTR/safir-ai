@@ -5,10 +5,8 @@
 // already warm and the probe resolves almost instantly.
 //
 // hasShownOnce is shared app-wide (useState) so this only ever blocks on the
-// TRUE cold boot — this component remounts every time the operator navigates
-// back to Genel Bakış (it lives on that page), and without this guard it
-// would re-run its own 700ms minimum display each time, stacking with
-// PanelTransition's sidebar-switch overlay (usePanelTransition.ts).
+// TRUE cold boot — without this guard it would re-run its own 700ms minimum
+// display every time this component remounts.
 const { state } = useBackendHealth()
 const hasShownOnce = useState<boolean>('app-splash-shown-once', () => false)
 

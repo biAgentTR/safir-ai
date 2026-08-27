@@ -195,8 +195,12 @@ body {
 
 @layer components {
   /* ---- surfaces ---- */
+  /* Glassy by default (semi-transparent + blur) so every panel, on every
+     screen, reads as part of the same ambient/glow system as the launch
+     hero and admin login (BackgroundScene sits behind the whole app shell —
+     see layouts/default.vue). */
   .card {
-    @apply bg-surface-1 border border-edge rounded-md;
+    @apply bg-surface-1/80 backdrop-blur-sm border border-edge rounded-md;
   }
 
   /* Full-bleed panel with a heavier top rule — used for the operator-facing
@@ -204,7 +208,7 @@ body {
      single most important reading on screen doesn't look like just another
      tile among many. */
   .panel-band {
-    @apply bg-surface-1 border border-edge border-t-2 rounded-md;
+    @apply bg-surface-1/80 backdrop-blur-sm border border-edge border-t-2 rounded-md;
   }
 
   /* ---- typography ---- */

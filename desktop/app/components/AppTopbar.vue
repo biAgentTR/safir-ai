@@ -11,16 +11,15 @@ const initials = computed(() => {
   return (parts[0]?.[0] ?? 'Y').toUpperCase() + (parts[1]?.[0] ?? '').toUpperCase()
 })
 
+// Most panels now live as scroll-synced sections on the hub ('/') — see
+// AppTabNav.vue, which shows which one you're on. Only routes that are
+// genuinely their own screen (a workspace run, a single report, admin login)
+// get their own title here.
 const title = computed(() => {
   const p = route.path
-  if (p === '/') return 'Genel Bakış'
-  if (p.startsWith('/new-analysis')) return 'Yeni Analiz'
   if (p.startsWith('/workspace')) return 'Analiz Çalışma Alanı'
-  if (p.startsWith('/history')) return 'Geçmiş'
-  if (p.startsWith('/reports')) return 'Raporlar'
-  if (p.startsWith('/assistant')) return 'SAFİR Asistan'
-  if (p.startsWith('/system')) return 'Sistem Verileri'
-  if (p.startsWith('/vlm-direct')) return 'VLM Direct Analiz'
+  if (p.startsWith('/reports/')) return 'Rapor Detayı'
+  if (p.startsWith('/admin/login')) return 'Yönetici Girişi'
   return 'SAFİR'
 })
 
@@ -56,7 +55,7 @@ const dot = computed(() => ({
       </NuxtLink>
       <NuxtLink
         v-else
-        to="/system"
+        to="/#sistem"
         class="w-8 h-8 rounded-full bg-accent-soft border border-accent/30 text-accent text-xs font-bold flex items-center justify-center shrink-0"
         :title="auth.username ?? 'Yönetici'"
       >

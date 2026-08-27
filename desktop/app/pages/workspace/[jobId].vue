@@ -61,7 +61,7 @@ onBeforeUnmount(() => stream.stop())
   <div class="px-6 py-5 space-y-5 max-w-[1500px] mx-auto">
     <!-- header -->
     <div class="flex items-center gap-4">
-      <NuxtLink :to="isHistory ? '/history' : '/new-analysis'" class="btn-ghost">← {{ isHistory ? 'Geçmiş' : 'Yeni' }}</NuxtLink>
+      <NuxtLink :to="isHistory ? '/#gecmis' : '/#yeni-analiz'" class="btn-ghost">← {{ isHistory ? 'Geçmiş' : 'Yeni' }}</NuxtLink>
       <div class="min-w-0">
         <div class="eyebrow">İş Kimliği</div>
         <div class="font-mono text-sm text-slate-300 truncate">{{ jobId }}</div>

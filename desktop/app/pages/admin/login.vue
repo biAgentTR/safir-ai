@@ -20,7 +20,7 @@ async function onSubmit() {
   submitted.value = true
   const ok = await auth.login(username.value, password.value, rememberMe.value)
   if (ok) {
-    const next = typeof route.query.next === 'string' ? route.query.next : '/system'
+    const next = typeof route.query.next === 'string' ? route.query.next : '/#sistem'
     router.push(next)
   }
 }
