@@ -6,7 +6,16 @@
 // uc noktalarini okur. Yeni bir DB soyutlamasi/tablosu yoktur.
 import type { Conversation, ConversationDetail, HistoryDetail, HistoryListItem, TraceEvent } from '~/types/api'
 
+definePageMeta({ middleware: 'admin-auth' })
+
 const api = useSafirApi()
+const auth = useAuthStore()
+const router = useRouter()
+
+function logout() {
+  auth.logout()
+  router.push('/')
+}
 
 type Tab = 'analizler' | 'konusmalar' | 'pipeline' | 'kanitlar'
 const tab = ref<Tab>('analizler')
@@ -177,11 +186,17 @@ onMounted(() => {
 
 <template>
   <div class="max-w-6xl mx-auto px-6 py-8">
-    <div class="mb-5">
-      <h2 class="text-xl font-bold tracking-tight text-slate-100">Sistem Verileri</h2>
-      <p class="mt-1 text-sm text-slate-500">
-        SAFİR'in kalıcı olarak sakladığı gerçek veriler — salt okunur. SQL çalıştırma veya veri değiştirme imkanı yoktur.
-      </p>
+    <div class="mb-5 flex flex-wrap items-start justify-between gap-4">
+      <div>
+        <h2 class="text-xl font-bold tracking-tight text-slate-100">Sistem Verileri</h2>
+        <p class="mt-1 text-sm text-slate-500">
+          SAFİR'in kalıcı olarak sakladığı gerçek veriler — salt okunur. SQL çalıştırma veya veri değiştirme imkanı yoktur.
+        </p>
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        <span class="badge badge-accent" title="Demo yönetici oturumu">{{ auth.username }}</span>
+        <button type="button" class="btn-ghost" @click="logout">Çıkış yap</button>
+      </div>
     </div>
 
     <!-- KPI özeti -->

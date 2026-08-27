@@ -2,6 +2,14 @@
 // Top bar with a route-derived title and a live backend health indicator.
 const { state, system } = useBackendHealth()
 const route = useRoute()
+const auth = useAuthStore()
+onMounted(() => auth.init())
+
+const initials = computed(() => {
+  const name = auth.username ?? ''
+  const parts = name.split(/[@.\s]+/).filter(Boolean)
+  return (parts[0]?.[0] ?? 'Y').toUpperCase() + (parts[1]?.[0] ?? '').toUpperCase()
+})
 
 const title = computed(() => {
   const p = route.path
@@ -41,6 +49,19 @@ const dot = computed(() => ({
         <span class="text-slate-400 font-mono tracking-tight">{{ label }}</span>
       </div>
       <ThemeToggle />
+
+      <NuxtLink v-if="!auth.isAuthenticated" to="/admin/login" class="btn-ghost">
+        <span aria-hidden="true">🔒</span>
+        <span class="hidden md:inline">Yönetici girişi</span>
+      </NuxtLink>
+      <NuxtLink
+        v-else
+        to="/system"
+        class="w-8 h-8 rounded-full bg-accent-soft border border-accent/30 text-accent text-xs font-bold flex items-center justify-center shrink-0"
+        :title="auth.username ?? 'Yönetici'"
+      >
+        {{ initials }}
+      </NuxtLink>
     </div>
   </header>
 </template>

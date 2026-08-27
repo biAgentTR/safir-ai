@@ -150,7 +150,7 @@ function ms(v: number | null): string {
 
       <!-- ============ VLM: step-by-step progress (video chunking/sending, still running) ============ -->
       <div v-else-if="vlmProgress" class="space-y-4">
-        <div class="rounded-md border border-accent/30 bg-accent/10 px-4 py-3 flex items-center gap-3">
+        <div class="scan-line rounded-md border border-accent/30 bg-accent/10 px-4 py-3 flex items-center gap-3">
           <span class="inline-block w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin shrink-0 motion-reduce:animate-none" />
           <span class="text-sm text-slate-100">{{ ev?.summary }}</span>
         </div>

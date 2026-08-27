@@ -292,4 +292,96 @@ body {
   .instrument-cell {
     @apply flex-1 min-w-[7rem] px-4 py-3;
   }
+
+  /* ---- glass panel: used for standalone screens (admin login) that sit on
+     top of the ambient background rather than inside the dense data shell ---- */
+  .glass-panel {
+    @apply bg-surface-1/70 border border-edge backdrop-blur-md shadow-2xl shadow-black/40;
+  }
+}
+
+/* ---- ambient background: faint grid + two slow-drifting light rings.
+   Decorative only (aria-hidden at the call site), GPU-cheap (opacity/transform
+   only, no layout thrash), and fully stilled under prefers-reduced-motion via
+   the global rule above. ---- */
+.grid-texture {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, rgb(var(--c-edge) / 0.5) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(var(--c-edge) / 0.5) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(ellipse at center, black 0%, transparent 75%);
+}
+
+.ambient-rings {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ambient-ring {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(60px);
+  opacity: 0.14;
+  will-change: transform;
+  animation: ambient-drift 22s ease-in-out infinite;
+}
+.ambient-ring-a {
+  width: 32rem;
+  height: 32rem;
+  top: -10rem;
+  left: -6rem;
+  background: rgb(var(--c-accent));
+}
+.ambient-ring-b {
+  width: 26rem;
+  height: 26rem;
+  bottom: -8rem;
+  right: -4rem;
+  background: rgb(var(--c-info));
+  animation-duration: 28s;
+  animation-delay: -6s;
+}
+@keyframes ambient-drift {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(2rem, 1.5rem) scale(1.08);
+  }
+}
+
+/* ---- scan line: swept across an actively-running pipeline stage to read as
+   "analysis in progress" without a spinner-only affordance. ---- */
+.scan-line {
+  position: relative;
+  overflow: hidden;
+}
+.scan-line::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgb(var(--c-accent) / 0.35), transparent);
+  width: 40%;
+  animation: scan-sweep 1.8s linear infinite;
+}
+@keyframes scan-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ambient-ring {
+    animation: none;
+  }
+  .scan-line::after {
+    animation: none;
+    display: none;
+  }
 }
