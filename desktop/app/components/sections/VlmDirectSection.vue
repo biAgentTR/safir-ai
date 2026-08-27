@@ -322,14 +322,15 @@ async function doExportPdf() {
       <VlmEventList :events="events" :active-event-id="activeEventId" @select="onSelectEvent" />
     </div>
 
-    <!-- nihai JSON raporu — "Olay Türü Dağılımı" panelindeki JSON düğmesine
-         basılınca burada, dashboard'un altında açılır (dosya da indirilir). -->
+    <!-- nihai JSON raporu (şartname formatı) — "Olay Türü Dağılımı"
+         panelindeki JSON düğmesine basılınca burada, dashboard'un altında
+         açılır; indirilen dosyayla BİREBİR AYNI içerik (bkz. buildSartnameJson). -->
     <div v-if="showJsonReport && store.report" class="mt-5 card p-4">
       <div class="flex items-center justify-between mb-2">
-        <h3 class="text-sm font-semibold text-slate-100">Nihai JSON Raporu</h3>
+        <h3 class="text-sm font-semibold text-slate-100">Nihai JSON Raporu (Şartname Formatı)</h3>
         <button type="button" class="btn-ghost text-xs px-2 py-1" @click="showJsonReport = false">Kapat</button>
       </div>
-      <pre class="text-[11px] font-mono text-slate-400 bg-surface-2 border border-edge rounded-md p-3 max-h-96 overflow-auto">{{ JSON.stringify(store.report, null, 2) }}</pre>
+      <pre class="text-[11px] font-mono text-slate-400 bg-surface-2 border border-edge rounded-md p-3 max-h-96 overflow-auto">{{ JSON.stringify(buildSartnameJson(store.report), null, 2) }}</pre>
     </div>
   </div>
 </template>

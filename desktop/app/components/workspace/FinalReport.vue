@@ -166,7 +166,7 @@ function mockActionLabel(tool: string): string {
           <span v-else-if="exportPhase.pdf === 'ok'">✓ PDF</span>
           <span v-else>PDF</span>
         </button>
-        <span class="text-[11px] text-slate-600 ml-2">(JSON/HTML gerçek rapor verisinden; PDF backend'de reportlab ile üretilir)</span>
+        <span class="text-[11px] text-slate-600 ml-2">(JSON şartname formatında; HTML gerçek rapor verisinden; PDF backend'de reportlab ile üretilir)</span>
       </div>
       <p v-if="exportPhase.json === 'error'" class="mt-2 text-xs text-risk-crit">JSON: {{ exportError.json }}</p>
       <p v-if="exportPhase.html === 'error'" class="mt-2 text-xs text-risk-crit">HTML: {{ exportError.html }}</p>

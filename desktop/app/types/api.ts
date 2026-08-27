@@ -117,6 +117,10 @@ export interface SafirReport {
   actions: string[]
   /** Ajanın gerçekten çağırdığı mock aksiyon araçları (bkz. TriggeredMockAction). */
   triggered_mock_actions?: TriggeredMockAction[]
+  /** "MM:SS" — bkz. src/schemas/report.py::SafirReport.to_sartname_json. */
+  onset_timestamp_str?: string | null
+  safe_timestamps?: string[]
+  incident_timestamps?: string[]
   detected_event_types: string[]
   timeline: TimelineEntry[]
   evidence_frames: EvidenceFrameOut[]

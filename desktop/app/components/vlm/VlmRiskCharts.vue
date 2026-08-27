@@ -63,7 +63,7 @@ const maxTypeCount = computed(() => Math.max(1, ...props.typeCounts.map((t) => t
           type="button"
           class="btn-ghost text-xs px-2 py-1"
           :disabled="!reportReady || phaseOf('json') === 'loading'"
-          :title="reportReady ? 'JSON raporu indir, yeni sekmede aç ve altta görüntüle' : 'Rapor henüz hazır değil'"
+          :title="reportReady ? 'Şartname formatında JSON raporu indir, yeni sekmede aç ve altta görüntüle' : 'Rapor henüz hazır değil'"
           @click="emit('export-json')"
         >
           <span v-if="phaseOf('json') === 'loading'">…</span>
