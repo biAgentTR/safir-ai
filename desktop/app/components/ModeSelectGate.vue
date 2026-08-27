@@ -11,7 +11,7 @@ const router = useRouter()
 
 function choose(mode: AnalysisMode) {
   setMode(mode)
-  router.push({ path: '/', hash: mode === 'vlm_direct' ? '#vlm-direct' : '#yeni-analiz' })
+  router.push({ path: '/', hash: mode === 'vlm_direct' ? '#vlm-direct' : '#ana-sayfa' })
 }
 
 const options: { mode: AnalysisMode; title: string; blurb: string; points: string[]; icon: string }[] = [

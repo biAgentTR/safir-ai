@@ -10,7 +10,10 @@ const { mode } = useAnalysisMode()
     <!-- welcome overlay: shown once until the first backend health probe resolves -->
     <AppSplash />
 
-    <!-- VLM Direct mode's own dashboard is its own section, first when active -->
+    <!-- fixed landing section — always the first tab, regardless of mode -->
+    <HomeSection />
+
+    <!-- VLM Direct mode's own dashboard is its own section, right after Ana Sayfa when active -->
     <VlmDirectSection v-if="mode === 'vlm_direct'" />
 
     <NewAnalysisSection />

@@ -11,7 +11,7 @@ const router = useRouter()
 function switchTo(next: AnalysisMode) {
   if (mode.value === next) return
   setMode(next)
-  router.push({ path: '/', hash: next === 'vlm_direct' ? '#vlm-direct' : '#yeni-analiz' })
+  router.push({ path: '/', hash: next === 'vlm_direct' ? '#vlm-direct' : '#ana-sayfa' })
 }
 </script>
 
