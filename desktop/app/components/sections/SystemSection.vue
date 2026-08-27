@@ -218,18 +218,23 @@ onMounted(() => {
       {{ overviewError }}
       <button class="btn-ghost ml-2" @click="loadOverview">Tekrar dene</button>
     </div>
-    <div v-else-if="overview" class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 mb-6">
-      <MetricCell label="Toplam analiz" :value="overview.totals.total_analyses" />
-      <MetricCell label="Tamamlanan" :value="overview.totals.completed_analyses" />
-      <MetricCell label="Başarısız" :value="overview.totals.failed_analyses" />
-      <MetricCell label="Toplam konuşma" :value="overview.totals.total_conversations" />
-      <MetricCell label="Saklanan pipeline izi" :value="overview.totals.analyses_with_trace" />
-      <MetricCell label="Saklanan kanıt karesi" :value="overview.totals.stored_representative_frame_count" />
+    <div v-else-if="overview" class="card relative overflow-hidden p-5 mb-5">
+      <div class="absolute inset-x-0 top-0 h-[2px] bg-gradient-to-r from-transparent via-accent/60 to-transparent" />
+      <h3 class="text-sm font-semibold text-slate-300 mb-3">Genel Özet</h3>
+      <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+        <MetricCell label="Toplam analiz" :value="overview.totals.total_analyses" />
+        <MetricCell label="Tamamlanan" :value="overview.totals.completed_analyses" />
+        <MetricCell label="Başarısız" :value="overview.totals.failed_analyses" />
+        <MetricCell label="Toplam konuşma" :value="overview.totals.total_conversations" />
+        <MetricCell label="Saklanan pipeline izi" :value="overview.totals.analyses_with_trace" />
+        <MetricCell label="Saklanan kanıt karesi" :value="overview.totals.stored_representative_frame_count" />
+      </div>
     </div>
 
     <!-- AI Güvenlik & Bilgi Katmanı: RAG + Prompt Injection Guard KPI'ları (persisted trace_events'ten, gerçek toplamlar) -->
-    <div v-if="overview" class="mb-6">
-      <h3 class="text-sm font-semibold text-slate-300 mb-2">AI Güvenlik &amp; Bilgi Katmanı</h3>
+    <div v-if="overview" class="card relative overflow-hidden p-5 mb-5">
+      <div class="absolute inset-x-0 top-0 h-[2px] bg-gradient-to-r from-transparent via-accent/60 to-transparent" />
+      <h3 class="text-sm font-semibold text-slate-300 mb-3">AI Güvenlik &amp; Bilgi Katmanı</h3>
       <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
         <MetricCell label="Toplam olay" :value="overview.totals.total_events_detected" />
         <MetricCell label="Kritik risk analizi" :value="overview.totals.critical_risk_analyses" />
@@ -240,14 +245,14 @@ onMounted(() => {
         <MetricCell label="Guard quarantine" :value="overview.totals.guard_quarantined" />
         <MetricCell label="Guard hatası" :value="overview.totals.guard_failures" />
       </div>
-      <p class="mt-2 text-xs text-slate-500">
+      <p class="mt-3 pt-3 border-t border-edge text-xs text-slate-500">
         Semantik retrieval yalnızca ilgili olabilecek mevzuat kaynaklarını sağlar. Risk skoru ve deterministik kural
         eşleşmeleri RuleEngine tarafından belirlenir; yukarıdaki RAG/Guard metrikleri risk kararını ETKİLEMEZ.
       </p>
     </div>
 
     <!-- tabs -->
-    <div class="card relative overflow-hidden shadow-2xl border-edge/90">
+    <div class="card relative overflow-hidden shadow-2xl border-edge">
       <!-- Top Luminous Hairline Accent -->
       <div class="absolute inset-x-0 top-0 h-[2px] bg-gradient-to-r from-transparent via-accent/60 to-transparent" />
 
@@ -421,7 +426,7 @@ onMounted(() => {
               Bu analiz için kalıcı olarak saklanmış kanıt karesi bulunmuyor.
             </div>
             <div v-else class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-              <figure v-for="f in storedFrames" :key="f.frame_id" class="border border-edge rounded-lg overflow-hidden bg-surface-2">
+              <figure v-for="f in storedFrames" :key="f.frame_id" class="border border-edge hover:border-accent/40 rounded-lg overflow-hidden bg-surface-2 transition-colors">
                 <img :src="api.getFrameUrl(selectedJobId!, f.frame_id)" :alt="f.frame_id" class="w-full h-28 object-cover" loading="lazy" />
                 <figcaption class="px-2 py-1.5 text-[11px] text-slate-400">
                   <div class="text-slate-300">{{ f.evidence_id }}</div>
