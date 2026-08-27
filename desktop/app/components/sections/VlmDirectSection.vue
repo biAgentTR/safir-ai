@@ -147,7 +147,7 @@ const typeCounts = computed(() => eventTypeCounts(events.value))
       Arka uca ulaşılamıyor. Analiz servisi şu anda kullanılamayabilir.
     </div>
 
-    <!-- launch bar: same bolt.new-style composer as the low-budget landing (Genel Bakış) -->
+    <!-- launch bar: bolt.new-style composer, see components/PromptLaunchBar.vue -->
     <PromptLaunchBar
       v-if="!hasRunAnalysis && !store.isRunning"
       v-model="userPrompt"

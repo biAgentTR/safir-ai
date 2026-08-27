@@ -17,13 +17,11 @@ const sharedItems: TabItem[] = [
   { id: 'sistem', label: 'Sistem Verileri' },
 ]
 const lowBudgetItems: TabItem[] = [
-  { id: 'genel-bakis', label: 'Genel Bakış' },
   { id: 'yeni-analiz', label: 'Yeni Analiz' },
   ...sharedItems,
 ]
 const vlmDirectItems: TabItem[] = [
   { id: 'vlm-direct', label: 'VLM Direct Analiz' },
-  { id: 'genel-bakis', label: 'Genel Bakış' },
   { id: 'yeni-analiz', label: 'Yeni Analiz' },
   ...sharedItems,
 ]

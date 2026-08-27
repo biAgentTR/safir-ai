@@ -271,7 +271,7 @@ body {
     @apply inline-block w-2 h-2 rounded-full shrink-0;
   }
 
-  /* ---- dense operational table (Genel Bakış, Geçmiş, Sistem Verileri) ---- */
+  /* ---- dense operational table (Geçmiş, Sistem Verileri) ---- */
   .op-table {
     @apply w-full text-sm border-collapse;
   }
@@ -289,7 +289,7 @@ body {
   }
 
   /* ---- instrument strip: a single-row KPI band with vertical dividers
-     instead of N separate boxed cards (Genel Bakış status strip, KpiPanel) ---- */
+     instead of N separate boxed cards (status strip, KpiPanel) ---- */
   .instrument-strip {
     @apply flex flex-wrap bg-surface-1 border border-edge rounded-md divide-x divide-edge;
   }

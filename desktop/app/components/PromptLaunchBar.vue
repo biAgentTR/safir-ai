@@ -1,10 +1,9 @@
 <script setup lang="ts">
 // Bolt.new-style "start here" composer — the first thing the operator sees
-// on each mode's landing page (Genel Bakış for low_budget, VLM Direct
-// Analysis for vlm_direct). Adapted to SAFİR's actual job: attach a video +
-// describe what to look for, not a code-gen prompt. Purely presentational —
-// the parent page owns submission (POST /analyze/jobs via the Pinia store)
-// and routing, since the two modes navigate to different places afterward.
+// on VLM Direct Analysis's landing section (vlm_direct mode). Adapted to
+// SAFİR's actual job: attach a video + describe what to look for, not a
+// code-gen prompt. Purely presentational — the parent owns submission
+// (POST /analyze/jobs via the Pinia store) and what happens afterward.
 const props = defineProps<{
   modelValue: string
   videoLabel: string | null
