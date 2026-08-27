@@ -66,6 +66,7 @@ from src.schemas.report import EventSummary, EvidenceFrameOut, RagContext, Safir
 from src.utils.config_loader import SafirConfig, load_config
 from src.vlm.base_vlm import BaseVLM, VLMResponse
 from src.vlm.factory import get_llm_client, get_vlm_client
+from src.vlm.sudden_event_analyzer import analyze_sudden_events
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1109,6 +1110,37 @@ class SafirPipeline:
             video_source, evidence_frames, user_prompt, on_progress=_on_vlm_progress, analysis_mode=analysis_mode
         )
         _emit("vlm", {"vlm_response": vlm_response, "evidence_frames": evidence_frames, "user_prompt": user_prompt})
+
+        # Ani Olay Tespiti (bkz. src/vlm/sudden_event_detector.py +
+        # sudden_event_analyzer.py): VLM Direct'te ana VLM'e TUM video TEK
+        # seferde gonderilir - modelin kendisi kare-kare fark HESAPLAMAZ, bu
+        # yuzden cok kisa/ani gecen olaylar (bir kapinin aniden kapanmasi,
+        # bir kisinin sikismasi vb.) uzun anlatinin icinde KAYBOLABILIR. Bu
+        # katman TAMAMEN EK/BAGIMSIZDIR: OpenCV ile videoyu ONCEDEN tarayip
+        # ani kare-farki "sicramalari" bulur, her adayi (ONCESI/SONRASI kare
+        # cifti) `self._vlm_frames` (zaten var olan, dusuk-butceli mod icin
+        # kurulmus goruntu-kabul eden istemci) ile DOGRULATIR ve yalnizca
+        # GERCEKTEN onemli bulunanlari ana VLM'in `structured_events`
+        # listesine EKLER - asagi akis (EventEngine/RuleEngine/rapor) HICBIR
+        # DEGISIKLIGE UGRAMAZ, cunku eklenen sozlukler AYNI EVENTS_JSON
+        # semasindadir. Canli yayin (rtsp/http) kaynaklari HIC TARANMAZ
+        # (tam-video taramasi sonsuz surer); zaten VLM Direct'in aktif
+        # saglayicisi (EvrenVLM) bu kaynaklari `vlm_response` asamasindan
+        # ONCE reddeder, ama burada da AYRICA guvenlik icin kontrol edilir.
+        if analysis_mode == "vlm_direct" and not video_source.strip().lower().startswith(
+            ("rtsp://", "http://", "https://")
+        ):
+            try:
+                confirmed_sudden_events = analyze_sudden_events(video_source, self._vlm_frames)
+            except Exception:  # noqa: BLE001 - bu katman ASLA ana analizi COKERTMEMELI
+                logger.exception("Ani olay tespit/dogrulama katmani basarisiz; ana VLM sonucu etkilenmedi.")
+                confirmed_sudden_events = []
+            if confirmed_sudden_events:
+                vlm_response.structured_events = list(vlm_response.structured_events) + confirmed_sudden_events
+                logger.info(
+                    "Ani olay tespiti: %d dogrulanmis olay ana olay listesine eklendi.",
+                    len(confirmed_sudden_events),
+                )
 
         # VLM Direct'te sampler hic calismadigi (evidence_frames=[]) icin
         # kanit karesi burada, dogrudan kaynak videodan uretilir - bkz.
