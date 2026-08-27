@@ -34,6 +34,18 @@ function frameUrl(id: string): string {
   return store.jobId ? getFrameUrl(store.jobId, id) : ''
 }
 
+// notify_health_team_tool/dispatch_security_tool/trigger_area_lockdown_tool
+// (src/agent/tools.py) — sabit, insan-okunur Türkçe etiketler; bilinmeyen bir
+// arac adi gelirse (ör. ileride eklenir) adin kendisi fallback olarak kalır.
+const MOCK_ACTION_LABELS: Record<string, string> = {
+  notify_health_team_tool: 'Sağlık Ekibi Bilgilendirildi',
+  dispatch_security_tool: 'Güvenlik Ekibi Yönlendirildi',
+  trigger_area_lockdown_tool: 'Alan Tahliye/Kilitleme Tetiklendi',
+}
+function mockActionLabel(tool: string): string {
+  return MOCK_ACTION_LABELS[tool] ?? tool
+}
+
 // typed views of the payload (data is Record<string, unknown> -> narrow per stage)
 const view = <T,>(s: TraceStage): T | null => (stage.value === s ? (ev.value?.data as unknown as T) : null)
 const sampler = computed(() => view<SamplerStageData>('sampler'))
@@ -393,6 +405,19 @@ function ms(v: number | null): string {
           <ol class="list-decimal list-inside space-y-1 text-sm text-slate-200">
             <li v-for="(a, i) in decision.actions" :key="i">{{ a }}</li>
           </ol>
+        </div>
+        <div v-if="decision.triggered_mock_actions?.length">
+          <div class="field-label">Ajanın Çağırdığı Mock Aksiyon Araçları</div>
+          <ul class="space-y-1.5">
+            <li
+              v-for="(t, i) in decision.triggered_mock_actions"
+              :key="i"
+              class="rounded-md border border-accent/30 bg-accent/10 px-3 py-2 text-xs text-slate-200"
+            >
+              <span class="font-mono text-accent">{{ mockActionLabel(t.tool) }}</span>
+              <span class="text-slate-400"> — {{ t.result }}</span>
+            </li>
+          </ul>
         </div>
       </div>
 
