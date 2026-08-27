@@ -241,11 +241,10 @@ const typeCounts = computed(() => eventTypeCounts(events.value))
       <VlmEventList :events="events" :active-event-id="activeEventId" @select="onSelectEvent" />
     </div>
 
-    <!-- Ask SAFİR — same mode-agnostic contextual assistant as the low-budget
-         Workspace (workspace/[jobId].vue); job_id is auto-sent once real
-         analysis exists. -->
-    <div v-if="store.report" class="mt-5">
-      <AskSafir :job-id="store.jobId" />
-    </div>
+    <!-- SAFİR'e Sor — collapsible right-side chat drawer about this video,
+         see components/vlm/VlmChatPanel.vue. Replaces the inline single-turn
+         AskSafir here; the Workspace (workspace/[jobId].vue) keeps its own
+         separate AskSafir untouched. -->
+    <VlmChatPanel :job-id="store.jobId" />
   </div>
 </template>
