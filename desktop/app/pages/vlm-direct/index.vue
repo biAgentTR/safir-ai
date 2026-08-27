@@ -147,8 +147,19 @@ const typeCounts = computed(() => eventTypeCounts(events.value))
       Arka uca ulaşılamıyor. Analiz servisi şu anda kullanılamayabilir.
     </div>
 
-    <!-- source + prompt -->
-    <div class="card p-4 mb-5 flex flex-col md:flex-row md:items-end gap-3">
+    <!-- launch bar: same bolt.new-style composer as the low-budget landing (Genel Bakış) -->
+    <PromptLaunchBar
+      v-if="!hasRunAnalysis && !store.isRunning"
+      v-model="userPrompt"
+      :video-label="fileName"
+      :can-submit="canSubmit"
+      :submitting="store.submitting"
+      :error="submitError"
+      @pick-file="pickVideo"
+      @submit="startAnalysis"
+    />
+    <!-- once an analysis has run (or is running), the composer collapses to a compact bar so the dashboard below takes over -->
+    <div v-else class="card p-4 mb-5 flex flex-col md:flex-row md:items-end gap-3">
       <div class="flex-1 min-w-0">
         <div class="field-label">Video Kaynağı</div>
         <div class="text-sm text-slate-300 truncate font-mono">{{ videoPath || 'Henüz seçilmedi' }}</div>
@@ -158,13 +169,13 @@ const typeCounts = computed(() => eventTypeCounts(events.value))
         <input id="vlm-direct-prompt" v-model="userPrompt" class="field-input" />
       </div>
       <div class="flex items-center gap-2 shrink-0">
-        <button type="button" class="btn-ghost" @click="pickVideo">{{ videoPath ? 'Videoyu Değiştir' : 'Video Seç' }}</button>
+        <button type="button" class="btn-ghost" :disabled="store.isRunning" @click="pickVideo">{{ videoPath ? 'Videoyu Değiştir' : 'Video Seç' }}</button>
         <button type="button" class="btn-primary" :disabled="!canSubmit" @click="startAnalysis">
-          {{ store.submitting ? 'Başlatılıyor…' : 'Analizi Başlat' }}
+          {{ store.submitting ? 'Başlatılıyor…' : 'Yeni Analiz' }}
         </button>
       </div>
     </div>
-    <p v-if="submitError" class="-mt-3 mb-5 text-sm text-risk-crit">{{ submitError }}</p>
+    <p v-if="submitError && (hasRunAnalysis || store.isRunning)" class="-mt-3 mb-5 text-sm text-risk-crit">{{ submitError }}</p>
     <p v-if="store.status === 'error'" class="-mt-3 mb-5 text-sm text-risk-crit">Analiz tamamlanamadı{{ store.error ? `: ${store.error}` : '.' }}</p>
 
     <!-- step-by-step VLM progress (video parçalanıyor/gönderiliyor) — bkz. StageCard.vue'daki eşdeğeri -->

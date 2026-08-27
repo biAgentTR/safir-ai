@@ -4,11 +4,50 @@
 // GET /history (critical events + recent analyses + timeline source).
 // No fabricated metrics — a section with no backing data renders an honest
 // empty state instead of a placeholder number.
-import type { HistoryListItem } from '~/types/api'
+import type { AnalyzeRequest, HistoryListItem } from '~/types/api'
 
 const api = useSafirApi()
 const router = useRouter()
 const { state: backendState } = useBackendHealth()
+const store = useAnalysisStore()
+
+// ---- launch bar: bolt.new-style "start here" composer, the first thing the
+// operator sees. Same POST /analyze/jobs call as pages/new-analysis.vue's
+// full form, with defaults for the advanced sampler params — those stay
+// reachable from "Yeni Analiz" for operators who need to tune them. ----
+const launchVideoPath = ref('')
+const launchPrompt = ref('Sahnede riskli bir durum var mi degerlendir.')
+const launchError = ref<string | null>(null)
+const launchCanSubmit = computed(() => !!launchVideoPath.value.trim() && !store.submitting)
+
+async function pickLaunchVideo() {
+  try {
+    const dialog = await import('@tauri-apps/plugin-dialog')
+    const selected = await dialog.open({
+      multiple: false,
+      filters: [{ name: 'Video', extensions: ['mp4', 'avi', 'mov', 'mkv', 'webm'] }],
+    })
+    if (typeof selected === 'string') launchVideoPath.value = selected
+  } catch {
+    // Not running inside Tauri (or plugin unavailable) — no picker available here.
+  }
+}
+
+async function submitLaunch() {
+  if (!launchCanSubmit.value) return
+  launchError.value = null
+  const payload: AnalyzeRequest = {
+    video_source: launchVideoPath.value.trim(),
+    user_prompt: launchPrompt.value.trim() || undefined,
+  }
+  try {
+    const jobId = await store.createAnalysis(payload)
+    router.push(`/workspace/${jobId}`)
+  } catch (e: unknown) {
+    launchError.value =
+      (e as { data?: { detail?: string } })?.data?.detail ?? (e as Error)?.message ?? 'Analiz başlatılamadı.'
+  }
+}
 
 // ---- system status strip (GET /system/overview) ----
 const overview = ref<Awaited<ReturnType<typeof api.getSystemOverview>> | null>(null)
@@ -175,6 +214,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
   <div class="max-w-6xl mx-auto px-6 py-6">
     <!-- welcome overlay: only on Genel Bakış, shown until the first backend health probe resolves -->
     <AppSplash />
+
+    <!-- launch bar: the first thing on screen — start an analysis directly, no dashboard-first detour -->
+    <PromptLaunchBar
+      v-model="launchPrompt"
+      :video-label="launchVideoPath || null"
+      :can-submit="launchCanSubmit"
+      :submitting="store.submitting"
+      :error="launchError"
+      @pick-file="pickLaunchVideo"
+      @submit="submitLaunch"
+    />
 
     <!-- backend offline: blocks everything below with a clear, actionable banner -->
     <div
