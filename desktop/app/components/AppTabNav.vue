@@ -32,27 +32,13 @@ const { mode } = useAnalysisMode()
 const items = computed(() => (mode.value === 'vlm_direct' ? vlmDirectItems : lowBudgetItems))
 
 const route = useRoute()
-const router = useRouter()
 const onHub = computed(() => route.path === '/')
 const activeId = ref<string | null>(null)
-
-function prefersReducedMotion(): boolean {
-  return typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-}
-
-function scrollToId(id: string) {
-  const el = document.getElementById(id)
-  if (!el) return
-  el.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' })
-}
+const { scrollToId, goToSection } = useSectionNav()
 
 function onTabClick(id: string) {
-  if (!onHub.value) {
-    router.push({ path: '/', hash: `#${id}` })
-    return
-  }
-  activeId.value = id
-  scrollToId(id)
+  if (onHub.value) activeId.value = id
+  goToSection(id)
 }
 
 // ---- scroll-spy: highlight the tab for whichever section is at the top of

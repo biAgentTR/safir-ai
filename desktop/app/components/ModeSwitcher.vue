@@ -6,12 +6,12 @@
 import type { AnalysisMode } from '~/composables/useAnalysisMode'
 
 const { mode, setMode } = useAnalysisMode()
-const router = useRouter()
+const { goToSection } = useSectionNav()
 
 function switchTo(next: AnalysisMode) {
   if (mode.value === next) return
   setMode(next)
-  router.push({ path: '/', hash: next === 'vlm_direct' ? '#vlm-direct' : '#ana-sayfa' })
+  goToSection(next === 'vlm_direct' ? 'vlm-direct' : 'ana-sayfa')
 }
 </script>
 

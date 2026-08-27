@@ -5,6 +5,7 @@ import type { HistoryListItem } from '~/types/api'
 
 const api = useSafirApi()
 const router = useRouter()
+const { goToSection } = useSectionNav()
 
 const items = ref<HistoryListItem[]>([])
 const loading = ref(true)
@@ -63,7 +64,7 @@ onMounted(() => load(true))
         <h2 class="text-xl font-bold tracking-tight text-slate-100">Analiz Geçmişi</h2>
         <p class="text-sm text-slate-500 mt-1">Kalıcı olarak saklanmış tüm analizler (en yeni önce).</p>
       </div>
-      <NuxtLink to="/#yeni-analiz" class="btn-primary">Yeni Analiz</NuxtLink>
+      <button type="button" class="btn-primary" @click="goToSection('yeni-analiz')">Yeni Analiz</button>
     </div>
 
     <!-- loading (initial) -->
@@ -81,7 +82,7 @@ onMounted(() => load(true))
     <!-- empty -->
     <div v-else-if="!items.length" class="card p-10 text-center">
       <p class="text-sm text-slate-400">Henüz kayıtlı analiz yok.</p>
-      <NuxtLink to="/#yeni-analiz" class="btn-primary mt-4 inline-flex">İlk analizi başlat</NuxtLink>
+      <button type="button" class="btn-primary mt-4 inline-flex" @click="goToSection('yeni-analiz')">İlk analizi başlat</button>
     </div>
 
     <!-- list -->

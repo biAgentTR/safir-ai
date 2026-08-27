@@ -7,9 +7,10 @@
 // tab, just not surfaced from the home screen.
 const { mode } = useAnalysisMode()
 const { requestNewAnalysis } = useVlmDirectReset()
+const { goToSection } = useSectionNav()
 
 interface QuickLink {
-  href: string
+  id: string
   label: string
   blurb: string
   glyph: string
@@ -19,13 +20,13 @@ interface QuickLink {
 
 const links = computed<QuickLink[]>(() => {
   const base: QuickLink[] = [
-    { href: '/#gecmis', label: 'Geçmiş', blurb: 'Daha önce çalıştırılmış tüm analizler.', glyph: '≡' },
-    { href: '/#raporlar', label: 'Raporlar', blurb: 'Tamamlanmış analizlerin risk raporları.', glyph: '▦' },
-    { href: '/#asistan', label: 'SAFİR Asistan', blurb: 'Analizler ve mevzuat hakkında soru sorun.', glyph: '◆' },
+    { id: 'gecmis', label: 'Geçmiş', blurb: 'Daha önce çalıştırılmış tüm analizler.', glyph: '≡' },
+    { id: 'raporlar', label: 'Raporlar', blurb: 'Tamamlanmış analizlerin risk raporları.', glyph: '▦' },
+    { id: 'asistan', label: 'SAFİR Asistan', blurb: 'Analizler ve mevzuat hakkında soru sorun.', glyph: '◆' },
   ]
   if (mode.value === 'vlm_direct') {
     base.unshift({
-      href: '/#vlm-direct',
+      id: 'vlm-direct',
       label: 'VLM Direct Analiz',
       blurb: 'Video doğrudan görsel-dil modeline gönderilir.',
       glyph: '▤',
@@ -34,6 +35,15 @@ const links = computed<QuickLink[]>(() => {
   }
   return base
 })
+
+// Not a plain <NuxtLink to="/#id"> — see composables/useSectionNav.ts: a link
+// to a hash we're already sitting on is a silent no-op in Vue Router, which
+// is exactly what made this card look broken (mode picker/tab clicks already
+// leave the URL on #vlm-direct, so clicking here again did nothing).
+function onCardClick(l: QuickLink) {
+  l.onClick?.()
+  goToSection(l.id)
+}
 </script>
 
 <template>
@@ -57,19 +67,19 @@ const links = computed<QuickLink[]>(() => {
       </p>
 
       <div class="mt-10 grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
-        <NuxtLink
+        <button
           v-for="l in links"
-          :key="l.href"
-          :to="l.href"
+          :key="l.id"
+          type="button"
           class="glass-panel rounded-lg p-4 flex items-start gap-3 hover:border-accent/60 hover:bg-surface-2/40 transition-colors"
-          @click="l.onClick?.()"
+          @click="onCardClick(l)"
         >
           <span class="w-9 h-9 rounded-md bg-accent-soft text-accent flex items-center justify-center text-lg shrink-0" aria-hidden="true">{{ l.glyph }}</span>
           <span class="min-w-0">
             <span class="block text-sm font-semibold text-slate-100">{{ l.label }}</span>
             <span class="block mt-0.5 text-xs text-slate-500">{{ l.blurb }}</span>
           </span>
-        </NuxtLink>
+        </button>
       </div>
     </div>
   </div>

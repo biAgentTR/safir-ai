@@ -7,6 +7,7 @@ import type { HistoryListItem } from '~/types/api'
 
 const api = useSafirApi()
 const router = useRouter()
+const { goToSection } = useSectionNav()
 
 const items = ref<HistoryListItem[]>([])
 const loading = ref(true)
@@ -55,7 +56,7 @@ onMounted(() => load(true))
         <h2 class="text-xl font-bold tracking-tight text-slate-100">Raporlar</h2>
         <p class="text-sm text-slate-500 mt-1">Tamamlanmış analizlerin raporları — özet, risk, zaman çizelgesi, kanıt kareleri ve dışa aktarma tek ekranda.</p>
       </div>
-      <NuxtLink to="/#gecmis" class="btn-ghost">Tüm Geçmiş →</NuxtLink>
+      <button type="button" class="btn-ghost" @click="goToSection('gecmis')">Tüm Geçmiş →</button>
     </div>
 
     <!-- loading (initial) -->
@@ -73,7 +74,7 @@ onMounted(() => load(true))
     <!-- truly empty: no more pages left AND nothing completed found -->
     <div v-else-if="!reports.length && done" class="card p-10 text-center">
       <p class="text-sm text-slate-400">Henüz tamamlanmış bir rapor yok.</p>
-      <NuxtLink to="/#yeni-analiz" class="btn-primary mt-4 inline-flex">İlk analizi başlat</NuxtLink>
+      <button type="button" class="btn-primary mt-4 inline-flex" @click="goToSection('yeni-analiz')">İlk analizi başlat</button>
     </div>
 
     <!-- loaded page(s) had no completed analyses yet, but more pages remain -->

@@ -3,6 +3,7 @@
 const { state, system } = useBackendHealth()
 const route = useRoute()
 const auth = useAuthStore()
+const { goToSection } = useSectionNav()
 onMounted(() => auth.init())
 
 const initials = computed(() => {
@@ -53,14 +54,15 @@ const dot = computed(() => ({
         <span aria-hidden="true">🔒</span>
         <span class="hidden md:inline">Yönetici girişi</span>
       </NuxtLink>
-      <NuxtLink
+      <button
         v-else
-        to="/#sistem"
+        type="button"
         class="w-8 h-8 rounded-full bg-accent-soft border border-accent/30 text-accent text-xs font-bold flex items-center justify-center shrink-0"
         :title="auth.username ?? 'Yönetici'"
+        @click="goToSection('sistem')"
       >
         {{ initials }}
-      </NuxtLink>
+      </button>
     </div>
   </header>
 </template>
