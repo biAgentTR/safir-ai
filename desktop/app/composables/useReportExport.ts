@@ -13,6 +13,9 @@
  * All three go through the same `download()` helper (Blob + `<a download>`),
  * which is the standard web-platform download mechanism — supported by the
  * Tauri v2 webview (WebView2/WebKitGTK) without any extra Tauri plugin.
+ * `download()` also best-effort opens the same blob in a new tab/window
+ * right away, so the operator can immediately see the file loaded instead
+ * of only trusting a download notification.
  */
 import type { SafirReport } from '~/types/api'
 
@@ -30,7 +33,16 @@ function download(filename: string, content: string | Blob, mime?: string) {
   document.body.appendChild(a)
   a.click()
   a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
+  // Indirmeye EK olarak, dosyayi dogrudan bir sekmede/pencerede acmayi da
+  // DENER (operator "indirildi mi?" diye Indirilenler klasorunu aramak
+  // zorunda kalmasin diye) — best-effort: Tauri webview'de engellenirse veya
+  // tarayici pop-up'i durdurursa sessizce yutulur, indirme YINE DE gecerlidir.
+  try {
+    window.open(url, '_blank')
+  } catch {
+    // yoksay — indirme zaten tamamlandi
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
 }
 
 function esc(s: unknown): string {
@@ -78,18 +90,22 @@ export function buildReportHtml(r: SafirReport): string {
 export function useReportExport() {
   const api = useSafirApi()
 
-  function exportJson(r: SafirReport) {
-    download(`${fileStub(r)}.json`, JSON.stringify(r, null, 2), 'application/json')
+  function exportJson(r: SafirReport): string {
+    const filename = `${fileStub(r)}.json`
+    download(filename, JSON.stringify(r, null, 2), 'application/json')
+    return filename
   }
-  function exportHtml(r: SafirReport) {
-    download(`${fileStub(r)}.html`, buildReportHtml(r), 'text/html')
+  function exportHtml(r: SafirReport): string {
+    const filename = `${fileStub(r)}.html`
+    download(filename, buildReportHtml(r), 'text/html')
+    return filename
   }
   /**
    * Real backend PDF. Needs `jobId` (live job still in memory OR already
    * persisted to History — the endpoint tries both). Throws a human-readable
    * error on failure; callers surface it (no silent no-op).
    */
-  async function exportPdf(jobId: string | null, r: SafirReport) {
+  async function exportPdf(jobId: string | null, r: SafirReport): Promise<string> {
     if (!jobId) throw new Error('PDF dışa aktarmak için analiz kimliği bulunamadı.')
     let blob: Blob
     try {
@@ -98,7 +114,9 @@ export function useReportExport() {
       const detail = (e as { data?: { detail?: string } })?.data?.detail
       throw new Error(detail ?? 'PDF oluşturulamadı. Backend\'e ulaşılamıyor olabilir.')
     }
-    download(`${fileStub(r)}.pdf`, blob)
+    const filename = `${fileStub(r)}.pdf`
+    download(filename, blob)
+    return filename
   }
   return { exportJson, exportHtml, exportPdf }
 }

@@ -87,7 +87,9 @@ function resetForNewAnalysis() {
   activeEventId.value = null
   submitError.value = null
   showJsonReport.value = false
-  reportExportError.value = null
+  exportPhase.json = 'idle'
+  exportPhase.html = 'idle'
+  exportPhase.pdf = 'idle'
 }
 onMounted(resetForNewAnalysis)
 watch(newAnalysisTrigger, (v) => {
@@ -152,30 +154,63 @@ const typeCounts = computed(() => eventTypeCounts(events.value))
 
 // ---- report export (Olay Türü Dağılımı panel) — JSON/HTML/PDF from the
 // same SafirReport backing Workspace's FinalReport.vue (useReportExport.ts).
-// Clicking JSON additionally opens the raw report below the dashboard. ----
+// Clicking JSON additionally opens the raw report below the dashboard; all
+// three also open in a new tab right away (useReportExport's download())
+// and show an explicit "indirildi, kontrol edin" confirmation here — bir
+// indirmenin sessizce Indirilenler klasorune duşup fark edilmemesi yerine. ----
 const { exportJson, exportHtml, exportPdf } = useReportExport()
 const reportReady = computed(() => !!store.report)
 const showJsonReport = ref(false)
-const reportExportError = ref<string | null>(null)
+
+type ExportKind = 'json' | 'html' | 'pdf'
+const exportPhase = reactive<Record<ExportKind, 'idle' | 'loading' | 'ok' | 'error'>>({
+  json: 'idle',
+  html: 'idle',
+  pdf: 'idle',
+})
+const exportMessage = reactive<Record<ExportKind, string>>({ json: '', html: '', pdf: '' })
+const exportOkTimers: Record<ExportKind, ReturnType<typeof setTimeout> | null> = { json: null, html: null, pdf: null }
+
+function markExported(kind: ExportKind, filename: string) {
+  exportPhase[kind] = 'ok'
+  exportMessage[kind] = `${filename} indirildi ve yeni sekmede açıldı — lütfen dosyayı kontrol edin.`
+  if (exportOkTimers[kind]) clearTimeout(exportOkTimers[kind]!)
+  exportOkTimers[kind] = setTimeout(() => {
+    if (exportPhase[kind] === 'ok') exportPhase[kind] = 'idle'
+  }, 6000)
+}
+function markExportFailed(kind: ExportKind, e: unknown) {
+  exportPhase[kind] = 'error'
+  exportMessage[kind] = e instanceof Error ? e.message : 'Dışa aktarma başarısız oldu.'
+}
 
 function doExportJson() {
   if (!store.report) return
-  reportExportError.value = null
-  exportJson(store.report)
-  showJsonReport.value = true
+  exportPhase.json = 'loading'
+  try {
+    const filename = exportJson(store.report)
+    showJsonReport.value = true
+    markExported('json', filename)
+  } catch (e: unknown) {
+    markExportFailed('json', e)
+  }
 }
 function doExportHtml() {
   if (!store.report) return
-  reportExportError.value = null
-  exportHtml(store.report)
+  exportPhase.html = 'loading'
+  try {
+    markExported('html', exportHtml(store.report))
+  } catch (e: unknown) {
+    markExportFailed('html', e)
+  }
 }
 async function doExportPdf() {
   if (!store.report) return
-  reportExportError.value = null
+  exportPhase.pdf = 'loading'
   try {
-    await exportPdf(store.jobId, store.report)
+    markExported('pdf', await exportPdf(store.jobId, store.report))
   } catch (e: unknown) {
-    reportExportError.value = e instanceof Error ? e.message : 'PDF dışa aktarılamadı.'
+    markExportFailed('pdf', e)
   }
 }
 </script>
@@ -265,13 +300,19 @@ async function doExportPdf() {
           :risk-counts="riskCounts"
           :type-counts="typeCounts"
           :report-ready="reportReady"
+          :export-phase="exportPhase"
           @export-json="doExportJson"
           @export-html="doExportHtml"
           @export-pdf="doExportPdf"
         />
       </div>
     </div>
-    <p v-if="reportExportError" class="mt-2 text-xs text-risk-crit">{{ reportExportError }}</p>
+    <p v-if="exportPhase.json === 'ok'" class="mt-2 text-xs text-risk-low">✓ {{ exportMessage.json }}</p>
+    <p v-if="exportPhase.json === 'error'" class="mt-2 text-xs text-risk-crit">JSON: {{ exportMessage.json }}</p>
+    <p v-if="exportPhase.html === 'ok'" class="mt-2 text-xs text-risk-low">✓ {{ exportMessage.html }}</p>
+    <p v-if="exportPhase.html === 'error'" class="mt-2 text-xs text-risk-crit">HTML: {{ exportMessage.html }}</p>
+    <p v-if="exportPhase.pdf === 'ok'" class="mt-2 text-xs text-risk-low">✓ {{ exportMessage.pdf }}</p>
+    <p v-if="exportPhase.pdf === 'error'" class="mt-2 text-xs text-risk-crit">PDF: {{ exportMessage.pdf }}</p>
 
     <div v-if="hasRunAnalysis && store.status === 'done' && !events.length" class="mt-5 card p-8 text-center">
       <p class="text-sm font-semibold text-slate-200">Kritik olay tespit edilmedi</p>

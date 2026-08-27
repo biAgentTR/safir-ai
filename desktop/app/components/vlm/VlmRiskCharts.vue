@@ -5,11 +5,18 @@
 // same risk color tokens as the rest of SAFIR).
 import type { VlmRiskLevel } from '~/types/vlm'
 
+type ExportPhase = 'idle' | 'loading' | 'ok' | 'error'
+
 const props = defineProps<{
   riskCounts: Record<VlmRiskLevel, number>
   typeCounts: { type: string; count: number }[]
   reportReady?: boolean
+  exportPhase?: Record<'json' | 'html' | 'pdf', ExportPhase>
 }>()
+
+function phaseOf(kind: 'json' | 'html' | 'pdf'): ExportPhase {
+  return props.exportPhase?.[kind] ?? 'idle'
+}
 
 const emit = defineEmits<{
   (e: 'export-json' | 'export-html' | 'export-pdf'): void
@@ -55,25 +62,38 @@ const maxTypeCount = computed(() => Math.max(1, ...props.typeCounts.map((t) => t
         <button
           type="button"
           class="btn-ghost text-xs px-2 py-1"
-          :disabled="!reportReady"
-          :title="reportReady ? 'JSON raporu indir ve altta görüntüle' : 'Rapor henüz hazır değil'"
+          :disabled="!reportReady || phaseOf('json') === 'loading'"
+          :title="reportReady ? 'JSON raporu indir, yeni sekmede aç ve altta görüntüle' : 'Rapor henüz hazır değil'"
           @click="emit('export-json')"
-        >JSON</button>
+        >
+          <span v-if="phaseOf('json') === 'loading'">…</span>
+          <span v-else-if="phaseOf('json') === 'ok'">✓ JSON</span>
+          <span v-else>JSON</span>
+        </button>
         <button
           type="button"
           class="btn-ghost text-xs px-2 py-1"
-          :disabled="!reportReady"
-          :title="reportReady ? 'HTML raporu indir' : 'Rapor henüz hazır değil'"
+          :disabled="!reportReady || phaseOf('html') === 'loading'"
+          :title="reportReady ? 'HTML raporu indir ve yeni sekmede aç' : 'Rapor henüz hazır değil'"
           @click="emit('export-html')"
-        >HTML</button>
+        >
+          <span v-if="phaseOf('html') === 'loading'">…</span>
+          <span v-else-if="phaseOf('html') === 'ok'">✓ HTML</span>
+          <span v-else>HTML</span>
+        </button>
         <button
           type="button"
           class="btn-ghost text-xs px-2 py-1"
-          :disabled="!reportReady"
-          :title="reportReady ? 'PDF raporu indir' : 'Rapor henüz hazır değil'"
+          :disabled="!reportReady || phaseOf('pdf') === 'loading'"
+          :title="reportReady ? 'PDF raporu indir ve yeni sekmede aç' : 'Rapor henüz hazır değil'"
           @click="emit('export-pdf')"
-        >PDF</button>
+        >
+          <span v-if="phaseOf('pdf') === 'loading'">PDF oluşturuluyor…</span>
+          <span v-else-if="phaseOf('pdf') === 'ok'">✓ PDF</span>
+          <span v-else>PDF</span>
+        </button>
       </div>
+      <p class="mt-2 text-[11px] text-slate-600">İndirilen dosyayı bilgisayarınızın "İndirilenler" klasöründen kontrol edin.</p>
     </div>
   </div>
 </template>
