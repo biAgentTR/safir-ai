@@ -741,7 +741,7 @@ def _reconcile_unassigned_evidence(
             (
                 e
                 for e in cleaned_events
-                if e.get("event_id") == "unassigned" or e.get("type") == "siniflandirilamadi"
+                if e.get("event_id") == "unassigned" or e.get("canonical_event_type") == "siniflandirilamadi"
             ),
             None,
         )
@@ -751,7 +751,13 @@ def _reconcile_unassigned_evidence(
             cleaned_events.append(
                 {
                     "event_id": "unassigned",
-                    "type": "siniflandirilamadi",
+                    # `event_name`/`canonical_event_type` - GERCEK VLM olaylariyla
+                    # AYNI sema (bkz. prompts/vlm_prompts.py EVENTS_JSON semasi);
+                    # eski `"type"` alani hicbir zaman var olmayan bir anahtardi
+                    # (frontend'in VlmEventList.vue "Tur" kolonu hep bunu okuyup
+                    # hep bos donuyordu - bkz. desktop/app/types/api.ts VlmEvent).
+                    "event_name": "siniflandirilamadi",
+                    "canonical_event_type": "siniflandirilamadi",
                     "start_time": min(f.timestamp_sec for f in leftover_frames),
                     "end_time": max(f.timestamp_sec for f in leftover_frames),
                     "evidence_ids": leftover_ids,

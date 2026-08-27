@@ -200,13 +200,28 @@ export interface SamplerStageData {
 }
 
 /** A single VLM-clustered event from EVENTS_JSON (src/prompts/vlm_prompts.py). */
+/**
+ * A single VLM-clustered event, exactly as parsed from the model's own
+ * EVENTS_JSON block (src/vlm/base_vlm.py::parse_structured_events) — these
+ * dicts are forwarded to the frontend UNCHANGED (src/observability/
+ * trace_serializer.py), so the field names here MUST match the prompt's
+ * schema (src/prompts/vlm_prompts.py::_EVENTS_JSON_INSTRUCTION) exactly.
+ * There is NO `type` field — an earlier version of this interface declared
+ * one, which was always `undefined` at runtime and silently broke the "Tür"
+ * column in VlmEventList.vue (always fell back to a generic label).
+ */
 export interface VlmEvent {
   event_id: string
-  type: string
+  /** Free-form, model-chosen short name (e.g. "forklift_geri_manevra") — always present. */
+  event_name: string
+  /** One of EventType's known categories, or null if none genuinely applies. */
+  canonical_event_type: string | null
   start_time: number
   end_time: number
   evidence_ids: string[]
   description: string
+  /** Short risk phrases (NOT bare object names) — see prompt docstring. */
+  keywords?: string[]
   risk_score: number | null
   confidence: number
 }
