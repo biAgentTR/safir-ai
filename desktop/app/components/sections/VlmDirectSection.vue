@@ -173,7 +173,7 @@ const exportOkTimers: Record<ExportKind, ReturnType<typeof setTimeout> | null> =
 
 function markExported(kind: ExportKind, filename: string) {
   exportPhase[kind] = 'ok'
-  exportMessage[kind] = `${filename} indirildi ve yeni sekmede açıldı — lütfen dosyayı kontrol edin.`
+  exportMessage[kind] = `${filename} — yeni sekmede açıldı, lütfen dosyayı kontrol edin.`
   if (exportOkTimers[kind]) clearTimeout(exportOkTimers[kind]!)
   exportOkTimers[kind] = setTimeout(() => {
     if (exportPhase[kind] === 'ok') exportPhase[kind] = 'idle'
@@ -301,18 +301,13 @@ async function doExportPdf() {
           :type-counts="typeCounts"
           :report-ready="reportReady"
           :export-phase="exportPhase"
+          :export-message="exportMessage"
           @export-json="doExportJson"
           @export-html="doExportHtml"
           @export-pdf="doExportPdf"
         />
       </div>
     </div>
-    <p v-if="exportPhase.json === 'ok'" class="mt-2 text-xs text-risk-low">✓ {{ exportMessage.json }}</p>
-    <p v-if="exportPhase.json === 'error'" class="mt-2 text-xs text-risk-crit">JSON: {{ exportMessage.json }}</p>
-    <p v-if="exportPhase.html === 'ok'" class="mt-2 text-xs text-risk-low">✓ {{ exportMessage.html }}</p>
-    <p v-if="exportPhase.html === 'error'" class="mt-2 text-xs text-risk-crit">HTML: {{ exportMessage.html }}</p>
-    <p v-if="exportPhase.pdf === 'ok'" class="mt-2 text-xs text-risk-low">✓ {{ exportMessage.pdf }}</p>
-    <p v-if="exportPhase.pdf === 'error'" class="mt-2 text-xs text-risk-crit">PDF: {{ exportMessage.pdf }}</p>
 
     <div v-if="hasRunAnalysis && store.status === 'done' && !events.length" class="mt-5 card p-8 text-center">
       <p class="text-sm font-semibold text-slate-200">Kritik olay tespit edilmedi</p>

@@ -12,11 +12,16 @@ const props = defineProps<{
   typeCounts: { type: string; count: number }[]
   reportReady?: boolean
   exportPhase?: Record<'json' | 'html' | 'pdf', ExportPhase>
+  exportMessage?: Record<'json' | 'html' | 'pdf', string>
 }>()
 
 function phaseOf(kind: 'json' | 'html' | 'pdf'): ExportPhase {
   return props.exportPhase?.[kind] ?? 'idle'
 }
+function messageOf(kind: 'json' | 'html' | 'pdf'): string {
+  return props.exportMessage?.[kind] ?? ''
+}
+const KIND_LABEL: Record<'json' | 'html' | 'pdf', string> = { json: 'JSON', html: 'HTML', pdf: 'PDF' }
 
 const emit = defineEmits<{
   (e: 'export-json' | 'export-html' | 'export-pdf'): void
@@ -93,6 +98,16 @@ const maxTypeCount = computed(() => Math.max(1, ...props.typeCounts.map((t) => t
           <span v-else>PDF</span>
         </button>
       </div>
+      <p
+        v-for="kind in (['json', 'html', 'pdf'] as const)"
+        v-show="phaseOf(kind) === 'ok' || phaseOf(kind) === 'error'"
+        :key="kind"
+        class="mt-2 text-[11px]"
+        :class="phaseOf(kind) === 'error' ? 'text-risk-crit' : 'text-risk-low'"
+      >
+        <template v-if="phaseOf(kind) === 'ok'">✓ İndirme başarılı — {{ messageOf(kind) }}</template>
+        <template v-else-if="phaseOf(kind) === 'error'">{{ KIND_LABEL[kind] }} indirilemedi: {{ messageOf(kind) }}</template>
+      </p>
       <p class="mt-2 text-[11px] text-slate-600">İndirilen dosyayı bilgisayarınızın "İndirilenler" klasöründen kontrol edin.</p>
     </div>
   </div>
