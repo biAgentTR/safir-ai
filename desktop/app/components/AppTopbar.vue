@@ -4,6 +4,7 @@ const { state, system } = useBackendHealth()
 const route = useRoute()
 const auth = useAuthStore()
 const { goToSection } = useSectionNav()
+const { togglePanel, isPanelOpen } = useUsageMetrics()
 onMounted(() => auth.init())
 
 const isHidden = ref(false)
@@ -92,6 +93,19 @@ const dot = computed(() => ({
         />
         <span class="font-normal">{{ label }}</span>
       </div>
+
+      <button
+        type="button"
+        class="btn-ghost !py-1.5 !px-2.5 text-xs flex items-center gap-1.5 transition-all"
+        :class="isPanelOpen ? 'text-accent border-accent/40 bg-accent/10' : ''"
+        title="AI Metrikleri"
+        @click="togglePanel"
+      >
+        <svg class="w-3.5 h-3.5 text-accent" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 2L2 12l10 10 10-10L12 2zm0 3.6L18.4 12 12 18.4 5.6 12 12 5.6z"/>
+        </svg>
+        <span class="hidden sm:inline">AI Metrikleri</span>
+      </button>
 
       <ModeSwitcher />
       <ThemeToggle />

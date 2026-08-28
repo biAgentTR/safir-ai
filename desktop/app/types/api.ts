@@ -643,3 +643,37 @@ export interface SseTraceEnvelope {
   event: TraceEvent
 }
 export type SseMessage = SseTraceEnvelope | SseEndEvent | SseErrorEvent
+
+// -------------------------------------------------- usage metrics -----------
+
+export interface UsageCategoryBreakdown {
+  key: string
+  label: string
+  count: number
+  tokens: number | null
+  duration_ms: number
+}
+
+export interface UsageMetrics {
+  elapsed_ms: number
+  total_calls: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  last_latency_ms: number
+  avg_latency_ms: number
+  categories: UsageCategoryBreakdown[]
+}
+
+export interface UsageKeyInfo {
+  key_name: string
+  cost_usd: number
+}
+
+export interface KpiMetric {
+  key: string
+  label: string
+  value: string | number
+  unit?: string
+  change_pct?: number
+}

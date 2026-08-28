@@ -20,6 +20,35 @@ export function mmss(seconds: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
+/** Format milliseconds into human-readable duration (e.g. '2 dk 44 sn', '9.8 sn', '362 ms'). */
+export function durationMs(ms: number): string {
+  if (ms == null || isNaN(ms) || ms <= 0) return '0 ms'
+  if (ms < 1000) return `${Math.round(ms)} ms`
+  const totalSec = ms / 1000
+  if (totalSec < 60) {
+    return `${totalSec.toLocaleString('tr-TR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} sn`
+  }
+  const min = Math.floor(totalSec / 60)
+  const sec = Math.round(totalSec % 60)
+  return `${min} dk ${sec} sn`
+}
+
+/** Format token count with Turkish localization (e.g. 235400 -> '235,4 B', 6405 -> '6.405'). */
+export function tokenCount(count: number | null | undefined): string {
+  if (count == null || isNaN(count)) return '—'
+  if (count >= 10000) {
+    const k = count / 1000
+    return `${k.toLocaleString('tr-TR', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} B`
+  }
+  return count.toLocaleString('tr-TR')
+}
+
+/** Format number as percentage string. */
+export function percent(val: number): string {
+  if (val == null || isNaN(val)) return '0%'
+  return `%${Math.round(val * 100)}`
+}
+
 /**
  * Risk level -> tailwind text/ring/bg tone key.
  *

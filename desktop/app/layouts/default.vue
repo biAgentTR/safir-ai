@@ -11,5 +11,6 @@ const analysisStore = useAnalysisStore()
       <slot />
     </main>
     <VlmChatPanel :job-id="analysisStore.jobId" />
+    <UsageMetricsPanel />
   </div>
 </template>
