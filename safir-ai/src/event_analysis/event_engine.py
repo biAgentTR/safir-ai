@@ -3,7 +3,7 @@
 Kategori kaynagi
 -----------------
 `_KEYWORD_RULES` anahtarlari `EventType` degerleridir; ilk 8 kategori
-`src/memory/embedding_rag_service.py::DEFAULT_ISG_REGULATIONS` icindeki 8
+`src/rag/embedding_rag_service.py::DEFAULT_ISG_REGULATIONS` icindeki 8
 mevzuat maddesiyle birebir hizalanmistir (bkz. `schemas.EVENT_TYPE_REGULATION_MAP`).
 `YETKISIZ_ERISIM` ve `GENEL_GOZLEM` mevcut mevzuat setinde karsiligi olmayan,
 operasyonel amacli iki ozel kategoridir (bkz. `EventType` docstring'i).
@@ -36,12 +36,35 @@ degerlendirildi:
    (-) `05` katmani zaten ayni metni LLM ile degerlendiriyor; bu adimda
        ikinci bir LLM cagrisi maliyeti karsiliksiz kalir.
 
-Karar: kural tabanli yaklasim secildi (yukaridaki (+) gerekceleriyle).
-`EventEngine.__init__`'teki `classifier` parametresi, ileride dusuk-guven
-tespitlerini iyilestirmek icin `src.vlm.llm_client.LLMClient` ile ayni
-`invoke(messages) -> AIMessage` sozlesmesine sahip opsiyonel bir siniflandirici
-enjekte etme imkani birakir; varsayilan `None` ile devre disidir ve `vlm/`
-katmanina hicbir bagimlilik eklemez.
+Karar: kural tabanli yaklasim secildi (yukaridaki (+) gerekceleriyle) ANCAK
+sartname acikca "statik, yalnizca kural tabanli cozumler dusuk puanlanacaktir"
+der - bu yuzden SAF kural-tabanli tasarim TEK BASINA yeterli degildir.
+
+2026-08-25 (kucuk-LLM FALLBACK siniflandirici - T008 P1): `EventEngine.
+__init__`teki `classifier` parametresi (daha once "ileride" icin ayrilmis,
+KULLANILMAYAN bir genisletme noktasiydi) artik AKTIF: birincil (VLM
+structured) VE ikincil (anahtar-kelime) yol HER IKISI de basarisiz olup
+hicbir kategori bulamadiginda - yani sistem `genel_gozlem`e dusmek UZERE
+oldugunda - bu SON ADIMDA, kucuk/hizli bir LLM'e ("llm-fast", `src.vlm.
+llm_client.LLMClient` ile ayni `invoke_json(messages) -> AIMessage`
+sozlesmesi) TEK bir siniflandirma sorusu sorulur (bkz. `src/prompts/
+event_classifier_prompts.py`, `_classify_with_llm_fallback`). Boylece:
+- Hizli/deterministik/ucretsiz yol (structured + keyword) HER ZAMAN
+  ONCELIKLIDIR - bu LLM cagrisi yalnizca "hicbiri calismadi" durumunda,
+  YANI EN NADIR yolda tetiklenir (gecikme/maliyet minimal).
+- "Kural motoru %100 emin olamazsa otonom karar al" mantigi somutlasir -
+  sartnamenin "Ajanin akil yurutme yetenegi" kriterine katki saglar.
+- `classifier=None` (varsayilan, orn. mock-LLM modunda `main.py` bunu HIC
+  enjekte etmez) ile davranis TAMAMEN ESKISI GIBI kalir - genel_gozlem'e
+  duser; bu OPSIYONEL bir zenginlestirmedir, ZORUNLU bir bagimlilik degil.
+- 2026-08-25 (2. duzeltme): siniflandirici BASARISIZ olursa (ag hatasi,
+  bozuk JSON, gecersiz kategori), bu ARTIK sessizce "genel_gozlem"e (yani
+  "risk yok" ONAYINA) DUSMEZ - "belirsiz/karar verilemedi" ile "onaylanmis
+  risk yok" AYNI SEY DEGILDIR (`risk_status="unknown"` icin daha once
+  yapilan P0 duzeltmesiyle AYNI gerekce). Basarisiz cagri, `event_type=
+  None`/`event_name="degerlendirme_yapilamadi"` ile ACIKCA isaretlenen AYRI
+  bir "belirsiz" olay uretir (bkz. `_indeterminate_event`) - pipeline yine
+  de ASLA COKMEZ, yalnizca dogru/durust bir etiket kullanilir.
 
 T014 - Olumsuzlama tespiti (ve sinirlari)
 -------------------------------------------
@@ -78,13 +101,21 @@ NLP kutuphanesi) gerekir.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Any, Dict, List, Optional
 
+from langchain_core.messages import HumanMessage, SystemMessage
+
 from src.event_analysis.schemas import DetectedEvent, EventEngineInput, EventType
+from src.prompts import EVENT_CLASSIFIER_SYSTEM_PROMPT, build_event_classifier_user_prompt
 
 logger = logging.getLogger(__name__)
+
+_LLM_FALLBACK_SOURCE_SUFFIX = "+llm_fallback_classifier"
+"""`DetectedEvent.source_model`e eklenen ek - bu olayin yapisal/keyword yolu
+DEGIL, kucuk-LLM geri-dususu ile siniflandirildigini izlenebilir kilar."""
 
 _KEYWORD_RULES: Dict[EventType, List[str]] = {
     EventType.DUSME_RISKI: [
@@ -100,9 +131,6 @@ _KEYWORD_RULES: Dict[EventType, List[str]] = {
         "koruyucu ekipman eksik",
         "kkd eksik",
         "korumasiz alan",
-        "belirsiz",
-        "eldiven belirsiz",
-        "yelek belirsiz",
     ],
     EventType.ARAC_YAYA_YAKINLIGI: [
         "forklift",
@@ -122,15 +150,6 @@ _KEYWORD_RULES: Dict[EventType, List[str]] = {
         "yangin",
         "alev",
         "yanik kokusu",
-        "pus",
-        "puslanma",
-        "tuten",
-        "tutme",
-        "dumanli",
-        "isik veya nesne",
-        "isik",
-        "isi",
-        "yanma",
     ],
     EventType.DAR_ALAN_IHLALI: [
         "kapali alan",
@@ -149,11 +168,6 @@ _KEYWORD_RULES: Dict[EventType, List[str]] = {
         "kren",
         "agir yuk kaldirma",
         "sinyalman olmadan",
-        "panel",
-        "devrilme",
-        "devrilmesi",
-        "altinda kalma",
-        "altinda",
     ],
     EventType.YETKISIZ_ERISIM: [
         "yetkisiz",
@@ -161,71 +175,12 @@ _KEYWORD_RULES: Dict[EventType, List[str]] = {
         "yasakli alan",
         "guvenlik ihlali",
     ],
-    EventType.SIZMA_YETKISIZ_ERISIM: [
-        "sizma",
-        "cizgi ihlali",
-        "tel orgu",
-        "cevre ihlali",
-        "nizamye",
-        "duvar atlama",
-        "perimeter",
-        "gece gorusu",
-        "termal ihlal",
-    ],
-    EventType.SUPHELI_PAKET_HAREKET: [
-        "supheli paket",
-        "sahipsiz canta",
-        "supheli sahis",
-        "kesif",
-        "gizlenme",
-        "saklanan kisi",
-        "canta birakma",
-    ],
-    EventType.DRONE_IHA_TEHDIDI: [
-        "drone",
-        "iha",
-        "hava araci",
-        "hava ihlali",
-        "ucan cisim",
-        "dron",
-        "insansiz hava araci",
-    ],
-    EventType.YARALANMA_KAZA: [
-        "yaralanma",
-        "yarali",
-        "kaza",
-        "is kazasi",
-        "dusme",
-        "dustu",
-        "dusecek",
-        "kanama",
-        "sikisma",
-        "ezilme",
-        "carpma",
-        "carpisma",
-        "takilma",
-        "kayma",
-        "bayilma",
-        "hareketsiz",
-        "acili",
-        "yaralanan",
-        "darbe",
-        "kemik",
-        "kirik",
-        "ambulans",
-        "ilk yardim",
-        "kesik",
-        "can kaybi",
-        "yere yigil",
-    ],
     EventType.SINIFLANDIRILAMADI: [
-        "siniflandirilamadi",
+        "siniflandirilamayan",
+        "tanimlanamayan risk",
+        "belirsiz ihlal",
         "anormallik",
-        "supheli durum",
-        "bilinmeyen risk",
-        "tehlikeli durum",
-        "kaza riski",
-        "fiziksel zarar",
+        "bilinmeyen durum",
     ],
 }
 
@@ -319,11 +274,14 @@ class EventEngine:
         """EventEngine'i opsiyonel bir siniflandirici ve guven esigiyle baslatir.
 
         Args:
-            classifier: `invoke(messages) -> AIMessage` sozlesmesine sahip
-                opsiyonel bir LLM istemcisi (orn. `src.vlm.llm_client.LLMClient`
-                veya `MockLLMClient`). Su an tespit mantiginda kullanilmaz;
-                ileride dusuk-guven tespitlerini iyilestirmek icin ayrilmis
-                bir genisletme noktasidir.
+            classifier: `invoke_json(messages) -> AIMessage` sozlesmesine
+                sahip opsiyonel bir LLM istemcisi (orn. `src.vlm.llm_client.
+                LLMClient`, gercek "llm-fast" EVREN uc noktasina baglanir).
+                Yalnizca birincil (VLM structured) VE ikincil (anahtar-kelime)
+                yol HER IKISI de basarisiz oldugunda, SON CARE siniflandirma
+                icin cagrilir (bkz. modul dokustringi 2026-08-25 notu).
+                `None` (varsayilan) ile fallback TAMAMEN DEVRE DISIDIR -
+                davranis eski (genel_gozlem'e duser) haliyle AYNI kalir.
             min_confidence: Bu esigin altindaki tespitler `detect()`
                 ciktisindan elenir (varsayilan 0.0: hicbiri elenmez).
         """
@@ -358,7 +316,7 @@ class EventEngine:
                 "EventEngine: t=%.2f -> %d olay (model-tabanli/structured: %s)",
                 engine_input.timestamp,
                 len(structured),
-                ", ".join(d.event_type for d in structured),
+                ", ".join(d.event_name for d in structured),
             )
             return structured
 
@@ -377,6 +335,7 @@ class EventEngine:
 
             detections.append(
                 DetectedEvent(
+                    event_name=event_type.value,
                     event_type=event_type.value,
                     description=engine_input.vlm_description,
                     timestamp=engine_input.timestamp,
@@ -387,34 +346,66 @@ class EventEngine:
             )
 
         if not detections:
-            detections.append(
-                DetectedEvent(
-                    event_type=EventType.GENEL_GOZLEM.value,
-                    description=engine_input.vlm_description,
-                    timestamp=engine_input.timestamp,
-                    confidence=0.0,
-                    matched_keywords=[],
-                    source_model=engine_input.source_model,
+            if self._classifier is not None:
+                # Siniflandirici YAPILANDIRILMIS - "genel_gozlem" ARTIK yalnizca
+                # siniflandiricinin GERCEKTEN/POZITIF olarak "risk yok" dedigi
+                # durumda kullanilir; siniflandirici basarisiz olursa/gecersiz
+                # bir sey donerse bu, "risk yok" ile ASLA KARISTIRILMAZ - acikca
+                # "degerlendirilemedi" olarak isaretlenir (bkz. `_classify_with_llm_fallback`).
+                detections.append(self._classify_with_llm_fallback(engine_input))
+            else:
+                # Siniflandirici HIC yapilandirilmamis (bkz. `main.py`: mock-LLM
+                # modunda veya operator bilerek devre disi biraktiginda) - bu,
+                # ONCEDEN VAR OLAN, degismemis davranistir: hicbir siniflandirma
+                # denemesi YAPILMADI, bu yuzden "genel_gozlem"e (dusuk guvenli)
+                # duser. Bu, "denedik ve basarisiz olduk" ile AYNI SEY DEGILDIR.
+                detections.append(
+                    DetectedEvent(
+                        event_name=EventType.GENEL_GOZLEM.value,
+                        event_type=EventType.GENEL_GOZLEM.value,
+                        description=engine_input.vlm_description,
+                        timestamp=engine_input.timestamp,
+                        confidence=0.0,
+                        matched_keywords=[],
+                        source_model=engine_input.source_model,
+                    )
                 )
-            )
 
         detections.sort(key=lambda event: event.confidence, reverse=True)
         logger.debug(
             "EventEngine: t=%.2f -> %d olay tespit edildi (%s)",
             engine_input.timestamp,
             len(detections),
-            ", ".join(d.event_type for d in detections),
+            ", ".join(d.event_name for d in detections),
         )
         return detections
 
     def _detect_from_structured(self, engine_input: EventEngineInput) -> List[DetectedEvent]:
-        """VLM'in dogrudan urettigi tipli olaylari (`structured_events`) dogrulayip `DetectedEvent`e cevirir.
+        """VLM'in dogrudan urettigi olaylari (`structured_events`) `DetectedEvent`e cevirir.
 
-        Yalnizca `EventType` enum'unda tanimli tipler kabul edilir (gecersiz
-        tipler atlanir); guven skoru 0-1 araligina kirpilir ve zaman damgasi
-        item'da yoksa cagrinin zaman damgasina duser. Gecerli hicbir olay
-        yoksa bos liste doner ve cagiran (`detect`) anahtar-kelime fallback'ine
-        gecer.
+        T020 (kimlik ayrimi): olayin BIRINCIL kimligi artik VLM'in KENDI
+        urettigi `event_name` alanidir (serbest bicimli, ONCEDEN TANIMLI bir
+        taksonomiyle SINIRLI DEGIL) - `EventType` enum'unda olup olmamasi bir
+        KABUL/RED kriteri DEGILDIR; hicbir olay bu yuzden ATILMAZ. `type`/
+        `canonical_event_type` alani varsa VE `EventType`de GERCEKTEN
+        taniniyorsa opsiyonel `event_type` (canonical baglanti) olarak
+        aktarilir; taninmiyorsa veya yoksa `event_type=None` kalir (bu, KASITLI
+        ve GECERLI bir "eslestirilemedi" durumudur - `siniflandirilamadi` ya da
+        baska bir kategoriye ZORLANMAZ).
+
+        Geriye uyumluluk: eski/degrade bir VLM ciktisi yalnizca `type` alanini
+        (yeni `event_name`/`canonical_event_type` cifti DEGIL) uretebilir; bu
+        durumda `type` degeri hem `event_name` HEM DE (gecerliyse) `event_type`
+        icin kullanilir - hicbir olay bu geciste KAYBOLMAZ.
+
+        Guven skoru 0-1 araligina kirpilir; zaman damgasi item'da yoksa
+        cagrinin zaman damgasina duser. `event_id`/`evidence_ids`/`end_time`/
+        `risk_score` (VLM'in olay kumeleme ciktisi - bkz.
+        `src/prompts/vlm_prompts.py`) varsa aynen tasinir; hicbiri VLM
+        katmaninda UYDURULMAZ, yalnizca burada oldugu gibi aktarilir (kimlik
+        dogrulamasi/`unassigned` yonetimi `src/main.py` katmaninda yapilir).
+        Gecerli hicbir olay yoksa bos liste doner ve cagiran (`detect`)
+        anahtar-kelime fallback'ine gecer.
 
         Args:
             engine_input: (varsa) `structured_events` tasiyan girdi.
@@ -427,27 +418,170 @@ class EventEngine:
             if not isinstance(item, dict):
                 continue
 
-            raw_type = str(item.get("type", "")).strip().lower()
-            if raw_type not in _VALID_EVENT_TYPES:
-                logger.debug("Structured olay atlandi (gecersiz tip): %r", raw_type)
+            legacy_type_raw = str(item.get("type", "")).strip().lower()
+            event_name = str(item.get("event_name") or item.get("event") or item.get("event_label") or "").strip()
+            if not event_name:
+                # Eski/degrade cikti: yalnizca `type` var - onu HEM event_name
+                # HEM (gecerliyse) canonical event_type icin kullan (kayip yok).
+                event_name = legacy_type_raw
+            if not event_name:
+                logger.debug("Structured olay atlandi (event_name/type ikisi de bos): %r", item)
                 continue
+
+            canonical_raw = str(item.get("canonical_event_type") or legacy_type_raw or "").strip().lower()
+            event_type: Optional[str] = canonical_raw if canonical_raw in _VALID_EVENT_TYPES else None
 
             confidence = self._coerce_confidence(item.get("confidence"))
             if confidence < self._min_confidence:
                 continue
 
-            evidence = str(item.get("evidence") or "").strip() or engine_input.vlm_description
+            evidence = str(item.get("description") or item.get("evidence") or "").strip() or engine_input.vlm_description
+            start_time = self._coerce_timestamp(
+                item.get("start_time", item.get("timestamp")), engine_input.timestamp
+            )
+            end_time_raw = item.get("end_time")
+            end_time = self._coerce_timestamp(end_time_raw, start_time) if end_time_raw is not None else None
+            evidence_ids = [str(eid) for eid in (item.get("evidence_ids") or []) if isinstance(eid, (str, int))]
+            start_time, end_time = self._enforce_temporal_consistency(
+                start_time, end_time, evidence_ids, engine_input.evidence_timestamps
+            )
+            keywords = self._normalize_free_form_keywords(item.get("keywords"))
+            if not keywords and event_type is not None:
+                # VLM bu olay icin `keywords` uretmediyse (eski prompt/model
+                # veya bos liste) VE bir canonical `event_type` biliniyorsa,
+                # guvenli bir fallback olarak sabit taksonomi-tabanli
+                # cikarima duser (bkz. `_extract_keywords_for_type`). Canonical
+                # tip yoksa (serbest/yeni olay) taksonomi-fallback UYGULANAMAZ
+                # - bos liste kalir, hicbir terim UYDURULMAZ.
+                keywords = self._extract_keywords_for_type(event_type, evidence)
+            prov = item.get("_provenance", {})
             detections.append(
                 DetectedEvent(
-                    event_type=raw_type,
+                    event_name=event_name,
+                    event_type=event_type,
                     description=evidence,
-                    timestamp=self._coerce_timestamp(item.get("timestamp"), engine_input.timestamp),
+                    timestamp=start_time,
+                    end_timestamp=end_time,
                     confidence=confidence,
-                    matched_keywords=[],
+                    matched_keywords=keywords,
                     source_model=engine_input.source_model,
+                    vlm_event_id=str(item.get("event_id")) if item.get("event_id") is not None else None,
+                    evidence_ids=evidence_ids,
+                    risk_hint=self._coerce_risk_hint(item.get("risk_score")),
+                    source_analysis_id=prov.get("source_analysis_id"),
+                    source_video_id=prov.get("source_video_id"),
+                    source_chunk_id=prov.get("source_chunk_id"),
+                    source_model_call_id=prov.get("source_model_call_id"),
+                    source_observation_id=prov.get("source_observation_id"),
+                    relative_start_sec=prov.get("relative_start_sec"),
+                    relative_end_sec=prov.get("relative_end_sec"),
                 )
             )
         return detections
+
+    def _classify_with_llm_fallback(self, engine_input: EventEngineInput) -> DetectedEvent:
+        """SON CARE: birincil (structured) VE ikincil (anahtar-kelime) yol basarisiz oldugunda kucuk bir LLM'e siniflandirma sorar.
+
+        Bkz. modul dokustringi 2026-08-25 notu. 2026-08-25 (2. duzeltme -
+        "belirsiz" ile "onaylanmis risk yok" KARISTIRILMAMALI): bu metod
+        ARTIK ASLA `None` DONDURMEZ VE bu metod cagrildiginda ASLA sessizce
+        "genel_gozlem"e (yani "risk yok" ONAYINA) DUSMEZ. Siniflandirici
+        GERCEKTEN VE ACIKCA "genel_gozlem" derse bu GECERLI, POZITIF bir
+        sonuctur (`event_type="genel_gozlem"`). Ancak siniflandirici cagrisi
+        BASARISIZ olursa (ag hatasi, bozuk JSON, gecersiz/bilinmeyen kategori),
+        bu "risk yoktur" ANLAMINA GELMEZ - sistem sadece KARAR VEREMEDI; bu
+        yuzden boyle bir durumda `event_type=None` (T020: "eslestirilemedi",
+        GECERLI/BEKLENEN bir sonuc) VE `event_name="degerlendirme_yapilamadi"`
+        ile acikca isaretlenen, AYRI bir "belirsiz" olay dondurulur - operator/
+        rapor bunu ASLA "onaylanmis risksiz gozlem" ile KARISTIRMAZ. `event_type=
+        None` oldugu icin RuleEngine bu olay icin zaten hicbir RuleMatch
+        URETMEZ (mevcut, degismemis davranis - bkz. `rule_engine.py`).
+
+        Args:
+            engine_input: Structured VE keyword yolunun HER IKISININ de
+                basarisiz oldugu cagriya ait girdi.
+
+        Returns:
+            Siniflandirici gecerli bir kategori dondurduyse o kategoriye ait
+            bir `DetectedEvent` (bu, `genel_gozlem` OLABILIR - ama bu durumda
+            POZITIF/onaylanmis bir sonuctur); siniflandirici basarisiz olursa
+            `event_type=None`, `event_name="degerlendirme_yapilamadi"` olan,
+            "risk yok" ile ASLA karistirilamayacak belirgin bir "belirsiz" olay.
+        """
+        try:
+            messages = [
+                SystemMessage(content=EVENT_CLASSIFIER_SYSTEM_PROMPT),
+                HumanMessage(content=build_event_classifier_user_prompt(engine_input.vlm_description)),
+            ]
+            response = self._classifier.invoke_json(messages)
+            raw_text = (response.content or "").strip()
+            match = re.search(r"\{.*\}", raw_text, re.DOTALL)
+            payload = json.loads(match.group(0) if match else raw_text)
+
+            event_type_raw = str(payload.get("event_type", "")).strip().lower()
+            if event_type_raw not in _VALID_EVENT_TYPES:
+                logger.warning(
+                    "EventEngine LLM fallback: gecersiz/bilinmeyen kategori dondurdu (%r); "
+                    "'risk yok' DEGIL, 'degerlendirilemedi' olarak isaretleniyor.",
+                    event_type_raw,
+                )
+                return self._indeterminate_event(engine_input)
+
+            confidence = self._coerce_confidence(payload.get("confidence"), default=0.3)
+            reason = str(payload.get("reason") or "").strip()
+        except Exception:  # noqa: BLE001 - fallback best-effort'tur, ASLA pipeline'i KESMEZ
+            logger.exception(
+                "EventEngine LLM fallback siniflandirmasi basarisiz; 'risk yok' DEGIL, 'degerlendirilemedi' olarak isaretleniyor."
+            )
+            return self._indeterminate_event(engine_input)
+
+        event_type = EventType(event_type_raw)
+        keywords = self._extract_keywords_for_type(event_type_raw, engine_input.vlm_description)
+        logger.info(
+            "EventEngine LLM fallback: t=%.2f -> %s (confidence=%.2f, gerekce=%s)",
+            engine_input.timestamp,
+            event_type_raw,
+            confidence,
+            reason or "(yok)",
+        )
+        return DetectedEvent(
+            event_name=event_type.value,
+            event_type=event_type.value,
+            description=engine_input.vlm_description,
+            timestamp=engine_input.timestamp,
+            confidence=confidence,
+            matched_keywords=keywords,
+            source_model=f"{engine_input.source_model}{_LLM_FALLBACK_SOURCE_SUFFIX}",
+        )
+
+    @staticmethod
+    def _indeterminate_event(engine_input: EventEngineInput) -> DetectedEvent:
+        """Siniflandirici BASARISIZ oldugunda (hata/bozuk JSON/gecersiz kategori) dondurulen, "risk YOK" ile ASLA karistirilmayan belirsiz olay.
+
+        `event_type=None` (T020: "eslestirilemedi" - GECERLI/BEKLENEN bir
+        sonuc, RuleEngine bunun icin hicbir RuleMatch URETMEZ) VE `event_name
+        ="degerlendirme_yapilamadi"` (sabit taksonomi disi, serbest bicimli
+        bir isim - bkz. `DetectedEvent.event_name` docstring'i) ile, sistemin
+        bu gozlem icin GERCEKTEN bir karar VEREMEDIGINI acikca isaretler.
+        """
+        return DetectedEvent(
+            event_name="degerlendirme_yapilamadi",
+            event_type=None,
+            description=engine_input.vlm_description,
+            timestamp=engine_input.timestamp,
+            confidence=0.0,
+            matched_keywords=[],
+            source_model=f"{engine_input.source_model}{_LLM_FALLBACK_SOURCE_SUFFIX}_failed",
+        )
+
+    @staticmethod
+    def _coerce_risk_hint(value: Any) -> Optional[int]:
+        """VLM'in kaba `risk_score` ipucunu 0-100 araligina kirpilmis bir int'e cevirir (gecersizse `None`)."""
+        try:
+            risk = int(round(float(value)))
+        except (TypeError, ValueError):
+            return None
+        return max(0, min(100, risk))
 
     @staticmethod
     def _coerce_confidence(value: Any, default: float = 0.5) -> float:
@@ -465,6 +599,158 @@ class EventEngine:
             return float(value)
         except (TypeError, ValueError):
             return fallback
+
+    @staticmethod
+    def _enforce_temporal_consistency(
+        start_time: float,
+        end_time: Optional[float],
+        evidence_ids: List[str],
+        evidence_timestamps: Dict[str, float],
+    ) -> "tuple[float, Optional[float]]":
+        """SAFIR-specific deterministic temporal consistency validation.
+
+        VLM'in `EVENTS_JSON.start_time`/`end_time` alanlari kendi urettigi
+        degerlerdir (bkz. `vlm_prompts.py`: VLM'e bunlari atadigi evidence
+        karelerinin GERCEK zaman damgalarindan turetmesi SOYLENIR, ama bu
+        hicbir yerde koda DOGRULANMAZ). Bu, SEASON (arXiv:2512.04643)
+        makalesinin decode-ici, attention-tabanli kontrastif mekanizmasinin
+        bir implementasyonu DEGILDIR (o mekanizma, barindirilan bir API
+        uzerinden erisilemez); yalnizca SAFIR'e ozgu, tamamen deterministik,
+        kod-tarafi bir tutarlilik dogrulamasidir.
+
+        Degismez (invariant): bir olayin span'i `T_event = [t_start, t_end]`,
+        kendisine atanan evidence karelerinin gercek zaman damgalari
+        `T_e = {t_1, ..., t_n}` icin
+            t_start <= min(T_e)  ve  t_end >= max(T_e)
+        kosulunu SAGLAMALIDIR - yani olay araligi, dayandigi TUM kanitlari
+        kapsamalidir. Ihlal edilirse, VLM'in iddiasi SILINMEZ; yalnizca bu
+        degismezi saglayacak sekilde GENISLETILIR (guvenli, minimal
+        duzeltme - bkz. gorev tanimi: "amac VLM timestamp'ini 'duzeltmek'
+        degil, dogrulamaktir" - burada duzeltme yalnizca ihlal durumunda,
+        span'i DARALTMADAN, yalnizca genisleterek yapilir).
+
+        Args:
+            start_time: VLM'in urettigi (veya cagri zaman damgasina dusmus) baslangic.
+            end_time: VLM'in urettigi bitis (varsa).
+            evidence_ids: Bu olaya atanan evidence kimlikleri (henuz
+                `main.py::_reconcile_unassigned_evidence` ile dogrulanmamis
+                olabilir - bilinmeyen kimlikler asagida sessizce yoksayilir).
+            evidence_timestamps: `EventEngineInput.evidence_timestamps`
+                (evidence_id -> gercek zaman damgasi). Bos ise (cagiran
+                bunu hic saglamadiysa) VLM'in zaman iddiasi TAMAMEN kopuk
+                sayilir ve dogrulama atlanir - guvenli fallback, mevcut
+                deger degistirilmeden aynen dondurulur.
+
+        Returns:
+            `(start_time, end_time)` - ihlal yoksa GIRDIYLE BIREBIR AYNI;
+            ihlal varsa yalnizca degismezi saglayacak minimal genisletme
+            uygulanmis hali. `start_time <= end_time` de her zaman saglanir
+            (end_time varsa).
+        """
+        # Evidence'dan tamamen bagimsiz, kosulsuz invariant: start <= end.
+        # VLM start_time > end_time gibi gecersiz bir span uretirse (evidence
+        # eslemesi olsun ya da olmasin), bu asla asagi akisa (duration
+        # hesabina) negatif olarak sizmamalidir.
+        if end_time is not None and end_time < start_time:
+            end_time = start_time
+
+        known_timestamps = [
+            evidence_timestamps[eid] for eid in evidence_ids if eid in evidence_timestamps
+        ]
+        if not known_timestamps:
+            # Evidence'dan tamamen kopuk (bilinen hicbir evidence_id yok) -
+            # guvenli fallback: VLM'in iddiasina (start<=end disinda) dokunma.
+            return start_time, end_time
+
+        evidence_min = min(known_timestamps)
+        evidence_max = max(known_timestamps)
+
+        corrected_start = min(start_time, evidence_min)
+        # end_time VLM tarafindan hic verilmediyse (None) bu "bilinmiyor"
+        # demektir - bir deger UYDURULMAZ, None oldugu gibi kalir. Yalnizca
+        # VLM zaten bir end_time VERMISSE ve bu, evidence'in gercek ust
+        # sinirinin ALTINDA kalmissa genisletilir.
+        corrected_end = max(end_time, evidence_max) if end_time is not None else None
+        if corrected_end is not None and corrected_end < corrected_start:
+            corrected_end = corrected_start
+
+        if corrected_start != start_time or corrected_end != end_time:
+            logger.warning(
+                "EventEngine: VLM start_time/end_time (%.2f/%s) atadigi evidence "
+                "karelerinin gercek zaman araligini (%.2f-%.2f) kapsamiyordu; "
+                "SAFIR-specific deterministic temporal consistency validation "
+                "geregi span genisletildi -> (%.2f/%s).",
+                start_time,
+                end_time,
+                evidence_min,
+                evidence_max,
+                corrected_start,
+                corrected_end,
+            )
+        return corrected_start, corrected_end
+
+    @staticmethod
+    def _normalize_free_form_keywords(raw: Any) -> List[str]:
+        """VLM'in `EVENTS_JSON.keywords` alaninda urettigi SERBEST BICIMLI (taksonomiyle SINIRLI OLMAYAN) terimleri temizler.
+
+        Bu, `_extract_keywords_for_type`in TERSIDIR: orada sabit bir kelime
+        dagarcigi metne karsi ARANIR; burada VLM'in KENDI urettigi terimler
+        yalnizca bicimsel olarak (tur/bosluk/tekrar) temizlenir - hicbir
+        terim baska bir listeyle KARSILASTIRILMAZ, ELENMEZ veya UYDURULMAZ.
+        Sabit bir sayi siniri YOKTUR (bkz. mimari karar: EventType = kategori,
+        keywords = o olaya ozgu serbest kanit).
+
+        Args:
+            raw: `item.get("keywords")` (beklenen: string listesi; VLM
+                bozuk/eksik bir deger dondurebilir - bu durumda bos liste).
+
+        Returns:
+            Bos olmayan, bas/son bosluklari temizlenmis, ilk-gorulme sirali
+            tekrarsiz (tam-esitlik) terim listesi. `raw` liste degilse veya
+            bos ise bos liste.
+        """
+        if not isinstance(raw, list):
+            return []
+
+        seen: List[str] = []
+        for item in raw:
+            if not isinstance(item, str):
+                continue
+            cleaned = item.strip()
+            if not cleaned or cleaned in seen:
+                continue
+            seen.append(cleaned)
+        return seen
+
+    @staticmethod
+    def _extract_keywords_for_type(event_type: str, description: str) -> List[str]:
+        """VLM'in yapilandirilmis (`EVENTS_JSON`) olayindaki serbest metin aciklamadan canonical anahtar kelime cikarir.
+
+        Model-tabanli (structured) path daha once `matched_keywords=[]`
+        birakiyordu (yalnizca `type` alani vardi); bu, `TemporalReasoner`in
+        kelime birlestirmesini ve `RuleEngine`in kombinasyon kurallarini
+        zayiflatiyordu. Bu metod, ayni `_KEYWORD_RULES` canonical listesini
+        (anahtar-kelime fallback'inde zaten kullanilan, gercek VLM
+        ciktilarindan derlenmis kelime dagarcigi) olayin kendi `event_type`ina
+        karsi calistirarak VLM'in farkli ifadelerini ayni canonical kelimeye
+        indirger (normalizasyon); olumsuzlanmis gecisler `_is_negated` ile
+        elenir (bkz. T014).
+
+        Args:
+            event_type: `DetectedEvent.event_type` (VLM'in verdigi tip).
+            description: Bu olaya ait serbest metin aciklama.
+
+        Returns:
+            Eslesen canonical anahtar kelime listesi (bulunamazsa bos liste;
+            `EventType`e karsilik gelen bir `_KEYWORD_RULES` girdisi yoksa da bos).
+        """
+        keywords = _KEYWORD_RULES.get(EventType(event_type)) if event_type in _VALID_EVENT_TYPES else None
+        if not keywords:
+            return []
+
+        text_lower = description.lower()
+        clauses = _split_into_clauses(text_lower)
+        return EventEngine._match_keywords_excluding_negated(keywords, text_lower, clauses)
 
     @staticmethod
     def _match_keywords_excluding_negated(
@@ -528,6 +814,6 @@ if __name__ == "__main__":
     demo_events = EventEngine().detect(demo_input)
     for demo_event in demo_events:
         print(
-            f"[{demo_event.event_type}] conf={demo_event.confidence} "
+            f"[{demo_event.event_name} / canonical={demo_event.event_type}] conf={demo_event.confidence} "
             f"keywords={demo_event.matched_keywords}"
         )

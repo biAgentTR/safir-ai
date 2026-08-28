@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -29,23 +29,161 @@ class TimelineEvent(BaseModel):
     )
 
 
+class EventSummary(BaseModel):
+    """T020: Bir `StructuredEvent`in rapora/API'ye tasinan ozeti - UC AYRI kavrami acikca ayirir.
+
+    1. `event_name`: olayin BIRINCIL kimligi - VLM'in KENDI urettigi, ONCEDEN
+       TANIMLI bir taksonomiyle SINIRLI OLMAYAN serbest bicimli isim (orn.
+       "yerde_hareketsiz_kisi"). HER ZAMAN doludur.
+    2. `event_type`: OPSIYONEL canonical baglanti (bkz. `EventType`); yalnizca
+       VLM'in gozlemi ZATEN BILINEN bir kategoriye GERCEKTEN karsilik
+       geliyorsa doludur. `None` = "eslestirilemedi" (GECERLI, ZORLANMAZ).
+    3. `keywords`: VLM'in evidence karelerinde GERCEKTEN gozlemledigi, HICBIR
+       taksonomiyle FILTRELENMEYEN serbest kanit ifadeleri (bkz.
+       `StructuredEvent.keywords`, `EventEngine._normalize_free_form_keywords`).
+
+    `risk_level`/`risk_score`, bu olaya ait `RuleEngine` eslesmelerinden
+    (varsa) deterministik olarak gelir (bkz. `risk_resolver.py`, degistirilmedi);
+    eslesme yoksa (orn. `event_type=None` oldugunda COGUNLUKLA boyledir) HER
+    IKISI DE `None` kalir - "Degerlendirilmedi" GECERLI bir sonuctur, risk
+    UYDURULMAZ.
+    """
+
+    event_name: str = Field(
+        description="Olayin BIRINCIL, serbest-bicimli kimligi (VLM-uretimi; taksonomiyle SINIRLI DEGIL)."
+    )
+    event_type: Optional[str] = Field(
+        default=None,
+        description="OPSIYONEL canonical baglanti (bkz. `EventType`); `None` = 'eslestirilemedi'.",
+    )
+    keywords: List[str] = Field(
+        default_factory=list,
+        description="VLM'in urettigi serbest-bicimli kanit ifadeleri (taksonomiyle SINIRLI DEGIL, risk KARARI DEGIL).",
+    )
+    risk_level: Optional[str] = Field(
+        default=None, description="Bu olaya ait deterministik RuleEngine eslesmesi (varsa); yoksa 'Degerlendirilmedi'."
+    )
+    risk_score: Optional[int] = Field(default=None, ge=0, le=100, description="Bkz. `risk_level`.")
+    evidence_ids: List[str] = Field(
+        default_factory=list,
+        description="Izlenebilirlik: bu olayin dayandigi kanit karesi kimlikleri (bkz. "
+        "`StructuredEvent.evidence_ids`) - Evidence -> Event -> Rapor zincirini rapor "
+        "duzeyinde de takip edilebilir kilar.",
+    )
+    rule_ids: List[str] = Field(
+        default_factory=list,
+        description="Izlenebilirlik: bu olaya uygulanan `RuleMatch.rule_id` degerleri (bkz. "
+        "`StructuredEvent.related_rule_matches`) - `risk_level`in HANGI kural(lar)dan "
+        "geldigini gosterir; kurallar INSAN-YAZIMI ve sabittir, LLM tarafindan uretilmez.",
+    )
+
+
 class RagContext(BaseModel):
     """Modul 4 spesifikasyonundaki ortak sema: FAISS RAG'dan gelen tek bir mevzuat sonucu.
 
-    `SafirReport.relevant_regulations` (duz metin listesi) ile ayni veriyi,
-    kural basligi/skor gibi yapilandirilmis alanlarla birlikte sunmak isteyen
-    tuketiciler icin kullanilir (bkz. `EmbeddingRAGService.search_laws`).
+    `SafirReport.relevant_regulations` (duz metin listesi, bu alanla AYNI
+    gercek semantik RAG sonuclarindan turetilir - bkz. o alanin dokustringi)
+    ile ayni veriyi, kaynak basligi/skor gibi yapilandirilmis alanlarla
+    birlikte sunmak isteyen tuketiciler icin kullanilir.
+
+    2026-08-24 (RAG entegrasyon dogrulama turu - traceability gap kapatildi):
+    Onceden bu sema TANIMLIYDI ama HICBIR YERDE POPULATE EDILMIYORDU - operator,
+    canli pipeline SSE trace'i disinda (kalici DEGIL, yalnizca o anki run icin),
+    "bu karar hangi mevzuat maddesine dayaniyor?" sorusunu rapor UZERINDEN
+    CEVAPLAYAMIYORDU. `SafirReport.semantic_rag_sources` alani artik bunu
+    (chunk_id/document_id/article_number/source_url ile birlikte) KALICI
+    olarak tasir - bkz. `main.py::build_report`. Bu, risk_score/risk_level
+    hesaplamasini ETKILEMEZ (semantik RAG zaten karar mekanizmasina HIC
+    girmiyordu, bkz. `context_builder.py` modul dokustringi) - yalnizca
+    ZATEN var olan bilginin kalici hale getirilmesidir.
     """
 
     rule_title: str = Field(description="Mevzuat/kural maddesinin kisa basligi (orn. 'ISG Yonetmeligi Madde 12').")
     content: str = Field(description="Maddenin tam metni.")
-    score: float = Field(description="FAISS benzerlik skoru.")
+    score: float = Field(description="GERIYE-UYUMLULUK: `embedding_score` ile AYNI deger (bkz. asagida) - eski tuketiciler icin korunur.")
+    embedding_score: Optional[float] = Field(
+        default=None,
+        description=(
+            "E5/FAISS `IndexFlatIP` cosine benzerlik skoru (semantic_score'un HAM girdisi) - "
+            "`relevance_score`/`cross_encoder_score` ile KARISTIRILMAZ (bkz. RAG finalizasyon "
+            "turu gorev tanimi 5. bolum: 'embedding_score = E5/FAISS semantic similarity'). "
+            "`score` alaniyla AYNI degeri tasir, yalnizca ismi kanonik/acik."
+        ),
+    )
+    chunk_id: Optional[str] = Field(default=None, description="Kaynak chunk'in kimligi (persisted KB index'teki).")
+    document_id: Optional[str] = Field(default=None, description="Kaynak mevzuat dokumaninin kimligi.")
+    article_number: Optional[str] = Field(default=None, description="Madde/ek numarasi (orn. 'I.3.1').")
+    source_url: Optional[str] = Field(default=None, description="Resmi mevzuat kaynak URL'si (varsa).")
+    relevance_score: Optional[float] = Field(
+        default=None,
+        description=(
+            "Deterministik, agirlikli-toplam relevance skoru (bkz. "
+            "`src/rag/deterministic_reranker.py::score_candidate`) - LLM'e SORULMAZ; "
+            "relevance skorlama devre disiysa `None`."
+        ),
+    )
+    semantic_score: Optional[float] = Field(
+        default=None,
+        description=(
+            "`relevance_score`e giden bes bilesenden biri (bkz. "
+            "`deterministic_reranker.RelevanceBreakdown.semantic_score`) - E5/FAISS "
+            "benzerliginin [0,1] araligina kirpilmis hali. Relevance skorlama devre "
+            "disiysa/hesaplanmadiysa `None` (UYDURULMAZ)."
+        ),
+    )
+    lexical_score: Optional[float] = Field(
+        default=None, description="`RelevanceBreakdown.lexical_score` - sorgu/chunk token orusumu. `None` = hesaplanmadi."
+    )
+    keyword_score: Optional[float] = Field(
+        default=None, description="`RelevanceBreakdown.keyword_score` - VLM matched_keywords orusumu. `None` = hesaplanmadi."
+    )
+    metadata_score: Optional[float] = Field(
+        default=None, description="`RelevanceBreakdown.metadata_score` - baslik/madde numarasi eslesmesi. `None` = hesaplanmadi."
+    )
+    phrase_score: Optional[float] = Field(
+        default=None, description="`RelevanceBreakdown.phrase_score` - tam ifade eslesmesi. `None` = hesaplanmadi."
+    )
+    relevance_status: Optional[str] = Field(
+        default=None,
+        description=(
+            "'accepted' | 'rejected' (bkz. `RetrievedDocument.relevance_status`) - bu kaynagin "
+            "threshold/top_k SONRASI nihai sonuc kumesine (Agent'in GORDUGU `semantic_rag_sources`) "
+            "GIRIP GIRMEDIGINI backend'in KENDI canonical karar alanindan tasir; UI 'Seçildi' "
+            "kolonu bunu okur, kendi basina bir esik hesaplamasi YAPMAZ."
+        ),
+    )
+    relevance_reason: Optional[str] = Field(
+        default=None,
+        description="`relevance_status`un insan-okunur gerekcesi (bkz. `RetrievedDocument.relevance_reason`).",
+    )
+    cross_encoder_score: Optional[float] = Field(
+        default=None,
+        description=(
+            "LOKAL Cross-Encoder'in (bkz. `src/rag/local_cross_encoder_reranker.py`) (query, chunk) "
+            "cift relevance skoru - `embedding_score`/`relevance_score`den AYRI, `risk_score`/"
+            "`confidence`/`probability` OLARAK ADLANDIRILMAZ. Cross-Encoder bu cagrida devreye "
+            "GIRMEDIYSE (model kullanilamadi/devre disi) `None`."
+        ),
+    )
+    final_rank: Optional[int] = Field(
+        default=None,
+        description="Nihai (Cross-Encoder SONRASI, devredeyse) 1-index'li sira (bkz. `RetrievedDocument.final_rank`).",
+    )
+    source_verified: bool = Field(
+        default=True,
+        description=(
+            "Bu kaynagin GERCEKTEN persisted KB index'inden geldigi (bkz. "
+            "`RetrievedDocument.source_verified`) - retrieval sonucu OLDUGU icin HER ZAMAN `True`dur. "
+            "YUKSEK bir `relevance_score`, source_verified=False bir kaynagi ASLA 'dogrulanmis "
+            "mevzuat kaniti' YAPMAZ - bu iki alan BAGIMSIZDIR (bkz. gorev tanimi 15. bolum)."
+        ),
+    )
 
 
 class EvidenceFrameOut(BaseModel):
-    """UI'da gorsel kanit karti olarak gosterilecek bir Olay Grubu zirve karesi."""
+    """UI'da gorsel kanit karti olarak gosterilecek, VLM'in kumeledigi bir olayin temsili karesi."""
 
-    event_id: int = Field(description="Bu karenin ait oldugu Olay Grubu kimligi.")
+    event_id: str = Field(description="Bu karenin ait oldugu VLM olayinin kimligi (bkz. EVENTS_JSON.event_id).")
     timestamp_sec: float = Field(description="Karenin saniye cinsinden zaman damgasi.")
     timestamp_str: str = Field(description="`MM:SS` formatinda okunabilir zaman damgasi.")
     change_score: float = Field(description="Gurultu-tabani-dusulmus degisim skoru.")
@@ -75,43 +213,102 @@ class SafirReport(BaseModel):
     event_id: Optional[int] = Field(
         default=None, description="Bu analizin SQLite'a yazildigi olay kaydinin kimligi (Human-in-the-Loop geri bildirimi icin)."
     )
-    session_id: Optional[str] = Field(
-        default=None, description="Bu analiz oturumuna ait benzersiz kimlik (Stateless Session ID)."
-    )
     video_source: str = Field(description="Analiz edilen video/kamera akisinin kaynagi.")
     generated_at: str = Field(description="Raporun ISO-8601 formatinda uretim zamani.")
     natural_language_summary: str = Field(description="VLM'in urettigi ham Turkce sahne gozlemi.")
     summary: str = Field(
         default="", description="Ajanin urettigi, operatore yonelik sade Turkce durum ozeti (sartname 'summary')."
     )
-    executive_summary: Optional[str] = Field(
-        default=None, description="Dinamik RAG sentezleyicisi tarafindan mevzuatla harmanlanmis yonetici ozeti."
-    )
-    report_data: Optional[Dict[str, Any]] = Field(
-        default=None, description="DynamicReportSynthesizer tarafindan uretilen dinamik RAG rapor verisi."
-    )
     risk_score: Optional[int] = Field(
-        default=None, ge=0, le=100, description="0-100 arasi hesaplanmis risk skoru; guvenilir karar uretilemediyse None."
+        default=None,
+        ge=0,
+        le=100,
+        description=(
+            "0-100 arasi NIHAI (blended) risk skoru; guvenilir karar uretilemediyse None. "
+            "RISK ENGINE V2.1: `deterministic_score` VE `llm_proposed_score` (ikisi de "
+            "mevcutsa) ARITMETIK ORTALAMASIDIR - bkz. `risk_resolver.RiskProvenance.risk_score`."
+        ),
+    )
+    deterministic_score: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description=(
+            "SADECE RuleEngine + risk_model formulunden turemis, Agent'in (LLM) tahmininden "
+            "TAMAMEN BAGIMSIZ risk skoru - `risk_score` (nihai/blended) ile KARISTIRILMAMALIDIR. "
+            "Sartname 'Aciklanabilir Cikti' gerekliligi geregi operatore/rapora `llm_proposed_score` "
+            "ile birlikte AYRI AYRI gosterilir (bkz. `risk_resolver.RiskProvenance.deterministic_score`)."
+        ),
+    )
+    deterministic_level: Optional[str] = Field(
+        default=None,
+        description="`deterministic_score`e karsilik gelen risk seviyesi (blended `risk_level`den FARKLI olabilir).",
     )
     risk_level: str = Field(description="dusuk | orta | yuksek | kritik | unknown")
     risk_status: str = Field(
         default="assessed",
         description=(
             "'assessed': risk_score/risk_level guvenilir sekilde hesaplandi (0 dahil gecerli bir deger). "
-            "'unknown': VLM/LLM/ajan karar zincirinde hata olustu veya guvenilir bir karar uretilemedi; "
-            "bu durumda risk_score None'dir ve ASLA dusuk risk olarak yorumlanmamalidir."
+            "'unclassified': olay/risk tespit edildi veya kumeleme yapildi ancak 8 temel ISG kategorisine oturtulamadi; "
+            "bu durumda risk_score null (None) olarak set edilir ve 'risk yok' (0 risk) durumundan kesin olarak ayrilir. "
+            "'unknown': VLM/LLM/ajan karar zincirinde hata olustu veya guvenilir karar uretilemedi."
         ),
     )
-    confidence: Optional[str] = Field(
-        default="yuksek", description="Karar zincirinin guven derecesi (yuksek | orta | dusuk)."
+    risk_source: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nihai `risk_score`/`risk_level`in HANGI mekanizmadan geldigi (izlenebilirlik): "
+            "'rule_engine' (deterministik RuleEngine eslesmesi bulundu; nihai skor bu deterministik "
+            "deger ile `llm_proposed_score`un ORTALAMASI alinarak - bkz. RISK ENGINE V2.1, "
+            "`deterministic_score`/`llm_proposed_score` alanlarina AYRI AYRI bakiniz), 'agent' "
+            "(hicbir kural eslesmedi, Agent'in KENDI dogrulanmamis tahmini korundu), "
+            "'unknown' (analiz basarisiz oldu, risk hic belirlenemedi)."
+        ),
     )
-    guardrail_triggered: bool = Field(
-        default=False,
-        description="İkincil güvenlik katmanının (Guardrail) LLM kararı üzerine denetim amacıyla devreye girip girmediği.",
+    risk_explanation: Optional[str] = Field(
+        default=None,
+        description=(
+            "Nihai riskin deterministik, LLM'e SORULMAMIS Turkce gerekcesi (bkz. "
+            "`risk_resolver.RiskProvenance.explanation`). Operatorun 'bu risk neden bu deger?' "
+            "sorusunu, structured RuleMatch verisinden turemis bir cumleyle cevaplar."
+        ),
     )
-    event_category: str = Field(
-        default="safety",
-        description="Operasyonel risk kategorisi: safety (iş güvenliği) | security (tesis/perimeter güvenliği) | ambiguous",
+    contributing_rule_ids: List[str] = Field(
+        default_factory=list,
+        description="Nihai risk_level'i belirleyen (en yuksek siddetli) RuleMatch(ler)in rule_id'leri; "
+        "risk_source='rule_engine' degilse bos liste.",
+    )
+    scoring_method: Optional[str] = Field(
+        default=None,
+        description=(
+            "RISK ENGINE V2: nihai skoru ureten matematiksel modelin kimligi (orn. "
+            "'safir_evidence_weighted_v2') - bkz. `src/event_analysis/risk_model.py`. "
+            "risk_source='rule_engine' degilse `None`."
+        ),
+    )
+    risk_features: Optional[Dict[str, Optional[float]]] = Field(
+        default=None,
+        description=(
+            "Nihai skoru ureten sekiz normalize edilmis (0.0-1.0) feature: severity/likelihood/"
+            "exposure/duration/recurrence/protection_gap/rule_support/regulatory_support. "
+            "`None` deger = bu cagirida OLCULEMEDI (notr/guvenli varsayilan kullanildi, UYDURULMADI)."
+        ),
+    )
+    risk_feature_contributions: Optional[Dict[str, float]] = Field(
+        default=None,
+        description=(
+            "Skora giden ara carpim adimlari (base_risk + temporal/exposure/protection/evidence_factor + "
+            "raw_score) - jurinin/operatorun 'bir feature degisince skor NEDEN degisti?' sorusunu "
+            "izleyebilmesi icin (bkz. `risk_model.RiskScoreBreakdown.as_contributions_dict`)."
+        ),
+    )
+    llm_proposed_score: Optional[int] = Field(
+        default=None,
+        description=(
+            "Agent'in (05 LangGraph) KENDI, dogrulanmamis taslak risk_score'u - ASLA final_score/"
+            "risk_score'u BELIRLEMEZ, yalnizca karsilastirma/kalibrasyon icin izlenir "
+            "(bkz. gorev tanimi 8. bolum)."
+        ),
     )
     recommended_action: str = Field(
         description="Saha operatorune yonelik birincil aksiyon onerisi (geriye-uyum: actions[0])."
@@ -119,14 +316,19 @@ class SafirReport(BaseModel):
     actions: List[str] = Field(
         default_factory=list, description="Operatore yonelik somut aksiyon onerileri listesi (sartname 'actions')."
     )
+    triggered_mock_actions: List[Dict[str, object]] = Field(
+        default_factory=list,
+        description=(
+            "05 LangGraph Agent'in bu calismada GERCEKTEN cagirdigi mock aksiyon araclari "
+            "(notify_health_team_tool/dispatch_security_tool/trigger_area_lockdown_tool - bkz. "
+            "`src/agent/tools.py`). `actions`teki metin onerilerinden FARKLIDIR: buradaki her oge "
+            "ajanin bir arac-cagrisi (tool_call) olarak DISA VURDUGU, somut bir aksiyonu temsil eder "
+            "(sartname: 'mock fonksiyonlarin ajanin araclari olarak basariyla kullanilmasi'). Her "
+            "oge {'tool', 'args', 'result'} anahtarlarini icerir; hicbir mock arac cagrilmadiysa bos."
+        ),
+    )
     onset_timestamp_str: Optional[str] = Field(
         default=None, description="Olayin/kazanin ILK BAŞLADIGI kareden alinan zaman damgasi (MM:SS)."
-    )
-    candidate_onset_str: Optional[str] = Field(
-        default=None, description="Erken sinyal başlangıcı zaman damgası (düşük gürültü tabanı eşiği, örn. 00:25)."
-    )
-    confirmed_onset_str: Optional[str] = Field(
-        default=None, description="Teyit edilmiş olay başlangıcı zaman damgasi (kümülatif trend eşiği, örn. 00:32)."
     )
     safe_timestamps: List[str] = Field(
         default_factory=list, description="Hicbir kazanin/riskin olmadigi rutin karesel zaman damgalari (orn. 00:07, 00:10, 00:12, 00:15)."
@@ -134,19 +336,104 @@ class SafirReport(BaseModel):
     incident_timestamps: List[str] = Field(
         default_factory=list, description="Tehlikenin/kazanin aktif oldugu zaman damgalari (orn. 00:18, 00:22, 00:25)."
     )
+    detected_event_names: List[str] = Field(
+        default_factory=list,
+        description="Bu analizde tespit edilen olaylarin BIRINCIL, serbest-bicimli kimlikleri (event_name); "
+        "ONCEDEN TANIMLI bir taksonomiyle SINIRLI DEGILDIR (bkz. `EventSummary.event_name`).",
+    )
     detected_event_types: List[str] = Field(
         default_factory=list,
-        description="Bu analizde tespit edilen olay kategorileri (bkz. EventType); aciklanabilirlik/olcumleme icin.",
+        description="Bu analizde tespit edilen olaylardan, YALNIZCA ZATEN BILINEN bir kategoriye (bkz. EventType) "
+        "GERCEKTEN karsilik gelenlerin canonical listesi; eslesmeyenler burada GORUNMEZ (bkz. `detected_event_names`).",
+    )
+    events: List[EventSummary] = Field(
+        default_factory=list,
+        description="Her tespit edilen olayin (StructuredEvent) ozeti: event_name (birincil, serbest-bicimli), "
+        "opsiyonel canonical event_type, VLM-uretimi keywords, ve (varsa) deterministik risk (bkz. `EventSummary`). "
+        "Hicbiri taksonomiyle zorla FILTRELENMEZ/DEGISTIRILMEZ.",
     )
     timeline: List[TimelineEntry] = Field(default_factory=list, description="Kronolojik olay cizelgesi.")
     evidence_frames: List[EvidenceFrameOut] = Field(
         default_factory=list, description="Her Olay Grubunun zirve karesi (goruntu + metadata)."
     )
     relevant_regulations: List[str] = Field(
-        default_factory=list, description="FAISS RAG'dan getirilen ilgili ISG mevzuat maddeleri."
+        default_factory=list,
+        description=(
+            "2026-08-25: `semantic_rag_sources` ile AYNI, GERCEK semantik RAG sorgusundan "
+            "(deterministik relevance/guvenlik esiginden GECMIS 'accepted' adaylar) turetilmis "
+            "duz-metin kaynak listesi - baska hicbir (sabit/manuel) kaynaktan gelmez. Risk "
+            "skoru/seviyesini ETKILEMEZ (risk tamamen ayri, deterministik RuleEngine'den gelir); "
+            "esik-uzeri kanit bulunamadiysa BOS LISTE - bir mevzuat UYDURULMAZ."
+        ),
+    )
+    unverified_references: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Ajanin serbest metninde (summary/actions) gecen, mevzuat-atfi GIBI GORUNEN "
+            "ama bu cagrida GERCEKTEN retrieved olan `semantic_rag_sources`den HICBIRIYLE "
+            "eslesmeyen ifadeler (bkz. `main.py::_unverified_citations`, gorev tanimi 10. "
+            "bolum). Deterministik, regex-tabanli bir kontroldur (LLM'e SORULMAZ); TAM bir "
+            "NLP atif-dogrulamasi DEGILDIR - yalnizca acikca UYDURULMUS gorunen, corpus'ta "
+            "karsiligi bulunamayan referanslari isaretler. Bos liste = ya hicbir mevzuat-"
+            "benzeri ifade gecmedi ya da gecenlerin TAMAMI retrieved evidence'la eslesti."
+        ),
+    )
+    semantic_rag_sources: List[RagContext] = Field(
+        default_factory=list,
+        description=(
+            "Bu analizde semantik RAG sorgusunun (VLM keyword'lerinden kurulan, bkz. "
+            "`main.py::_build_semantic_query`) persisted KB index'inden GERCEKTEN sectigi "
+            "kaynaklar - chunk_id/document_id/article_number/source_url ile birlikte. "
+            "`relevant_regulations` (duz metin) BUNUN AYNISINDAN turetilir; risk_score/"
+            "risk_level'i ETKILEMEZ (bkz. RagContext docstring'i); yalnizca 'bu karar/gozlem "
+            "hangi mevzuat "
+            "maddesine dayaniyor?' sorusunun KALICI, iz-surulebilir cevabidir. Esik-uzeri "
+            "sonuc bulunamadiysa VEYA reranker basarisiz olduysa (bkz. `rag_security` trace "
+            "stage'i) BOS LISTE - GECERLI bir sonuctur, uydurulmus bir kaynak EKLENMEZ."
+        ),
+    )
+    cross_encoder_status: Optional[str] = Field(
+        default=None,
+        description=(
+            "Bu analizin semantik RAG sorgusunda LOKAL Cross-Encoder'in GERCEKTEN calisip "
+            "calismadigi: 'used' (calisti, `semantic_rag_sources[i].cross_encoder_score` dolu) | "
+            "'unavailable' (bir Cross-Encoder verildi ama model agirligi yuklenemedi - kontrollu "
+            "sekilde deterministic relevance siralamasina dusuldu, HARICI BIR API'YE DUSULMEDI) | "
+            "'disabled' (bu cagriya Cross-Encoder hic verilmedi). `None` = bu cagrida semantik RAG "
+            "sorgusu hic yapilmadi (matched_keywords yoktu). UI, `cross_encoder_score` alani `None` "
+            "GORUNDUGUNDE bunu SESSIZCE '-' olarak degil, bu alana gore ('kullanilamadi'/'devre disi') "
+            "ACIKCA gostermelidir - bkz. `src/rag/embedding_rag_service.py::RagQueryTelemetry.cross_encoder_status`."
+        ),
+    )
+    relevance_threshold: Optional[float] = Field(
+        default=None,
+        description=(
+            "Bu analizde deterministic relevance/evidence gate'in KULLANDIGI esik degeri (bkz. "
+            "`RagQueryTelemetry.threshold`, `configs/config.yaml -> memory.reranker.score_threshold`den "
+            "okunur, HARD-CODE DEGIL). `relevance_score < relevance_threshold` olan adaylar "
+            "REJECTED sayilir. Bu cagrida hic semantik RAG sorgusu yapilmadiysa `None`."
+        ),
+    )
+    relevance_weights: Optional[Dict[str, float]] = Field(
+        default=None,
+        description=(
+            "Bu analizde `deterministic_reranker.score_candidate()`e GERCEKTEN gecirilen "
+            "agirliklar (bkz. `EmbeddingRAGService.relevance_weights`, `configs/config.yaml -> "
+            "memory.reranker.weights`den okunur, HARD-CODE DEGIL): "
+            "{'semantic','lexical','keyword','metadata','phrase'} -> agirlik. UI'nin 'Deterministic "
+            "Relevance' aciklamasi/formulu bunu KENDI varsayimindan degil BURADAN okumalidir. "
+            "Bu cagrida hic semantik RAG sorgusu yapilmadiysa `None`."
+        ),
     )
     escalation_tier: Optional[str] = Field(
-        default=None, description="Otomatik eskalasyon kademesi: monitor | notify | alarm."
+        default=None,
+        description=(
+            "Otomatik eskalasyon kademesi: monitor | notify | alarm | pending_review. "
+            "pending_review (2026-08-25): risk_status belirsiz VEYA nihai risk_score "
+            "hicbir deterministik (RuleEngine) kanit tasimiyorsa (bkz. RiskProvenance."
+            "rule_ids) - hicbir otomatik bildirim/alarm YAPILMAZ, operatorun ACIK "
+            "karari (manuel alarm/geri cevirme) beklenir."
+        ),
     )
     auto_dispatched: bool = Field(
         default=False, description="Saha alarminin operator onayi beklemeden otomatik tetiklenip tetiklenmedigi."
@@ -167,19 +454,12 @@ class SafirReport(BaseModel):
         return f"{total // 60:02d}:{total % 60:02d}"
 
     def to_sartname_json(self) -> dict:
-        """Raporu sartnamedeki mock ornekle birebir ayni sekle indirger.
-
-        Sartname ornegi: `{"summary", "events":[{"time","event"}], "risk", "actions"}`.
-        `events`, `timeline` girislerinden (`MM:SS` zaman damgasiyla) uretilir;
-        `risk`, insan-okur risk seviyesidir. Tam/zengin cikti icin
-        `model_dump()` (tum alanlar) kullanilabilir; bu yardimci yalnizca
-        sartname-uyumlu ozet gorunumu icindir.
-
-        Returns:
-            Sartname semasiyla uyumlu, JSON-serilestirilebilir sozluk.
-        """
+        """Raporu sartnamedeki mock ornekle birebir ayni sekle indirger."""
         return {
             "summary": self.summary or self.natural_language_summary,
+            "onset_timestamp": self.onset_timestamp_str or (self._seconds_to_mmss(self.timeline[0].timestamp) if self.timeline else "00:00"),
+            "safe_timestamps": self.safe_timestamps,
+            "incident_timestamps": self.incident_timestamps,
             "events": [
                 {"time": self._seconds_to_mmss(entry.timestamp), "event": entry.description}
                 for entry in self.timeline
@@ -187,6 +467,14 @@ class SafirReport(BaseModel):
             "risk": self.risk_level,
             "risk_score": self.risk_score,
             "risk_status": self.risk_status,
+            "risk_accuracy": {
+                "deterministic_score": self.deterministic_score,
+                "deterministic_level": self.deterministic_level,
+                "llm_proposed_score": self.llm_proposed_score,
+                "final_score": self.risk_score,
+                "final_level": self.risk_level,
+                "method": "ortalama(deterministic_score, llm_proposed_score)" if self.llm_proposed_score is not None else "deterministic_score",
+            },
             "actions": self.actions or ([self.recommended_action] if self.recommended_action else []),
         }
 
@@ -198,11 +486,3 @@ class SafirReport(BaseModel):
         """
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(self.model_dump_json(indent=2))
-
-
-TimelineEntry.model_rebuild()
-TimelineEvent.model_rebuild()
-RagContext.model_rebuild()
-EvidenceFrameOut.model_rebuild()
-SamplerStats.model_rebuild()
-SafirReport.model_rebuild()

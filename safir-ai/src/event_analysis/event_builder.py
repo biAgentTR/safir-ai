@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Dict, List
 
+from src.event_analysis.risk_resolver import resolve_deterministic_risk_with_provenance
 from src.event_analysis.schemas import RuleMatch, StructuredEvent, TemporalEvent
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,14 @@ class EventBuilder:
     def build(self, temporal_event: TemporalEvent, rule_matches: List[RuleMatch]) -> StructuredEvent:
         """Tek bir `TemporalEvent`i, ona ait `RuleMatch`lerle birlikte `StructuredEvent`e cevirir.
 
+        `risk_score`/`risk_level`, VLM/LLM'den DEGIL, bu olaya ait
+        `rule_matches`den (VE bu `temporal_event`in KENDI confidence/duration/
+        occurrence_count'undan - RISK ENGINE V2, bkz. `risk_model.py`)
+        `resolve_deterministic_risk_with_provenance` ile matematiksel olarak
+        turetilir. Hicbir kural eslesmediyse (`rule_matches` bos veya tumu
+        bilinmeyen siddette) `None` kalir - risk UYDURULMAZ; asagi akıştaki
+        `05 LangGraph Ajani` (varsa) bu bosluğu doldurabilir.
+
         Args:
             temporal_event: `TemporalReasoner.reason(...)` ciktisindan tek bir olay.
             rule_matches: `RuleEngine.evaluate(...)` ciktisindan bu olaya ait
@@ -34,19 +43,24 @@ class EventBuilder:
             ve `05 LangGraph Ajani`na dogrudan verilebilecek `StructuredEvent`.
         """
         description = self._compose_description(temporal_event, rule_matches)
+        risk_provenance = resolve_deterministic_risk_with_provenance(rule_matches, temporal_events=[temporal_event])
+        risk_level, risk_score = risk_provenance.risk_level, risk_provenance.risk_score
 
         return StructuredEvent(
             timestamp=temporal_event.end_timestamp,
             description=description,
-            risk_score=None,
-            risk_level=None,
+            risk_score=risk_score,
+            risk_level=risk_level,
             source_model=temporal_event.source_model,
+            event_name=temporal_event.event_name,
             event_type=temporal_event.event_type,
             confidence=temporal_event.confidence,
             temporal_event_id=temporal_event.event_id,
             related_rule_matches=list(rule_matches),
             occurrence_count=temporal_event.occurrence_count,
             duration=temporal_event.duration,
+            evidence_ids=list(temporal_event.evidence_ids),
+            keywords=list(temporal_event.matched_keywords),
         )
 
     def build_batch(
@@ -134,6 +148,7 @@ if __name__ == "__main__":
 
     demo_temporal_event = TemporalEvent(
         event_id="evt_0",
+        event_name="kkd_ihlali",
         event_type="kkd_ihlali",
         description="Personel baretsiz calisiyor.",
         start_timestamp=0.0,

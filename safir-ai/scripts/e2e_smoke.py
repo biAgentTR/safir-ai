@@ -53,7 +53,10 @@ class _FakeRagService:
     def seed_default_regulations(self) -> None:
         return None
 
-    def query(self, question: str, top_k: Optional[int] = None) -> List[_FakeDoc]:
+    def query(
+        self, question: str, top_k: Optional[int] = None, keywords: Optional[List[str]] = None
+    ) -> List[_FakeDoc]:
+        del keywords  # gercek EmbeddingRAGService.query ile arayuz PARITESI icin kabul edilir, kullanilmaz
         return [
             _FakeDoc(text="ISG Yonetmeligi Madde 12: KKD (baret/yelek) zorunludur."),
             _FakeDoc(text="Operasyonel Kural OK-07: Forklift trafiginde yaya gecitleri acik tutulmalidir."),
@@ -95,8 +98,17 @@ def main() -> int:
 
     config = load_config()
     if args.mock:
+        # `use_mock_vlm`/`use_mock_llm` yalnizca VLM/LLM istemcilerini mock'lar;
+        # `PromptInjectionGuard` (src/security/prompt_injection_guard.py) bu
+        # bayraklardan BAGIMSIZ kurulur ve `guard.enabled=true` ise (varsayilan
+        # config.yaml) gercek EVREN agina baglanmaya calisirdi - bu docstring'in
+        # vaat ettigi "tamamen offline, ag/anahtar gerekmez" davranisiyla
+        # CELISIRDI. --mock guard'i da devre disi birakir.
         config = config.model_copy(
-            update={"app": config.app.model_copy(update={"use_mock_vlm": True, "use_mock_llm": True})}
+            update={
+                "app": config.app.model_copy(update={"use_mock_vlm": True, "use_mock_llm": True}),
+                "guard": config.guard.model_copy(update={"enabled": False}),
+            }
         )
 
     print("=" * 72)

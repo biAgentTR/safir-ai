@@ -34,27 +34,217 @@ system:
 # -----------------------------------------------------------------------------
 sampler:
   # --- AdaptiveFrameSampler tarafindan aktif olarak kullanilan parametreler ---
-  min_change_threshold: 0.001        # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani (yuksek hassasiyet)
+  # KANITA DAYALI DEGISIKLIK (0.001 -> 0.0005 -> 0.00025): kullanicidan
+  # gelen ek geri bildirim - "bazen cok uzun araliklarda frame alamiyorum
+  # VE kritik kisa anlari da alamiyorum" - AYNI ANDA GORULUYOR; bu ikilinin
+  # birlikte gorulmesi, `min_change_threshold`in (dolayisiyla ondan
+  # TURETILEN TUM oranli esiklerin: `early_change_score_ratio`,
+  # `dedup_similarity_ratio`, `single_frame_change_noise_floor_ratio`)
+  # GERCEK sahne hareketini bile bastiracak kadar yuksek olabilecegine
+  # isaret eder. Ilk turda yariya indirildi (0.001 -> 0.0005); kullanici
+  # "daha da hassas olabilir" diyerek AYNI yonde devam istedi, bu yuzden
+  # BIR KEZ DAHA yariya indirildi (0.0005 -> 0.00025). TUM oranli alt-
+  # esikler yine OTOMATIK olarak ayni oranda duser - ayrica dokunulmadi.
+  # ONEMLI (birikimli risk uyarisi - guncellendi): kullanici "biraz daha
+  # oynayalim" diyerek AYNI yonde bir adim daha istedi; bu kez BUTUN
+  # yariya-indirme yerine daha OLCULU bir adim atildi (0.00025 -> 0.00015,
+  # ~1.7x) - esik artik ILK degerin (0.001) ~1/6.7'si. False-positive riski
+  # bu noktada ARTIK KUCUMSENMEMELI; bir SONRAKI adim icin gercek
+  # diagnostic veri/video KESINLIKLE onerilir (kor tahminle daha fazla
+  # ILERLEMEK, "hicbir sey kacirilmasin" ugruna "her sey evidence sayilsin"a
+  # cok yaklasabilir). Operator panelindeki `min_change_threshold_override`
+  # slider'i ile sahne bazinda GERI yukseltilebilir (bkz. `sampler_from_config`).
+  # KANITA DAYALI DEGISIKLIK (0.00015 -> 0.0001): "5 saniye boyunca hic
+  # cikti alinmiyor" geri bildirimi - bu, ASIL olarak `max_temporal_gap_
+  # sec`in kendisiyle (asagida 7.0 -> 4.0) DUZELTILECEK bir sikayettir
+  # (coverage guvenlik agi zaten en fazla `max_temporal_gap_sec` kadar
+  # sessizlige izin veriyordu - "5 saniye" bunun ICINDE, bir hata degil).
+  # Yine de piksel esigi de biraz daha dusuruldu ki gercek ama zayif bir
+  # sinyal, coverage'in "hicbir sey secilmedi" bekleme suresini SIFIRLAYAN
+  # bir esik/erken-degisim/single-frame karesi olarak DAHA SIK yakalansin.
+  # KANITA DAYALI DEGISIKLIK (0.0001 -> 0.00008): kullanicidan "cok az daha
+  # hassasiyet" talebi - KUCUK, olculu bir adim (onceki turlardaki tam
+  # yariya indirmelerin cok altinda, ~%20 dusus). Esik artik ilk degerin
+  # (0.001) 1/12.5'i - bu noktadan sonraki EK dususler icin GERCEK
+  # diagnostic veri/video onerilir, kor tahmin degil.
+  min_change_threshold: 0.00008      # Kanit Karesi sayilmasi icin gurultu-tabani-dusulmus min degisim orani (yuksek hassasiyet)
   blur_kernel_size: [21, 21]         # Gauss bulaniklastirma cekirdek boyutu (tek sayilar)
-  history_window: 30                 # Dinamik gurultu tabani (medyan) icin tutulan kare gecmisi
-  min_event_interval_sec: 2.0        # Ardisik kareleri ayni Olay Grubuna dahil etme zaman araligi (sn)
-  sample_fps: 5                      # Videonun kac saniyede bir kare kontrol edilecegini belirleyen hiz
+  # KANITA DAYALI DEGISIKLIK (30 -> 60): `sample_fps` 5'ten 10'a
+  # cikarildiginda (asagisi), `history_window` SABIT KALDIGI icin adaptif
+  # gurultu tabaninin (medyan) baktigi GERCEK sure 6 saniyeden 3 saniyeye
+  # YARIYA DUSTU (30 ornek / 5fps = 6s idi; 30 ornek / 10fps = 3s oldu).
+  # Daha kisa bir pencere, gercek/surdurulen bir hareketi DAHA HIZLI "yeni
+  # normal" (gurultu) sayip net_change_score'u bastirir - hem "uzun
+  # bosluk" hem "kisa an kacirma" sikayetlerine KATKIDA bulunabilecek bir
+  # yan etkidir. 60'a cikarilarak eski 6 saniyelik pencere (60 ornek /
+  # 10fps = 6s) GERI getirildi - sample_fps degisikliginin DIGER
+  # parametreleri sessizce kaydirmasi onlendi.
+  # KANITA DAYALI DEGISIKLIK (60 -> 90 -> 180): `sample_fps` her artiginda
+  # (10 -> 15 -> 30) ORANTILI olarak buyutuldu - GERCEK 6 saniyelik
+  # gurultu-tabani penceresini korur (180 ornek / 30fps = 6s, oncekiyle
+  # AYNI); aksi halde sample_fps artisi bu pencereyi sessizce daraltirdi.
+  history_window: 180                # Dinamik gurultu tabani (medyan) icin tutulan kare gecmisi
+  # KANITA DAYALI DEGISIKLIK (5 -> 10 -> 15 -> 30): kullanici "kritik anlik
+  # kareleri kacirmaya devam ediyoruz" dedi - `15` degeri yalnizca 25fps'lik
+  # bir KAYNAK icin native (`frame_step=int(25/15)=1`) hiz veriyordu;
+  # GERCEK saha kameralari genellikle 30fps (yaygin varsayilan, PAL/NTSC
+  # standartlarindan) veya daha yuksek calisiyorsa, `frame_step=
+  # int(native_fps/sample_fps)` HALA 2 (veya daha buyuk) cikip HER IKI
+  # karede birini atlamaya devam ediyor olabilirdi - bu, `threshold_
+  # exceeded` yolunun kosulsuzlugu DAHIL, secim mantigindaki HICBIR ayarla
+  # duzeltilemeyen, TAMAMEN taban tarama hizina bagli bir kor pencere
+  # kaynagidir (bkz. onceki tur notlari). `30`, YAYGIN kaynak hizlarinin
+  # (25/30fps) TAMAMI icin `frame_step=1` (native, atlamasiz okuma)
+  # garantiler; yalnizca 60fps gibi DAHA NADIR yuksek-hizli kaynaklarda
+  # hala `frame_step=2` (~33ms kor pencere, oncekinden cok daha kucuk)
+  # kalir. CPU maliyeti (hafif OpenCV gri-tonlama+fark islemi, GPU'suz)
+  # ilk turdaki (5) degere gore ~6x artar - bu, videonun HER TEK native
+  # karesini islemenin dogal maliyetidir (25/30fps kaynaklar icin daha
+  # ILERI gidilemez, `frame_step` zaten 1'in altina inemez); secim
+  # mantigindaki HICBIR deger degismez. GERCEK kaynak fps'i (25/30'dan
+  # FARKLI, ör. 60) biliniyorsa bu deger ona gore GERI ayarlanabilir -
+  # amac her zaman `frame_step<=1` (mumkunse tam native hiz) saglamaktir.
+  sample_fps: 30                      # Videonun kac saniyede bir kare kontrol edilecegini belirleyen hiz
 
-  # --- Olay kumeleme / zamansal oylama / temsili kare cikarimi (cluster_events) ---
-  cluster_merge_gap_sec: 20.0        # Iki HAM olay grubunu tek Olay Grubunda birlestirmek icin izin verilen bosluk (sn)
-  bbox_iou_merge_threshold: 0.10     # Sinir kutusu IoU tabanli birlestirme esigi
+  # NOT (mimari): Sampler artik hicbir OLAY KUMELEMESI yapmaz (eski
+  # min_event_interval_sec/cluster_merge_gap_sec/bbox_iou_merge_threshold/
+  # max_cluster_duration_sec KALDIRILDI). Kanit Karesi sayisinda sabit bir
+  # ust sinir da YOKTUR (eski max_evidence_buffer KALDIRILDI): esik-gecmis
+  # TUM kareler VLM'e gonderilir. Kumeleme + istek boyutu kontrolu artik
+  # vlm.batch_size ile VLM katmaninda yapilir (bkz. src/vlm/base_vlm.py).
   temporal_vote_window: 1            # Zamansal oylama penceresi (kare)
   temporal_vote_min_count: 1         # Bir olayin gecerli sayilmasi icin gereken min oy
-  pre_peak_offset_sec: 2.0           # Zirve karesi oncesi temsili kare ofseti (sn)
-  post_peak_offset_sec: 2.0          # Zirve karesi sonrasi temsili kare ofseti (sn)
 
-  # --- Kademeli / Yavas gelisen olaylar icin coklu sinyal ve ust sinir (Drift, Haze & Hard Cap) ---
-  max_sampling_gap_sec: 4.0          # Iki kanit karesi arasindaki maksimum zaman boslugu ust siniri (Hard Cap)
-  ref_reset_interval_sec: 10.0       # Kumulatif referans karesinin periyodik yenilenme suresi (sn)
-  ref_change_threshold: 0.0015       # Baseline karesine gore kumulatif piksel suruklenme (drift) esigi
-  enable_contrast_check: true        # Duman/sis/pus icin kontrast ve varyans denetimini aktif et
-  contrast_change_threshold: 0.05    # Kontrast/varyans degisim hassasiyet esigi
-  contrast_check_interval_sec: 1.0   # CPU yukunu dusurmek icin kontrast kontrolu frekansi (sn)
+  # NOT (zamansal kapsama): Esigi hicbir zaman gecemeyen uzun sessiz
+  # araliklarda (ör. 00:15 -> 01:45) sistemin kor kalmasini onleyen guvenlik
+  # agi. Kumeleme DEGILDIR, pre/peak/post rolu getirmez (bkz.
+  # EvidenceFrame.selection_reason="temporal_coverage"). Bu, EN SEYREK secim
+  # araligidir (sakin bolge) - erken/guclu degisimde daha sik secilir.
+  # KANITA DAYALI DEGISIKLIK (15.0 -> 10.0): evidence kare sayisini artirma
+  # talebi - sakin bolgedeki "en seyrek" araligi kisaltmak, VLM'e giden
+  # temsili kare yogunlugunu (kumeleme/esik mantigina DOKUNMADAN) genel
+  # olarak artirir; ayni zamanda "uzun bosluk" HISSINI de azaltir. `10.0`,
+  # asagidaki `early_change_selection_interval_sec` (2.0) <= `max_temporal_
+  # gap_sec` sirasini hala korur (constructor bu sirayi dogrular).
+  # KANITA DAYALI DEGISIKLIK (10.0 -> 7.0): "daha sik frame" talebiyle
+  # devam - sakin bolge araligi bir kademe daha kisaltildi.
+  # KANITA DAYALI DEGISIKLIK (7.0 -> 4.0): kullanicidan gelen "bazen 5
+  # saniye boyunca hic cikti almiyoruz, en kritik anlari kacirmayalim"
+  # geri bildirimi - bu, DOGRUDAN bu degerle sinirli. 4.0, sessiz/sakin
+  # bolgelerde bile en fazla 4 saniyelik bir bosluk garantiler.
+  max_temporal_gap_sec: 4.0          # Son evidence karesinden bu yana izin verilen azami sessizlik suresi (saniye)
+
+  # NOT (yogunluk-uyarlamali secim): Kaynak/analiz FPS'i (sample_fps) HER
+  # ZAMAN sabittir - adaptif olan yalnizca VLM'e gonderilecek karelerin secim
+  # SIKLIGIDIR. Ana esik gecilmeden ONCE baslayan kucuk-ama-surekli
+  # degisimler (ör. izmarit atma ani, hafif dumanin ilk gorulme ani) icin
+  # daha sik secim yapilir; ana esik gecildikten sonra bir hysteresis
+  # penceresinde secim daha da siklastirilir. Kumeleme/olay baslangic-bitis
+  # zamani uretimi DEGILDIR (bkz. EvidenceFrame.selection_reason=
+  # "early_change"/"significant_change").
+  early_change_score_ratio: 0.4      # net_change_score >= bu_oran * min_change_threshold ise "supheli-erken"
+  early_change_window: 3             # Erken-degisim onayinda dikkate alinan son karar sayisi (sabit boyut)
+  early_change_min_count: 2          # Onay icin gereken min "supheli-erken" karar sayisi (tek sicramayi eler)
+  # KANITA DAYALI DEGISIKLIK (3.0 -> 2.0): erken-degisim (onaylanmis, henuz
+  # ana esigi gecmemis) durumdayken uygulanan azami secim araligi
+  # kisaltildi - bir onceki turda eklenen "yaklasma penceresi" ek-kare
+  # mekanizmasi da AYNI degeri kullaniyor (bkz. adaptive_sampler.py), yani
+  # bu tek deger HEM onay-oncesi HEM onay-sonrasi erken-durumda VLM'e giden
+  # kare yogunlugunu artirir.
+  # KANITA DAYALI DEGISIKLIK (2.0 -> 1.5): "daha sik frame" talebiyle devam.
+  # KANITA DAYALI DEGISIKLIK (1.5 -> 1.0): "en kritik anlari kacirmayalim"
+  # talebiyle devam - erken-degisim durumundaki azami secim araligi
+  # kisaltildi (bkz. `max_temporal_gap_sec` yorumu, ayni gerekce).
+  early_change_selection_interval_sec: 1.0  # Erken-degisimde azami secim araligi (sakin moddan daha sik)
+  early_change_cooldown_sec: 4.0     # Erken-degisim sinyali kesildikten sonra sakin moda donmeden once beklenen sure
+
+  # KANITA DAYALI DEGISIKLIK (1.0 -> 0.5): ana esik gecildikten sonraki EN
+  # SIK secim araligi kisaltildi - guclu/dogrulanmis bir olayin GELISEN
+  # asamalarindan (esik-alti kalan ama hysteresis penceresindeki) daha COK
+  # temsili kare yakalanir. `threshold_exceeded` kareler zaten kosulsuz/
+  # sinirsiz secildigi icin bu deger yalnizca ARADAKI esik-alti kareleri
+  # etkiler - eklenen kareler halihazirda VAR OLAN "significant_change"
+  # kategorisine girer, yeni bir kategori EKLENMEZ.
+  # KANITA DAYALI DEGISIKLIK (0.5 -> 0.3): "daha sik frame" talebiyle devam.
+  # KANITA DAYALI DEGISIKLIK (0.3 -> 0.2): "en kritik anlari kacirmayalim"
+  # talebiyle devam - ana esik sonrasi hysteresis penceresindeki EN SIK
+  # secim araligi daha da kisaltildi.
+  significant_change_selection_interval_sec: 0.2  # Guclu-degisim hysteresis penceresinde azami secim araligi (en sik)
+  strong_change_cooldown_sec: 4.0    # Ana esik gecildikten sonra "guclu degisim" durumunun korunacagi sure
+
+  # NOT (duplicate onleme): Yalnizca coverage/early_change/significant_change
+  # (esik-alti) secimlerine uygulanir; threshold_exceeded kareler ASLA
+  # bu kontrolle elenmez.
+  # KANITA DAYALI DEGISIKLIK (0.5 -> 0.35): esik-alti secimlerde "neredeyse
+  # ayni" sayilip elenme sinirini daraltir (0.35*min_change_threshold, daha
+  # KUCUK bir fark payi) - daha az agresif dedup, GORSEL OLARAK BIRBIRINE
+  # yakin ama yine de farkli olan ardisik kareler artik daha az elenir; bu
+  # da toplam evidence/VLM kare sayisini artiran DIGER bir kanal. threshold_
+  # exceeded kareler zaten bu kontrolden HICBIR ZAMAN gecmiyor - etkilenmez.
+  # KANITA DAYALI DEGISIKLIK (0.35 -> 0.25): "daha sik frame" talebiyle devam.
+  # KANITA DAYALI DEGISIKLIK (0.25 -> 0.2): daha COK kare degerlendirme
+  # talebiyle devam - dedup sinirini biraz daha daraltir (daha az agresif
+  # eleme).
+  dedup_similarity_ratio: 0.2        # Son secilen kareye gore fark orani bu_oran*min_change_threshold'dan dusukse "duplicate"
+
+  # NOT (tek-kareli guclu/lokal degisim): early_change_min_count'un cok-kareli
+  # onayindan BAGIMSIZ, ayri bir yol - ana esigin ALTINDA ama TEK bir karede
+  # zaten guclu+lokal olan sinyalleri onay beklemeden yakalar.
+  single_frame_change_enabled: true
+  single_frame_change_noise_floor_ratio: 2.0   # skor >= bu_oran * max(adaptive_noise_floor, early_esik) ise "guclu"
+  single_frame_change_max_area_ratio: 0.35     # hareket kutusu/kare alani bu orani asarsa "lokal degil" (elenir)
+
+  # KOK NEDEN DUZELTMESI (regresyon): kullanicidan gelen geri bildirim -
+  # "onceden yakalanan dusuk kontrastli/yavas gelisen bir olay baslangici
+  # (ör. yaziciden ilk dumanin cikisi) artik kaciyor, yalnizca olay
+  # guclendikten sonraki kareler seciliyor". `git diff` ile onceki/mevcut
+  # config karsilastirildi: `min_change_threshold` DUSURULMUS olmasina
+  # RAGMEN sorun buydu degil - as gecen turlarda `sample_fps` art arda
+  # yukseltildikce (kisa/ani olaylari yakalamak icin, bkz. `sample_fps`
+  # yorumu) ARDISIK ORNEKLER arasindaki gercek zaman farki kisaldi. Dusuk
+  # kontrastli/kademeli buyuyen bir olayda (ör. duman), her ORNEK ARASI
+  # gerceklesen degisim de o kadar KUCULDU ki (21x21 blur + sabit piksel-
+  # fark esigi 25 ile birlesince) `raw_change_ratio` TAMAMEN SIFIRA dustu -
+  # bu, `min_change_threshold` NE KADAR dusurulurse dusurulsun DUZELTILEMEZ,
+  # cunku sorun ORAN degil, HAM sinyalin kendisinin kaybolmasidir (izole
+  # test: `git diff` ONCESI TUM esik/interval degerleriyle ama YALNIZCA
+  # `sample_fps=30` ile calistirildiginda ayni olay YINE kacirildi -
+  # degisken `sample_fps`ti, esik degerleri degildi).
+  #
+  # Bu, "sample_fps'i geri dusur" ile DUZELTILMEDI (bu, gecen turlarda
+  # kazanilan kisa/ani olay yakalama iyilestirmelerini GERI ALIRDI - gorev
+  # kisiti "eski ayarlara tamamen donme"). Bunun yerine, ardisik-ornek
+  # karsilastirmasina (`prev_gray`, sample_fps'e bagli, kisa/ani olaylar
+  # icin DEGISTIRILMEDEN korunur) EK olarak, periyodik yenilenen DAHA UZUN
+  # bazli bir referans karsilastirmasi eklendi (bkz.
+  # `AdaptiveFrameSampler.process_video` - `long_baseline_*`). Bu, KUCUK-
+  # AMA-BIRIKIMLI degisimin daha uzun bir zaman araliginda GORUNUR hale
+  # gelmesini saglar; yalnizca esik-alti aday tespitini (`is_early_
+  # suspicious`) etkiler, `threshold_exceeded` (kosulsuz secim) yoluna ASLA
+  # dokunmaz. Yanlis-pozitif korumasi: yalnizca skor bir ONCEKI ornege gore
+  # HALA ARTMAKTAYSA "supheli" sayilir (TEK seferlik bir sicrama/adim
+  # DEGIL, SURDURULEN bir buyume) - bkz. kod yorumu.
+  long_baseline_change_enabled: true  # false ile bu yol tamamen devre disi (eski davranisla BIREBIR ayni)
+  long_baseline_interval_sec: 0.5     # hizli kanal: uzun-baz referansin yenilenme araligi (saniye)
+
+  # IKINCI KANAL (kanita dayali ek iyilestirme): hizli kanal (0.5s) tek
+  # basina COK yavas gelisen olaylari (ör. kademeli baslayan bir yangin,
+  # dumanin cok yavas yayilmasi) yakalamaya yetmeyebilir - dogrudan olculdu:
+  # 5x daha yavas buyuyen sentetik bir "duman" senaryosunda, yalnizca hizli
+  # kanalla HICBIR early_change uretilmiyordu; 3.0s'lik bu ikinci kanal
+  # eklendiginde ayni olay baslangictan (~1.7s gecikmeyle) yakalandi. AYNI
+  # `is_early_suspicious`i besler (VEYA mantigiyla) - hizli kanalin veya
+  # `threshold_exceeded` (kosulsuz secim) yolunun YERINE GECMEZ, TAMAMEN
+  # BAGIMSIZ EK bir guvenlik agidir.
+  long_baseline_slow_interval_sec: 3.0  # yavas kanal: ikinci, daha uzun bazli referansin yenilenme araligi (saniye)
+
+  # NOT (tanilama/diagnostic): Varsayilan KAPALI - secim davranisini/
+  # performansini DEGISTIRMEZ. Acildiginda her ornek kare icin tam karar
+  # izini (skorlar, esikler, durum, secim/red nedeni) diske yazar; goruntu/
+  # base64 veri ASLA loglanmaz. Kok neden analizi icindir.
+  diagnostic_enabled: false          # true yapilirsa diagnostic CSV/JSONL uretilir
+  diagnostic_output_dir: "outputs/diagnostics"  # Tanilama dosyalarinin yazilacagi klasor
+  diagnostic_output_format: "jsonl"  # "jsonl" veya "csv"
 
   # --- Geriye donuk uyumluluk / alternatif sampler ince ayarlari ---
   idle_interval_sec: 2.0             # Sakin bolgelerde kare yakalama araligi (saniye/kare)
@@ -63,7 +253,6 @@ sampler:
   motion_threshold: 0.02             # Hareket olarak kabul edilecek fark orani esigi
   scene_change_threshold: 0.15       # Sahne degisimi esigi
   resize_width: 640                  # Analiz oncesi kare kucultme genisligi (performans icin)
-  max_evidence_buffer: 300           # Bellekte tutulacak maksimum "Evidence Frame" sayisi (önem agirlikli pinned seyreltme ile)
   warmup_frames: 30                  # Baslangicta arka plan modelini olusturmak icin kare sayisi
 
 # -----------------------------------------------------------------------------
@@ -93,78 +282,183 @@ sampler:
 #
 # GELISTIRME/TEST (opsiyonel): GPU'suz ortamda tum pipeline'i denemek icin
 #   app.use_mock_vlm: true + app.use_mock_llm: true  (harici hicbir sey gerekmez)
-# veya harici Gemini ile (yalnizca gelistirme; offline degildir):
-#   vlm.active_model: "gemini" + llm.active_model: "gemini" + GEMINI_API_KEY.
+# AKTIF (production): TEKNOFEST EVREN yarisma cikarim servisi - video DOGRUDAN
+#   EVREN'in video-analiz ucuna (`model="vlm"`) gonderilir, yerel GPU/vLLM
+#   gerekmez. `EVREN_API_KEY` ortam degiskeni tanimli olmalidir (bkz. .env).
 # =============================================================================
 vlm:
-  active_model: "gemini"             # qwen | gemma | gemini  (VLMFactory tarafindan okunur) — AKTIF: gemini
+  # 2026-08-26 (IKI BAGIMSIZ ANALIZ MODU): operator panelindeki "VLM Direct" /
+  # "Dusuk Butceli" secimi ARTIK backend'e `AnalyzeRequest.analysis_mode` ile
+  # GERCEKTEN iletilir (bkz. src/main.py::SafirPipeline.run/stage_vlm) -
+  # ONCEDEN her iki UI modu da AYNI `active_model`i kullaniyordu (mod secimi
+  # yalnizca GORSELDI). Iki mod ARTIK iki AYRI VLM orneğiyle calisir:
+  #   - "vlm_direct" -> `active_model` (asagida, video-dogrudan, TEK istekte tum video)
+  #   - "low_budget"  -> `frames_model` (asagida, kare-tabanli, en fazla `batch_size` goruntu/istek)
+  active_model: "evren"              # qwen | gemma | evren | evren_frames  (VLMFactory tarafindan okunur) — VLM Direct modu icin
+  frames_model: "evren_frames"       # qwen | gemma | evren | evren_frames  — Dusuk Butceli (kare-tabanli) modu icin; varsayilan: llm-large, <=2 goruntu/istek
+  batch_size: 2                      # Kare-tabanli (dusuk butceli) saglayicilarda TEK istege dahil edilecek azami evidence karesi sayisi.
+                                      # `evren_frames` (asagida) EVREN dokumantasyonu SS 7.5 geregi istek basina EN FAZLA 2 goruntu kabul eder -
+                                      # bu deger 2'nin UZERINE CIKARILMAMALIDIR (EvrenFramesVLM.analyze_evidence aksi halde ACIKCA hata verir).
+                                      # `evren` (video-dogrudan, VLM Direct) bu degerden HICBIR SEKILDE ETKILENMEZ.
   models:
     qwen:
       model_name: "Qwen/Qwen3.5-9B"   # native gorsel destekli; 32 GB'de vLLM FP8 ile
       vllm_host: "127.0.0.1"                        # tek makine: API + vLLM ayni host
       vllm_port: 8001
       max_new_tokens: 512
-      temperature: 0.0
+      temperature: 0.2
       top_p: 0.9
     gemma:
       model_name: "google/gemma-3-vision-instruct"
       vllm_host: "0.0.0.0"
       vllm_port: 8002
       max_new_tokens: 512
-      temperature: 0.0
+      temperature: 0.2
       top_p: 0.9
-    gemini:                          # gecici TEST backend'i (harici API — offline degildir)
-      provider: "gemini"
-      model_name: "gemini-3.5-flash-lite"
-      base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
-      api_key_env: "GEMINI_API_KEY"
+    evren:                          # AKTIF: TEKNOFEST EVREN yarisma cikarim servisi (harici API, video-tabanli)
+      provider: "evren"
+      model_name: "vlm"             # EVREN'in ayrilmis, hizli video-analiz model takma adi (bkz. dokumantasyon SS 5/7.3)
+      base_url: "https://evren-llmapi.ssyz.org.tr/v1"
+      api_key_env: "EVREN_API_KEY"
+      max_new_tokens: 2048
+      temperature: 0.0              # dokumantasyon onerisi: video isteklerinde deterministik cikti icin 0.0
+      top_p: 0.9
+      chunk_duration_sec: 60         # "video cozunurluk zarfi" duzeltmesi: EVREN videonun TAMAMINA TEK piksel
+                                      # butcesi uyguladigi icin (dokumantasyon onerisi: "klip kisa parcalara
+                                      # bolunmeli"), bu sureden UZUN videolar otomatik olarak ardisik 60s'lik
+                                      # parcalara bolunup HER parca AYRI istekte gonderilir (bkz.
+                                      # src/vlm/video_chunker.py, src/vlm/evren_vlm.py::EvrenVLM._analyze_video_chunks)
+    evren_frames:                   # DUSUK BUTCELI (kare-tabanli) EVREN yolu - `vlm.frames_model` ile secilir
+                                      # (bkz. asagida `SafirPipeline`in kullandigi `VLMConfig.frames_model` alani);
+                                      # video-dogrudan `evren` girdisinden BAGIMSIZDIR. Adaptive Frame Sampler'in
+                                      # urettigi evidence kareleri (goruntu), yukaridaki `batch_size` (2) kadarlik
+                                      # gruplar halinde bu uc noktaya gonderilir (bkz. src/vlm/evren_vlm.py::
+                                      # EvrenFramesVLM - model adi kodda "llm-large" olarak SABITLENMISTIR,
+                                      # dokumantasyon SS 7.5 tablosu: "en fazla 2 goruntu" siniri ACIKCA
+                                      # "llm-large" icin olculmustur).
+      provider: "evren"
+      model_name: "llm-large"         # bkz. yukaridaki NOT - EvrenFramesVLM bu alani DOGRULAMA icin kullanir, HTTP istegi hep "llm-large" ile gider
+      base_url: "https://evren-llmapi.ssyz.org.tr/v1"
+      api_key_env: "EVREN_API_KEY"
       max_new_tokens: 1024
-      temperature: 0.0
-      top_p: 0.9
+      temperature: 0.1
+      extra_body:
+        chat_template_kwargs:
+          enable_thinking: false      # bkz. asagidaki llm.active_model=evren NOTU - ayni tuzak goruntu isteklerinde de gecerlidir
 
 # -----------------------------------------------------------------------------
-# 04 - Hibrit Bellek ve Baglam Olusturucu - CPU ONLY
+# 04 - Hibrit Bellek ve Baglam Olusturucu - EVREN Embedding + Qdrant
 # -----------------------------------------------------------------------------
 memory:
   sqlite:
     db_path: "data/events.db"
   embedding:
-    provider: "sentence-transformers"
-    model_name: "sentence-transformers/all-MiniLM-L6-v2"          # hizli & kararli CPU embedding modeli
-    device: "cpu"                      # RAG embedding hesaplama CPU'da yapilir, GPU'yu VLM/LLM'e ayirir
+    provider: "evren"                  # EVREN /v1/embeddings (bge-m3-embed) - lokal sentence-transformers KALDIRILDI
+    model_name: "bge-m3-embed"         # dokumantasyon SS 5/10: en yuksek ilk-isabet (R@1) dogrulugu
+    output_dimensionality: 1024
+    base_url: "https://evren-llmapi.ssyz.org.tr/v1"
+    api_key_env: "EVREN_API_KEY"
     normalize_embeddings: true
-  faiss:
-    index_path: "data/faiss_index"
-    embedding_model: "sentence-transformers/all-MiniLM-L6-v2"     # memory.embedding.model_name ile senkron
+    max_batch_tokens: 7500             # EVREN bge-m3-embed istek basina azami 8192 token kabul eder; guvenlik payli hedef (bkz. src/rag/embedding_providers.py)
+  qdrant:
+    url: "https://evren-vektor.ssyz.org.tr"   # takima tahsis edilmis izole Qdrant orneği (dokumantasyon SS 11)
+    api_key_env: "EVREN_QDRANT_KEY"
+    prefix_env: "EVREN_TEAM"                  # takim kodu (orn. "team33") - Qdrant yol on-eki
+    collection_name: "safir_regulations"
+    top_k: 5                           # RERANK SONRASI nihai sonuc sayisi
+    candidate_k: 20                    # Qdrant'tan cekilecek aday sayisi (rerank ONCESI)
+    similarity_threshold: null
+  reranker:
+    enabled: true                      # deterministik relevance skorlama katmanini calistir (2. asama, LLM/API GEREKTIRMEZ)
+    candidate_k: 20
     top_k: 5
-    faiss_weight: 0.5
-    bm25_weight: 0.5
+    score_threshold: 0.10              # relevance_score'un ALTINDAKI sonuclar ELENIR (0 sonuc GECERLIDIR)
+    # 2026-08-26 (RERANK KALDIRILDI): asagidaki provider/model_name/api_key_env/
+    # base_url, opsiyonel 3. asama AI reranker'i (EVREN'i "LLM-as-judge" olarak
+    # kullanan `src/rag/reranker.py::EvrenReranker`) yapilandirirdi - ARTIK
+    # `src/main.py::SafirPipeline` tarafindan OKUNMUYOR/CAGRILMIYOR. EVREN
+    # dokumantasyonu (SS 10), saf yogun getirmenin (R@1=0.95) HER reranking
+    # varyantindan (dedike rerank ucu DAHIL, LLM-as-judge DAHIL) daha iyi
+    # performans gosterdigini olcumle kanitlamaktadir - "yeniden siralama
+    # adiminin eklenmemesi" onerilir. `EvrenReranker` sinifi SILINMEDI (bkz.
+    # proje kurallari: KULLANILMAYAN saglayicilar kaldirilmaz, devre disi
+    # birakilir), yalnizca `main.py`deki cagri kaldirildi. Asagidaki alanlar
+    # yalnizca BELGE/gecmis amaclidir, hicbir etkileri yoktur.
+    provider: "evren"
+    model_name: "llm-fast"
+    base_url: "https://evren-llmapi.ssyz.org.tr/v1"
+    api_key_env: "EVREN_API_KEY"
+    weights:                           # src/rag/deterministic_reranker.py::RelevanceWeights (2. asama, degismedi)
+      semantic: 0.60
+      lexical: 0.15
+      keyword: 0.15
+      metadata: 0.05
+      phrase: 0.05
+    # NOT: provider/model_name/api_key_env/base_url ARTIK OKUNMUYOR (bkz.
+    # RerankerConfig dokustringi) - relevance skorlamasi TAMAMEN yerel/deterministiktir.
 
 # -----------------------------------------------------------------------------
 # 05 - Ajan ve Muhakeme Katmani (LangGraph) - GPU / vLLM
 # -----------------------------------------------------------------------------
 llm:
-  active_model: "gemini"              # qwen3 | gemma3 | gemini (VLM'den bagimsiz saf muhakeme modeli) — AKTIF: gemini
+  active_model: "evren"               # qwen3 | gemma3 | evren — AKTIF: evren
+  # NOT (EVREN "dusunme" modu): EVREN dokumantasyonu (SS 3.2), akil yurutme
+  # (thinking) modunun KAPALI tutulmasini onerir - acildiginda token
+  # tuketimi 9-17 kat artarken dogruluk kazanci ihmal edilebilir/negatiftir
+  # ve `reasoning_content` her zaman BOS doner. 2026-08-25 P0 duzeltmesi:
+  # ONCEDEN bu alan hic GONDERILMIYORDU ("varsayilan kapali" varsayimiyla) -
+  # ancak gercekte gonderilmeyince model dusunme moduna girip TUM
+  # max_new_tokens butcesini gizli akil yurutmeye harcayip goruen `content`i
+  # BOS birakabiliyordu (ajan JSON parse edemiyor, risk_status=unknown
+  # sonucuna dusuyordu). Artik asagidaki `evren` girdisi `extra_body.
+  # chat_template_kwargs.enable_thinking: false` ile ACIKCA kapatir
+  # (bkz. `src/vlm/llm_client.py::LLMClient.__init__`).
+  # 2026-08-25 (mentor eleştirisi 5): bu koruma artik VLM video istekleri
+  # (`src/vlm/evren_vlm.py`) icin de gecerli - onceden yalnizca bu `llm`
+  # blogundaki (Ajan) cagrilarda vardi, video analizinde YOKTU (bkz.
+  # `src/vlm/base_vlm.py::apply_extra_body`/`raise_if_empty_content`).
+  # NOT (determinizm/tekrarlanabilirlik, mentor onerisi): `temperature`
+  # (asagida) HER cagrida ZATEN acikca gonderiliyor; EVREN'in OpenAI-uyumlu
+  # ucu `seed` destekliyorsa, `extra_body: {seed: <sayi>}` eklenerek AYNI
+  # mekanizmayla (kod DEGISIKLIGI GEREKMEDEN) etkinlestirilebilir - EVREN'in
+  # `seed` parametresini fiilen destekledigi bu oturumda DOGRULANAMADIGINDAN
+  # varsayilan olarak EKLENMEDI (bkz. proje kurallari: API yuzeyini tahmin etme).
   models:
     qwen3:                           # aktif model Qwen3-4B-Instruct-2507'dir (VLM'den (Qwen3.5) FARKLI aile — bilerek: olgun/kararli, metin-only, gorsele ihtiyaci yok)
       model_name: "Qwen/Qwen3-4B-Instruct-2507"   # non-thinking mod (<think> bloklari yok), Nisan 2025'ten beri olgun vLLM destegi
       vllm_host: "127.0.0.1"                     # tek makine: API + vLLM ayni host
       vllm_port: 8003
       max_new_tokens: 1024
-      temperature: 0.0
+      temperature: 0.1
     gemma3:
       model_name: "google/gemma-3-8b-it"
       vllm_host: "0.0.0.0"
       vllm_port: 8004
       max_new_tokens: 1024
-      temperature: 0.0
-    gemini:                          # gecici TEST backend'i (harici API — offline degildir)
-      provider: "gemini"
-      model_name: "gemini-3.5-flash-lite"
-      base_url: "https://generativelanguage.googleapis.com/v1beta/openai/"
-      api_key_env: "GEMINI_API_KEY"
+      temperature: 0.1
+    evren:                           # AKTIF: TEKNOFEST EVREN yarisma cikarim servisi (harici API)
+      provider: "evren"
+      model_name: "llm-fast"         # dokumantasyon SS 6: JSON uretimi/arac cagirma/siniflandirmada llm-large ile olcumlenebilir fark yok
+      base_url: "https://evren-llmapi.ssyz.org.tr/v1"
+      api_key_env: "EVREN_API_KEY"
       max_new_tokens: 1024
-      temperature: 0.0
+      temperature: 0.1
+      extra_body:                    # yukaridaki NOT: enable_thinking ACIKCA GONDERILMEZSE model
+        chat_template_kwargs:        # dusunme moduna girip tum max_new_tokens butcesini gizli
+          enable_thinking: false     # akil yurutme tokenlarina harcayabilir, goruen content BOS kalir
+    evren_large:                     # Model hiyerarsisi (mentor eleştirisi, SS 6): yalnizca NIHAI
+      provider: "evren"              # karar sentezi icin kullanilir (bkz. asagidaki `decision_model`);
+      model_name: "llm-large"        # arac-secimi/JSON-uretimi donguleri HALA `evren` (llm-fast) kullanir.
+      base_url: "https://evren-llmapi.ssyz.org.tr/v1"
+      api_key_env: "EVREN_API_KEY"
+      max_new_tokens: 1024
+      temperature: 0.1
+      extra_body:                    # ayni SS 3.2 notu llm-large icin de gecerlidir - model buyuklugunden
+        chat_template_kwargs:        # BAGIMSIZ bir EVREN-genelinde bulgu (bkz. yukaridaki NOT); bu yuzden
+          enable_thinking: false     # burada da acikca kapatilir.
+  decision_model: "evren_large"      # "uzun akil yurutme zincirleri ve otonom karar anlari" icin (SS 6)
+                                      # nihai JSON karari BU modelle sentezlenir; `active_model` ile AYNI
+                                      # yapilirsa (veya bu satir silinirse) hiyerarsi devre disi kalir.
 
 agent:
   max_iterations: 6                  # LangGraph durum makinesinin maksimum dongu sayisi
@@ -180,6 +474,7 @@ agent:
     retriever_tool_enabled: true
     timeline_tool_enabled: true
     verification_tool_enabled: true
+    mock_action_tools_enabled: true    # notify_health_team_tool / dispatch_security_tool / trigger_area_lockdown_tool
 
 # -----------------------------------------------------------------------------
 # Otomatik Eskalasyon (Human-on-the-Loop) - bloke edici operator kapisi YOK
@@ -192,6 +487,34 @@ agent:
 escalation:
   notify_score: 26                   # orta ve uzeri -> bildirim
   auto_alarm_score: 51               # yuksek/kritik -> otomatik saha alarmi
+
+# -----------------------------------------------------------------------------
+# Guvenlik - Prompt Injection Guard
+# -----------------------------------------------------------------------------
+# Agent'a giden guvenilmeyen serbest metni (user_prompt, VLM aciklamasi)
+# talimat olarak yorumlanmaya karsi kontrol eder. risk_score/risk_level/
+# event_type/RuleEngine/RAG kararlarina DOKUNMAZ (bkz. src/security/
+# prompt_injection_guard.py modul dokustringi). 2026-08-25 EVREN MIGRASYONU:
+# VLM/LLM/embedding/reranker ile AYNI EVREN altyapisini (OpenAI-uyumlu LLM
+# ucu, EVREN_API_KEY) kullanir - `model_name` (`llm-fast`), `llm.models.evren`
+# ile AYNI EVREN modelidir (bkz. src/security/prompt_injection_guard.py::
+# EvrenPromptInjectionGuard). Eski gemini/groq saglayicilari ve bunlara ait
+# API anahtarlari KALDIRILMISTIR - yalnizca 'evren' desteklenir.
+# NOT (varsayilan KAPALI): reranker'in aksine (yalnizca RAG sonucunu bos
+# birakir - `stage_context` icinde try/except ile yutulur), guard basarisiz
+# oldugunda fail_closed=true politikasi vlm_description/user_prompt metnini
+# GORUNUR sekilde quarantine ile isaretler. EVREN_API_KEY tanimli DEGILSE
+# (orn. CI/test ortami) bu her cagrida tetiklenir - bu yuzden guard,
+# EVREN_API_KEY provizyonlanip dogrulandiktan SONRA acikca enabled:true
+# yapilmalidir (production).
+guard:
+  enabled: true
+  provider: "evren"                  # AKTIF: EVREN'in OpenAI-uyumlu LLM ucu (VLM/LLM/embedding/reranker ile AYNI altyapi)
+  model_name: "llm-fast"             # llm.models.evren.model_name ile AYNI EVREN modeli (bkz. dokumantasyon SS 6: siniflandirma icin llm-fast yeterli)
+  fail_closed: true                  # true: guard API/parse hatasinda icerik QUARANTINE edilir (production)
+  confidence_threshold: 0.80         # is_injection=true VE confidence >= bu deger -> quarantine
+  base_url: "https://evren-llmapi.ssyz.org.tr/v1"
+  api_key_env: "EVREN_API_KEY"
 
 # -----------------------------------------------------------------------------
 # API / Servis Katmani

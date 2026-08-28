@@ -4,10 +4,11 @@
 `VLMFactory` uzerinden kurup gercek vLLM servisine HTTP istegi atar; boylece
 mevcut test edilmis `BaseVLM`/`QwenVLM`/`GemmaVLM` mantigi hic degistirilmeden
 tek bir noktadan yeniden kullanilir. `MockVLMClient` ise GPU'su olmayan
-gelistiriciler icin ayni `BaseVLM` sozlesmesini (`describe_events`,
+gelistiriciler icin ayni `BaseVLM` sozlesmesini (`analyze_evidence`,
 `health_check`) saniyenin onda biri kadar surede, sabit Turkce ISG tasvir
-metniyle karsilar; boylece `get_vlm_client(..., use_mock=True)` ile secildiginde
-main.py'deki pipeline hicbir kod degisikligi olmadan calisir.
+metniyle + gonderilen evidence_id'lere dayali bir EVENTS_JSON ile karsilar;
+boylece `get_vlm_client(..., use_mock=True)` ile secildiginde main.py'deki
+pipeline (kumeleme dahil) hicbir kod degisikligi olmadan uctan uca calisir.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import logging
 import time
 from typing import List
 
-from src.sampler.adaptive_sampler import EventCluster
+from src.sampler.schema import EvidenceFrame
 from src.utils.config_loader import VLLMEndpointConfig, VLMConfig
 from src.vlm.base_vlm import BaseVLM, VLMResponse
 from src.vlm.vlm_factory import VLMFactory
@@ -54,17 +55,54 @@ class VLMClient(BaseVLM):
         self._delegate = VLMFactory.create(vlm_config)
         super().__init__(vlm_config.active_endpoint())
 
-    def describe_events(self, clusters: List[EventCluster], prompt: str) -> VLMResponse:
+    @property
+    def requires_frame_sampling(self) -> bool:
+        """Devredilen gercek VLM implementasyonunun degerini yansitir.
+
+        `BaseVLM.requires_frame_sampling` sinif-duzeyinde sabit `True`dur;
+        bu override olmadan `SafirPipeline.run()`, `VLMClient` sarmalayicisi
+        arkasindaki `EvrenVLM` icin bile her zaman `True` gorur ve video-tabanli
+        saglayicilarda ATLANMASI gereken Adaptive Frame Sampler asamasini
+        (video uzunluguyla orantili, ~saniyeler-dakikalar suren bir CPU
+        on-islemesini) gereksiz yere calistirir.
+        """
+        return self._delegate.requires_frame_sampling
+
+    def analyze_evidence(self, evidence_frames: List[EvidenceFrame], prompt: str) -> VLMResponse:
         """Cagriyi, config'te secilen gercek VLM implementasyonuna devreder.
 
         Args:
-            clusters: Analiz edilecek Olay Gruplari.
+            evidence_frames: Analiz edilecek evidence kareleri.
             prompt: Kullanici/istem metni.
 
         Returns:
             Gercek vLLM servisinden donen `VLMResponse`.
         """
-        return self._delegate.describe_events(clusters, prompt)
+        return self._delegate.analyze_evidence(evidence_frames, prompt)
+
+    def analyze_video(
+        self, video_source: str, evidence_frames: List[EvidenceFrame], prompt: str
+    ) -> VLMResponse:
+        """Cagriyi, config'te secilen gercek VLM implementasyonunun video-tabanli analizine devreder.
+
+        Args:
+            video_source: Yerel video dosyasinin yolu (bkz. `EvrenVLM.analyze_video`).
+            evidence_frames: Yalnizca arayuz parametresi olarak devredilir.
+            prompt: Kullanici/istem metni.
+
+        Returns:
+            Gercek VLM servisinden donen `VLMResponse`.
+        """
+        return self._delegate.analyze_video(video_source, evidence_frames, prompt)
+
+    def answer_video_question(self, video_source: str, question: str, analysis_summary: str) -> str:
+        """Cagriyi, config'te secilen gercek VLM implementasyonuna devreder.
+
+        Devredilen implementasyon bunu desteklemiyorsa (bkz. `BaseVLM`
+        varsayilani), `NotImplementedError` OLDUGU GIBI yukari yayilir -
+        `AskService` bunu yakalayip metin-tabanli akisa geri doner.
+        """
+        return self._delegate.answer_video_question(video_source, question, analysis_summary)
 
     def health_check(self) -> bool:
         """Devredilen gercek VLM implementasyonunun saglik durumunu dondurur."""
@@ -75,32 +113,123 @@ class MockVLMClient(BaseVLM):
     """GPU'su olmayan gelistiriciler icin sahte VLM istemcisi (`use_mock_vlm: true`).
 
     Gercek vLLM servisine hic baglanmadan, `BaseVLM` sozlesmesine uygun sabit
-    bir Turkce ISG sahne tasviri dondurur.
+    bir Turkce ISG sahne tasviri + gonderilen evidence karelerinin TAMAMINI
+    tek bir sahte olayda kumeleyen bir `EVENTS_JSON` dondurur; boylece
+    event-analysis katmani (evidence_ids dahil) mock modda da gercekci
+    sekilde egzersiz edilir.
     """
 
     def __init__(self) -> None:
         """MockVLMClient'i (gercek endpoint gerekmeden) baslatir."""
         super().__init__(_MOCK_ENDPOINT)
 
-    def describe_events(self, clusters: List[EventCluster], prompt: str) -> VLMResponse:
-        """Sahte gecikme sonrasi sabit bir Turkce sahne tasviri dondurur.
+    def analyze_evidence(self, evidence_frames: List[EvidenceFrame], prompt: str) -> VLMResponse:
+        """Sahte gecikme sonrasi sabit bir Turkce sahne tasviri + sahte EVENTS_JSON dondurur.
 
         Args:
-            clusters: Analiz edilecek Olay Gruplari (yalnizca sayisi kullanilir).
+            evidence_frames: Analiz edilecek evidence kareleri.
             prompt: Kullanici/istem metni (yalnizca loglanir).
 
         Returns:
-            Sabit metinli, model_name="mock-vlm" olan `VLMResponse`.
+            Sabit metinli, model_name="mock-vlm" olan, gonderilen TUM
+            evidence_id'leri TEK bir sahte olayda kumeleyen `VLMResponse`.
         """
         started_at = time.perf_counter()
         time.sleep(0.1)
-        logger.info("MockVLMClient: %d olay grubu icin sahte aciklama uretildi (prompt=%r)", len(clusters), prompt)
+        logger.info(
+            "MockVLMClient: %d evidence karesi icin sahte aciklama uretildi (prompt=%r)",
+            len(evidence_frames),
+            prompt,
+        )
+        structured_events = []
+        if evidence_frames:
+            structured_events = [
+                {
+                    "event_id": "mock_e1",
+                    "event_name": "arac_yaya_yakinligi",
+                    "canonical_event_type": "arac_yaya_yakinligi",
+                    "start_time": evidence_frames[0].timestamp_sec,
+                    "end_time": evidence_frames[-1].timestamp_sec,
+                    "evidence_ids": [ef.evidence_id for ef in evidence_frames],
+                    "description": _MOCK_DESCRIPTION,
+                    "keywords": ["forklift", "yaya gecidi", "arac yaklasti"],
+                    "risk_score": 35,
+                    "confidence": 0.6,
+                }
+            ]
         return VLMResponse(
             description=_MOCK_DESCRIPTION,
             model_name=self.model_name,
-            frame_count=len(clusters),
+            frame_count=len(evidence_frames),
             latency_ms=(time.perf_counter() - started_at) * 1000,
+            structured_events=structured_events,
         )
+
+    def reconcile_events(self, batch_responses: List[VLMResponse], prompt: str) -> VLMResponse:
+        """Batch sonuclarini YEREL olarak birlestirir - hicbir HTTP cagrisi yapmaz.
+
+        `BaseVLM.reconcile_events` varsayilani IKINCI bir metin-tabanli VLM
+        cagrisi yapar; mock istemci `_MOCK_ENDPOINT` (host "mock", port 0) ile
+        kuruldugu icin bu cagri `getaddrinfo failed` ile patliyordu ve
+        `use_mock_vlm: true` modunda kare-tabanli (dusuk butceli) analizin
+        TAMAMI basarisiz oluyordu - oysa mock modun tanimi "harici hicbir sey
+        gerekmez"dir. Bu yuzden birlestirme burada tamamen yerel yapilir.
+        """
+        successful = [r for r in batch_responses if getattr(r, "status", "ok") != "failed"]
+        evidence_ids: List[str] = []
+        for r in batch_responses:  # basarisiz batch'lerin evidence'i de KORUNUR
+            for eid in getattr(r, "evidence_ids", None) or []:
+                if eid not in evidence_ids:
+                    evidence_ids.append(eid)
+
+        if not successful:
+            failed = VLMResponse(
+                # "[HATA]" oneki KASITLI: pipeline/rapor sozlesmesi basarisiz
+                # analizi bu isaretle ayirt eder (bkz. tests/test_pipeline_
+                # integration.py::test_pipeline_produces_degraded_report_when_vlm_fails).
+                description="[HATA] [MOCK] Hicbir batch analiz edilemedi; VLM cagrisi basarisiz.",
+                model_name=self.model_name,
+                frame_count=0,
+                latency_ms=0.0,
+                structured_events=[],
+                status="failed",
+            )
+            failed.evidence_ids = evidence_ids
+            return failed
+
+        merged_events = []
+        for response in successful:
+            for event in response.structured_events or []:
+                merged = dict(event)
+                merged["event_id"] = f"mock_e{len(merged_events) + 1}"
+                merged_events.append(merged)
+                for eid in merged.get("evidence_ids") or []:
+                    if eid not in evidence_ids:
+                        evidence_ids.append(eid)
+
+        result = VLMResponse(
+            description=successful[0].description,
+            model_name=self.model_name,
+            frame_count=sum(r.frame_count for r in successful),
+            latency_ms=sum(r.latency_ms for r in successful),
+            structured_events=merged_events,
+        )
+        result.evidence_ids = evidence_ids
+        return result
+
+    def analyze_video(
+        self, video_source: str, evidence_frames: List[EvidenceFrame], prompt: str
+    ) -> VLMResponse:
+        """`analyze_evidence` ile AYNI sahte mantigi kullanir (mock modda video/frame ayrimi yapilmaz).
+
+        Production akisi artik video-tabanli `analyze_video`'yu cagirir
+        (bkz. `src/main.py::SafirPipeline.stage_vlm`); mock istemci gercek
+        video dosyasini OKUMAZ, yalnizca `evidence_frames`e gore ayni sabit
+        Turkce ISG tasvirini + evidence_id'leri kumeleyen `EVENTS_JSON`i
+        dondurur - boylece mock-mod testleri/pipeline'i degismeden calisir.
+        """
+        del video_source  # mock modda gercek video okunmaz
+        return self.analyze_evidence(evidence_frames, prompt)
 
     def health_check(self) -> bool:
         """Mock istemci her zaman saglikli kabul edilir."""
@@ -113,13 +242,13 @@ if __name__ == "__main__":
     #   python -m src.vlm.vlm_client --real      -> config'teki gercek vLLM'e istek atar
     import sys
 
-    from src.sampler.schema import EventCluster as _EventCluster
     from src.sampler.schema import EvidenceFrame as _EvidenceFrame
     from src.utils.config_loader import load_config
 
     logging.basicConfig(level=logging.INFO)
 
     demo_evidence = _EvidenceFrame(
+        evidence_id="ev0",
         frame_id=0,
         timestamp_sec=1.0,
         timestamp_str="00:01",
@@ -128,9 +257,6 @@ if __name__ == "__main__":
         base64_image="data:image/jpeg;base64,AA==",
         image_shape=(1, 1, 3),
     )
-    demo_cluster = _EventCluster(
-        event_id=1, start_time=1.0, end_time=1.0, peak_frame=demo_evidence, total_candidate_frames=1
-    )
 
     use_real = "--real" in sys.argv
     if use_real:
@@ -138,7 +264,7 @@ if __name__ == "__main__":
     else:
         demo_client = MockVLMClient()
 
-    demo_response = demo_client.describe_events([demo_cluster], prompt="Test istemi: risk var mi?")
+    demo_response = demo_client.analyze_evidence([demo_evidence], prompt="Test istemi: risk var mi?")
     print(f"model_name={demo_response.model_name}")
     print(f"latency_ms={demo_response.latency_ms:.1f}")
     print(f"description={demo_response.description}")

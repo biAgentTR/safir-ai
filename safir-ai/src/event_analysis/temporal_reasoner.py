@@ -115,17 +115,35 @@ class TemporalReasoner:
     def _group_by_type_and_proximity(
         self, sorted_events: List[DetectedEvent]
     ) -> List[List[DetectedEvent]]:
-        """Zaman sirali olaylari, tip bazinda "en son acik grup" mantigiyla gruplar.
+        """Zaman sirali olaylari, `event_name` bazinda "en son acik grup" mantigiyla gruplar.
 
-        Her `event_type` icin, o tipteki EN SON grubun indeksi ayri ayri
-        izlenir (`last_group_index_by_type`). Yeni bir olay geldiginde:
-        - Ayni tipteki en son grubun son olayina zaman farki
-          `merge_window_sec` icindeyse, o gruba eklenir (araya baska tipte
+        T020: gruplama artik `event_type`e (opsiyonel/canonical) DEGIL,
+        olayin BIRINCIL kimligi olan `event_name`e (VLM-uretimi, serbest
+        bicimli) gore yapilir - boylece canonical taksonomiye hic
+        oturmayan (`event_type=None`) yeni/serbest olaylar da kendi
+        `event_name`leri altinda dogru sekilde kumelenir.
+
+        Her `event_name` icin, o isimdeki EN SON grubun indeksi ayri ayri
+        izlenir (`last_group_index_by_name`). Yeni bir olay geldiginde:
+        - Ayni isimdeki en son grubun son olayina zaman farki
+          `merge_window_sec` icindeyse, o gruba eklenir (araya baska isimde
           kac olay girmis olursa olsun - listede bitisik olma sarti YOKTUR).
-        - Degilse (ya bu tip ilk kez goruluyor ya da esik asilmis), bu tip
-          icin YENI bir grup acilir; o tipin "en son grup" isaretcisi bu
+        - Degilse (ya bu isim ilk kez goruluyor ya da esik asilmis), bu isim
+          icin YENI bir grup acilir; o ismin "en son grup" isaretcisi bu
           yeni gruba guncellenir (eski grup bir daha asla yeniden acilmaz -
           zaten zaman ilerledikce ona olan uzaklik sadece artabilir).
+
+        Formalizasyon (temporal proximity): iki tespit `E_i=(name_i,t_i)`,
+        `E_j=(name_j,t_j)` (j, i'den once, ayni ismin en son GRUBUNUN son
+        elemani) icin, ayni gruba dahil edilirler ancak VE ancak:
+
+            name_i == name_j  VE  (t_i - t_j) <= Delta   (Delta = self._merge_window_sec)
+
+        Farkli `event_name` (dolayisiyla farkli `canonical_event_type`,
+        cogu durumda) hicbir zaman YALNIZCA zaman yakinligindan dolayi
+        birlestirilmez - esitlik birinci, zorunlu kosuldur. Bu, SAFIR'in
+        TEK gruplama mekanizmasidir; ikinci bir gruplama/kumeleme
+        mantigi (orn. embedding-tabanli benzerlik) YOKTUR.
 
         Args:
             sorted_events: Zaman damgasina gore artan sirali `DetectedEvent` listesi.
@@ -136,10 +154,10 @@ class TemporalReasoner:
             siraya esittir) dizili `DetectedEvent` gruplarinin listesi.
         """
         groups: List[List[DetectedEvent]] = []
-        last_group_index_by_type: Dict[str, int] = {}
+        last_group_index_by_name: Dict[str, int] = {}
 
         for event in sorted_events:
-            last_index = last_group_index_by_type.get(event.event_type)
+            last_index = last_group_index_by_name.get(event.event_name)
             if last_index is not None:
                 last_event = groups[last_index][-1]
                 if (event.timestamp - last_event.timestamp) <= self._merge_window_sec:
@@ -147,24 +165,36 @@ class TemporalReasoner:
                     continue
 
             groups.append([event])
-            last_group_index_by_type[event.event_type] = len(groups) - 1
+            last_group_index_by_name[event.event_name] = len(groups) - 1
 
         return groups
 
     def _build_temporal_event(self, group: List[DetectedEvent], index: int) -> TemporalEvent:
-        """Ayni tipteki, birlesmis bir `DetectedEvent` grubundan tek bir `TemporalEvent` uretir.
+        """Ayni `event_name`e sahip, birlesmis bir `DetectedEvent` grubundan tek bir `TemporalEvent` uretir.
 
         Args:
             group: `_group_by_type_and_proximity` tarafindan uretilmis, zaman
-                sirali, ayni `event_type`e sahip `DetectedEvent` grubu.
+                sirali, ayni `event_name`e sahip `DetectedEvent` grubu.
             index: Bu grubun `event_id` uretiminde kullanilacak sira numarasi.
 
         Returns:
             Grubu temsil eden tek bir `TemporalEvent`.
         """
         start_timestamp = group[0].timestamp
-        end_timestamp = group[-1].timestamp
         latest = group[-1]
+        # BUG FIX (kritik): eskiden burada `group[-1].timestamp` kullanilirdi -
+        # ama `DetectedEvent.timestamp` olayin BASLANGIC zaman damgasidir
+        # (bkz. schemas.py docstring), GERCEK bitisi DEGIL. Gercek bir VLM
+        # olayi (orn. "00:06-00:22") icin bu, `TemporalEvent.end_timestamp`in
+        # YANLISLIKLA olayin BASLANGICINA esit olmasina yol aciyordu; bu da
+        # `main.py::_select_current_call_events`in (`end_timestamp` ==
+        # `latest_timestamp` == evidence karelerinin GERCEK bitis zamani,
+        # 1e-6 tolerans) karsilastirmasini HER ZAMAN basarisiz kiliyor, VE
+        # `SafirReport.events`/`detected_event_names` SESSIZCE BOS
+        # donuyordu - VLM gercek olaylar uretse bile. `DetectedEvent.
+        # end_timestamp` (varsa) kullanilir; yoksa (VLM tek an bildirdiyse)
+        # `.timestamp`e duser.
+        end_timestamp = latest.end_timestamp if latest.end_timestamp is not None else latest.timestamp
 
         max_confidence = max(event.confidence for event in group)
         occurrence_count = len(group)
@@ -173,9 +203,20 @@ class TemporalReasoner:
             2,
         )
 
+        risk_hints = [event.risk_hint for event in group if event.risk_hint is not None]
+        # Canonical `event_type` (opsiyonel): gruptaki EN SON bilinen (None
+        # olmayan) deger tercih edilir - VLM tutarsiz davranip bir gozlemde
+        # canonical baglanti verip digerinde vermeyebilir; bilgi varsa
+        # KAYBEDILMEZ. Hicbir gozlemde canonical yoksa `None` kalir
+        # ("eslestirilemedi", zorlanmaz).
+        canonical_event_type = next(
+            (event.event_type for event in reversed(group) if event.event_type is not None), None
+        )
+
         return TemporalEvent(
             event_id=f"evt_{index}",
-            event_type=latest.event_type,
+            event_name=latest.event_name,
+            event_type=canonical_event_type,
             description=latest.description,
             start_timestamp=start_timestamp,
             end_timestamp=end_timestamp,
@@ -185,6 +226,13 @@ class TemporalReasoner:
             matched_keywords=self._union_keywords(group),
             source_model=latest.source_model,
             related_events=[],
+            evidence_ids=self._union_evidence_ids(group),
+            source_analysis_ids=self._union_provenance(group, "source_analysis_id"),
+            source_video_ids=self._union_provenance(group, "source_video_id"),
+            source_chunk_ids=self._union_provenance(group, "source_chunk_id"),
+            source_model_call_ids=self._union_provenance(group, "source_model_call_id"),
+            source_observation_ids=self._union_provenance(group, "source_observation_id"),
+            risk_hint=max(risk_hints) if risk_hints else None,
         )
 
     @staticmethod
@@ -202,6 +250,33 @@ class TemporalReasoner:
             for keyword in event.matched_keywords:
                 if keyword not in seen:
                     seen.append(keyword)
+        return seen
+
+
+    @staticmethod
+    def _union_provenance(group: List[DetectedEvent], field_name: str) -> List[str]:
+        seen = []
+        for event in group:
+            val = getattr(event, field_name, None)
+            if val is not None and val not in seen:
+                seen.append(val)
+        return seen
+
+    @staticmethod
+    def _union_evidence_ids(group: List[DetectedEvent]) -> List[str]:
+        """Gruptaki tum tespitlerin `evidence_ids`lerini, ilk gorulme sirasini koruyarak birlestirir.
+
+        Args:
+            group: Evidence kimlikleri birlestirilecek `DetectedEvent` grubu.
+
+        Returns:
+            Tekrarsiz, ilk gorulme sirali evidence_id listesi.
+        """
+        seen: List[str] = []
+        for event in group:
+            for evidence_id in event.evidence_ids:
+                if evidence_id not in seen:
+                    seen.append(evidence_id)
         return seen
 
     def _link_related_events(self, temporal_events: List[TemporalEvent]) -> None:
@@ -250,6 +325,7 @@ if __name__ == "__main__":
 
     demo_events = [
         DetectedEvent(
+            event_name="dusme_riski",
             event_type="dusme_riski",
             description="Personel korkuluksuz iskelede calisiyor.",
             timestamp=0.0,
@@ -258,6 +334,7 @@ if __name__ == "__main__":
             source_model="demo-vlm",
         ),
         DetectedEvent(
+            event_name="dusme_riski",
             event_type="dusme_riski",
             description="Personel hala korkuluksuz iskelede.",
             timestamp=5.0,
@@ -266,6 +343,7 @@ if __name__ == "__main__":
             source_model="demo-vlm",
         ),
         DetectedEvent(
+            event_name="kkd_ihlali",
             event_type="kkd_ihlali",
             description="Ayni bolgede baretsiz bir personel daha goruldu.",
             timestamp=12.0,
@@ -277,7 +355,8 @@ if __name__ == "__main__":
 
     for demo_temporal_event in TemporalReasoner().reason(demo_events):
         print(
-            f"[{demo_temporal_event.event_id}] {demo_temporal_event.event_type} "
+            f"[{demo_temporal_event.event_id}] {demo_temporal_event.event_name} "
+            f"(canonical={demo_temporal_event.event_type}) "
             f"occurrence_count={demo_temporal_event.occurrence_count} "
             f"duration={demo_temporal_event.duration} "
             f"related={demo_temporal_event.related_events}"

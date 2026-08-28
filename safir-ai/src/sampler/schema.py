@@ -1,78 +1,89 @@
 """Modul 1 - VLM Oncesi Katman icin ortak Pydantic veri sozlesmeleri.
 
 `AdaptiveFrameSampler` (`adaptive_sampler.py`) tarafindan uretilen `EvidenceFrame`
-ve `EventCluster` modelleri burada tanimlanir; boylece sampler modulu, VLM/UI
-gibi tuketici modullerle net bir arayuz sozlesmesi (schema) uzerinden konusur
-ve modul kendi basina (`python -m src.sampler.adaptive_sampler`) test edilebilir.
+modeli burada tanimlanir; boylece sampler modulu, VLM/UI gibi tuketici
+modullerle net bir arayuz sozlesmesi (schema) uzerinden konusur ve modul
+kendi basina (`python -m src.sampler.adaptive_sampler`) test edilebilir.
+
+ONEMLI (mimari): Sampler artik hicbir OLAY KUMELEMESI (event clustering)
+YAPMAZ - yalnizca evidence esigini gecen kareleri uretir. Kumeleme (hangi
+evidence karelerinin ayni gercek olaya ait oldugu) VLM katmaninda yapilir
+(bkz. `src/vlm/base_vlm.py`); bu yuzden burada `EventCluster`/
+`RepresentativeFrame` gibi kumeleme-ozel modeller ARTIK BULUNMAZ.
 """
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+SelectionReason = Literal[
+    "threshold_exceeded",
+    "temporal_coverage",
+    "early_change",
+    "significant_change",
+    "single_frame_change",
+    "fallback",
+]
+
 
 class EvidenceFrame(BaseModel):
-    """VLM'e gonderilecek Kanit Karesi veri modeli."""
+    """Esik-gecmis, VLM'e gonderilecek Kanit Karesi veri modeli.
 
-    frame_id: int = Field(description="Karenin video icindeki sirasi.")
+    Video genelinde SIRALI, kayipsiz uretilir: hicbir global buffer/kare
+    limiti, temporal voting/clustering/deduplication veya liste kesme
+    nedeniyle evidence esigini gecen bir kare burada elenmez (bkz.
+    `AdaptiveFrameSampler.process_video`).
+
+    ONEMLI: `selection_reason` bir pre/peak/post KONUMSAL ROLU DEGILDIR -
+    sadece bu karenin NEDEN evidence listesine girdigini (esik mi gecti,
+    yoksa uzun bir sessiz araligi mi kapatti) aciklayan, olay
+    kumelemesinden bagimsiz bir MEDATADIR. Olay kumelemesi hala tamamen
+    VLM katmaninin sorumlulugundadir.
+    """
+
+    evidence_id: str = Field(
+        description="Bu evidence karesinin video genelinde benzersiz, kararli kimligi "
+        "(`f'ev{frame_id}'`); VLM'in `evidence_ids` referanslarinda kullandigi kimliktir."
+    )
+    frame_id: int = Field(description="Karenin video icindeki sirasi (frame index).")
     timestamp_sec: float = Field(description="Karenin saniye cinsinden zaman damgasi.")
     timestamp_str: str = Field(description="`MM:SS` formatinda okunabilir zaman damgasi.")
-    change_score: float = Field(description="Gurultu-tabani-dusulmus degisim skoru.")
+    change_score: float = Field(description="Gurultu-tabani-dusulmus evidence/degisim skoru.")
     image_bytes: bytes = Field(description="JPEG-kodlu ham kare baytlari.", repr=False)
     base64_image: str = Field(description="`data:image/jpeg;base64,...` formatinda goruntu.")
     image_shape: Tuple[int, int, int] = Field(description="(yukseklik, genislik, kanal) kare boyutu.")
     saved_path: Optional[str] = Field(default=None, description="Karenin diskte kayitli oldugu yol.")
     is_fallback: bool = Field(default=False, description="Esik gecilemedigi icin frame 0 fallback'i mi.")
-    has_gradual_trend: bool = Field(
-        default=False, description="Kademeli pus/kontrast azalişi trendi tespit edildi mi."
+    selection_reason: SelectionReason = Field(
+        default="threshold_exceeded",
+        description=(
+            "Bu karenin evidence listesine GIRME NEDENI (pozisyonel bir rol "
+            "DEGILDIR, olay sinifi DEGILDIR - yalnizca sampler'in kendi secim "
+            "gerekcesidir): 'threshold_exceeded' = kare ana esik testini "
+            "gecti; 'temporal_coverage' = sakin bolgede son evidence "
+            "karesinden bu yana `max_temporal_gap_sec` asildigi icin secildi; "
+            "'early_change' = ana esigin ALTINDA ama surdurulen (tek karelik "
+            "sicrama degil) bir onset sinyali tespit edildiginde, ana esik "
+            "beklenmeden secildi - olayin baslangic karesini geriye donuk "
+            "buffer gerektirmeden korur; 'significant_change' = ana esik "
+            "gecildikten sonraki kisa bir hysteresis/cooldown penceresinde, "
+            "skor tekrar esigin altina dustugunde bile hala yuksek yogunlukta "
+            "secilen bir kare; 'single_frame_change' = ana esigin ALTINDA "
+            "ama TEK bir karede zaten GUCLU, LOKAL ve gurultu tabanindan "
+            "acikca ayrisan bir sinyal - 'early_change'in cok-kareli "
+            "(early_change_min_count) onayi BEKLENMEDEN, ayri ve bagimsiz "
+            "bir yoldan secilir; 'fallback' = videoda hicbir kare esigi "
+            "gecemedi, sistem cokmesin diye ilk kare temsilen kullanildi "
+            "(bkz. `is_fallback`)."
+        ),
     )
     motion_bbox: Optional[Tuple[int, int, int, int]] = Field(
         default=None,
         description=(
             "Bu karenin ureten hareket maskesinin (x_min, y_min, x_max, y_max) sinirlayici "
-            "kutusu; `cluster_events`in ayni fiziksel olayin devami mi yoksa farkli bir olay mi "
-            "oldugunu ayirt etmek icin kullandigi konumsal sinyal. Hareket maskesi bossa "
-            "(ör. fallback kare) `None`."
+            "kutusu (bilgi amaclidir; artik kumeleme icin kullanilmaz - bkz. modul docstring'i). "
+            "Hareket maskesi bossa (ör. fallback kare) `None`."
         ),
     )
-
-
-class RepresentativeFrame(BaseModel):
-    """Bir Olay Grubu icin VLM'e gonderilen tekil temsili kare (pre/peak/post)."""
-
-    label: str = Field(description="Karenin olay icindeki rolu: 'pre-event', 'peak' veya 'post-event'.")
-    timestamp_sec: float = Field(description="Karenin saniye cinsinden zaman damgasi.")
-    timestamp_str: str = Field(description="`MM:SS` formatinda okunabilir zaman damgasi.")
-    base64_image: str = Field(description="`data:image/jpeg;base64,...` formatinda goruntu.")
-
-
-class EventCluster(BaseModel):
-    """Arka arkaya gerceklesen degisim karelerinin kumelenmis olay grubu."""
-
-    event_id: int = Field(description="Bu Olay Grubunun kimligi.")
-    start_time: float = Field(description="Grubun baslangic zaman damgasi (sn).")
-    end_time: float = Field(description="Grubun bitis zaman damgasi (sn).")
-    peak_frame: EvidenceFrame = Field(description="Grubun en yuksek degisim skoruna sahip zirve karesi.")
-    total_candidate_frames: int = Field(description="Bu gruba dahil edilen Kanit Karesi sayisi.")
-    has_gradual_trend: bool = Field(
-        default=False, description="Kumede kademeli pus/kontrast azalişi trendi var mi."
-    )
-    duration_sec: float = Field(
-        default=0.0, description="`end_time - start_time` (saniye); birlestirilmis olayin toplam suresi."
-    )
-    representative_frames: list["RepresentativeFrame"] = Field(
-        default_factory=list,
-        description=(
-            "Zaman sirali pre-event/peak/post-event temsili kareler (0-3 adet arasi); "
-            "VLM'e context.mp4 yerine dogrudan gonderilir. Bos ise VLMPayloadBuilder yalnizca "
-            "peak_frame ile eski (tek-kare) davranisa duser."
-        ),
-    )
-
-    @property
-    def start_time_str(self) -> str:
-        """`MM:SS` formatinda baslangic (onset) zaman damgasi."""
-        minutes, seconds = divmod(int(self.start_time), 60)
-        return f"{minutes:02d}:{seconds:02d}"

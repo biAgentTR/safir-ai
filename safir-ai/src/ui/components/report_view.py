@@ -160,18 +160,165 @@ class AgentRagPanel:
             st.subheader("📝 Operator Ozeti (Ajan)")
             st.write(summary)
 
+        llm_proposed_score = report.get("llm_proposed_score")
+        if llm_proposed_score is not None:
+            st.info(
+                f"🤖 **Model Önerisi (llm_proposed_score): {llm_proposed_score}/100** — bu, Agent'ın "
+                f"KENDİ taslak değerlendirmesidir, RESMİ DEĞİLDİR ve final risk kararını BELİRLEMEZ. "
+                f"Sistemin resmi kararı yukarıdaki **Risk Skoru: {report['risk_score']}/100** "
+                f"({report['risk_level'].upper()}) alanıdır - deterministik risk motoru tarafından "
+                f"(RuleEngine şiddeti + temporal kanıt + hazard escalation + doğrulanmış RAG mevzuat "
+                f"desteği) hesaplanmıştır ve Agent'ın önerisinden BAĞIMSIZDIR."
+            )
+
         st.subheader("🧠 VLM Gorsel Anlama Ciktisi (Turkce)")
         st.write(report["natural_language_summary"])
+
+        st.subheader("🏷️ Tespit Edilen Olaylar (VLM-uretimi, serbest bicimli)")
+        with st.container(border=True):
+            events = report.get("events") or []
+            if not events:
+                st.caption("Bu analiz icin VLM olay uretmedi.")
+            else:
+                st.caption(
+                    "`event_name`, VLM'in KENDI urettigi serbest-bicimli olay ismidir - "
+                    "ONCEDEN TANIMLI bir taksonomiyle SINIRLI DEGILDIR. Kategori ve risk, "
+                    "yalnizca deterministik Kural Motoru (RuleEngine) bu olay icin GERCEKTEN "
+                    "bir eslesme urettiyse doludur; aksi halde 'Eslestirilemedi'/'Degerlendirilmedi' "
+                    "GECERLI bir sonuctur."
+                )
+                for entry in events:
+                    st.markdown(f"#### {entry.get('event_name', '?')}")
+                    keywords = entry.get("keywords") or []
+                    if keywords:
+                        st.markdown(" ".join(f"`{kw}`" for kw in keywords))
+                    event_type = entry.get("event_type")
+                    risk_level = entry.get("risk_level")
+                    st.caption(
+                        f"Kategori: {event_type or 'Eşleştirilemedi'}  |  "
+                        f"Risk: {risk_level or 'Değerlendirilmedi'}"
+                    )
 
         st.subheader("📚 RAG & Mevzuat Karti (FAISS)")
         with st.container(border=True):
             regulations = report.get("relevant_regulations", [])
             if not regulations:
-                st.caption("Bu analiz icin ilgili mevzuat maddesi bulunamadi.")
+                st.caption(
+                    "Mevzuat eşleştirilemedi. Gerekçe: bu analiz için RuleEngine tarafından "
+                    "doğrulanmış, güvenilir bir İSG mevzuat eşleşmesi bulunamadı."
+                )
             else:
-                st.caption("LangGraph Ajaninin `retriever_tool` uzerinden FAISS'ten getirdigi maddeler:")
+                st.caption("RuleEngine tarafindan deterministik olarak dogrulanmis mevzuat maddeleri:")
                 for regulation in regulations:
                     st.markdown(f"- {regulation}")
+
+        st.subheader("🔎 Semantik RAG Kanit Detayı (deterministik değil)")
+        with st.container(border=True):
+            sources = report.get("semantic_rag_sources") or []
+            if not sources:
+                st.caption(
+                    "Bu analiz için eşik-üzeri, doğrulanmış bir semantik RAG kanıtı bulunamadı "
+                    "(persisted index boş/yüklenemedi, sorgu embedding'i başarısız oldu ya da "
+                    "hiçbir aday relevance eşiğini geçemedi olabilir - bkz. retrieval telemetrisi)."
+                )
+            else:
+                cross_encoder_status = report.get("cross_encoder_status")
+                # `cross_encoder_status` backend'in `RagQueryTelemetry.cross_encoder_status`inden
+                # GELIR - "bu analizde neden cross_encoder_score None?" sorusunu SESSIZCE "-" ile
+                # DEGIL, ACIK bir nedenle cevaplar (bkz. gorev tanimi: "A) model gercekten
+                # yuklenemiyor / B) score uretiliyor ama UI'a ulasmiyor" ayrimi).
+                show_cross_encoder_column = cross_encoder_status in ("used", "unavailable")
+                if cross_encoder_status == "used":
+                    ce_status_caption = "Cross-Encoder bu analizde ÇALIŞTI - aşağıdaki değerler gerçek model çıktısıdır."
+                elif cross_encoder_status == "unavailable":
+                    ce_status_caption = (
+                        "⚠️ Cross-Encoder bu analizde KULLANILAMADI (model ağırlığı yüklenemedi - "
+                        "ağ erişimi olmayabilir). Sıralama kontrollü şekilde Deterministic Relevance'a "
+                        "düştü; hiçbir harici API'ye sessizce düşülmedi."
+                    )
+                elif cross_encoder_status == "disabled":
+                    ce_status_caption = "Cross-Encoder bu analizde devre dışıydı (production bu adımı hiç çağırmadı)."
+                else:
+                    ce_status_caption = "Cross-Encoder durumu bu analiz için bilinmiyor (eski bir rapor formatı olabilir)."
+                st.caption(
+                    "Her satır, `EmbeddingRAGService.query()`'nin GERÇEKTEN döndürdüğü bir kanıttır - "
+                    "**Embedding Skoru** (sorgu ile dokümanın semantic similarity değeri), "
+                    "**Deterministic Relevance** (semantic + lexical + keyword + metadata + phrase "
+                    "bileşenlerinden hesaplanan evidence relevance skoru) ve **Cross-Encoder Relevance** "
+                    "(kabul edilen adayların sorgu + doküman birlikte değerlendirilerek yeniden "
+                    "sıralanmasından elde edilen lokal model skoru) KASITLI AYRI kolonlardır; hiçbiri "
+                    f"risk skoru/risk confidence/probability/agent confidence değildir. {ce_status_caption}"
+                )
+
+                weights = report.get("relevance_weights")
+                if weights:
+                    st.caption(
+                        "**Deterministic Relevance Formülü** (çalışan koddan okunur, `configs/config.yaml -> "
+                        "memory.reranker.weights`): "
+                        f"Semantic × {weights.get('semantic')}  +  Lexical × {weights.get('lexical')}  +  "
+                        f"Keyword × {weights.get('keyword')}  +  Metadata × {weights.get('metadata')}  +  "
+                        f"Phrase × {weights.get('phrase')}"
+                    )
+                threshold = report.get("relevance_threshold")
+
+                for src in sources:
+                    embedding_score = src.get("embedding_score")
+                    if embedding_score is None:
+                        embedding_score = src.get("score")
+                    relevance_score = src.get("relevance_score")
+                    cross_encoder_score = src.get("cross_encoder_score")
+                    raw_status = src.get("relevance_status")
+                    if raw_status == "accepted":
+                        selected_label = "ACCEPTED → CROSS-ENCODER" if cross_encoder_score is not None else "ACCEPTED (Deterministic Gate)"
+                    elif raw_status == "rejected":
+                        selected_label = "REJECTED BY DETERMINISTIC GATE"
+                    else:
+                        selected_label = raw_status or "-"
+                    with st.container(border=True):
+                        cols = st.columns(6 if show_cross_encoder_column else 5)
+                        cols[0].markdown(f"**Kaynak**\n\n{src.get('rule_title') or '-'}")
+                        cols[1].markdown(f"**Madde**\n\n{src.get('article_number') or '-'}")
+                        cols[2].markdown(f"**Embedding Skoru**\n\n{embedding_score:.3f}" if embedding_score is not None else "**Embedding Skoru**\n\n-")
+                        cols[3].markdown(f"**Deterministic Relevance**\n\n{relevance_score:.3f}" if relevance_score is not None else "**Deterministic Relevance**\n\nyok (devre dışı)")
+                        if show_cross_encoder_column:
+                            if cross_encoder_score is not None:
+                                ce_cell = f"{cross_encoder_score:.3f}"
+                            elif cross_encoder_status == "unavailable":
+                                ce_cell = "Kullanılamadı"
+                            else:
+                                ce_cell = "-"
+                            cols[4].markdown(f"**Cross-Encoder Relevance**\n\n{ce_cell}")
+                            cols[5].markdown(f"**Seçildi**\n\n{selected_label}")
+                        else:
+                            cols[4].markdown(f"**Seçildi**\n\n{selected_label}")
+                        if src.get("source_url"):
+                            st.caption(f"Kaynak URL: {src['source_url']}")
+
+                        with st.expander("🔬 Skor Detayı (Breakdown)"):
+                            st.markdown(f"**Embedding Score**\n\n{embedding_score:.3f}" if embedding_score is not None else "**Embedding Score**\n\n-")
+                            st.markdown(f"**Deterministic Relevance**\n\n{relevance_score:.3f}" if relevance_score is not None else "**Deterministic Relevance**\n\nyok (devre dışı)")
+                            component_rows = [
+                                ("Semantic", src.get("semantic_score"), weights.get("semantic") if weights else None),
+                                ("Lexical", src.get("lexical_score"), weights.get("lexical") if weights else None),
+                                ("Keyword", src.get("keyword_score"), weights.get("keyword") if weights else None),
+                                ("Metadata", src.get("metadata_score"), weights.get("metadata") if weights else None),
+                                ("Phrase", src.get("phrase_score"), weights.get("phrase") if weights else None),
+                            ]
+                            if any(score is not None for _, score, _ in component_rows):
+                                st.markdown("**Breakdown**")
+                                for name, score, weight in component_rows:
+                                    if score is None or weight is None:
+                                        st.markdown(f"- {name}: yok (hesaplanmadı)")
+                                    else:
+                                        st.markdown(f"- {name}: {score:.3f} × {weight} = {score * weight:.3f}")
+                            else:
+                                st.caption("Bu kaynak için component skorları taşınmadı (relevance skorlama devre dışıydı).")
+                            if threshold is not None:
+                                st.markdown(f"**Threshold**\n\n{threshold:.3f}")
+                            st.markdown(f"**Status**\n\n{selected_label}")
+                            if show_cross_encoder_column:
+                                ce_detail = f"{cross_encoder_score:.3f}" if cross_encoder_score is not None else ("Kullanılamadı" if cross_encoder_status == "unavailable" else "-")
+                                st.markdown(f"**Cross-Encoder Relevance**\n\n{ce_detail}")
 
 
 class TimelineEscalationPanel:
@@ -217,6 +364,15 @@ class TimelineEscalationPanel:
                     st.success(result["message"])
                 except httpx.HTTPError as exc:
                     st.error(f"Alarm onaylanamadi: {exc}")
+        elif tier == "pending_review":
+            explanation = report.get("risk_explanation") or (
+                "Risk durumu belirsiz VEYA deterministik (RuleEngine) kanit yok."
+            )
+            st.warning(
+                f"🧑‍✈️ **Operator onayı bekleniyor** — hiçbir otomatik bildirim/alarm "
+                f"tetiklenmedi (skor: {risk_score if risk_score is not None else 'yok'}/100).\n\n{explanation}\n\n"
+                "Karar vermek icin asagidaki 'Manuel alarm tetikle' bolumunu kullanabilirsiniz."
+            )
         elif tier == "notify":
             st.warning(
                 f"Bildirim: risk **{risk_level.upper()}** (skor: {risk_score}/100). "

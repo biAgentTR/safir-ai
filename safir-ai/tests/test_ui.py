@@ -103,3 +103,113 @@ def test_dashboard_apptest_renders_report_without_exception() -> None:
     at.session_state["last_report"] = _sample_report()
     at.run()
     assert not at.exception
+
+
+# ---------------------------------------------------------------------------
+# 2026-08-24 (SON PRODUCTION RUNTIME AUDIT): Agent onerisi (llm_proposed_score)
+# ile resmi risk_score UI'da ASLA KARISTIRILMAMALI/BIRLESTIRILMEMELI - bu
+# testler GERCEK render edilmis widget agacini (kaynak string taramasi
+# DEGIL) inceler.
+# ---------------------------------------------------------------------------
+
+
+def _sample_report_with_diverging_agent_score() -> Dict[str, Any]:
+    """Agent'in taslak skoru (85) ile resmi deterministik risk_score'un (58) BILEREK FARKLI oldugu bir rapor."""
+    report = _sample_report()
+    report.update(
+        {
+            "risk_score": 58,
+            "risk_level": "yuksek",
+            "llm_proposed_score": 85,
+            "summary": "Ajan degerlendirmesi: sahada aktif bir tehlike gozlemlendi.",
+            "semantic_rag_sources": [
+                {
+                    "rule_title": "BYKHY",
+                    "content": "madde metni",
+                    "score": 0.869,
+                    "embedding_score": 0.869,
+                    "chunk_id": "bykhy__madde_87",
+                    "document_id": "bykhy",
+                    "article_number": "87",
+                    "source_url": "https://example.gov.tr/bykhy",
+                    "relevance_score": 0.42,
+                    "relevance_status": "accepted",
+                    "cross_encoder_score": 0.91,
+                    "final_rank": 1,
+                    "source_verified": True,
+                },
+            ],
+        }
+    )
+    return report
+
+
+def _collect_all_rendered_text(at) -> str:
+    """`AppTest` agacindaki tum yaygin metin-tasiyan widget turlerinin (metric/info/markdown/caption/subheader/header) icerigini TEK bir metinde birlestirir."""
+    parts: list = []
+    for collection_name in ("metric", "info", "warning", "error", "success", "markdown", "caption", "subheader", "header", "text"):
+        collection = getattr(at, collection_name, None)
+        if not collection:
+            continue
+        for element in collection:
+            label = getattr(element, "label", None)
+            if label:
+                parts.append(str(label))
+            value = getattr(element, "value", None)
+            if value is not None:
+                parts.append(str(value))
+    return "\n".join(parts)
+
+
+def test_ui_official_risk_metric_uses_canonical_risk_score_not_agent_proposal() -> None:
+    """Ust bilgi panelindeki 'Risk Skoru' metric'i, `llm_proposed_score` (85) DEGIL, `report.risk_score` (58) degerini gostermeli."""
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file("src/ui/dashboard.py", default_timeout=30)
+    at.run()
+    at.session_state["last_report"] = _sample_report_with_diverging_agent_score()
+    at.run()
+    assert not at.exception
+
+    risk_metrics = [m for m in at.metric if m.label == "Risk Skoru"]
+    assert len(risk_metrics) == 1
+    assert risk_metrics[0].value == "58/100"
+    assert "85" not in risk_metrics[0].value
+
+
+def test_ui_agent_proposal_is_labeled_separately_and_never_as_official_risk() -> None:
+    """Agent'in 85 taslak skoru, GORULUYORSA acikca 'Model Önerisi'/'llm_proposed_score' olarak etiketlenmeli - `report.risk_score` alaniyla AYNI widget'ta GORUNMEMELI."""
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file("src/ui/dashboard.py", default_timeout=30)
+    at.run()
+    at.session_state["last_report"] = _sample_report_with_diverging_agent_score()
+    at.run()
+    assert not at.exception
+
+    all_text = _collect_all_rendered_text(at)
+    assert "llm_proposed_score" in all_text or "Model Önerisi" in all_text
+    # "85" GORULEBILIR (Agent onerisi olarak) ama HICBIR "Risk Skoru" metric'i BUNU tasimamali.
+    risk_metrics = [m for m in at.metric if m.label == "Risk Skoru"]
+    assert all("85" not in m.value for m in risk_metrics)
+
+
+def test_ui_never_renders_old_rerank_score_terminology() -> None:
+    """Render edilmis panelde 'Rerank Skoru' / 'LLM Rerank' terminolojisi HICBIR YERDE gecmemeli - canonical alanlar (Embedding Skoru/Deterministic Relevance/Cross-Encoder Relevance/Seçildi) kullanilmali."""
+    pytest.importorskip("streamlit")
+    from streamlit.testing.v1 import AppTest
+
+    at = AppTest.from_file("src/ui/dashboard.py", default_timeout=30)
+    at.run()
+    at.session_state["last_report"] = _sample_report_with_diverging_agent_score()
+    at.run()
+    assert not at.exception
+
+    all_text = _collect_all_rendered_text(at)
+    assert "Rerank Skoru" not in all_text
+    assert "LLM Rerank" not in all_text
+    assert "Cross-Encoder Relevance" in all_text
+    assert "Embedding Skoru" in all_text
+    assert "Deterministic Relevance" in all_text

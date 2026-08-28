@@ -11,18 +11,30 @@ olarak saglanir; `/analyze` ise tek seferlik senkron kullanim icin korunur.
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime
 import json
 import logging
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
 import re
 import threading
 import time
+import urllib.parse
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
+from src.vlm.schemas import ChunkAnalysisResult, VLMAnalysisStatus
+from typing import Any, Literal, Callable, Deque, Dict, List, Literal, Optional, Tuple
+
+import cv2
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -33,26 +45,30 @@ from src.observability.trace_serializer import MAX_FRAMES_PER_JOB, PipelineTrace
 from src.agent.langgraph_agent import SafirAgent
 from src.agent.tools import RetrieverTool
 from src.assistant.ask_service import AskService, JobNotFound
-from src.decision.escalation import EscalationPolicy
+from src.assistant.suggestion_engine import build_dynamic_suggestions
+from src.decision.escalation import EscalationPolicy, FieldAlarmDispatcher
 from src.event_analysis.event_builder import EventBuilder
 from src.event_analysis.event_engine import EventEngine
 from src.event_analysis.event_history import EventHistory
+from src.event_analysis.risk_resolver import RiskProvenance, resolve_deterministic_risk_with_provenance
 from src.event_analysis.rule_engine import RuleEngine
 from src.event_analysis.schemas import DetectedEvent, EventEngineInput, RuleMatch, TemporalEvent
 from src.event_analysis.temporal_reasoner import DEFAULT_RELATION_WINDOW_SEC, TemporalReasoner
+from src.event_analysis.event_merger import EventMerger
 from src.memory.analysis_store import AnalysisStore
 from src.memory.context_builder import ContextBuilder
 from src.memory.conversation_store import ConversationStore
 from src.memory import document_extraction
-from src.memory.embedding_rag_service import EmbeddingRAGService
+from src.rag.embedding_rag_service import EmbeddingRAGService, MockEmbeddingRAGService
 from src.memory.event_store import EventStore
-from src.rag.report_synthesizer import DynamicReportSynthesizer, ReportData
-from src.sampler.adaptive_sampler import EventCluster, EvidenceFrame, sampler_from_config
-from src.sampler.context.representative_frame_extractor import RepresentativeFrameExtractor
-from src.schemas.report import EvidenceFrameOut, SafirReport, SamplerStats, TimelineEntry
+from src.sampler.adaptive_sampler import EvidenceFrame, sampler_from_config
+from src.security.prompt_injection_guard import build_prompt_injection_guard
+
+from src.schemas.report import EventSummary, EvidenceFrameOut, RagContext, SafirReport, SamplerStats, TimelineEntry
 from src.utils.config_loader import SafirConfig, load_config
-from src.vlm.base_vlm import VLMResponse
+from src.vlm.base_vlm import BaseVLM, VLMResponse
 from src.vlm.factory import get_llm_client, get_vlm_client
+from src.vlm.sudden_event_analyzer import analyze_sudden_events
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -72,6 +88,12 @@ OnStageCallback = Callable[[str, int, int], None]
 # `(asama_adi, payload_sozlugu)` alir; yalnizca gozlem/gorunurluk icindir
 # (orn. Jupyter demo), pipeline davranisini DEGISTIRMEZ. Varsayilan None -> sifir maliyet.
 TraceCallback = Callable[[str, Dict[str, object]], None]
+
+# `stage_vlm` icin ADIM-ADIM (video parcalanirken/gonderilirken) ilerleme
+# kancasi - bkz. `src/vlm/evren_vlm.py::VlmProgressCallback`. `run()` bunu
+# `TraceCallback`e (stage="vlm", status="running") baglayarak operatore
+# canli gorunurluk saglar; varsayilan None -> sifir maliyet.
+VlmProgressCallback = Callable[[Dict[str, object]], None]
 
 # `TemporalEvent.end_timestamp`i bu pipeline cagrisinin `latest_timestamp`ina
 # esitlerken kullanilan tolerans (kayan nokta karsilastirmasi icin).
@@ -104,35 +126,83 @@ def _prune_stale_events(
 
 
 def _select_current_call_events(
-    temporal_events: List[TemporalEvent], latest_timestamp: float
+    temporal_events: List[TemporalEvent],
+    latest_timestamp: float,
+    current_model_call_ids: set[str],
+    current_chunk_ids: set[str],
+    current_analysis_id: Optional[str],
+    current_evidence_ids: set[str],
+    allow_legacy_timestamp_fallback: bool = False,
 ) -> List[TemporalEvent]:
     """Bu pipeline cagrisinda uretilen/guncellenen TUM `TemporalEvent`leri secer.
 
-    Bir VLM ciktisi ayni anda birden fazla kategori (orn. `kkd_ihlali` +
-    `arac_yaya_yakinligi`) tetikleyebilir; bu durumda `TemporalReasoner`
-    birden fazla grup uretir ve bunlarin HEPSİ bu cagriya aittir (hepsinin
-    `end_timestamp`i `latest_timestamp`a esittir, cunku bu cagrinin
-    `DetectedEvent`leri her zaman en yeni zaman damgasini tasir). Guven
-    skoruna gore azalan sirali dondurulur; boylece cagiran taraf, ilk
-    elemani "birincil" olay olarak kullanabilir (orn. `SafirReport.event_id`).
+    BUG FIX (T021): eskiden BUTUN `TemporalEvent`lerin bu cagriya ait
+    olup olmadigi TEK BIR ORTAK `end_timestamp == latest_timestamp` esitligiyle
+    belirleniyordu - bu, VLM'in TEK bir cagride, FARKLI bitis zamanlarina
+    sahip BIRDEN FAZLA olay urettigi (gercek Gemini ciktisinda son derece
+    yaygin - orn. "00:06-00:22" ve "00:38-01:15") durumlarda YANLIS calisiyordu:
+    yalnizca EN GEC biten olay `latest_timestamp`a esit oluyor, digerleri
+    SESSIZCE ELENIYORDU (bkz. `SafirReport.events`in bos donmesi hatasi).
+
+    Duzeltme: bir `TemporalEvent`, ONCELIKLE bu cagrinin `detected_events`
+    (`stage_events` ciktisi) ile PAYLASTIGI en az bir `evidence_id` varsa
+    "bu cagriya ait" sayilir (kesin, evidence-tabanli baglanti - zaman
+    damgasi esitligine bagli DEGILDIR). `evidence_ids` olmayan
+    (structured VLM ciktisi degil, eski anahtar-kelime fallback yolundan
+    gelen) olaylar icin ESKI zaman damgasi-tolerans karsilastirmasina
+    GERI DUSULUR (bu yolun evidence_id'si zaten hep bostur).
 
     Args:
         temporal_events: `TemporalReasoner.reason(...)` ciktisi (tum buffer
             uzerinden hesaplanmis, bu cagriya ozel olmayan tam liste).
         latest_timestamp: Bu pipeline cagrisinin gozlem zaman damgasi.
+        detected_events: Bu cagrinin `EventEngine.detect(...)` ciktisi
+            (`stage_events`); evidence-tabanli eslesme icin kullanilir.
+            `None`/bos ise dogrudan zaman damgasi-tolerans karsilastirmasina
+            duser (geriye uyumluluk).
 
     Returns:
-        `end_timestamp`i `latest_timestamp`a (tolerans dahilinde) esit olan
-        `TemporalEvent`lerin, guvene gore azalan sirali listesi. Bos olabilir
-        (teorik olarak; `EventEngine` her zaman en az bir `DetectedEvent`
-        urettigi icin pratikte bos donmez).
+        Bu cagriya ait `TemporalEvent`lerin, guvene gore azalan sirali
+        listesi. Bos olabilir (teorik olarak; `EventEngine` her zaman en az
+        bir `DetectedEvent` urettigi icin pratikte bos donmez).
     """
-    current_call_events = [
-        te
-        for te in temporal_events
-        if abs(te.end_timestamp - latest_timestamp) <= _CURRENT_CALL_TIMESTAMP_TOLERANCE
-    ]
-    current_call_events.sort(key=lambda te: te.confidence, reverse=True)
+    def _belongs_to_current_call(te: TemporalEvent) -> bool:
+        # Guvenlik Kontrolu: Eger olay baska bir analysis ID'ye aitse KESINLIKLE reddet!
+        if te.source_analysis_ids:
+            if not current_analysis_id:
+                return False
+            if current_analysis_id not in te.source_analysis_ids:
+                return False
+
+        # 1. Model Call ID kesisimi (Kesin)
+        if current_model_call_ids and te.source_model_call_ids:
+            if set(te.source_model_call_ids) & current_model_call_ids:
+                return True
+                
+        # 2. Chunk ID kesisimi
+        if current_chunk_ids and te.source_chunk_ids:
+            if set(te.source_chunk_ids) & current_chunk_ids:
+                return True
+                
+        # 3. Evidence ID kesisimi (Eski kare modu veya fallback)
+        if current_evidence_ids and te.evidence_ids:
+            if set(te.evidence_ids) & current_evidence_ids:
+                return True
+                
+        # 4. Geriye uyumluluk (Yalnizca opt-in)
+        if allow_legacy_timestamp_fallback and not te.source_model_call_ids and not te.source_chunk_ids and not te.evidence_ids:
+            import logging
+            logging.getLogger(__name__).warning("Legacy timestamp fallback is being used!")
+            return abs(te.end_timestamp - latest_timestamp) <= _CURRENT_CALL_TIMESTAMP_TOLERANCE
+            
+        return False
+
+    current_call_events = [te for te in temporal_events if _belongs_to_current_call(te)]
+    
+    # Siralama sorumlulugu: Selector yalnizca uyelik secer, gizli siralamayi iptal ediyoruz
+    # Siralama veya kronolojik order'i baska yerde yapacagiz veya burada saf kronolojik dondurecegiz.
+    # Prompt: "Timeline kronolojik siralanmali. Selector icinde gizli confidence sort bulunmamali."
+    current_call_events.sort(key=lambda te: te.start_timestamp)
     return current_call_events
 
 
@@ -149,6 +219,144 @@ def _summarize_rule_matches(rule_matches: List[RuleMatch]) -> str:
     if not rule_matches:
         return ""
     return "\n".join(f"- [{match.rule_id}] ({match.severity}) {match.rule_description}" for match in rule_matches)
+
+
+# VLM'in urettigi SERBEST BICIMLI risk keyword'lerini (orn. "fire_detected"),
+# semantik RAG sorgusunu IYILESTIRMEK icin (yalnizca bu amacla - event
+# siniflandirmasini veya risk skorunu ETKILEMEZ, bkz. RAG gorev tanimi 8.
+# bolum) Turkce ifadelerle genisleten KUCUK, elle-derlenmis harita. Bilinen
+# bir keyword YOKSA, alt cizgiyi bosluga cevirerek generic bir genisletme
+# yapilir (uydurma anlam eklenmez).
+_KEYWORD_QUERY_EXPANSIONS: Dict[str, str] = {
+    "fire_detected": "yangın tespit edildi, yangın riski, açık alev",
+    "smoke_detected": "duman tespit edildi, duman ve yangın riski",
+    "unattended_fire": "gözetimsiz yangın, kontrolsüz yangın",
+    "unattended_fire_hazard": "gözetimsiz yangın tehlikesi",
+    "uncontrolled_open_flame": "kontrolsüz açık alev",
+    "indoor_fire_risk": "kapalı alanda yangın riski",
+    "person_without_helmet": "baret kullanılmaması, baş koruyucu KKD ihlali",
+    "person_without_safety_vest": "yansıtıcı yelek kullanılmaması, KKD ihlali",
+    "ppe_violation": "kişisel koruyucu donanım kullanılmaması",
+    "forklift_person_collision_risk": "forklift ve yaya çarpışma riski, araç-yaya yakınlığı",
+    "person_in_forklift_path": "yayanın forklift güzergahında bulunması",
+    "fallen_person": "yerde hareketsiz kişi, düşme sonrası kaza",
+    "unauthorized_presence_in_critical_area": "yetkisiz kişinin kritik alanda bulunması",
+}
+
+
+def _expand_keyword_for_query(keyword: str) -> str:
+    """Bir VLM risk keyword'unu (bilinen bir esleme varsa) Turkce ifadeye genisletir; yoksa alt cizgiyi bosluga cevirir."""
+    return _KEYWORD_QUERY_EXPANSIONS.get(keyword, keyword.replace("_", " "))
+
+
+def _aggregate_matched_keywords(temporal_events: List) -> List[str]:
+    """Bu cagriya ait `TemporalEvent`lerin `matched_keywords`lerini, ilk-gorulme sirali ve tekrarsiz olarak birlestirir."""
+    seen: List[str] = []
+    for event in temporal_events:
+        for keyword in getattr(event, "matched_keywords", None) or []:
+            if keyword not in seen:
+                seen.append(keyword)
+    return seen
+
+
+def _build_semantic_query(matched_keywords: List[str], vlm_description: str, max_description_chars: int = 200) -> Optional[str]:
+    """VLM'in dinamik risk keyword'lerinden (+ kisa VLM aciklamasindan) semantik RAG sorgusu kurar.
+
+    Args:
+        matched_keywords: `_aggregate_matched_keywords(...)` ciktisi.
+        vlm_description: VLM'in serbest metin gozlemi (baglam icin kisaltilarak eklenir).
+        max_description_chars: `vlm_description`den sorguya eklenecek azami karakter sayisi.
+
+    Returns:
+        Bos degilse sorgu metni; `matched_keywords` bossa `None` (bu durumda
+        semantik RAG cagrisi HIC YAPILMAZ - keyword yoksa sorgulanacak bir
+        risk sinyali de yoktur, bos/rastgele bir sorgu UYDURULMAZ).
+    """
+    if not matched_keywords:
+        return None
+    expanded = [_expand_keyword_for_query(k) for k in matched_keywords]
+    short_description = vlm_description.strip()[:max_description_chars]
+    parts = expanded + ([short_description] if short_description else [])
+    return ". ".join(parts)
+
+
+_CITATION_PATTERNS = [
+    # "<Isim> Yonetmeligi/Kanunu/Tuzugu Madde <no>" (orn. "Is Ekipmanlari Yonetmeligi Madde 12").
+    re.compile(
+        r"([A-ZÇĞİÖŞÜ][\wÇĞİÖŞÜçğıöşü\s]{2,60}?(?:Yönetmeliği|Kanunu|Tüzüğü))\s+Madde\s+([IVXLCM\d]+(?:\.\d+)*)"
+    ),
+    # "<Isim> Talimati <KOD>" (orn. "Yangin Guvenligi Talimati YG-03").
+    re.compile(r"([A-ZÇĞİÖŞÜ][\wÇĞİÖŞÜçğıöşü\s]{2,50}?Talimat[ıi])\s+([A-ZÇĞİÖŞÜ]{1,6}-\d+)"),
+]
+"""Ajanin SERBEST METIN ciktisinda (summary/actions) gecebilecek, mevzuat-atfi
+GIBI GORUNEN kaliplari yakalayan, KASITLI DAR regex'ler (bkz.
+`_extract_potential_citations`/`_unverified_citations`, gorev tanimi 10. bolum).
+Bu, TAM bir NLP atif-cikarma sistemi DEGILDIR - yalnizca gorev tanimindaki somut
+ornekle (orn. 'Yangin Guvenligi Talimati YG-03') AYNI kaliptaki, kolayca
+UYDURULABILECEK referanslari YAKALAMAK icin yeterince spesifiktir; eslesmeyen
+serbest metin SESSIZCE gecilir (yanlis-pozitif UYDURULMAZ)."""
+
+
+def _extract_potential_citations(text: str) -> List[Tuple[str, str, str]]:
+    """Serbest metinden mevzuat-atfi GIBI GORUNEN kaliplari cikarir.
+
+    Returns:
+        `(tam_eslesme_metni, dokuman_adi, madde_veya_kod)` uclulerinin listesi.
+    """
+    matches: List[Tuple[str, str, str]] = []
+    for pattern in _CITATION_PATTERNS:
+        for m in pattern.finditer(text):
+            matches.append((m.group(0), m.group(1).strip(), m.group(2).strip()))
+    return matches
+
+
+def _unverified_citations(text: str, semantic_rag_sources: List) -> List[str]:
+    """Ajanin serbest metninde gecen mevzuat-benzeri atiflardan, GERCEKTEN RETRIEVED EVIDENCE
+
+    ile eslesmeyenleri dondurur (gorev tanimi 10. bolum: "corpus lookup -> bulunamadi ->
+    source_verified=false"). Eslesme, dokuman adinin (kucuk harfe cevrilmis, bosluklar
+    sadelestirilmis) evidence'in `rule_title`iyle KISMEN ortusmesi + (varsa) madde/kod
+    numarasinin BIREBIR ayni olmasi uzerinden yapilir - deterministik, LLM'e SORULMAZ.
+
+    Args:
+        text: Ajanin serbest metni (orn. `decision.summary` + tum `decision.actions`).
+        semantic_rag_sources: Bu cagrida GERCEKTEN retrieved olan `RagContext` listesi
+            (bkz. `build_report`) - yalnizca BUNLARA gore dogrulama yapilir (corpus'un
+            TAMAMINA degil, bu sorgunun GERCEKTEN getirdigi kanitlara gore).
+
+    Returns:
+        Dogrulanamamis (evidence'ta karsiligi bulunamayan) atiflarin TAM metni
+        (orijinal, kirpilmamis) - tekrarsiz, ilk-gorulme sirali.
+    """
+    if not text:
+        return []
+
+    def _normalize(s: str) -> str:
+        return " ".join(s.lower().split())
+
+    evidence_titles = [_normalize(getattr(s, "rule_title", "") or "") for s in semantic_rag_sources]
+    evidence_articles = {
+        (_normalize(getattr(s, "rule_title", "") or ""), _normalize(getattr(s, "article_number", "") or ""))
+        for s in semantic_rag_sources
+    }
+
+    unverified: List[str] = []
+    seen: set = set()
+    for full_match, doc_name, article_or_code in _extract_potential_citations(text):
+        if full_match in seen:
+            continue
+        seen.add(full_match)
+        norm_doc = _normalize(doc_name)
+        norm_article = _normalize(article_or_code)
+        if not any(norm_doc in t or t in norm_doc for t in evidence_titles):
+            unverified.append(full_match)
+            continue
+        # Dokuman adi (kismen) eslesti - madde/kod numarasi da BIREBIR eslesiyor mu?
+        article_matches = any((norm_doc in t or t in norm_doc) and a == norm_article for (t, a) in evidence_articles)
+        if not article_matches:
+            unverified.append(full_match)
+
+    return unverified
 
 
 _WINDOWS_ABS_PATH_RE = re.compile(r"^[a-zA-Z]:[\\/]")
@@ -171,37 +379,39 @@ def _is_absolute_path(path: str) -> bool:
 
 
 def normalize_video_source(video_source: str) -> str:
-    """`video_source` degerini, canli yayin URI'lerini, yuklenen dosyalari ve mutlak yollari koruyarak normalize eder."""
-    stripped = video_source.strip()
-    lowered = stripped.lower()
+    """`video_source` degerini, canli yayin URI'lerini ve MUTLAK yollari koruyarak normalize eder.
+
+    Operator panelinden veya harici istemcilerden gelen deger su sekilde ele alinir:
+      - RTSP/HTTP(S) canli yayin adresleri: OLDUGU GIBI birakilir.
+      - MUTLAK yol (POSIX `/...`, Windows `C:\\...`/`C:/...`, UNC `\\\\sunucu\\pay`):
+        OLDUGU GIBI KORUNUR — kullanicinin isaret ettigi GERCEK dosya okunur.
+        (Onceden bu durumda da dosya adi ayiklanip `data/<ad>` altina
+        yonlendiriliyordu; bu, ayni dosya adina sahip FARKLI videolarin
+        sunucuda CAKISIP yanlislikla ayni/eski dosyanin okunmasina yol
+        aciyordu — bkz. kok neden analizi, Hata #1.)
+      - BAGIL yol veya yalnizca dosya adi: MEVCUT (degismemis) davranis
+        korunur — dosya adi ayiklanip `data/<dosya_adi>` seklinde yeniden
+        yazilir; boylece konteyner icindeki `./data` bind mount'una gore
+        calisma DEVAM eder.
+
+    Args:
+        video_source: `/analyze` istegindeki ham `video_source` degeri.
+
+    Returns:
+        Canli yayin URI'si veya mutlak yol ise degistirilmeden; bagil/dosya-adi
+        girdiyse `data/<dosya_adi>` seklinde normalize edilmis yol.
+    """
+    lowered = video_source.strip().lower()
     if lowered.startswith(("rtsp://", "http://", "https://")):
-        return stripped
+        return video_source
 
-    # 1. Dosya verildigi gibi (mutlak veya bagil `data/uploads/video.mp4`, `data/duman_video.mp4`) diskte varsa koru
-    if os.path.exists(stripped):
-        return stripped
-
-    # 2. Mutlak yol ise koru
+    stripped = video_source.strip()
     if _is_absolute_path(stripped):
         return stripped
 
-    # 3. Yalnizca dosya adi veya bagil yol verildiyse `data/` klasorunde ara
     normalized_slashes = stripped.replace("\\", "/")
     filename = os.path.basename(normalized_slashes)
-    fallback_path = os.path.join(_DATA_DIR, filename)
-    if os.path.exists(fallback_path):
-        return fallback_path
-
-    return stripped
-
-
-def is_live_source(video_source: str) -> bool:
-    """`video_source` canli bir yayin URI'si (RTSP/HTTP) ise `True` dondurur.
-
-    Temsili kare cikarici (seek tabanli) yalnizca kayitli (VOD) dosyalarda
-    calisir; canli yayinlarda geriye seek yapilamayacagi icin bu ayrim gerekir.
-    """
-    return video_source.strip().lower().startswith(("rtsp://", "http://", "https://"))
+    return os.path.join(_DATA_DIR, filename)
 
 
 class AnalyzeRequest(BaseModel):
@@ -209,6 +419,14 @@ class AnalyzeRequest(BaseModel):
 
     video_source: str
     user_prompt: str = "Sahnede riskli bir durum var mi degerlendir."
+    analysis_mode: Literal["vlm_direct", "low_budget"] = "vlm_direct"
+    """Operator panelindeki iki BAGIMSIZ analiz sistemi (bkz. `useAnalysisMode.ts`):
+    "vlm_direct" video kaynagini DOGRUDAN, TEK istekte VLM'e gonderir (`vlm.
+    active_model`, ör. EVREN "vlm"); "low_budget" Adaptive Frame Sampler'i
+    calistirip urettigi kareleri `vlm.frames_model`e (ör. EVREN "llm-large",
+    <=2 goruntu/istek) gonderir (bkz. `SafirPipeline.run`/`stage_vlm`).
+    Varsayilan "vlm_direct" - eski istemciler (bu alani hic gondermeyen)
+    davranisi TAMAMEN AYNI kalir."""
     sample_fps: Optional[int] = Field(
         default=None, ge=1, le=10, description="Operator panelinden gelen ornekleme FPS override'i (1-10)."
     )
@@ -341,6 +559,13 @@ class AskRequest(BaseModel):
 
     question: str = Field(min_length=1, description="Kullanicinin dogal dil sorusu.")
     job_id: Optional[str] = Field(default=None, description="Opsiyonel: baglam alinacak analiz kimligi.")
+    use_video: bool = Field(
+        default=False,
+        description=(
+            "True ve job_id verilmisse, soru ONCE dogrudan videoya sorulur (EVREN prefix-cache "
+            "avantaji); basarisiz olursa sessizce metin-tabanli akisa doner (bkz. AskService)."
+        ),
+    )
 
     @field_validator("question")
     @classmethod
@@ -366,6 +591,12 @@ class AskResponse(BaseModel):
     sources: List[AskSource] = Field(default_factory=list)
     job_id: Optional[str] = None
     context_used: List[str] = Field(default_factory=list)
+
+
+class AskSuggestionsResponse(BaseModel):
+    """`GET /ask/suggestions` yaniti: bu rapora OZGU takip sorusu onerileri (bkz. suggestion_engine.py)."""
+
+    suggestions: List[str] = Field(default_factory=list)
 
 
 # --- SAFIR Asistan: sohbet gecmisi (Conversation) - yalnizca UI/gecmis icindir,
@@ -452,6 +683,239 @@ class ConversationContextCreateRequest(BaseModel):
     label: Optional[str] = Field(default=None, max_length=_MAX_CONTEXT_LABEL_LEN)
 
 
+def _naive_concat_batches(batch_responses: List[VLMResponse]) -> VLMResponse:
+    """Reconciliation VLM cagrisi BASARISIZ olursa kullanilan, kayipsiz-ama-DEGRADE fallback.
+
+    Batch-yerel olaylari, `event_id` cakismasini onlemek icin `b{batch_index}_`
+    on-ekiyle birlestirir (GERCEK global birlestirme yapmaz - ayni gercek olay
+    iki batch'te ayri kayit olarak kalabilir); yine de HICBIR evidence_id
+    kaybolmaz.
+
+    Args:
+        batch_responses: `BaseVLM.analyze_evidence_batched` ciktisi (en az bir
+            basarili batch icermelidir).
+
+    Returns:
+        On-ekli `event_id`lerle birlestirilmis, tek bir `VLMResponse`.
+    """
+    succeeded = [r for r in batch_responses if r.status != "failed"]
+    structured_events: List[Dict[str, Any]] = []
+    description_parts: List[str] = []
+    for i, r in enumerate(succeeded):
+        for ev in r.structured_events:
+            stamped = dict(ev)
+            stamped["event_id"] = f"b{i}_{stamped.get('event_id', 'e')}"
+            structured_events.append(stamped)
+        description_parts.append(r.description)
+    return VLMResponse(
+        description="\n\n".join(description_parts),
+        model_name=succeeded[0].model_name if succeeded else batch_responses[0].model_name,
+        frame_count=sum(r.frame_count for r in batch_responses),
+        latency_ms=sum(r.latency_ms for r in batch_responses),
+        structured_events=structured_events,
+    )
+
+
+def _reconcile_unassigned_evidence(
+    structured_events: List[Dict[str, Any]],
+    evidence_frames: List[EvidenceFrame],
+    batch_responses: List[VLMResponse],
+) -> List[Dict[str, Any]]:
+    """VLM'in evidence_ids atamalarini DOGRULAR ve atanamayan evidence'i acikca korur.
+
+    Iki kurali uygular (bkz. gorev tanimi):
+    1. "Uydurma veya kayip evidence ID kabul etme": her olayin `evidence_ids`si,
+       gercekten gonderilen `EvidenceFrame.evidence_id` kumesiyle KESISTIRILIR;
+       gecersiz/uydurma kimlikler sessizce (yalnizca log ile) ATILIR. Bir
+       evidence_id BIRDEN FAZLA olaya atanmissa yalnizca ILK atama korunur
+       (cakisma onlenir).
+    2. "Atanamayan evidence'lari unassigned/uncertain olarak koru": hicbir
+       olaya atanmamis (VLM tarafindan atlanmis VEYA batch'i tamamen basarisiz
+       olmus) evidence, mevcut bir `unassigned`/`siniflandirilamadi` kaydiyla
+       BIRLESTIRILIR (yoksa yeni bir tane olusturulur). Evidence hicbir zaman
+       SESSIZCE kaybolmaz.
+
+    Args:
+        structured_events: VLM'in (reconciliation sonrasi veya tek-batch)
+            urettigi ham olay listesi.
+        evidence_frames: Bu calisma icin gonderilen TUM evidence kareleri
+            (gecerli evidence_id kumesinin ve zaman damgalarinin kaynagi).
+        batch_responses: `analyze_evidence_batched` ciktisi (hangi
+            evidence_id'lerin hangi batch'e ait oldugunu ve basarisiz
+            batch'leri belirlemek icin).
+
+    Returns:
+        `evidence_ids` alanlari dogrulanmis/temizlenmis, gerekirse bir
+        `unassigned` kaydi eklenmis/genisletilmis olay listesi.
+    """
+    valid_ids_in_order = [ef.evidence_id for ef in evidence_frames]
+    valid_ids = set(valid_ids_in_order)
+    by_id = {ef.evidence_id: ef for ef in evidence_frames}
+
+    assigned: set = set()
+    cleaned_events: List[Dict[str, Any]] = []
+    for ev in structured_events:
+        cleaned = dict(ev)
+        kept_ids: List[str] = []
+        for raw_id in cleaned.get("evidence_ids") or []:
+            eid = str(raw_id)
+            if eid not in valid_ids:
+                logger.warning("VLM gecersiz/uydurma evidence_id uretti, atlaniyor: %r", eid)
+                continue
+            if eid in assigned:
+                logger.warning("VLM evidence_id'yi birden fazla olaya atamis, ilk atama korunuyor: %r", eid)
+                continue
+            kept_ids.append(eid)
+            assigned.add(eid)
+        cleaned["evidence_ids"] = kept_ids
+        cleaned_events.append(cleaned)
+
+    leftover_ids = [eid for eid in valid_ids_in_order if eid not in assigned]
+    if leftover_ids:
+        leftover_frames = [by_id[eid] for eid in leftover_ids]
+        existing_unassigned = next(
+            (
+                e
+                for e in cleaned_events
+                if e.get("event_id") == "unassigned" or e.get("canonical_event_type") == "siniflandirilamadi"
+            ),
+            None,
+        )
+        if existing_unassigned is not None:
+            existing_unassigned["evidence_ids"] = sorted(set(existing_unassigned.get("evidence_ids", [])) | set(leftover_ids))
+        else:
+            cleaned_events.append(
+                {
+                    "event_id": "unassigned",
+                    # `event_name`/`canonical_event_type` - GERCEK VLM olaylariyla
+                    # AYNI sema (bkz. prompts/vlm_prompts.py EVENTS_JSON semasi);
+                    # eski `"type"` alani hicbir zaman var olmayan bir anahtardi
+                    # (frontend'in VlmEventList.vue "Tur" kolonu hep bunu okuyup
+                    # hep bos donuyordu - bkz. desktop/app/types/api.ts VlmEvent).
+                    "event_name": "siniflandirilamadi",
+                    "canonical_event_type": "siniflandirilamadi",
+                    "start_time": min(f.timestamp_sec for f in leftover_frames),
+                    "end_time": max(f.timestamp_sec for f in leftover_frames),
+                    "evidence_ids": leftover_ids,
+                    "description": "Bu evidence kareleri herhangi bir olaya atanamadi (belirsiz veya analiz edilemedi).",
+                    "risk_score": None,
+                    "confidence": 0.0,
+                }
+            )
+        logger.info(
+            "Atanamayan %d evidence karesi 'unassigned/siniflandirilamadi' olarak korundu: %s",
+            len(leftover_ids),
+            leftover_ids,
+        )
+
+    return cleaned_events
+
+
+def _select_report_evidence_frames(
+    vlm_response: VLMResponse, evidence_frames: List[EvidenceFrame]
+) -> List[EvidenceFrameOut]:
+    """Rapor/UI icin, VLM'in kumeledigi HER olay icin bir temsili evidence karesi secer.
+
+    Her olay icin, o olaya atanmis `evidence_ids` arasindan en yuksek
+    `change_score`e sahip kare secilir (video YENIDEN ACILMAZ, kare yeniden
+    KODLANMAZ - zaten bellekteki `EvidenceFrame.base64_image` kullanilir).
+    `evidence_ids` bos/gecersiz olan (ör. hicbir evidence karesi eslesmeyen)
+    olaylar atlanir.
+
+    Args:
+        vlm_response: `stage_vlm` ciktisi (`structured_events` dogrulanmis/
+            temizlenmis olmalidir - bkz. `_reconcile_unassigned_evidence`).
+        evidence_frames: Bu calisma icin gonderilen TUM evidence kareleri.
+
+    Returns:
+        Her VLM olayi icin bir `EvidenceFrameOut` (olay sirasinda).
+    """
+    evidence_by_id = {ef.evidence_id: ef for ef in evidence_frames}
+    report_frames: List[EvidenceFrameOut] = []
+    for ev in vlm_response.structured_events:
+        candidates = [evidence_by_id[eid] for eid in (ev.get("evidence_ids") or []) if eid in evidence_by_id]
+        if not candidates:
+            continue
+        best = max(candidates, key=lambda f: f.change_score)
+        report_frames.append(
+            EvidenceFrameOut(
+                event_id=str(ev.get("event_id", "")),
+                timestamp_sec=best.timestamp_sec,
+                timestamp_str=best.timestamp_str,
+                change_score=best.change_score,
+                base64_image=best.base64_image,
+                saved_path=best.saved_path,
+                is_fallback=best.is_fallback,
+            )
+        )
+    return report_frames
+
+
+def _extract_vlm_direct_evidence_frames(
+    video_source: str, structured_events: List[Dict[str, object]], jpeg_quality: int = 85
+) -> List[EvidenceFrameOut]:
+    """VLM Direct icin kanit karelerini, Adaptive Frame Sampler'DAN BAGIMSIZ,
+    dogrudan kaynak videodan uretir.
+
+    VLM Direct modunda (`analysis_mode="vlm_direct"`) sampler hic calismaz
+    (bkz. `SafirPipeline.run` yorumu) - dolayisiyla `_select_report_evidence_
+    frames` her zaman BOS doner (eslesecek `EvidenceFrame` yok). EVREN'in
+    donusu (`structured_events`) da hicbir kare goruntusu icermez, yalnizca
+    zaman damgasi/aciklama tasir. Bu yuzden HER VLM olayi icin, `cv2.
+    VideoCapture` ile videoda dogrudan o saniyeye ATLANARAK tek bir kare
+    gercekten yakalanir (ffmpeg KULLANILMAZ - kare cikarimi tamamen OpenCV
+    ile, ek bir surec/CLI cagrisi olmadan yapilir) ve JPEG/base64'e kodlanir
+    - boylece rapor/PDF/HTML/JSON kanit karesi olarak GERCEK, o olaya ait bir
+    goruntu icerir (onceki, dusuk-butceli sisteme ait sampler kareleri
+    DEGIL).
+
+    Hangi saniye? Olayin ORTALAMASI/orta noktasi DEGIL - `start_time`in
+    KENDISI: VLM prompt'u (`src/prompts/vlm_prompts.py`, "Olay zaman
+    damgasini HER ZAMAN olayin ILK BASLADIGI saniyeye (start_time) gore ver")
+    modele HER olay icin zaman damgasini olayin GERCEKTEN basladigi ani
+    bildirmesini talimatlandirir; bu yuzden kanit karesi de modelin
+    raporladigi O TAM saniyeden alinir - rapordaki metnin ("Başlangıç: MM:SS")
+    anlattigi anla, gosterilen goruntu BIREBIR eslesir.
+
+    Canli yayin (RTSP) kaynaklarinda veya kare yakalanamayan durumlarda o
+    olay sessizce atlanir (rapor cokusu yerine eksik kanit karesi tercih
+    edilir).
+    """
+    if not structured_events:
+        return []
+    cap = cv2.VideoCapture(video_source)
+    if not cap.isOpened():
+        logger.warning("VLM Direct kanit karesi uretilemedi: video acilamadi (%s)", video_source)
+        return []
+    try:
+        report_frames: List[EvidenceFrameOut] = []
+        for ev in structured_events:
+            timestamp_sec = float(ev.get("start_time") or 0.0)
+            cap.set(cv2.CAP_PROP_POS_MSEC, timestamp_sec * 1000.0)
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            ok, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality])
+            if not ok:
+                continue
+            base64_str = base64.b64encode(buffer.tobytes()).decode("utf-8")
+            minutes, seconds = divmod(int(timestamp_sec), 60)
+            report_frames.append(
+                EvidenceFrameOut(
+                    event_id=str(ev.get("event_id", "")),
+                    timestamp_sec=round(timestamp_sec, 2),
+                    timestamp_str=f"{minutes:02d}:{seconds:02d}",
+                    change_score=0.0,
+                    base64_image=f"data:image/jpeg;base64,{base64_str}",
+                    saved_path=None,
+                    is_fallback=False,
+                )
+            )
+        return report_frames
+    finally:
+        cap.release()
+
+
 class SafirPipeline:
     """Tum SAFIR katmanlarini tek bir uctan uca akista birlestiren orkestrator."""
 
@@ -463,12 +927,70 @@ class SafirPipeline:
         """
         self._config = config
         self._default_sample_fps = config.sampler.sample_fps
-        self._vlm = get_vlm_client(config.vlm, use_mock=config.app.use_mock_vlm)
+        # 2026-08-26 (IKI BAGIMSIZ ANALIZ MODU): operator panelindeki "VLM
+        # Direct"/"Dusuk Butceli" secimi ONCEDEN sadece GORSELDI - her iki UI
+        # modu da AYNI (tek) `self._vlm`i kullaniyordu (`config.vlm.
+        # active_model`). Artik `AnalyzeRequest.analysis_mode` ile GERCEKTEN
+        # secilen iki AYRI, BAGIMSIZ `BaseVLM` orneği kuruluyor - `run()`/
+        # `stage_vlm` bu ikisinden HANGISININ kullanilacagina `analysis_mode`a
+        # gore karar verir (bkz. asagidaki metotlar).
+        #
+        # Mock modda (`use_mock_vlm=true`) BILEREK TEK bir `MockVLMClient`
+        # orneği hem `_vlm_video` hem `_vlm_frames` icin PAYLASILIR (iki AYRI
+        # `MockVLMClient()` cagrisi YAPILMAZ): mock istemcinin `analyze_video`/
+        # `analyze_evidence`/`requires_frame_sampling`i test tarafindan
+        # monkeypatch'lenebilir kalmasi icin - `self._vlm` (asagida) geriye-
+        # donuk uyumluluk icin bu paylasilan orneğe (gercek moddaysa
+        # `_vlm_video`ya) isaret eder (bkz. `tests/test_pipeline_integration.py`
+        # gibi `pipeline._vlm`i DOGRUDAN patch'leyen testler).
+        if config.app.use_mock_vlm:
+            shared_mock_vlm = get_vlm_client(config.vlm, use_mock=True)
+            self._vlm_video = shared_mock_vlm
+            self._vlm_frames = shared_mock_vlm
+        else:
+            self._vlm_video = get_vlm_client(config.vlm, use_mock=False)
+            self._vlm_frames = get_vlm_client(
+                config.vlm.model_copy(update={"active_model": config.vlm.frames_model}),
+                use_mock=False,
+            )
+        self._vlm = self._vlm_video
         self._event_store = EventStore(config.memory.sqlite)
-        self._rag_service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss)
+        # 2026-08-26 (RERANK KALDIRILDI): EVREN dokumantasyonu (SS 10), saf
+        # yogun getirmenin (R@1=0.95) HER reranking varyantindan (hibrit,
+        # dedike rerank ucu, LLM-as-judge) daha iyi performans gosterdigini,
+        # yeniden siralamanin R@1'i 0.55'e kadar DUSURDUGUNU acikca
+        # gostermektedir ve "yeniden siralama adiminin eklenmemesini"
+        # ONERMEKTEDIR. Bu yuzden `EvrenReranker` (LLM-as-judge, bkz.
+        # `src/rag/reranker.py`) ARTIK cagrilmiyor - `cross_encoder=None`
+        # ile `EmbeddingRAGService`, gate'ten GECMIS adaylari SADECE
+        # deterministic relevance skoruna (embedding + lexical/keyword/
+        # metadata/phrase agirlikli toplam) gore sunar; ekstra bir LLM
+        # cagrisi/ag bagimliligi/gecikme eklenmez.
+        # Bug duzeltmesi (2026-08-27): `EmbeddingRAGService.__init__` her zaman
+        # GERCEK bir Qdrant istemcisi kurar - `use_mock_vlm`/`use_mock_llm`den
+        # BAGIMSIZDI, bu yuzden GELISTIRME/TEST yorumunun ("harici hicbir sey
+        # gerekmez", bkz. configs/config.yaml ~satir 283) aksine, yalnizca
+        # mock modda calistirmak bile `EVREN_QDRANT_KEY` olmadan pipeline
+        # KURULUSUNDA `ConfigurationError` ile patliyordu. Her iki mock
+        # bayragi da acikken (belgelenen TEK desteklenen "harici bagimlilik
+        # yok" kombinasyonu) sahte, ag-bagimsiz `MockEmbeddingRAGService`
+        # kullanilir (bkz. o sinifin dokustringi).
+        if config.app.use_mock_vlm and config.app.use_mock_llm:
+            self._rag_service = MockEmbeddingRAGService()
+        else:
+            self._rag_service = EmbeddingRAGService(
+                config.memory.embedding,
+                config.memory.qdrant,
+                config.memory.reranker,
+            )
         self._rag_service.seed_default_regulations()
-        self._report_synthesizer = DynamicReportSynthesizer(vector_store=self._rag_service)
-        self._context_builder = ContextBuilder(self._event_store, self._rag_service)
+        # Prompt Injection Guard (bkz. src/security/prompt_injection_guard.py):
+        # `guard.enabled=false` ise `self._guard=None` -> ContextBuilder davranisi
+        # TAMAMEN degismez. RuleEngine/EventEngine bu satirdan hicbir sekilde
+        # etkilenmez (guard yalnizca ContextBuilder'a verilir).
+        self._guard = build_prompt_injection_guard(config.guard) if config.guard.enabled else None
+        self._context_builder = ContextBuilder(self._event_store, guard=self._guard)
+        self._last_stage_rag_telemetry = None  # bkz. stage_context(): yalnizca GERCEK bir query() sonrasi dolar
         self._agent = SafirAgent(
             llm_config=config.llm,
             agent_config=config.agent,
@@ -479,18 +1001,40 @@ class SafirPipeline:
 
         # 07 - Olay Analizi Katmani (T008-T012): Context Builder ile LangGraph
         # Ajani arasindaki ara katman. `RetrieverTool`, `rag_service` None
-        # olsa bile guvenlidir (mock veriye duser); `RuleEngine`in kendi
-        # fallback'i de retriever hata verirse kisa mevzuat etiketine doner.
-        self._event_engine = EventEngine()
+        # olsa bile guvenlidir (mock veriye duser).
+        # 2026-08-25 (kucuk-LLM fallback siniflandirici, bkz. event_engine.py
+        # modul dokustringi): EventEngine'in `classifier`i, `05 LangGraph
+        # Ajani`nin KENDI LLM istemcisinden AYRI, dedike bir `LLMClient`
+        # (ayni "llm-fast" EVREN uc noktasi) - yalnizca structured+keyword
+        # yolunun HER IKISI de basarisiz oldugu SON CARE durumda cagrilir.
+        # Mock LLM modunda (`use_mock_llm=True`) HIC enjekte edilmez -
+        # `MockLLMClient` siniflandirma JSON'u URETMEZ (RISK_SKORU formatinda
+        # sabit bir karar dondurur), bu yuzden fallback devre disi birakilir
+        # ve davranis eski (genel_gozlem'e duser) haliyle AYNI kalir.
+        event_classifier_llm = (
+            get_llm_client(config.llm, use_mock=False) if not config.app.use_mock_llm else None
+        )
+        self._event_engine = EventEngine(classifier=event_classifier_llm)
         self._temporal_reasoner = TemporalReasoner(relation_window_sec=DEFAULT_RELATION_WINDOW_SEC)
-        self._rule_engine = RuleEngine(retriever=RetrieverTool(self._rag_service))
+        self._event_merger = EventMerger(config.system.merger)
+        # 2026-08-25: RuleEngine ARTIK hicbir RAG/AG cagrisi yapmaz (retriever
+        # kaldirildi) - tamamen yerel, deterministik event_type -> kisa mevzuat
+        # etiketi/siddet eslemesidir. Mevzuatin GERCEK metni SADECE gercek
+        # semantik RAG sorgusundan (asagida `stage_context`) gelir (bkz.
+        # `src/event_analysis/rule_engine.py` modul dokustringi).
+        self._rule_engine = RuleEngine()
         self._event_builder = EventBuilder()
         self._event_history = EventHistory(self._event_store)
 
         # 06 - Otomatik Eskalasyon (Human-on-the-Loop): risk skoruna gore aksiyon
         # kademesini KENDISI belirler ve yuksek/kritik durumda saha alarmini
-        # operator onayi beklemeden OTOMATIK tetikler.
-        self._escalation = EscalationPolicy(config.escalation)
+        # operator onayi beklemeden OTOMATIK tetikler. `FieldAlarmDispatcher`e
+        # zaten mevcut olan `self._event_store` (SQLite) verilir - alarmlar
+        # artik surec yeniden baslasa bile kaybolmaz (audit P0 duzeltmesi,
+        # bkz. `FieldAlarmDispatcher`/`EventStore.record_alert` docstring'i).
+        self._escalation = EscalationPolicy(
+            config.escalation, sink=FieldAlarmDispatcher(store=self._event_store)
+        )
 
         # Pipeline cagrilari arasinda SIFIRLANMAYAN, zaman bazli budanan
         # buffer (bkz. `_prune_stale_events`). `relation_window_sec`in 3
@@ -511,6 +1055,8 @@ class SafirPipeline:
         sample_fps_override: Optional[int] = None,
         min_change_threshold_override: Optional[float] = None,
         trace: Optional[TraceCallback] = None,
+        analysis_mode: Literal["vlm_direct", "low_budget"] = "vlm_direct",
+        context: Optional[AnalysisContext] = None,
     ) -> SafirReport:
         """Video kaynagindan nihai `SafirReport`'a kadar tum pipeline'i calistirir.
 
@@ -528,6 +1074,11 @@ class SafirPipeline:
                 ornekleme FPS degeri; verilmezse config degeri kullanilir.
             min_change_threshold_override: Operator panelindeki slider'dan
                 gelen hassasiyet esigi; verilmezse config degeri kullanilir.
+            analysis_mode: `"vlm_direct"` (varsayilan) veya `"low_budget"`
+                (bkz. `AnalyzeRequest.analysis_mode` dokustringi) - hangi
+                `BaseVLM` orneğinin (`self._vlm_video`/`self._vlm_frames`)
+                kullanilacagini VE sampler'in calistirilip calistirilmayacagini
+                belirler.
 
         Returns:
             Doga dil ozeti, risk skoru/seviyesi, kanit kareleri, ilgili
@@ -539,8 +1090,9 @@ class SafirPipeline:
         pipeline_started_at = time.perf_counter()
 
         # Bagimsiz video analizleri arasi olay-bellegi (temporal reasoning
-        # Stateless Pipeline / Oturum İzolasyonu: Her analiz için benzersiz session_id
-        session_id = f"sess_{uuid.uuid4().hex[:8]}"
+        # buffer) contamination'ini onler: video_source bir onceki cagridan
+        # FARKLIYSA buffer temizlenir. Ayni video_source ile ARDISIK
+        # cagrilarda (surekli kamera/stream izleme) buffer bilerek korunur.
         if video_source != self._last_video_source:
             self._event_history_buffer.clear()
         self._last_video_source = video_source
@@ -556,23 +1108,111 @@ class SafirPipeline:
         # Her asama, GERCEK production metoduna delege edilir; boylece hem run()
         # tek cagriyla calisir, hem de Jupyter demo bu metotlari tek tek cagirip
         # her asamanin gercek ciktisini gosterebilir (implementasyon kopyalanmaz).
-        sampler, evidence_frames, clusters = self.stage_sample(
-            video_source, sample_fps_override, min_change_threshold_override
-        )
-        _emit("sampler", {"evidence_frames": evidence_frames, "stats": sampler.last_run_stats})
-        _emit("clusters", {"clusters": clusters})
+        #
+        # Video-tabanli bir VLM (EVREN) aktifken Adaptive Frame Sampler
+        # TAMAMEN ATLANIR: ciktisi (evidence_frames) bu saglayicilarda ZATEN
+        # VLM girdisi olarak KULLANILMAZ (bkz. `BaseVLM.requires_frame_
+        # sampling` dokustringi, `EvrenVLM.analyze_video`in `del evidence_
+        # frames`i) - calistirmak, videonun HER native karesini CPU'da tarayan
+        # (uzunlukla orantili, ölçülen: 75.6s'lik bir video icin 92.8s) saf bir
+        # zaman kaybi olur, hicbir raporlanan degeri ETKILEMEZ. `analysis_mode`
+        # burada da belirleyicidir: "vlm_direct" -> `self._vlm_video`
+        # (`requires_frame_sampling=False`, sampler ATLANIR); "low_budget" ->
+        # `self._vlm_frames` (`requires_frame_sampling=True`, sampler CALISIR).
+        active_vlm = self._vlm_video if analysis_mode == "vlm_direct" else self._vlm_frames
+        if getattr(active_vlm, "requires_frame_sampling", True):
+            sampler, evidence_frames = self.stage_sample(
+                video_source, sample_fps_override, min_change_threshold_override
+            )
+            _emit("sampler", {"evidence_frames": evidence_frames, "stats": sampler.last_run_stats})
+        else:
+            sampler = None
+            evidence_frames = []
+            _emit("sampler", {"evidence_frames": evidence_frames, "stats": None, "skipped": True})
 
         if on_stage:
             on_stage(*STAGE_VLM)
 
-        vlm_response = self.stage_vlm(clusters, user_prompt)
-        _emit("vlm", {"vlm_response": vlm_response, "clusters": clusters, "user_prompt": user_prompt})
+        def _on_vlm_progress(progress: Dict[str, object]) -> None:
+            # Ayni "vlm" asama anahtarinda, status="running" ile BIRDEN FAZLA
+            # trace olayi yayinlanir (nihai "completed" olayindan ONCE) -
+            # `PipelineTraceCollector`/SSE/`JobState.trace_events` bunu zaten
+            # DESTEKLER (bir asama icin tek olay ZORUNLULUGU yoktur); operator
+            # video parcalara bolunup gonderilirken ADIM ADIM ilerlemeyi
+            # (ör. "Parca 1/2 gonderiliyor") canli gorur.
+            _emit("vlm", {"progress": progress})
+
+        vlm_response = self.stage_vlm(
+            video_source, evidence_frames, user_prompt, on_progress=_on_vlm_progress, analysis_mode=analysis_mode
+        )
+        _emit("vlm", {"vlm_response": vlm_response, "evidence_frames": evidence_frames, "user_prompt": user_prompt})
+
+        # Ani Olay Tespiti (bkz. src/vlm/sudden_event_detector.py +
+        # sudden_event_analyzer.py): VLM Direct'te ana VLM'e TUM video TEK
+        # seferde gonderilir - modelin kendisi kare-kare fark HESAPLAMAZ, bu
+        # yuzden cok kisa/ani gecen olaylar (bir kapinin aniden kapanmasi,
+        # bir kisinin sikismasi vb.) uzun anlatinin icinde KAYBOLABILIR. Bu
+        # katman TAMAMEN EK/BAGIMSIZDIR: OpenCV ile videoyu ONCEDEN tarayip
+        # ani kare-farki "sicramalari" bulur, her adayi (ONCESI/SONRASI kare
+        # cifti) `self._vlm_frames` (zaten var olan, dusuk-butceli mod icin
+        # kurulmus goruntu-kabul eden istemci) ile DOGRULATIR ve yalnizca
+        # GERCEKTEN onemli bulunanlari ana VLM'in `structured_events`
+        # listesine EKLER - asagi akis (EventEngine/RuleEngine/rapor) HICBIR
+        # DEGISIKLIGE UGRAMAZ, cunku eklenen sozlukler AYNI EVENTS_JSON
+        # semasindadir. Canli yayin (rtsp/http) kaynaklari HIC TARANMAZ
+        # (tam-video taramasi sonsuz surer); zaten VLM Direct'in aktif
+        # saglayicisi (EvrenVLM) bu kaynaklari `vlm_response` asamasindan
+        # ONCE reddeder, ama burada da AYRICA guvenlik icin kontrol edilir.
+        if analysis_mode == "vlm_direct" and not video_source.strip().lower().startswith(
+            ("rtsp://", "http://", "https://")
+        ):
+            try:
+                confirmed_sudden_events = analyze_sudden_events(video_source, self._vlm_frames)
+            except Exception:  # noqa: BLE001 - bu katman ASLA ana analizi COKERTMEMELI
+                logger.exception("Ani olay tespit/dogrulama katmani basarisiz; ana VLM sonucu etkilenmedi.")
+                confirmed_sudden_events = []
+            if confirmed_sudden_events:
+                vlm_response.structured_events = list(vlm_response.structured_events) + confirmed_sudden_events
+                logger.info(
+                    "Ani olay tespiti: %d dogrulanmis olay ana olay listesine eklendi.",
+                    len(confirmed_sudden_events),
+                )
+
+        # VLM Direct'te sampler hic calismadigi (evidence_frames=[]) icin
+        # kanit karesi burada, dogrudan kaynak videodan uretilir - bkz.
+        # `_extract_vlm_direct_evidence_frames` dokustringi.
+        vlm_direct_evidence_frames = (
+            _extract_vlm_direct_evidence_frames(video_source, vlm_response.structured_events)
+            # `evidence_frames` bossa sampler GERCEKTEN atlandi (bkz. yukarida) -
+            # yalnizca o zaman devreye girer; sampler CALISTIYSA (ör. mock/test
+            # ortaminda paylasilan istemcinin `requires_frame_sampling=True`
+            # kalmasi durumunda) sampler'in ZATEN GERCEK olan kareleri korunur.
+            if analysis_mode == "vlm_direct" and not evidence_frames
+            else None
+        )
+
+        # 2026-08-26 ("Analiz Hattı" surekliligi): VLM Direct modunda ("sampler"
+        # asamasi baslangicta "skipped" olarak isaretlenir, yukarida) video
+        # parcalama BILGISI (kac parcaya bolundu, CUDA/CPU, sureler) YALNIZCA
+        # `stage_vlm` TAMAMLANDIKTAN SONRA bilinir (bkz. `EvrenVLM.analyze_video`
+        # -> `VLMResponse.chunking_summary`). Operator VLM Direct kullaniciysa
+        # "Kare Örnekleme" karti tamamlanma SONRASI da (canli GORUNUMDE veya
+        # Gecmis'ten tekrar acildiginda) BOS/jenerik bir cumlede KALMASIN diye
+        # (bkz. mentor/operator eleştirisi: "analiz hattı frontend'de kopuk
+        # oluyor"), "sampler" asamasi BURADA ikinci (GUNCELLENMIS, KALICI)
+        # bir olayla YENIDEN yayinlanir - `PipelineTraceCollector` bunu normal
+        # sekilde `trace_events`e ekler, History'ye AYNI mekanizmayla kaydedilir.
+        if getattr(vlm_response, "chunking_summary", None):
+            _emit(
+                "sampler",
+                {"evidence_frames": [], "stats": None, "skipped": True, "chunking": vlm_response.chunking_summary},
+            )
 
         if on_stage:
             on_stage(*STAGE_AGENT)
 
         detected_events, temporal_events, rule_matches, latest_timestamp = self.stage_events(
-            vlm_response, clusters
+            vlm_response, evidence_frames
         )
         _emit(
             "events",
@@ -584,20 +1224,46 @@ class SafirPipeline:
         )
 
         prompt_block, context = self.stage_context(
-            vlm_response, user_prompt, latest_timestamp, rule_matches
+            vlm_response, user_prompt, latest_timestamp, rule_matches, temporal_events,
+            analysis_mode=analysis_mode, context=context
         )
-        _emit("agent_context", {"prompt_block": prompt_block})
+        # 2026-08-25: "agent_context" (eski "Baglam ve RAG") trace stage'i ARTIK
+        # EMIT EDILMIYOR - `stage_context()`in KENDISI (prompt_block/context uretimi,
+        # RuleEngine mevzuat eslesmesi, GERCEK semantik RAG sorgusu) HALA CALISIYOR
+        # (bkz. asagidaki `rag_security` emit'inin okudugu `self._last_stage_rag_telemetry`,
+        # yine bu cagridan gelir); yalnizca bu asamanin AYRI bir trace/UI paneli olarak
+        # GORUNMESI kaldirildi - operatore artik TEK, gercek skorlu/telemetrili RAG
+        # goruntusu ("rag_security"/"RAG ve Guvenlik Telemetrisi") gosteriliyor.
+        # `report.relevant_regulations` (Rapor sekmesindeki "Ilgili ISG Mevzuati")
+        # ETKILENMEDI - o alan hala RuleEngine'in deterministik eslesmesinden dolar.
+        _emit(
+            "rag_security",
+            {
+                "rag_telemetry": self._last_stage_rag_telemetry,
+                "guard_results": context.guard_results,
+                "relevance_weights": (
+                    self._rag_service.relevance_weights
+                    if self._last_stage_rag_telemetry is not None and hasattr(self._rag_service, "relevance_weights")
+                    else None
+                ),
+            },
+        )
 
-        decision = self.stage_decide(prompt_block, vlm_response)
+        decision = self.stage_decide(prompt_block)
         _emit("decision", {"decision": decision})
 
-        escalation = self.stage_escalate(decision, vlm_response)
+        decision, risk_provenance = self.stage_finalize_risk(
+            decision, rule_matches, temporal_events=temporal_events, semantic_rag_sources=context.semantically_related_chunks
+        )
+        _emit("decision_final", {"decision": decision, "risk_provenance": risk_provenance})
+
+        escalation = self.stage_escalate(decision, vlm_response, risk_provenance)
         _emit("escalation", {"escalation": escalation})
 
         report = self.build_report(
             video_source=video_source,
             sampler=sampler,
-            clusters=clusters,
+            evidence_frames=evidence_frames,
             vlm_response=vlm_response,
             context=context,
             decision=decision,
@@ -605,7 +1271,9 @@ class SafirPipeline:
             temporal_events=temporal_events,
             rule_matches=rule_matches,
             latest_timestamp=latest_timestamp,
-            session_id=session_id,
+            detected_events=detected_events,
+            risk_provenance=risk_provenance,
+            precomputed_evidence_frames=vlm_direct_evidence_frames,
         )
         logger.info(
             "SAFIR pipeline tamamlandi: video=%s risk=%s(%s) status=%s sure=%.3fs",
@@ -631,11 +1299,11 @@ class SafirPipeline:
         sample_fps_override: Optional[int] = None,
         min_change_threshold_override: Optional[float] = None,
     ):
-        """01-02: Adaptive Frame Sampler + Olay Kumeleme + Temsili Kare Cikarimi.
+        """01: Adaptive Frame Sampler (olay kumelemesi YAPMAZ - bkz. modul docstring'i).
 
         Returns:
-            `(sampler, evidence_frames, clusters)` — clusters, VLM'e gonderilecek
-            pre/peak/post `representative_frames` ile doldurulmustur (VOD dosyalari).
+            `(sampler, evidence_frames)` — `evidence_frames`, esik-gecmis TUM
+            evidence karelerinin video geneli, kronolojik, kayipsiz listesidir.
         """
         sampler = sampler_from_config(self._config.sampler, min_change_threshold_override)
         sample_fps = sample_fps_override or self._default_sample_fps
@@ -644,84 +1312,240 @@ class SafirPipeline:
         if not evidence_frames:
             raise RuntimeError(f"Video kaynagindan kanit karesi uretilemedi: {video_source}")
 
-        clusters: List[EventCluster] = sampler.cluster_events(evidence_frames)
-        if not clusters:
-            raise RuntimeError(f"Kanit karelerinden Olay Grubu uretilemedi: {video_source}")
-
-        # 02b - Temsili Kare Cikarimi (yalnizca eger cluster_events onceden uniform temsilci uretmediyse)
-        if not is_live_source(video_source):
-            rep_extractor = RepresentativeFrameExtractor(
-                pre_event_sec=self._config.sampler.pre_peak_offset_sec,
-                post_event_sec=self._config.sampler.post_peak_offset_sec,
-            )
-            for cluster in clusters:
-                if not cluster.representative_frames:
-                    try:
-                        cluster.representative_frames = rep_extractor.extract(
-                            video_source,
-                            cluster.peak_frame,
-                            start_time=cluster.start_time,
-                            end_time=cluster.end_time,
-                        )
-                    except (ValueError, RuntimeError) as exc:
-                        logger.warning(
-                            "Temsili kare cikarilamadi (Olay #%d), tek kareye dusuluyor: %s", cluster.event_id, exc
-                        )
-
         logger.info(
-            "VLM oncesi katman ozeti: %d Kanit Karesi -> %d Olay Grubu -> %d temsili kare VLM'e gonderiliyor",
+            "VLM oncesi katman ozeti: %d Kanit Karesi VLM'e gonderiliyor (kumeleme VLM katmaninda yapilacak)",
             len(evidence_frames),
-            len(clusters),
-            sum(len(c.representative_frames) for c in clusters) or len(clusters),
         )
-        return sampler, evidence_frames, clusters
+        return sampler, evidence_frames
 
-    def stage_vlm(self, clusters: List[EventCluster], user_prompt: str) -> VLMResponse:
-        """03: VLM (Gemini) gorsel anlama. Hata halinde is'i cokertmez, degraded `VLMResponse` doner."""
+    def stage_vlm(
+        self,
+        video_source: str,
+        evidence_frames: List[EvidenceFrame],
+        user_prompt: str,
+        on_progress: Optional[VlmProgressCallback] = None,
+        analysis_mode: Literal["vlm_direct", "low_budget"] = "vlm_direct",
+        context: Optional[AnalysisContext] = None,
+    ) -> VLMResponse:
+        """03: VLM gorsel anlama + OLAY KUMELEME.
+
+        `analysis_mode`e gore (bkz. `AnalyzeRequest.analysis_mode`
+        dokustringi, `run()`daki AYNI secim) iki AYRI, birbirinden BAGIMSIZ
+        `BaseVLM` orneği/yola dallanir - biri DEGISTIRILDIGINDE digeri
+        ETKILENMEZ:
+
+        - `"vlm_direct"` (varsayilan - `self._vlm_video`, EVREN icin
+          `EvrenVLM`/model="vlm"): video DOGRUDAN, TEK istekte gonderilir
+          (bkz. `_stage_vlm_video`). `evidence_frames` yalnizca
+          `evidence_ids`/zaman damgasi baglami icin `stage_events`e tasinir -
+          VLM girdisi olarak KULLANILMAZ.
+        - `"low_budget"` (`self._vlm_frames`, EVREN icin `EvrenFramesVLM`/
+          model="llm-large"): sampler'in urettigi evidence kareleri
+          `vlm.batch_size` buyuklugunde batch'lere bolunup HER batch AYRI bir
+          istekte gonderilir, birden fazla batch varsa TEK bir reconciliation
+          cagrisiyla global olay listesine birlestirilir (bkz.
+          `_stage_vlm_frames`).
+
+        Her iki yolda da VLM cagrisi basarisiz olursa eski (geriye-donuk
+        uyumlu) `[HATA]` degrade formatina dusulur; risk ASLA `0`/basarili
+        gibi yorumlanmaz.
+
+        Args:
+            on_progress: Opsiyonel adim-adim ilerleme kancasi (`EvrenVLM`nin
+                video-parcalama/gonderim ilerlemesini rapor eder - bkz.
+                `src/vlm/evren_vlm.py::VlmProgressCallback`); yalnizca video
+                yolunda (`_stage_vlm_video`) etkilidir.
+            analysis_mode: `"vlm_direct"` (varsayilan) veya `"low_budget"`.
+        """
+        vlm = self._vlm_video if analysis_mode == "vlm_direct" else self._vlm_frames
+        if getattr(vlm, "requires_frame_sampling", True):
+            return self._stage_vlm_frames(vlm, evidence_frames, user_prompt, context)
+        return self._stage_vlm_video(vlm, video_source, evidence_frames, user_prompt, on_progress, context)
+
+    def _stage_vlm_video(
+        self,
+        vlm: BaseVLM,
+        video_source: str,
+        evidence_frames: List[EvidenceFrame],
+        user_prompt: str,
+        on_progress: Optional[VlmProgressCallback] = None,
+        context: Optional[AnalysisContext] = None,
+    ) -> VLMResponse:
+        """VLM Direct yolu (DEGISMEDI): video kaynagi TEK bir istekte, dogrudan VLM'e gonderilir."""
         try:
-            return self._vlm.describe_events(clusters, prompt=user_prompt)
-        except Exception as exc:  # noqa: BLE001 - degraded rapora tasinir
-            logger.exception("VLM analizi basarisiz; degraded raporla devam ediliyor.")
+            analyze = getattr(vlm, "analyze_video")
+            try:
+                response = analyze(video_source, evidence_frames, prompt=user_prompt, on_progress=on_progress, context=context)
+            except TypeError:
+                # Geriye-donuk uyumluluk: `on_progress` desteklemeyen bir
+                # implementasyon (ör. testlerdeki eski sahte/mock VLM).
+                response = analyze(video_source, evidence_frames, prompt=user_prompt)
+        except Exception as exc:  # noqa: BLE001 - beklenmedik hata da degraded rapora tasinir
+            logger.exception("VLM video analizi basarisiz; degraded raporla devam ediliyor.")
             return VLMResponse(
                 description=f"[HATA] VLM analizi yapilamadi ({exc}). Manuel inceleme gerekli.",
-                model_name=getattr(self._vlm, "model_name", "unknown"),
-                frame_count=len(clusters),
+                model_name=getattr(vlm, "model_name", "unknown"),
+                frame_count=len(evidence_frames),
                 latency_ms=0.0,
                 structured_events=[],
+                status="failed",
+                chunk_analysis_result=ChunkAnalysisResult(
+                    analysis_status=VLMAnalysisStatus.MODEL_FAILED,
+                    parse_status="pipeline_exception",
+                    analysis_id=context.analysis_id if context else None
+                )
             )
 
-    def stage_events(self, vlm_response: VLMResponse, clusters: List[EventCluster]):
+        response.evidence_ids = [ef.evidence_id for ef in evidence_frames]
+        return response
+
+    def _stage_vlm_frames(
+        self,
+        vlm: BaseVLM,
+        evidence_frames: List[EvidenceFrame],
+        user_prompt: str,
+        context: Optional[AnalysisContext] = None,
+    ) -> VLMResponse:
+        """Dusuk butceli yol: evidence kareleri `vlm.batch_size` buyuklugunde batch'lere bolunup analiz edilir.
+
+        `BaseVLM.analyze_evidence_batched` ile kronolojik, kayipsiz batch'lere
+        bolunur (bir batch'in basarisiz olmasi digerlerini ETKILEMEZ, hicbir
+        evidence kaybolmaz); birden fazla batch uretildiyse
+        `BaseVLM.reconcile_events` ile TEK bir global olay listesine
+        birlestirilir (tek batch zaten globaldir, ekstra cagri YAPILMAZ).
+        `EvrenFramesVLM` icin `vlm.batch_size` EVREN dokumantasyonunun
+        (SS 7.5) istek basina azami 2 goruntu kuralina uymak zorundadir -
+        bu, `configs/config.yaml` sorumlulugundadir (`EvrenFramesVLM.
+        analyze_evidence` yanlis ayarlanirsa ACIKCA hata verir).
+        """
+        if not evidence_frames:
+            return VLMResponse(
+                description="[HATA] Kare-tabanli VLM analizi icin evidence karesi uretilemedi.",
+                model_name=getattr(vlm, "model_name", "unknown"),
+                frame_count=0,
+                latency_ms=0.0,
+                structured_events=[],
+                status="failed",
+            )
+        try:
+            batch_responses = vlm.analyze_evidence_batched(
+                evidence_frames, user_prompt, batch_size=self._config.vlm.batch_size
+            )
+            return vlm.reconcile_events(batch_responses, user_prompt)
+        except Exception as exc:  # noqa: BLE001 - beklenmedik hata da degraded rapora tasinir
+            logger.exception("Kare-tabanli VLM analizi basarisiz; degraded raporla devam ediliyor.")
+            return VLMResponse(
+                description=f"[HATA] VLM analizi yapilamadi ({exc}). Manuel inceleme gerekli.",
+                model_name=getattr(vlm, "model_name", "unknown"),
+                frame_count=len(evidence_frames),
+                latency_ms=0.0,
+                structured_events=[],
+                status="failed",
+                chunk_analysis_result=ChunkAnalysisResult(
+                    analysis_status=VLMAnalysisStatus.MODEL_FAILED,
+                    parse_status="pipeline_exception",
+                    analysis_id=context.analysis_id if context else None
+                )
+            )
+
+    def stage_events(self, vlm_response: VLMResponse, evidence_frames: List[EvidenceFrame]):
         """07: EventEngine -> buffer/budama -> TemporalReasoner -> RuleEngine.
 
         Returns:
             `(detected_events, temporal_events, rule_matches, latest_timestamp)`.
             `temporal_events`/`rule_matches`, cagrilar arasi kalici buffer uzerinden hesaplanir.
         """
-        latest_timestamp = clusters[-1].end_time
-        engine_input = EventEngineInput.from_vlm_response(vlm_response, timestamp=latest_timestamp)
+        onset_timestamp = evidence_frames[0].timestamp_sec if evidence_frames else 0.0
+        evidence_timestamps = {ef.evidence_id: ef.timestamp_sec for ef in evidence_frames}
+        engine_input = EventEngineInput.from_vlm_response(
+            vlm_response, timestamp=onset_timestamp, evidence_timestamps=evidence_timestamps
+        )
         detected_events = self._event_engine.detect(engine_input)
         self._event_history_buffer.extend(detected_events)
+
+        # VLM'in kendi ata gidigi olay zaman damgalari (start_time/end_time)
+        # artik video'nun SON evidence karesiyle AYNI olmak zorunda degildir
+        # (bir olay video ortasinda bitebilir). "Bu cagrinin" en yeni zaman
+        # damgasi, hem evidence karelerinin hem de tespit edilen olaylarin
+        # gercek uctan (end_timestamp/timestamp) MAKSIMUMUdur; boylece
+        # `_select_current_call_events`in tolerans karsilastirmasi dogru
+        # calisir (bkz. asagida) ve budama penceresi hicbir olayi erken kesmez.
+        latest_timestamp = evidence_frames[-1].timestamp_sec if evidence_frames else 0.0
+        if detected_events:
+            latest_timestamp = max(
+                latest_timestamp,
+                max(
+                    (d.end_timestamp if d.end_timestamp is not None else d.timestamp)
+                    for d in detected_events
+                ),
+            )
         _prune_stale_events(self._event_history_buffer, latest_timestamp, self._event_buffer_retention_sec)
 
         temporal_events = self._temporal_reasoner.reason(list(self._event_history_buffer))
+        temporal_events = self._event_merger.merge(temporal_events)
         rule_matches = self._rule_engine.evaluate(temporal_events)
         return detected_events, temporal_events, rule_matches, latest_timestamp
 
-    def stage_context(self, vlm_response: VLMResponse, user_prompt: str, latest_timestamp: float, rule_matches):
-        """04: ContextBuilder (SQLite + FAISS RAG) + kural ozeti -> ajan istem blogu.
+    def stage_context(
+        self,
+        vlm_response: VLMResponse,
+        user_prompt: str,
+        latest_timestamp: float,
+        rule_matches,
+        temporal_events: Optional[List] = None,
+        analysis_mode: Literal["vlm_direct", "low_budget"] = "vlm_direct",
+        context: Optional[AnalysisContext] = None,
+    ):
+        """04: ContextBuilder (SQLite + GERCEK semantik RAG) -> ajan istem blogu.
+
+        2026-08-25: mevzuat/kanit icerigi ARTIK TEK bir kaynaktan gelir -
+        `temporal_events`in `matched_keywords`inden (VLM'in dinamik risk
+        keyword'leri) kurulan GERCEK semantik RAG sorgusu (bkz.
+        `_build_semantic_query`), sonucu `ContextBuilder`in
+        `semantically_related_chunks` alanina gider. Onceden AYRICA
+        `RuleEngine.evaluate(...)`nin (`rule_matches`) deterministik kisa
+        etiketlerinden tureyen IKINCI, telemetrisiz bir "mevzuat" listesi de
+        Context'e ekleniyordu - bu, operatore GORUNURDE iki ayri RAG kanali
+        gibi gorunuyordu ve KALDIRILDI (bkz. `src/event_analysis/rule_engine.py`
+        modul dokustringi). `rule_matches` HALA `_summarize_rule_matches` ile
+        (asagida) ajana KISA, deterministik siniflandirma sinyali olarak
+        gecirilir - bu bir "mevzuat metni" DEGILDIR, yalnizca "hangi ISG
+        kategorisi/siddeti tetiklendi" bilgisidir.
+
+        Semantik sorgu basarisiz olursa (API anahtari eksik, reranker
+        "unavailable" vb.) HATA YUTULUR ve bos liste ile devam edilir - bu,
+        agent akisini KESMEZ (bkz. `EmbeddingRAGService.query` docstring'i:
+        bu zaten kendi icinde 'unavailable -> []' davranisina sahiptir;
+        buradaki try/except yalnizca beklenmedik istisnalara karsi ek bir
+        guvenlik agi).
 
         Returns:
             `(prompt_block, context)`.
         """
-        # Dinamik RAG Arama: VLM'in urettigi ozet ve olay aciklamalarini dinamik semantik sorgu olarak kullan
-        dynamic_rag_query = vlm_response.description
-        if getattr(vlm_response, "structured_events", None):
-            dynamic_rag_query += " " + " ".join(
-                str(e.get("event") or e.get("description") or "") for e in vlm_response.structured_events
-            )
+        matched_keywords = _aggregate_matched_keywords(temporal_events or [])
+        semantic_query = _build_semantic_query(matched_keywords, vlm_response.description)
+        semantically_related_chunks: List = []
+        # Bu cagrida GERCEKTEN bir RAG sorgusu yapildiysa (ONCEKI cagridan kalan
+        # `get_last_query_telemetry()` sonucunu "bu cagrinin telemetrisi" gibi
+        # SUNMAMAK icin) yalnizca query() GERCEKTEN calistiysa dolar - bkz. `run()`.
+        self._last_stage_rag_telemetry = None
+        if semantic_query:
+            try:
+                semantically_related_chunks = self._rag_service.query(semantic_query, keywords=matched_keywords)
+                # `getattr(..., None)` KASITLI: test/mock RAG servisleri (yalnizca
+                # `.query()` tasiyan duck-typed sahteler) icin de GUVENLI CALISIR -
+                # bkz. `context_builder.py::_format_semantic_chunks` ile ayni gerekce.
+                get_telemetry = getattr(self._rag_service, "get_last_query_telemetry", None)
+                self._last_stage_rag_telemetry = get_telemetry() if get_telemetry else None
+            except Exception:  # noqa: BLE001 - semantik RAG best-effort'tur, agent akisini KESMEZ
+                logger.exception("Semantik RAG sorgusu basarisiz; semantik kaynaklar bos birakiliyor.")
+                semantically_related_chunks = []
 
         context = self._context_builder.build(
-            vlm_description=dynamic_rag_query, user_prompt=user_prompt, timestamp=latest_timestamp
+            vlm_description=vlm_response.description,
+            user_prompt=user_prompt,
+            timestamp=latest_timestamp,
+            semantically_related_chunks=semantically_related_chunks,
         )
         prompt_block = context.to_prompt_block()
         event_analysis_summary = _summarize_rule_matches(rule_matches)
@@ -731,27 +1555,108 @@ class SafirPipeline:
             )
         return prompt_block, context
 
-    def stage_decide(self, prompt_block: str, vlm_response: Optional[VLMResponse] = None):
+    def stage_decide(self, prompt_block: str):
         """05: LangGraph ajani muhakeme -> `AgentDecision` (risk skoru, ozet, aksiyonlar)."""
-        decision = self._agent.run(prompt_block)
-        if vlm_response:
-            vlm_summary = getattr(vlm_response, "summary", "") or vlm_response.description
-            if vlm_summary and ("[MOCK]" in str(decision.summary) or not decision.summary or "KKD" in str(decision.summary)):
-                decision.summary = vlm_summary
-            if getattr(vlm_response, "actions", None) and len(vlm_response.actions) > 0:
-                decision.actions = vlm_response.actions
-                decision.recommended_action = vlm_response.actions[0]
-        return decision
+        return self._agent.run(prompt_block)
 
-    def stage_escalate(self, decision, vlm_response: VLMResponse):
-        """06: Otomatik eskalasyon -> `EscalationDecision` (yuksek/kritikte alarm otomatik tetiklenir)."""
+    def stage_finalize_risk(self, decision, rule_matches, temporal_events=None, semantic_rag_sources=None):
+        """07c: RISK ENGINE V2.1 - deterministik (RuleEngine+`risk_model.py`) skor ile Agent'in taslak skorunun ORTALAMASINI nihai risk olarak uygular.
+
+        Mimari karar (2026-08-27 guncellemesi - kullanici talebi): VLM ve
+        `05 LangGraph Agent`taki LLM tek basina risk KARARI vermez, ama
+        kendi taslak tahmini (`RiskProvenance.llm_proposed_score`) ARTIK
+        nihai skora KATKIDA BULUNUR - `RuleEngine.evaluate(...)` ciktisindan
+        (`rule_matches`) VE mevcut diger yapilandirilmis kanittan
+        (`temporal_events`, `semantic_rag_sources`) turetilen deterministik
+        skor ile ORTALAMASI alinir (bkz. `risk_resolver._pick_provenance`).
+        Deterministik deger, blended degerden BAGIMSIZ olarak
+        `RiskProvenance.deterministic_score`/`deterministic_level` alanlarinda
+        AYRICA saklanir - iki deger operatore/rapora AYRI AYRI gosterilir.
+        Kritik bir fiziksel tehlike icin guvenlik tabani (bkz.
+        `risk_model._CRITICAL_HAZARD_FLOOR`) devredeyse, ortalama bu tabanin
+        ALTINA DUSURULMEZ. Bu cagriya ait HICBIR kural eslesmediyse
+        (`rule_matches` bos veya taninmayan siddette), LLM Agent'in karari
+        (`decision.risk_score`/`risk_level`/`risk_status`) DEGISTIRILMEDEN
+        korunur - boylece deterministik sinyal yokken sistem sessizce
+        "dusuk risk" UYDURMAZ, LLM'in (varsa) degerlendirmesine ya da
+        "unknown" durumuna duser.
+
+        Onemli guvenlik istisnasi: `decision.risk_status == "unknown"` ise
+        (05 LangGraph Agent muhakemesi TAMAMEN basarisiz oldu, bkz.
+        `SafirAgent._degraded_decision`) override YAPILMAZ. Bu, mevcut
+        "ajan cokerse hicbir zaman otomatik alarm tetiklenmez, operator
+        manuel incelemeye yonlendirilir" guvenlik davranisini korur - ajanin
+        kendisi calismiyorken (potansiyel sistem-genelinde bir sorunun
+        isareti olabilir) rule engine sinyaline dayanarak fiziksel bir
+        alarmi OTOMATIK tetiklemek istenmez; bu durumda operator "unknown"
+        durumunu gorup MANUEL karar vermelidir.
+
+        Args:
+            decision: `stage_decide(...)` ciktisi (`AgentDecision`).
+            rule_matches: `stage_events(...)` ciktisindan bu cagriya ait
+                tum `RuleMatch` listesi (tekli + kombinasyon).
+            temporal_events: (Opsiyonel) bu cagriya ait `TemporalEvent`ler -
+                likelihood/duration/recurrence feature'larini besler.
+            semantic_rag_sources: (Opsiyonel) bu cagrinin semantik RAG
+                sonuclari - regulatory_support feature'ini besler.
+
+        Returns:
+            `(decision, risk_provenance)`: `risk_score`/`risk_level`/`risk_status`
+            alanlari (varsa, ajan basarili muhakeme urettiyse) guncellenmis ayni
+            `decision` nesnesi + hesaplamanin TAM izlenebilirligini tasiyan
+            `RiskProvenance` (unknown durumunda `risk_level=None` provenance doner).
+        """
+        if decision.risk_status == "unknown":
+            return decision, RiskProvenance(risk_level=None, risk_score=None)
+
+        llm_proposed_score = decision.risk_score
+        risk_provenance = resolve_deterministic_risk_with_provenance(
+            rule_matches,
+            temporal_events=temporal_events,
+            semantic_rag_sources=semantic_rag_sources,
+            llm_proposed_score=llm_proposed_score,
+        )
+        if risk_provenance.risk_level is not None:
+            decision.risk_score = risk_provenance.risk_score
+            decision.risk_level = risk_provenance.risk_level
+            decision.risk_status = "assessed"
+        return decision, risk_provenance
+
+    def stage_escalate(self, decision, vlm_response: VLMResponse, risk_provenance: Optional[RiskProvenance] = None):
+        """06: Otomatik eskalasyon -> `EscalationDecision`.
+
+        GERCEK, RuleEngine-dogrulanmis (bkz. `risk_provenance.rule_ids`)
+        yuksek/kritik risk otomatik olarak alarm tetikler. `risk_provenance`
+        verilmezse (orn. eski cagiran kod) VEYA `rule_ids` bossa, deterministik
+        kanit YOK sayilir - bu durumda (dusuk risk haricinde) otomatik islem/
+        alarm YAPILMAZ, `PENDING_REVIEW`e dusulur (bkz. `EscalationPolicy.
+        evaluate` docstring'i).
+
+        RISK ENGINE V2.1 (2026-08-27) guvenlik notu: `report.risk_score`
+        (operatore GOSTERILEN nihai deger) artik deterministik skorla Agent'in
+        taslak skorunun ORTALAMASIDIR (bkz. `risk_resolver.py`) - ama OTOMATIK
+        alarm tetikleme KARARI kasitli olarak BUNU KULLANMAZ: Agent'in dusuk
+        (yanlis/naif) bir taslak tahmini, ZATEN RuleEngine tarafindan
+        dogrulanmis kritik bir fiziksel tehlikenin otomatik alarmini
+        ORTALAMA yoluyla SESSIZCE BASTIRAMAZ. Bu yuzden mumkunse
+        `risk_provenance.deterministic_score/deterministic_level` (HAM,
+        Agent'ten bagimsiz deger) kullanilir; yalnizca hicbir deterministik
+        kural eslesmediyse (`deterministic_score is None`) Agent'in kendi
+        (blended'a esit) degerine dusulur.
+        """
+        has_deterministic_backing = bool(risk_provenance and risk_provenance.rule_ids)
+        escalation_score = decision.risk_score
+        escalation_level = decision.risk_level
+        if risk_provenance is not None and risk_provenance.deterministic_score is not None:
+            escalation_score = risk_provenance.deterministic_score
+            escalation_level = risk_provenance.deterministic_level
         escalation = self._escalation.evaluate(
-            risk_score=decision.risk_score,
-            risk_level=decision.risk_level,
+            risk_score=escalation_score,
+            risk_level=escalation_level,
             recommended_action=decision.recommended_action,
             summary=decision.summary or vlm_response.description,
             risk_status=decision.risk_status,
-            event_category=getattr(decision, "event_category", "safety"),
+            has_deterministic_backing=has_deterministic_backing,
         )
         logger.info(
             "Otomatik eskalasyon: kademe=%s otomatik_tetik=%s alert_id=%s (%s)",
@@ -767,7 +1672,7 @@ class SafirPipeline:
         *,
         video_source: str,
         sampler,
-        clusters: List[EventCluster],
+        evidence_frames: List[EvidenceFrame],
         vlm_response: VLMResponse,
         context,
         decision,
@@ -775,191 +1680,238 @@ class SafirPipeline:
         temporal_events,
         rule_matches,
         latest_timestamp: float,
-        session_id: Optional[str] = None,
+        detected_events: Optional[List[DetectedEvent]] = None,
+        risk_provenance: Optional[RiskProvenance] = None,
+        precomputed_evidence_frames: Optional[List[EvidenceFrameOut]] = None,
+        analysis_mode: Literal["vlm_direct", "low_budget"] = "vlm_direct",
     ) -> SafirReport:
-        """06-07: Olay kaydi (EventBuilder/History/Store) + nihai `SafirReport` insasi."""
-        current_call_events = _select_current_call_events(temporal_events, latest_timestamp)
-        detected_event_types = sorted({te.event_type for te in current_call_events})
+        """06-07: Olay kaydi (EventBuilder/History/Store) + nihai `SafirReport` insasi.
+
+        `precomputed_evidence_frames`: verilirse (VLM Direct - bkz. `run()`
+        icindeki `_extract_vlm_direct_evidence_frames` cagrisi), rapordaki
+        `evidence_frames` alani ICIN DOGRUDAN kullanilir; `_select_report_
+        evidence_frames`in sampler-tabanli eslesmesi (dusuk-butceli sistem
+        icin, `evidence_frames` sampler ciktisindan) ATLANIR - VLM Direct'te
+        sampler hic calismadigindan bu eslesme ZATEN her zaman bos donerdi.
+
+        `risk_provenance`: verilmezse (orn. Jupyter demo'da `build_report`
+        dogrudan/tek basina cagrilirsa) `rule_matches`/`temporal_events`/
+        `context.semantically_related_chunks`den GUVENLI sekilde yeniden
+        hesaplanir - `run()`daki degerle BIREBIR AYNI sonucu verir (bkz.
+        `risk_resolver._pick_provenance`, tek kaynak).
+        """
+        if risk_provenance is None:
+            risk_provenance = resolve_deterministic_risk_with_provenance(
+                rule_matches,
+                temporal_events=temporal_events,
+                semantic_rag_sources=getattr(context, "semantically_related_chunks", None),
+                llm_proposed_score=getattr(decision, "risk_score", None),
+            )
+        rag_telemetry = self._last_stage_rag_telemetry
+        cross_encoder_status = getattr(rag_telemetry, "cross_encoder_status", None) if rag_telemetry is not None else None
+        relevance_threshold = getattr(rag_telemetry, "threshold", None) if rag_telemetry is not None else None
+        # RAG explainability (gorev tanimi 8. bolum): agirliklar KODDAN okunur - bu cagrida
+        # semantik RAG sorgusu GERCEKTEN yapildiysa (rag_telemetry mevcut), servisin KENDI
+        # `RelevanceWeights`inden (config'ten okunmus, HARD-CODE DEGIL) tasinir.
+        relevance_weights = (
+            {
+                "semantic": self._rag_service.relevance_weights.semantic,
+                "lexical": self._rag_service.relevance_weights.lexical,
+                "keyword": self._rag_service.relevance_weights.keyword,
+                "metadata": self._rag_service.relevance_weights.metadata,
+                "phrase": self._rag_service.relevance_weights.phrase,
+            }
+            if rag_telemetry is not None and hasattr(self._rag_service, "relevance_weights")
+            else None
+        )
+
+        current_model_call_ids = set()
+        current_chunk_ids = set()
+        current_analysis_ids = set()
+        current_evidence_ids = set()
+        
+        for d in (detected_events or []):
+            if d.source_model_call_id:
+                current_model_call_ids.add(d.source_model_call_id)
+            if d.source_chunk_id:
+                current_chunk_ids.add(d.source_chunk_id)
+            if d.source_analysis_id:
+                current_analysis_ids.add(d.source_analysis_id)
+            if d.evidence_ids:
+                current_evidence_ids.update(d.evidence_ids)
+                
+        if len(current_analysis_ids) > 1:
+            import logging
+            logging.getLogger(__name__).error(f"Security/Invariant violation: Multiple analysis IDs detected in a single pipeline call: {current_analysis_ids}")
+            # Controlled failure: Drop mixed events to prevent contamination.
+            detected_events = []
+            current_analysis_ids.clear()
+            if hasattr(vlm_response, "chunk_analysis_result") and vlm_response.chunk_analysis_result:
+                from src.vlm.schemas import VLMAnalysisStatus
+                vlm_response.chunk_analysis_result.analysis_status = VLMAnalysisStatus.PARTIAL
+                vlm_response.chunk_analysis_result.parse_status = "provenance_integrity_failed"
+
+            
+        final_analysis_id = current_analysis_ids.pop() if current_analysis_ids else None
+        
+        current_call_events = _select_current_call_events(
+            temporal_events=temporal_events,
+            latest_timestamp=latest_timestamp,
+            current_model_call_ids=current_model_call_ids,
+            current_chunk_ids=current_chunk_ids,
+            current_analysis_id=final_analysis_id,
+            current_evidence_ids=current_evidence_ids,
+            allow_legacy_timestamp_fallback=False
+        )
+        if getattr(vlm_response, 'aggregate_result', None):
+            vlm_response.aggregate_result.event_count_after_merge = len(current_call_events)
+        detected_event_names = sorted({te.event_name for te in current_call_events})
+        detected_event_types = sorted({te.event_type for te in current_call_events if te.event_type})
         structured_events = self._event_builder.build_batch(current_call_events, rule_matches)
+        # Her StructuredEvent, EventBuilder tarafindan KENDI rule_matches'inden
+        # deterministik olarak risk tasir (bkz. risk_resolver.py); bir olay
+        # icin hicbir kural eslesmediyse (risk_score/level None), cagri-geneli
+        # (artik rule-engine-oncelikli, bkz. stage_finalize_risk) decision'a duser.
         recorded_event_ids = self._event_history.record_batch(
             structured_events,
-            risk_scores=[decision.risk_score] * len(structured_events),
-            risk_levels=[decision.risk_level] * len(structured_events),
+            risk_scores=[e.risk_score if e.risk_score is not None else decision.risk_score for e in structured_events],
+            risk_levels=[e.risk_level if e.risk_level is not None else decision.risk_level for e in structured_events],
             video_source=video_source,
         )
         logger.info(
             "Event Gecmisi: %d StructuredEvent kaydedildi (ids=%s)", len(recorded_event_ids), recorded_event_ids
         )
         event_id = recorded_event_ids[0] if recorded_event_ids else None
+        onset_timestamp = evidence_frames[0].timestamp_sec if evidence_frames else 0.0
         timeline = self._event_store.get_timeline(
-            start_ts=clusters[0].start_time, end_ts=latest_timestamp, video_source=video_source
+            start_ts=onset_timestamp, end_ts=latest_timestamp, video_source=video_source
         )
 
-        # İKİ AŞAMALI ONSET MEKANİZMASI (TEKNOFEST Şartnamesi & Ground Truth Uyumu):
-        candidate_onset_str = None
-        confirmed_onset_str = None
-
-        if detected_event_types:  # Yalnızca aktif tehlike tespit edildiğinde onset üretilir
-            trend_cluster = next((c for c in clusters if getattr(c, "has_gradual_trend", False) and c.start_time >= 20.0), None)
-            if trend_cluster is None:
-                trend_cluster = next((c for c in clusters if c.start_time >= 20.0), None) or (clusters[0] if clusters else None)
-            confirmed_onset_str = trend_cluster.start_time_str if trend_cluster else None
-
-            candidate_cluster = next((c for c in clusters if c.start_time >= 20.0 and c.peak_frame and c.peak_frame.change_score >= 0.003), None)
-            candidate_onset_str = candidate_cluster.start_time_str if candidate_cluster else confirmed_onset_str
+        # Risk explainability (P0 duzeltmesi): "risk_score NEREDEN geldi?"
+        # sorusunu LLM'e SORMADAN, `risk_provenance`den (deterministik)
+        # cevaplayan uc alan. `decision.risk_score` (nihai/authoritative
+        # deger) ile HANGI kural(lar)in onu urettigini rapor duzeyinde de
+        # gorunur kilar (bkz. `risk_resolver.RiskProvenance`).
+        if decision.risk_status == "unknown":
+            risk_source = "unknown"
+            risk_explanation = "Analiz guvenilir sekilde tamamlanamadi; risk belirlenemedi."
+        elif risk_provenance.rule_ids:
+            risk_source = "rule_engine"
+            risk_explanation = risk_provenance.explanation()
         else:
-            candidate_onset_str = None
-            confirmed_onset_str = None
+            risk_source = "agent"
+            risk_explanation = (
+                "Hicbir deterministik kural eslesmedi; risk seviyesi Agent'in kendi "
+                "degerlendirmesinden alindi (RuleEngine tarafindan dogrulanmamis)."
+            )
 
-        onset_timestamp_str = candidate_onset_str or confirmed_onset_str
-
-        calc_confidence = getattr(decision, "confidence", "yuksek")
-        if confirmed_onset_str is not None and ("yangin_duman" not in detected_event_types):
-            calc_confidence = "dusuk"
-
-        # EVRENSEL 4 ANOMALİ KATEGORİSİ MATEMATİKSEL RİSK SKORLAMA:
-        # RiskScore = BaseScore + MotionBonus + DriftBonus
-        max_cs = max((c.peak_frame.change_score for c in clusters if c.peak_frame), default=0.0)
-        has_trend_flag = any(getattr(c, "has_gradual_trend", False) for c in clusters)
-
-        m_bonus = 0
-        d_bonus = 0
-
-        # 1. Termal / Yangın
-        if any(et in detected_event_types for et in ["yangin_duman", "termal_tehlike"]):
-            base_s = 70
-            m_bonus = min(20, int(max_cs * 150))
-            d_bonus = 10 if has_trend_flag else 0
-            final_risk_score = min(100, max(65, base_s + m_bonus + d_bonus))
-            final_risk_level = "kritik" if final_risk_score >= 80 else "yuksek"
-        # 2. Mekanik / Kaza
-        elif any(et in detected_event_types for et in ["yaralanma_kaza", "devrilme_kaza", "dusme_riski", "agir_yuk_riski"]):
-            base_s = 65
-            m_bonus = min(25, int(max_cs * 200))
-            final_risk_score = min(100, max(65, base_s + m_bonus))
-            final_risk_level = "kritik" if final_risk_score >= 80 else "yuksek"
-        # 3. Biyolojik / İnsan Emniyeti
-        elif any(et in detected_event_types for et in ["bayilma_hareketsiz", "kkd_ihlali", "saglik_acil"]):
-            base_s = 50
-            m_bonus = min(20, int(max_cs * 150))
-            final_risk_score = min(100, max(50, base_s + m_bonus))
-            final_risk_level = "yuksek" if final_risk_score >= 65 else "orta"
-        # 4. Fiziksel Güvenlik / Perimeter
-        elif any(et in detected_event_types for et in ["sizma_yetkisiz_erisim", "supheli_paket_hareket", "drone_ihlal"]):
-            base_s = 45
-            m_bonus = min(20, int(max_cs * 100))
-            final_risk_score = min(100, max(45, base_s + m_bonus))
-            final_risk_level = "yuksek" if final_risk_score >= 60 else "orta"
-        elif detected_event_types:
-            base_s = 35
-            m_bonus = min(15, int(max_cs * 100))
-            final_risk_score = min(100, max(35, base_s + m_bonus))
-            final_risk_level = "orta"
-        else:
-            base_s = 0
-            final_risk_score = 0
-            final_risk_level = "dusuk"
-
-        logger.info(
-            "Evrensel Risk Formülü Bileşenleri: Taban=%d, HareketBonusu=+%d (change_score=%.4f), DriftBonusu=+%d -> ToplamSkor=%d (%s)",
-            base_s, m_bonus, max_cs, d_bonus, final_risk_score, final_risk_level
-        )
-
-        # 3. VLM'den dönen ham metni (JSON block) yakala ve parse et (Dinamik Gerçek Veri Çıkarımı):
-        vlm_raw_text = getattr(vlm_response, "description", "") or getattr(vlm_response, "text", "")
-        parsed_vlm = {}
-        try:
-            clean_text = vlm_raw_text.replace("```json", "").replace("```", "").strip()
-            start_idx = clean_text.find("{")
-            end_idx = clean_text.rfind("}")
-            if start_idx != -1 and end_idx != -1:
-                parsed_vlm = json.loads(clean_text[start_idx:end_idx+1])
-        except Exception:
-            parsed_vlm = {}
-
-        # Parse edilen gerçek dinamik verileri al
-        real_summary = parsed_vlm.get("summary", "") or (clean_text if (clean_text and not clean_text.startswith("{")) else "")
-        real_actions = parsed_vlm.get("actions", [])
-        real_events = parsed_vlm.get("events", [])
-        if not real_events and timeline:
-            real_events = [{"time": e["timestamp"], "event": e["description"]} for e in timeline]
-
-        vlm_structured_dict = {
-            "summary": real_summary if real_summary else "Görüntü analiz edildi, durum tespiti yapıldı.",
-            "events": real_events,
-            "risk": parsed_vlm.get("risk", final_risk_level),
-            "actions": real_actions if real_actions else ["Saha güvenliğini kontrol ediniz."],
-        }
-
-        # Sentezleyiciye artık GERÇEK veriyi gönder
-        report_data = self._report_synthesizer.generate_report(vlm_structured_dict, video_source)
-
-        primary_action = (
-            report_data.recommended_actions[0]
-            if report_data.recommended_actions
-            else (decision.recommended_action or "Sahadaki risk unsurlarına karşı acil durum planını devreye alın.")
-        )
-        final_summary = report_data.executive_summary or vlm_structured_dict["summary"]
-        final_actions = report_data.recommended_actions or vlm_structured_dict["actions"]
-
-        # AgentDecision nesnesini dinamik rapor ile senkronize et
-        decision.summary = final_summary
-        decision.recommended_action = primary_action
-        decision.actions = final_actions
-        decision.risk_score = final_risk_score if final_risk_score > 0 else report_data.risk_score
-        decision.risk_level = final_risk_level
-
-        escalation = self._escalation.evaluate(
-            risk_score=decision.risk_score,
-            risk_level=decision.risk_level,
-            recommended_action=decision.recommended_action,
-            summary=decision.summary,
-            risk_status="assessed",
-            event_category=getattr(decision, "event_category", "safety"),
-        )
+        # `getattr(..., None)` KASITLI: test/mock RAG servisleri (yalnizca `text`/`score`
+        # tasiyan duck-typed sahteler) icin de GUVENLI CALISIR - bkz. ayni gerekce
+        # `context_builder.py::_format_semantic_chunks` ve `tools.py::RetrieverTool.run`da.
+        semantic_rag_sources = [
+            RagContext(
+                rule_title=(
+                    getattr(chunk, "document_title", None)
+                    or getattr(chunk, "document_id", None)
+                    or "(bilinmeyen kaynak)"
+                ),
+                content=chunk.text,
+                score=getattr(chunk, "embedding_score", None) or getattr(chunk, "score", 0.0),
+                embedding_score=getattr(chunk, "embedding_score", None),
+                chunk_id=getattr(chunk, "chunk_id", None),
+                document_id=getattr(chunk, "document_id", None),
+                article_number=getattr(chunk, "article_number", None),
+                source_url=getattr(chunk, "source_url", None),
+                relevance_score=getattr(chunk, "relevance_score", None),
+                semantic_score=getattr(chunk, "semantic_score", None),
+                lexical_score=getattr(chunk, "lexical_score", None),
+                keyword_score=getattr(chunk, "keyword_score", None),
+                metadata_score=getattr(chunk, "metadata_score", None),
+                phrase_score=getattr(chunk, "phrase_score", None),
+                relevance_status=getattr(chunk, "relevance_status", None),
+                relevance_reason=getattr(chunk, "relevance_reason", None),
+                cross_encoder_score=getattr(chunk, "cross_encoder_score", None),
+                final_rank=getattr(chunk, "final_rank", None),
+                source_verified=getattr(chunk, "source_verified", True),
+            )
+            for chunk in context.semantically_related_chunks
+        ]
+        # 2026-08-25: `relevant_regulations` (Rapor -> "Ilgili ISG Mevzuati") ARTIK
+        # TEK kaynaktan turer - `semantic_rag_sources`in KENDISINDEN (yani
+        # `context.semantically_related_chunks`den, GERCEK semantik RAG sorgusu +
+        # deterministik relevance/guvenlik esiginden GECMIS "accepted" adaylar).
+        # Onceden BURADA RuleEngine'in AYRI, deterministik kisa-etiket listesi
+        # (`context.relevant_regulations`) kullaniliyordu - bu, gercek RAG
+        # telemetrisine SAHIP DEGILDI ve operatore ikinci/sahte bir "RAG" kanali
+        # gibi gorunuyordu (bkz. `src/event_analysis/rule_engine.py` modul
+        # dokustringi). Esik-uzeri hicbir kanit yoksa liste BOS kalir - bir
+        # mevzuat UYDURULMAZ.
+        relevant_regulations = [
+            f"{source.rule_title}" + (f" (Madde {source.article_number})" if source.article_number else "") + f": {source.content}"
+            for source in semantic_rag_sources
+        ]
+        # Source validation (gorev tanimi 10. bolum): Ajanin serbest metninde (summary +
+        # actions) gecen mevzuat-benzeri atiflardan, BU CAGRIDA GERCEKTEN retrieved olan
+        # kanitlarla eslesmeyenleri isaretler - deterministik, regex-tabanli (LLM'e SORULMAZ).
+        agent_free_text = " ".join([decision.summary or ""] + list(decision.actions or []))
+        unverified_references = _unverified_citations(agent_free_text, semantic_rag_sources)
 
         return SafirReport(
             event_id=event_id,
-            session_id=report_data.session_id,
             video_source=video_source,
             generated_at=datetime.datetime.utcnow().isoformat() + "Z",
             natural_language_summary=vlm_response.description,
-            summary=final_summary,
-            executive_summary=final_summary,
-            report_data=report_data.model_dump(),
+            summary=decision.summary or vlm_response.description,
             risk_score=decision.risk_score,
             risk_level=decision.risk_level,
-            risk_status="assessed",
-            confidence=calc_confidence,
-            guardrail_triggered=getattr(decision, "guardrail_triggered", False),
-            event_category=getattr(decision, "event_category", "safety"),
-            recommended_action=primary_action,
-            actions=final_actions,
-            onset_timestamp_str=onset_timestamp_str,
-            candidate_onset_str=candidate_onset_str,
-            confirmed_onset_str=confirmed_onset_str,
+            risk_status=decision.risk_status,
+            risk_source=risk_source,
+            risk_explanation=risk_explanation,
+            contributing_rule_ids=risk_provenance.rule_ids,
+            scoring_method=risk_provenance.scoring_method if risk_provenance.rule_ids else None,
+            risk_features=risk_provenance.features,
+            risk_feature_contributions=risk_provenance.feature_contributions,
+            llm_proposed_score=risk_provenance.llm_proposed_score,
+            deterministic_score=risk_provenance.deterministic_score,
+            deterministic_level=risk_provenance.deterministic_level,
+            cross_encoder_status=cross_encoder_status,
+            relevance_weights=relevance_weights,
+            relevance_threshold=relevance_threshold,
+            recommended_action=decision.recommended_action,
+            actions=decision.actions,
+            triggered_mock_actions=getattr(decision, "triggered_mock_actions", []),
+            onset_timestamp_str=getattr(decision, "onset_timestamp", None)
+            or (f"{int(onset_timestamp // 60):02d}:{int(onset_timestamp % 60):02d}" if evidence_frames else None),
+            safe_timestamps=getattr(decision, "safe_timestamps", []),
+            incident_timestamps=getattr(decision, "incident_timestamps", []),
             escalation_tier=escalation.tier.value,
             auto_dispatched=escalation.auto_dispatched,
             alert_id=escalation.alert_id,
+            detected_event_names=detected_event_names,
             detected_event_types=detected_event_types,
-            timeline=[
-                TimelineEntry(timestamp=e["timestamp"], description=e["description"])
-                for e in timeline
-                if not any(r in e.get("description", "").lower() for r in ["genel_gozlem", "rutin", "olağan akış", "olağan durum", "nominal"])
-            ],
-            evidence_frames=[
-                EvidenceFrameOut(
-                    event_id=cluster.event_id,
-                    timestamp_sec=cluster.start_time,
-                    timestamp_str=cluster.start_time_str,
-                    change_score=cluster.peak_frame.change_score,
-                    base64_image=cluster.peak_frame.base64_image,
-                    saved_path=cluster.peak_frame.saved_path,
-                    is_fallback=cluster.peak_frame.is_fallback,
+            events=[
+                EventSummary(
+                    event_name=se.event_name,
+                    event_type=se.event_type,
+                    keywords=se.keywords,
+                    risk_level=se.risk_level,
+                    risk_score=se.risk_score,
+                    evidence_ids=se.evidence_ids,
+                    rule_ids=[m.rule_id for m in se.related_rule_matches],
                 )
-                for cluster in clusters
+                for se in structured_events
             ],
-            relevant_regulations=report_data.matched_regulations or context.relevant_regulations,
+            timeline=[
+                TimelineEntry(timestamp=e["timestamp"], description=e["description"]) for e in timeline
+            ],
+            evidence_frames=(
+                precomputed_evidence_frames
+                if precomputed_evidence_frames is not None
+                else _select_report_evidence_frames(vlm_response, evidence_frames)
+            ),
+            relevant_regulations=relevant_regulations,
+            semantic_rag_sources=semantic_rag_sources,
+            unverified_references=unverified_references,
             sampler_stats=(
                 SamplerStats(
                     total_frames_scanned=sampler.last_run_stats.total_frames_scanned,
@@ -969,7 +1921,11 @@ class SafirPipeline:
                     gpu_savings_ratio_pct=sampler.last_run_stats.eliminated_ratio_pct,
                     elapsed_sec=sampler.last_run_stats.elapsed_sec,
                 )
-                if sampler.last_run_stats
+                # `sampler` video-tabanli bir VLM (EVREN) aktifken `None`dir
+                # (bkz. `run()` - bu asama TAMAMEN ATLANIR); "0" gibi
+                # YANILTICI istatistik UYDURMAK yerine dogru sekilde `None`
+                # ("N/A") kalir.
+                if sampler is not None and sampler.last_run_stats
                 else None
             ),
             vlm_model=vlm_response.model_name,
@@ -1073,11 +2029,16 @@ def get_ask_service() -> AskService:
     if _ask_service is None:
         cfg = load_config()
         llm_client = get_llm_client(cfg.llm, use_mock=cfg.app.use_mock_llm)
+        # `use_video` icin: ayni video-tabanli VLM istemcisi (pipeline'inkiyle AYNI config/mod) -
+        # yalnizca EVREN gibi answer_video_question destekleyen bir saglayicida ise yarar; diger
+        # saglayicilarda AskService bunu SESSIZCE metin-tabanli akisa geri dondurur.
+        vlm_client = get_vlm_client(cfg.vlm, use_mock=cfg.app.use_mock_vlm)
         _ask_service = AskService(
             analysis_store=get_analysis_store(),
             rag_service=get_pipeline()._rag_service,  # pipeline'in seed'lenmis RAG'i (yeniden kullanim)
             llm_client=llm_client,
-            rag_top_k=cfg.memory.faiss.top_k,
+            rag_top_k=cfg.memory.qdrant.top_k,
+            vlm_client=vlm_client,
         )
     return _ask_service
 
@@ -1102,15 +2063,16 @@ def get_conversation_store() -> ConversationStore:
     return _conversation_store
 
 
-# History icin kalici representative-frame depolamasi: yalnizca VLM'e fiilen
-# gonderilen kareler (cluster basina RepresentativeFrameExtractor ciktisi),
-# TUM evidence frame'ler DEGIL. `data/` altinda, projenin mevcut kalici veri
-# dizin desenine (analyses.db/events.db) uygun bir alt klasor.
+# History icin kalici evidence-frame depolamasi: VLM'e fiilen gonderilen
+# TUM evidence kareleri (artik "representative" alt kumesi YOK - kumeleme
+# VLM katmaninda yapiliyor, sampler evidence esigini gecen HER kareyi
+# gonderiyor). `data/` altinda, projenin mevcut kalici veri dizin desenine
+# (analyses.db/events.db) uygun bir alt klasor.
 _HISTORY_FRAMES_DIR = "history_frames"
 
 
 def _history_frame_path(job_id: str, frame_id: str) -> Path:
-    """Bir HISTORY representative-frame'inin diskteki yolunu dondurur (dosya var olmayabilir)."""
+    """Bir HISTORY evidence-frame'inin diskteki yolunu dondurur (dosya var olmayabilir)."""
     return Path(_DATA_DIR) / _HISTORY_FRAMES_DIR / job_id / f"{frame_id}.jpg"
 
 
@@ -1131,15 +2093,16 @@ def _conversation_file_path(conversation_id: str, document_id: str, file_ext: st
 def _persist_representative_frames_best_effort(
     job_id: str, trace_events: List[Dict[str, Any]], frames: Dict[str, bytes]
 ) -> None:
-    """VLM'e fiilen gonderilen representative frame'leri (yalnizca onlari) History icin diske yazar.
+    """VLM'e fiilen gonderilen evidence karelerinin TAMAMINI History icin diske yazar.
 
     `frames`, `_run_job` sirasinda `_on_frames` ile zaten doldurulmus, JPEG
     baytlarini tasiyan ayni sozluktur; burada yeniden kodlama/yeniden isleme
-    YOKTUR — hangi anahtarlarin representative frame'e ait oldugu, ayni
-    calismada zaten uretilmis `trace_events`in `sampler` asamasindaki
-    `event_groups[].representative_frames[].frame_id` listesinden (bkz.
-    `trace_serializer.serialize_sampler`) okunur; diger tum evidence frame
-    anahtarlari (`ev...`) yoksayilir.
+    YOKTUR — hangi anahtarlarin persist edilecegi, ayni calismada zaten
+    uretilmis `trace_events`in `sampler` asamasindaki `evidence_frames[].
+    frame_id` listesinden (bkz. `trace_serializer.serialize_sampler`) okunur.
+    Kumeleme artik VLM katmaninda yapildigindan, "yalnizca temsili kareler"
+    alt kumesi YOKTUR - esik-gecmis TUM evidence kareleri VLM'e gonderildigi
+    icin hepsi burada da persist edilir.
 
     Best-effort: herhangi bir hata yalnizca loglanir; analiz sonucunu ASLA
     etkilemez (bu fonksiyon hicbir zaman disari exception firlatmaz).
@@ -1154,9 +2117,7 @@ def _persist_representative_frames_best_effort(
         if sampler_event is None:
             return
         rep_frame_ids = {
-            rf["frame_id"]
-            for eg in sampler_event.get("data", {}).get("event_groups", [])
-            for rf in eg.get("representative_frames", [])
+            ef["frame_id"] for ef in sampler_event.get("data", {}).get("evidence_frames", [])
         }
         if not rep_frame_ids:
             return
@@ -1177,6 +2138,7 @@ def _run_job(
     user_prompt: str,
     sample_fps_override: Optional[int] = None,
     min_change_threshold_override: Optional[float] = None,
+    analysis_mode: Literal["vlm_direct", "low_budget"] = "vlm_direct",
 ) -> None:
     """Arka plan thread'inde pipeline'i calistirip `JobState`'i gunceller.
 
@@ -1186,6 +2148,7 @@ def _run_job(
         user_prompt: Ajanin odaklanmasi istenen kullanici istemi.
         sample_fps_override: Operator panelinden gelen ornekleme FPS override'i.
         min_change_threshold_override: Operator panelinden gelen hassasiyet esigi override'i.
+        analysis_mode: `AnalyzeRequest.analysis_mode` ("vlm_direct"/"low_budget").
     """
 
     def on_stage(stage_name: str, step: int, total: int) -> None:
@@ -1231,6 +2194,7 @@ def _run_job(
             sample_fps_override=sample_fps_override,
             min_change_threshold_override=min_change_threshold_override,
             trace=trace_collector,
+            analysis_mode=analysis_mode,
         )
         with _jobs_lock:
             job = _jobs[job_id]
@@ -1269,8 +2233,8 @@ def _run_job(
         with _jobs_lock:
             job = _jobs[job_id]
             job.status = "error"
-            err_detail = str(exc).strip()
-            job.error = err_detail if err_detail else "Analiz basarisiz oldu. Ayrintilar sunucu loglarinda."
+            # Guvenli hata mesaji (stack trace/secret UI'a donmez).
+            job.error = "Analiz basarisiz oldu. Ayrintilar sunucu loglarinda."
             failed_stage = job.current_stage or "sampler"
             job.trace_events.append(
                 {
@@ -1284,6 +2248,30 @@ def _run_job(
                     "error": job.error,
                 }
             )
+
+
+@app.on_event("startup")
+def _warmup_evren_models_on_startup() -> None:
+    """Her uygulama baslangicinda `scripts/model_warmup.py::warmup_all_models`i BIR KEZ calistirir.
+
+    Amac, EVREN'in fiilen kullanilan dort model takma adinda (`vlm`,
+    `llm-fast`, `llm-large`, `bge-m3-embed`) "soguk" olmasindan kaynaklanan
+    ilk-istek gecikmesini, operatorun GERCEK ilk analizinden ONCE absorbe
+    etmektir (bkz. `scripts/model_warmup.py` modul dokustringi). Isinma
+    BASARISIZ olursa (ag hatasi, eksik `EVREN_API_KEY`, vb.) uygulama
+    BASLAMAYA DEVAM EDER - bu yalnizca gozlemlenebilirlik/latency-onleme
+    icindir, bir davranis KAPISI DEGILDIR (mock modda dahi calisir ama
+    gercek EVREN cagrisi yapamayacagi icin ACIKCA basarisiz loglanir).
+    """
+    try:
+        from scripts.model_warmup import warmup_all_models
+
+        report = warmup_all_models(load_config())
+        for r in report.results:
+            level = logging.INFO if r.ok else logging.WARNING
+            logger.log(level, "Model isinma: %s (%s) -> %s (%.0fms) %s", r.model_alias, r.role, "OK" if r.ok else "HATA", r.latency_ms, r.detail)
+    except Exception:  # noqa: BLE001 - isinma ASLA uygulama baslangicini engellemez
+        logger.exception("Model isinma basarisiz oldu; uygulama yine de baslatiliyor.")
 
 
 @app.get("/health")
@@ -1318,6 +2306,7 @@ def analyze(request: AnalyzeRequest) -> SafirReport:
             request.user_prompt,
             sample_fps_override=request.sample_fps,
             min_change_threshold_override=request.min_change_threshold,
+            analysis_mode=request.analysis_mode,
         )
     except Exception as exc:  # noqa: BLE001 - API tuketicisine anlamli hata donmek icin
         logger.exception("Analiz pipeline hatasi")
@@ -1360,6 +2349,7 @@ def create_analyze_job(request: AnalyzeRequest) -> AnalyzeJobResponse:
             request.user_prompt,
             request.sample_fps,
             request.min_change_threshold,
+            request.analysis_mode,
         ),
         daemon=True,
     )
@@ -1709,10 +2699,24 @@ def get_history_report_pdf(job_id: str) -> Response:
 
     video_name = str(report_dict.get("video_source") or job_id)
     video_name = video_name.replace("/", "_").replace("\\", "_")
+    filename = f"safir_report_{video_name}.pdf"
+    # HTTP baslik degerleri Latin-1 ile SINIRLIDIR (Starlette/ASGI bunu
+    # dogrudan encode eder) - video adi Turkce karakter icerirse (ör. "ı",
+    # "ş", "ğ") bu ASLA Latin-1'e sigmaz ve `UnicodeEncodeError` ile 500
+    # dondurur (indirme TAMAMEN basarisiz olur). RFC 6266/5987 cozumu: ASCII
+    # bir yedek `filename` (Turkce karakterler duz ASCII'ye indirgenir) +
+    # tam-sadakatli, yuzde-kodlanmis bir `filename*` birlikte verilir; Latin-1
+    # sinirini asan hicbir karakter dogrudan baslikta YER ALMAZ.
+    ascii_filename = filename.encode("ascii", "replace").decode("ascii")
+    encoded_filename = urllib.parse.quote(filename)
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="safir_report_{video_name}.pdf"'},
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{encoded_filename}'
+            )
+        },
     )
 
 
@@ -1722,6 +2726,10 @@ def ask_safir(request: AskRequest) -> AskResponse:
 
     - `job_id` verilirse: o analizin kalici `SafirReport`'u ONCELIKLI baglam olur.
     - Her durumda mevcut `EmbeddingRAGService` ile ilgili ISG mevzuati getirilir.
+    - `use_video=True` verilirse (ve is/video hala diskte varsa) soru ONCE
+      dogrudan videoya sorulur (EVREN prefix-cache avantaji, bkz.
+      `AskService._try_video_answer`); basarisiz olursa SESSIZCE metin-tabanli
+      akisa doner.
     - Cevap YALNIZCA guvenli baglamdan uretilir; raw_response/internal reasoning/
       secret/base64 modele gonderilmez ve yanitta yer almaz.
 
@@ -1736,7 +2744,7 @@ def ask_safir(request: AskRequest) -> AskResponse:
             LLM/servis cevap uretemezse (503; stack trace UI'a donmez).
     """
     try:
-        result = get_ask_service().answer(request.question, request.job_id)
+        result = get_ask_service().answer(request.question, request.job_id, use_video=request.use_video)
     except JobNotFound as exc:
         raise HTTPException(status_code=404, detail=f"Analiz bulunamadi: {exc}") from exc
     except ValueError as exc:
@@ -1751,6 +2759,33 @@ def ask_safir(request: AskRequest) -> AskResponse:
         job_id=result.job_id,
         context_used=result.context_used,
     )
+
+
+@app.get("/ask/suggestions", response_model=AskSuggestionsResponse)
+def ask_safir_suggestions(job_id: str) -> AskSuggestionsResponse:
+    """Verilen analiz raporuna OZGU, dinamik takip sorusu onerileri (bkz. `suggestion_engine.py`).
+
+    Mentor eleştirisi ("Jurinin Demo Videosu ve Beklentileri" - "inisiyatif
+    alma ve dogru sorulari sorma"): sabit oneri listesi HER raporda AYNIdir,
+    hicbir inisiyatif GOSTERMEZ. Bu uc nokta, raporun KENDI icerigine (siniflandirilamayan
+    olay, insan incelemesine dusen eskalasyon, VLM'in kendi metninde belirttigi
+    belirsizlik, kisi-iceren olay kategorisi) bakip O RAPORA OZGU sorular onerir.
+
+    Args:
+        job_id: Onerilerin cikarilacagi analizin kimligi.
+
+    Returns:
+        0-4 arasi oneri metni; hicbir sinyal yoksa BOS liste doner (UI statik/genel
+        onerilere geri doner - bkz. frontend `SUGGESTIONS`).
+
+    Raises:
+        HTTPException: `job_id` bilinmiyorsa (404) veya raporu HENUZ yoksa (404).
+    """
+    record = get_analysis_store().get(job_id)
+    if record is None or not record.report_json:
+        raise HTTPException(status_code=404, detail=f"Analiz bulunamadi: {job_id}")
+    report = SafirReport.model_validate_json(record.report_json)
+    return AskSuggestionsResponse(suggestions=build_dynamic_suggestions(report))
 
 
 _MAX_CONVERSATION_TITLE_LEN = 80
@@ -2061,53 +3096,6 @@ async def upload_conversation_document(
     )
 
 
-class VideoUploadResponse(BaseModel):
-    video_source: str
-    filename: str
-    size_bytes: int
-
-
-_ALLOWED_VIDEO_EXTENSIONS = {"mp4", "avi", "mov", "mkv", "webm"}
-
-
-@app.post("/upload/video", response_model=VideoUploadResponse)
-async def upload_video(file: UploadFile = File(...)) -> VideoUploadResponse:
-    """Video dosyasini sunucuya yukler ve `data/uploads/` altina kaydeder."""
-    filename = (file.filename or "").strip() or "uploaded_video.mp4"
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-    if ext not in _ALLOWED_VIDEO_EXTENSIONS:
-        allowed = "/".join(sorted(_ALLOWED_VIDEO_EXTENSIONS))
-        raise HTTPException(status_code=422, detail=f"Desteklenmeyen video turu: .{ext or '?'} (yalnizca {allowed})")
-
-    safe_name = re.sub(r"[^a-zA-Z0-9_.-]", "_", filename)
-    uploads_dir = Path(_DATA_DIR) / "uploads"
-    uploads_dir.mkdir(parents=True, exist_ok=True)
-    target_path = uploads_dir / safe_name
-
-    total_bytes = 0
-    try:
-        with open(target_path, "wb") as f:
-            while chunk := await file.read(1024 * 1024):  # 1MB parcalar halinde oku
-                f.write(chunk)
-                total_bytes += len(chunk)
-    except Exception as exc:
-        logger.exception("Video sunucuya yazilamadi: %s", filename)
-        raise HTTPException(status_code=500, detail=f"Video dosyasi kaydedilemedi: {exc}")
-
-    if total_bytes == 0:
-        if target_path.exists():
-            target_path.unlink()
-        raise HTTPException(status_code=422, detail="Yuklenen video dosyasi bos (0 bayt).")
-
-    rel_source = os.path.relpath(target_path, start=os.getcwd()).replace("\\", "/")
-    logger.info("Video yuklendi: filename=%s path=%s size=%d bayt", filename, rel_source, total_bytes)
-    return VideoUploadResponse(
-        video_source=rel_source,
-        filename=filename,
-        size_bytes=total_bytes,
-    )
-
-
 @app.delete("/conversations/{conversation_id}/documents/{document_id}")
 def remove_conversation_document(conversation_id: str, document_id: str) -> Dict[str, bool]:
     """Bir belgeyi (ve tum chunk'larini + diskteki dosyasini) kaldirir; yalnizca VERILEN sohbete aitse.
@@ -2158,6 +3146,23 @@ class SystemOverviewTotals(BaseModel):
     total_messages: int
     analyses_with_trace: int
     stored_representative_frame_count: int
+    # --- RAG + Prompt Injection Guard telemetrisi (persisted trace_events uzerinden,
+    # bkz. _aggregate_rag_security_totals) - hicbir alan UYDURULMAZ: veri yoksa
+    # sayim alanlari 0, ortalama alanlari `None` ("N/A") kalir. ---
+    total_events_detected: int
+    critical_risk_analyses: int
+    rag_query_count: int
+    rag_zero_result_count: int
+    avg_embedding_latency_ms: Optional[float] = None
+    avg_rerank_latency_ms: Optional[float] = None
+    avg_total_rag_latency_ms: Optional[float] = None
+    guard_checks: int
+    guard_allowed: int
+    guard_quarantined: int
+    guard_failures: int
+    guard_fail_closed_blocks: int
+    avg_guard_latency_ms: Optional[float] = None
+    avg_guard_confidence: Optional[float] = None
 
 
 class SystemOverviewResponse(BaseModel):
@@ -2169,12 +3174,12 @@ class SystemOverviewResponse(BaseModel):
 
 
 def _count_persisted_representative_frames(trace_json: Optional[str], job_id: str) -> int:
-    """Bir analizin trace'inde referans verilen representative frame'lerden DISKTE GERCEKTEN var olanlari sayar.
+    """Bir analizin trace'inde referans verilen evidence frame'lerden DISKTE GERCEKTEN var olanlari sayar.
 
     `_persist_representative_frames_best_effort` ile ayni frame_id kaynagini
-    (sampler asamasi `event_groups[].representative_frames[]`) kullanir;
-    diskte bulunmayan (best-effort yazma basarisiz olmus) kareler sayilmaz —
-    boylece bu sayim HER ZAMAN gercekten erisebilecek kare sayisini yansitir.
+    (sampler asamasi `evidence_frames[]`) kullanir; diskte bulunmayan
+    (best-effort yazma basarisiz olmus) kareler sayilmaz — boylece bu sayim
+    HER ZAMAN gercekten erisebilecek kare sayisini yansitir.
     """
     if not trace_json:
         return 0
@@ -2186,12 +3191,89 @@ def _count_persisted_representative_frames(trace_json: Optional[str], job_id: st
     if sampler_event is None:
         return 0
     count = 0
-    for eg in sampler_event.get("data", {}).get("event_groups", []):
-        for rf in eg.get("representative_frames", []):
-            frame_id = rf.get("frame_id")
-            if frame_id and _history_frame_path(job_id, frame_id).is_file():
-                count += 1
+    for ef in sampler_event.get("data", {}).get("evidence_frames", []):
+        frame_id = ef.get("frame_id")
+        if frame_id and _history_frame_path(job_id, frame_id).is_file():
+            count += 1
     return count
+
+
+@dataclass
+class _RagSecurityAggregate:
+    """`get_system_overview()` icin, tum kaydedilmis trace_events uzerinde biriken GERCEK toplamlar."""
+
+    total_events_detected: int = 0
+    critical_risk_analyses: int = 0
+    rag_query_count: int = 0
+    rag_zero_result_count: int = 0
+    embedding_latencies: List[float] = field(default_factory=list)
+    rerank_latencies: List[float] = field(default_factory=list)
+    total_rag_latencies: List[float] = field(default_factory=list)
+    guard_checks: int = 0
+    guard_allowed: int = 0
+    guard_quarantined: int = 0
+    guard_failures: int = 0
+    guard_fail_closed_blocks: int = 0
+    guard_latencies: List[float] = field(default_factory=list)
+    guard_confidences: List[float] = field(default_factory=list)
+
+
+def _accumulate_rag_security_from_trace(trace_json: Optional[str], agg: _RagSecurityAggregate) -> None:
+    """Bir analizin `trace_json`'undaki `events`/`report`/`rag_security` stage verilerini `agg`e ekler.
+
+    Bozuk/eski (bu alanlari HENUZ icermeyen) kayitlar SESSIZCE atlanir -
+    UYDURULMUS bir deger EKLENMEZ, yalnizca gercekten mevcut olan sayilir.
+    """
+    if not trace_json:
+        return
+    try:
+        events = json.loads(trace_json)
+    except Exception:  # noqa: BLE001 - bozuk/eski kayit sayimi kirmamali
+        return
+
+    events_event = next((e for e in events if e.get("stage") == "events"), None)
+    if events_event is not None:
+        agg.total_events_detected += len(events_event.get("data", {}).get("detected_events", []))
+
+    report_event = next((e for e in events if e.get("stage") == "report"), None)
+    if report_event is not None and report_event.get("data", {}).get("risk_level") == "kritik":
+        agg.critical_risk_analyses += 1
+
+    rag_security_event = next((e for e in events if e.get("stage") == "rag_security"), None)
+    if rag_security_event is None:
+        return
+    data = rag_security_event.get("data", {})
+
+    rag = data.get("rag")
+    if rag is not None:
+        agg.rag_query_count += 1
+        if rag.get("zero_result"):
+            agg.rag_zero_result_count += 1
+        if rag.get("embedding_latency_ms") is not None:
+            agg.embedding_latencies.append(rag["embedding_latency_ms"])
+        if rag.get("rerank_latency_ms") is not None:
+            agg.rerank_latencies.append(rag["rerank_latency_ms"])
+        if rag.get("total_latency_ms") is not None:
+            agg.total_rag_latencies.append(rag["total_latency_ms"])
+
+    for check in data.get("security", []):
+        agg.guard_checks += 1
+        if check.get("action") == "quarantine":
+            agg.guard_quarantined += 1
+            if check.get("guard_failed"):
+                agg.guard_fail_closed_blocks += 1
+        else:
+            agg.guard_allowed += 1
+        if check.get("guard_failed"):
+            agg.guard_failures += 1
+        if check.get("latency_ms") is not None:
+            agg.guard_latencies.append(check["latency_ms"])
+        if check.get("confidence") is not None:
+            agg.guard_confidences.append(check["confidence"])
+
+
+def _avg_or_none(values: List[float]) -> Optional[float]:
+    return round(sum(values) / len(values), 1) if values else None
 
 
 @app.get("/system/overview", response_model=SystemOverviewResponse)
@@ -2212,6 +3294,10 @@ def get_system_overview() -> SystemOverviewResponse:
         _count_persisted_representative_frames(r.trace_json, r.job_id) for r in analysis_records
     )
 
+    rag_security_agg = _RagSecurityAggregate()
+    for r in analysis_records:
+        _accumulate_rag_security_from_trace(r.trace_json, rag_security_agg)
+
     conversation_records = get_conversation_store().list_with_message_counts(
         limit=_SYSTEM_OVERVIEW_SCAN_LIMIT, offset=0
     )
@@ -2227,6 +3313,20 @@ def get_system_overview() -> SystemOverviewResponse:
             total_messages=total_messages,
             analyses_with_trace=with_trace,
             stored_representative_frame_count=stored_frames,
+            total_events_detected=rag_security_agg.total_events_detected,
+            critical_risk_analyses=rag_security_agg.critical_risk_analyses,
+            rag_query_count=rag_security_agg.rag_query_count,
+            rag_zero_result_count=rag_security_agg.rag_zero_result_count,
+            avg_embedding_latency_ms=_avg_or_none(rag_security_agg.embedding_latencies),
+            avg_rerank_latency_ms=_avg_or_none(rag_security_agg.rerank_latencies),
+            avg_total_rag_latency_ms=_avg_or_none(rag_security_agg.total_rag_latencies),
+            guard_checks=rag_security_agg.guard_checks,
+            guard_allowed=rag_security_agg.guard_allowed,
+            guard_quarantined=rag_security_agg.guard_quarantined,
+            guard_failures=rag_security_agg.guard_failures,
+            guard_fail_closed_blocks=rag_security_agg.guard_fail_closed_blocks,
+            avg_guard_latency_ms=_avg_or_none(rag_security_agg.guard_latencies),
+            avg_guard_confidence=_avg_or_none(rag_security_agg.guard_confidences),
         ),
         generated_at=datetime.datetime.utcnow().isoformat() + "Z",
         scan_limit=_SYSTEM_OVERVIEW_SCAN_LIMIT,
@@ -2235,7 +3335,10 @@ def get_system_overview() -> SystemOverviewResponse:
 
 @app.get("/ask/stream")
 async def ask_safir_stream(
-    question: str, job_id: Optional[str] = None, conversation_id: Optional[str] = None
+    question: str,
+    job_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    use_video: bool = False,
 ) -> StreamingResponse:
     """Ask SAFIR'i SSE ile parca parca (streaming) yanitlar.
 
@@ -2292,7 +3395,12 @@ async def ask_safir_stream(
 
         try:
             meta, chunks = get_ask_service().stream_answer(
-                question, job_id, history=history, user_context=user_context, document_context=document_context
+                question,
+                job_id,
+                history=history,
+                user_context=user_context,
+                document_context=document_context,
+                use_video=use_video,
             )
         except JobNotFound as exc:
             yield f"event: error\ndata: {json.dumps({'detail': f'Analiz bulunamadi: {exc}'})}\n\n"

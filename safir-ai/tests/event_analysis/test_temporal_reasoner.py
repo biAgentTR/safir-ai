@@ -19,6 +19,7 @@ def _event(
     description: str = "test aciklamasi",
 ) -> DetectedEvent:
     return DetectedEvent(
+        event_name=event_type,
         event_type=event_type,
         description=description,
         timestamp=timestamp,
@@ -291,3 +292,84 @@ def test_closed_group_never_reopens_even_if_a_later_same_type_event_would_be_clo
     assert kkd_events[1].occurrence_count == 2
     assert kkd_events[1].start_timestamp == 15.0
     assert kkd_events[1].end_timestamp == 17.0
+
+
+def test_more_than_eight_well_separated_events_are_not_artificially_capped() -> None:
+    """Event sayisi hicbir sabit (orn. 8) ile sinirlanmamali; her biri onceki
+    gruptan `merge_window_sec`in COK otesinde olan N farkli olay, N ayri
+    `TemporalEvent` uretmelidir."""
+    event_types = [
+        "dusme_riski",
+        "kkd_ihlali",
+        "arac_yaya_yakinligi",
+        "sicak_calisma_ihlali",
+        "yangin_duman",
+        "dar_alan_ihlali",
+        "enerji_kesme_ihlali",
+        "agir_yuk_riski",
+        "yetkisiz_erisim",
+        "genel_gozlem",
+        "siniflandirilamadi",
+    ]
+    assert len(event_types) > 8
+
+    events = [_event(event_type, timestamp=index * 100.0) for index, event_type in enumerate(event_types)]
+    result = TemporalReasoner().reason(events)
+
+    assert len(result) == len(event_types)
+
+
+def test_many_close_observations_of_the_same_event_still_merge_into_one_cluster() -> None:
+    """Yapay bir ust sinir olmadan, ayni olaya ait COK sayida (>8) yakin
+    zamanli gozlem de tek bir cluster'a birlesmeye devam etmeli."""
+    events = [_event("arac_yaya_yakinligi", timestamp=float(i)) for i in range(12)]
+    result = TemporalReasoner().reason(events)
+
+    assert len(result) == 1
+    assert result[0].occurrence_count == 12
+
+
+def test_temporal_clustering_unions_free_form_keywords_across_observations() -> None:
+    """Ayni olaya ait, zaman icinde biriken serbest-bicimli (taksonomiyle
+    SINIRLI OLMAYAN) VLM keyword'leri, tek `TemporalEvent`e birlesirken
+    TEKRARSIZ olarak birlestirilmeli (union), hicbiri kaybolmamali."""
+    events = [
+        _event("yangin_duman", timestamp=6.0, keywords=["duman", "yogun duman"]),
+        _event("yangin_duman", timestamp=8.0, keywords=["yogun duman", "alev"]),
+        _event("yangin_duman", timestamp=9.5, keywords=["alevlenme"]),
+    ]
+    result = TemporalReasoner().reason(events)
+
+    assert len(result) == 1
+    assert result[0].matched_keywords == ["duman", "yogun duman", "alev", "alevlenme"]
+
+
+def test_temporal_clustering_union_preserves_more_than_eight_keywords() -> None:
+    group_a = _event("yangin_duman", timestamp=0.0, keywords=[f"terim-{i}" for i in range(5)])
+    group_b = _event("yangin_duman", timestamp=2.0, keywords=[f"terim-{i}" for i in range(5, 10)])
+    result = TemporalReasoner().reason([group_a, group_b])
+
+    assert len(result) == 1
+    assert len(result[0].matched_keywords) == 10
+
+
+def test_temporal_union_matches_users_exact_example_scenario() -> None:
+    """Kullanicinin verdigi tam ornek: 3 gozlem, ayni event_type, kismen
+    ortusen serbest-bicimli keyword'ler -> TEKRARSIZ birlesim, taksonomiye
+    INDIRGENMEDEN."""
+    events = [
+        _event("yangin_duman", timestamp=0.0, keywords=["duman", "siyah duman"]),
+        _event("yangin_duman", timestamp=2.0, keywords=["yogun duman", "alev"]),
+        _event("yangin_duman", timestamp=4.0, keywords=["alevlenme", "yanma belirtisi"]),
+    ]
+    result = TemporalReasoner().reason(events)
+
+    assert len(result) == 1
+    assert result[0].matched_keywords == [
+        "duman",
+        "siyah duman",
+        "yogun duman",
+        "alev",
+        "alevlenme",
+        "yanma belirtisi",
+    ]

@@ -15,23 +15,30 @@ Iki kural katmani uretir:
    seti koda gomulmez, YAML'dan okunur; boylece yeni bir bilesik ihlal
    kurali eklemek kod degisikligi gerektirmez.
 
-`agent/` bagimliligi
---------------------
-Bu modul, `src.agent.tools.RetrieverTool`'u dogrudan import ETMEZ (yasakli
-`src/agent/` klasorune bagimlilik eklememek icin). Bunun yerine
-`RegulationRetriever` adinda bir `Protocol` tanimlar; `run(question, top_k)
--> str` imzasina uyan herhangi bir nesne (gercek kullanimda
-`RetrieverTool(rag_service).run`, testte ise basit bir mock) `RuleEngine`e
-opsiyonel olarak enjekte edilebilir. Retriever verilmezse, tekli kural
-eslesmeleri yalnizca `EVENT_TYPE_REGULATION_MAP`'teki kisa etiketle
-doner (zenginlestirme atlanir).
+2026-08-25 duzeltmesi (RuleEngine KENDI RAG sorgusu YAPMAZ - tek gercek RAG kaynagi):
+Bu modul bir donem (`RegulationRetriever` Protocol'u + `_describe_regulation`
+icinde `EmbeddingRAGService.query()`e dogrudan baglanan bir zenginlestirme)
+KENDI, AYRI, telemetrisiz bir RAG sorgusu yaparak `rule_description`i gercek
+KB metniyle "zenginlestiriyordu". Bu, operatore GORUNURDE iki farkli RAG
+kanali (biri skor/telemetri TASIMAYAN "Baglam ve RAG", digeri skorlu/reranked
+"RAG ve Guvenlik") gibi gorunmesine yol acti - kafa karistirici VE gereksiz
+tekrardi. RuleEngine ARTIK tekrar SADECE deterministik, event_type -> kisa
+mevzuat ETIKETI eslemesi yapar (`EVENT_TYPE_REGULATION_MAP`); mevzuatin
+GERCEK, kanit-niteligindeki metni SADECE `EmbeddingRAGService.query()`nin
+telemetrili/skorlu/cross-encoder'li tek gercek yolundan (bkz.
+`src/main.py::stage_context`, "RAG ve Guvenlik" paneli) gelir ve nihai
+raporun `relevant_regulations` alanina ORADAN yazilir (bkz.
+`src/main.py::build_report`). `rule_description`, `severity` ile birlikte
+yalnizca "hangi ISG kategorisi tetiklendi" bilgisini tasiyan kisa, deterministik
+bir siniflandirma etiketidir - bir RAG/kanit metni DEGILDIR ve bu sekilde
+sunulmaz.
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional, Protocol, runtime_checkable
+from typing import Dict, List, Optional
 
 import yaml
 
@@ -75,28 +82,21 @@ Bu, `05 LangGraph Ajani`nin urettigi risk skorundan bagimsiz, salt kural
 tabanli bir on-degerlendirmedir."""
 
 
-@runtime_checkable
-class RegulationRetriever(Protocol):
-    """`src.agent.tools.RetrieverTool` ile ayni imzaya sahip herhangi bir nesne icin duck-typing sozlesmesi.
+def _safe_event_type(value: Optional[str]) -> Optional[EventType]:
+    """Bir string'i `EventType`e cevirir; bilinmeyen/gecersiz/`None` degerlerde `None` dondurur.
 
-    `RuleEngine`, `agent/` klasorune bagimlilik eklememek icin `RetrieverTool`'u
-    import etmez; bu Protocol'e uyan herhangi bir nesne (gercek kullanimda
-    `RetrieverTool(rag_service).run`, testte basit bir mock) enjekte edilebilir.
-    """
-
-    def run(self, question: str, top_k: int = 3) -> str:
-        """Verilen soruya en ilgili mevzuat/kural metnini dogal dil olarak dondurur."""
-        ...
-
-
-def _safe_event_type(value: str) -> Optional[EventType]:
-    """Bir string'i `EventType`e cevirir; bilinmeyen/gecersiz degerlerde `None` dondurur.
+    T020: `TemporalEvent.event_type` artik OPSIYONEL (canonical baglanti) -
+    `value=None` (VLM'in gozlemi bilinen hicbir kategoriye karsilik gelmiyor,
+    yani serbest/yeni bir `event_name`) GECERLI bir girdidir; bu durumda bu
+    fonksiyon (kasitli olarak) `None` dondurur ve cagiran taraf HICBIR
+    RuleMatch URETMEZ - bir kategoriye ZORLAMA YAPILMAZ.
 
     Args:
-        value: `TemporalEvent.event_type` gibi serbest bir string.
+        value: `TemporalEvent.event_type` (opsiyonel canonical baglanti) gibi
+            serbest bir string veya `None`.
 
     Returns:
-        Eslesen `EventType` uyesi, yoksa `None`.
+        Eslesen `EventType` uyesi, yoksa (bilinmeyen deger VEYA `None`) `None`.
     """
     try:
         return EventType(value)
@@ -108,29 +108,20 @@ class RuleEngine:
     """`TemporalEvent` listesini tekli mevzuat eslestirmesi ve kombinasyon kurallarina karsi sorgular.
 
     Bkz. modul dokustringi icin tekli/kombinasyon kural katmanlarinin tam
-    aciklamasi ve `agent/`'a bagimlilik eklenmemesini saglayan Protocol
-    yaklasimi.
+    aciklamasi. Bu sinif HICBIR AG/RAG CAGRISI YAPMAZ - tamamen yerel,
+    deterministik bir tablo/YAML eslemesidir.
     """
 
-    def __init__(
-        self,
-        retriever: Optional[RegulationRetriever] = None,
-        rules_path: str | Path = DEFAULT_RULES_PATH,
-    ) -> None:
-        """RuleEngine'i opsiyonel bir retriever ve kombinasyon kurallari dosyasiyla baslatir.
+    def __init__(self, rules_path: str | Path = DEFAULT_RULES_PATH) -> None:
+        """RuleEngine'i kombinasyon kurallari dosyasiyla baslatir.
 
         Args:
-            retriever: `RegulationRetriever` sozlesmesine uyan opsiyonel
-                mevzuat arama nesnesi (orn. `RetrieverTool(rag_service)`).
-                `None` ise tekli kural eslesmeleri yalnizca kisa mevzuat
-                etiketiyle doner.
             rules_path: `combination_rules` listesini iceren YAML dosyasinin
                 yolu (varsayilan: `src/event_analysis/rules/isg_rules.yaml`).
 
         Raises:
             FileNotFoundError: `rules_path` mevcut degilse.
         """
-        self._retriever = retriever
         self._combination_rules = self._load_combination_rules(Path(rules_path))
 
     @staticmethod
@@ -201,37 +192,13 @@ class RuleEngine:
         return [
             RuleMatch(
                 rule_id=_RULE_ID_BY_EVENT_TYPE.get(event_type, event_type.value),
-                rule_description=self._describe_regulation(regulation_label),
+                rule_description=regulation_label,
                 event_type=event.event_type,
                 severity=_DEFAULT_SEVERITY_BY_EVENT_TYPE.get(event_type, "orta"),
                 source_event_id=event.event_id,
                 related_event_ids=[],
             )
         ]
-
-    def _describe_regulation(self, regulation_label: str) -> str:
-        """Mevzuat etiketini, varsa retriever uzerinden tam metinle zenginlestirir.
-
-        Args:
-            regulation_label: `EVENT_TYPE_REGULATION_MAP`'ten gelen kisa etiket
-                (orn. "ISG Yonetmeligi Madde 12").
-
-        Returns:
-            Retriever mevcutsa donen zenginlestirilmis metin; retriever yoksa
-            veya cagri basarisiz olursa orijinal etiket.
-        """
-        if self._retriever is None:
-            return regulation_label
-
-        try:
-            enriched = self._retriever.run(question=regulation_label, top_k=1)
-        except Exception:
-            logger.exception(
-                "RuleEngine: retriever cagrisi basarisiz, kisa mevzuat etiketiyle devam ediliyor."
-            )
-            return regulation_label
-
-        return enriched or regulation_label
 
     def _match_combination_rules(self, sorted_events: List[TemporalEvent]) -> List[RuleMatch]:
         """`related_events` iliski kumelerini YAML'daki kombinasyon kurallarina karsi degerlendirir.
@@ -314,6 +281,7 @@ if __name__ == "__main__":
     demo_events = [
         TemporalEvent(
             event_id="evt_0",
+            event_name="kkd_ihlali",
             event_type="kkd_ihlali",
             description="Personel baretsiz calisiyor.",
             start_timestamp=0.0,
@@ -327,6 +295,7 @@ if __name__ == "__main__":
         ),
         TemporalEvent(
             event_id="evt_1",
+            event_name="arac_yaya_yakinligi",
             event_type="arac_yaya_yakinligi",
             description="Forklift yaya gecidine yaklasiyor.",
             start_timestamp=8.0,

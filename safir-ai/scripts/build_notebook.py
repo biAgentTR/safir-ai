@@ -34,7 +34,7 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
     md(
         "## 0) Kurulum ve Ayarlar\n"
         "- `USE_MOCK=False` → `config.yaml`'daki backend (**Gemini**; `GEMINI_API_KEY` gerekli).\n"
-        "- `USE_FAKE_RAG=True` → agir embedding modelini (bge-m3 ~2GB) indirmez; hafif mevzuat kullanir (demo hizli)."
+        "- `USE_FAKE_RAG=True` → gercek Gemini embedding/rerank API'lerini cagirmaz; hafif mevzuat kullanir (demo hizli, offline)."
     )
     code(
         "import sys, os\n"
@@ -48,7 +48,7 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
         "\n"
         "# ---- AYARLAR ----\n"
         f"USE_MOCK = {use_mock_default}       # False: Gemini | True: offline\n"
-        "USE_FAKE_RAG = True    # True: bge-m3 indirmez (hizli) | False: gercek FAISS RAG\n"
+        "USE_FAKE_RAG = True    # True: Gemini API'yi cagirmaz (hizli/offline) | False: gercek Gemini+FAISS RAG\n"
         "\n"
         "from src.utils.config_loader import load_config\n"
         "config = load_config()\n"
@@ -127,32 +127,25 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
         "print(f'Sure             : {s.elapsed_sec}s')"
     )
 
-    # 2 - clusters + representative frames SHOWN
+    # 2 - all evidence frames SHOWN (no clustering in sampler)
     md(
-        "## 2) Olay Kumeleme + VLM'e Gidecek Kareler (pre / peak / post)\n"
-        "Kanit kareleri **Olay Gruplari**na kumelenir; her grup icin zirvenin oncesi/sonrasi da eklenir. "
-        "**Asagida VLM'e GONDERILECEK kareler tam olarak gorunur** — model bunlari bir dizi olarak yorumlayacak."
+        "## 2) VLM'e Gidecek Kanit Kareleri\n"
+        "Sampler artik olay kumelemesi YAPMAZ — esigi gecen **tum kanit kareleri**, hicbir konumsal rol "
+        "etiketi olmadan, kronolojik sirayla VLM'e gonderilir. Olay kumeleme (ayni olaya ait kareleri "
+        "gruplama) artik VLM'in kendi gorevidir (bkz. adim 4). "
+        "**Asagida VLM'e GONDERILECEK tum kareler tam olarak gorunur.**"
     )
     code(
         "import base64\n"
         "from IPython.display import Image as IPyImage, display\n"
-        "from src.sampler.context.representative_frame_extractor import RepresentativeFrameExtractor\n"
         "\n"
-        "clusters = sampler.cluster_events(evidence)\n"
-        "extractor = RepresentativeFrameExtractor(\n"
-        "    config.sampler.pre_peak_offset_sec, config.sampler.post_peak_offset_sec)\n"
-        "for c in clusters:\n"
-        "    c.representative_frames = extractor.extract(VIDEO_PATH, c.peak_frame)\n"
-        "\n"
-        "print(f'{len(clusters)} olay grubu\\n')\n"
-        "for c in clusters:\n"
-        "    print(f'=== Olay #{c.event_id} — VLM\\'e gidecek {len(c.representative_frames)} kare ===')\n"
-        "    imgs = []\n"
-        "    for rf in c.representative_frames:\n"
-        "        _, b64 = rf.base64_image.split(',', 1)\n"
-        "        imgs.append(IPyImage(data=base64.b64decode(b64), width=200))\n"
-        "        print(f'  • {rf.label:<11} @ {rf.timestamp_str}')\n"
-        "    display(widgets.HBox([widgets.Image(value=i.data, format='jpeg', width=200) for i in imgs]))"
+        "print(f'{len(evidence)} kanit karesi VLM\\'e gonderilecek\\n')\n"
+        "imgs = []\n"
+        "for ef in evidence:\n"
+        "    _, b64 = ef.base64_image.split(',', 1)\n"
+        "    imgs.append(IPyImage(data=base64.b64decode(b64), width=200))\n"
+        "    print(f'  • {ef.evidence_id:<12} @ {ef.timestamp_str}  skor={ef.change_score:.3f}')\n"
+        "display(widgets.HBox([widgets.Image(value=i.data, format='jpeg', width=200) for i in imgs]))"
     )
 
     # RAG service (moved up; rule engine + agent need it)
@@ -176,23 +169,29 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
         "            ][:(top_k or 2)]\n"
         "    rag_service = _FakeRAG()\n"
         "else:\n"
-        "    from src.memory.embedding_rag_service import EmbeddingRAGService\n"
-        "    rag_service = EmbeddingRAGService(config.memory.embedding, config.memory.faiss)\n"
+        "    from src.rag.embedding_rag_service import EmbeddingRAGService\n"
+        "    rag_service = EmbeddingRAGService(config.memory.embedding, config.memory.qdrant, config.memory.reranker)\n"
         "    rag_service.seed_default_regulations()\n"
         "print('RAG servisi hazir:', type(rag_service).__name__)"
     )
 
     # 4 - VLM
     md(
-        "## 4) VLM — Gorsel Anlama (Gemini)\n"
-        "Yukaridaki kareler VLM'e gonderilir. Iki cikti: **insan-okur** Turkce gozlem ve **makine-okur** "
-        "yapilandirilmis olaylar (`EVENTS_JSON`: tip/zaman/guven)."
+        "## 4) VLM — Gorsel Anlama + Olay Kumeleme (Gemini)\n"
+        "Yukaridaki TUM kanit kareleri VLM'e gonderilir. VLM hem **insan-okur** Turkce gozlem uretir hem de "
+        "kareleri kendisi ayni gercek olaya gore kumeleyip **makine-okur** yapilandirilmis olaylar "
+        "(`EVENTS_JSON`: event_id/zaman/evidence_ids/tip/risk/guven) doner. Tek istege sigmayan videolarda "
+        "`analyze_evidence_batched` kronolojik batch'lere boler ve gerekirse `reconcile_events` ile "
+        "batch-local olaylari global olaylara birlestirir."
     )
     code(
         "from src.vlm.factory import get_vlm_client\n"
+        "from src.prompts.vlm_prompts import VLM_RECONCILIATION_SYSTEM_PROMPT\n"
         "\n"
         "vlm = get_vlm_client(config.vlm, use_mock=config.app.use_mock_vlm)\n"
-        "vlm_response = vlm.describe_events(clusters, prompt='Sahnede riskli bir durum var mi degerlendir.')\n"
+        "batch_responses = vlm.analyze_evidence_batched(\n"
+        "    evidence, prompt='Sahnede riskli bir durum var mi degerlendir.', batch_size=config.vlm.batch_size)\n"
+        "vlm_response = vlm.reconcile_events(batch_responses, prompt=VLM_RECONCILIATION_SYSTEM_PROMPT)\n"
         "\n"
         "print('Model:', vlm_response.model_name, f'({vlm_response.latency_ms:.0f} ms)')\n"
         "print('\\n----- VLM Gozlemi -----\\n')\n"
@@ -215,7 +214,7 @@ def build(use_mock_default: bool) -> nbf.NotebookNode:
         "from src.event_analysis.schemas import EventEngineInput\n"
         "from src.agent.tools import RetrieverTool\n"
         "\n"
-        "engine_input = EventEngineInput.from_vlm_response(vlm_response, timestamp=clusters[-1].end_time)\n"
+        "engine_input = EventEngineInput.from_vlm_response(vlm_response, timestamp=evidence[-1].timestamp_sec)\n"
         "detected = EventEngine().detect(engine_input)\n"
         "print('1) Tespit edilen olaylar (DetectedEvent):')\n"
         "for d in detected:\n"

@@ -38,14 +38,35 @@ class EventEngineInput(BaseModel):
             "anahtar-kelime fallback'ine duser."
         ),
     )
+    evidence_timestamps: Dict[str, float] = Field(
+        default_factory=dict,
+        description=(
+            "SAFIR-specific deterministic temporal consistency validation icin: "
+            "`EvidenceFrame.evidence_id -> EvidenceFrame.timestamp_sec` eslemesi "
+            "(bu cagriya ait TUM evidence kareleri, `sampler`den gelen gercek "
+            "zaman damgalariyla). `EventEngine._detect_from_structured`, VLM'in "
+            "urettigi `start_time`/`end_time`in bu GERCEK zaman damgalariyla "
+            "tutarli olup olmadigini bu esleme uzerinden dogrular - VLM'in "
+            "zaman iddiasini 'duzeltmek' degil, DOGRULAMAK icindir (bkz. "
+            "`EventEngine._enforce_temporal_consistency` docstring'i). Bos "
+            "birakilirsa (eski davranisla uyumlu) hicbir dogrulama yapilmaz."
+        ),
+    )
 
     @classmethod
-    def from_vlm_response(cls, vlm_response: "VLMResponse", timestamp: float) -> "EventEngineInput":
+    def from_vlm_response(
+        cls,
+        vlm_response: "VLMResponse",
+        timestamp: float,
+        evidence_timestamps: Optional[Dict[str, float]] = None,
+    ) -> "EventEngineInput":
         """`VLMResponse` orneginden bir `EventEngineInput` uretir.
 
         Args:
-            vlm_response: `BaseVLM.describe_events(...)` ciktisi.
-            timestamp: Gozlemin zaman damgasi (orn. `EventCluster.end_time`).
+            vlm_response: `BaseVLM.analyze_evidence(...)`/`reconcile_events(...)` ciktisi.
+            timestamp: Gozlemin zaman damgasi (orn. son evidence karesinin zaman damgasi).
+            evidence_timestamps: Bkz. `EventEngineInput.evidence_timestamps`;
+                `None`/bos birakilirsa zamansal tutarlilik dogrulamasi atlanir.
 
         Returns:
             Event Engine'e dogrudan verilebilecek girdi nesnesi.
@@ -56,13 +77,14 @@ class EventEngineInput(BaseModel):
             source_model=vlm_response.model_name,
             frame_count=vlm_response.frame_count,
             structured_events=list(getattr(vlm_response, "structured_events", []) or []),
+            evidence_timestamps=dict(evidence_timestamps or {}),
         )
 
 
 class EventType(str, Enum):
     """Event Engine'in tanidigi olay kategorileri.
 
-    Ilk 8 deger, `src/memory/embedding_rag_service.py::DEFAULT_ISG_REGULATIONS`
+    Ilk 8 deger, `src/rag/embedding_rag_service.py::DEFAULT_ISG_REGULATIONS`
     icindeki 8 mevzuat maddesiyle birebir hizalanmistir (bkz.
     `EVENT_TYPE_REGULATION_MAP`); T010 Rule Engine bu eslesmeyi dogrudan
     kullanabilir. `YETKISIZ_ERISIM` ve `GENEL_GOZLEM` mevcut mevzuat setinde
@@ -95,25 +117,17 @@ class EventType(str, Enum):
     """ISG Yonetmeligi Madde 52 (sinyalman olmadan vinc/kren ile agir yuk kaldirma)."""
 
     YETKISIZ_ERISIM = "yetkisiz_erisim"
-    """Erisim Kontrol Proseduru EK-01 (yasakli/yetkisiz alana giris)."""
-
-    SIZMA_YETKISIZ_ERISIM = "sizma_yetkisiz_erisim"
-    """Savunma Sanayi & Kritik Tesis Cevre Koruma Hattinda (tel orgu, duvar, nizamye) sizma ve yetkisiz erisim ihlali."""
-
-    SUPHELI_PAKET_HAREKET = "supheli_paket_hareket"
-    """Tesis icinde veya cevresinde sahipsiz paket/canta veya supheli davranis (kesif, gizlenme)."""
-
-    DRONE_IHA_TEHDIDI = "drone_iha_tehdidi"
-    """Kritik tesis hava sahasinda izinsiz IHA, drone veya ucan cisim gorulmesi."""
-
-    YARALANMA_KAZA = "yaralanma_kaza"
-    """Fiziki is kazasi, yaralanma, dusme, kanama, ezilme, carpisma veya acil mudahale gerektiren durumlar."""
-
-    SINIFLANDIRILAMADI = "siniflandirilamadi"
-    """8 ana ISG kurali disinda supheli risk / anormallik / inceleme bekleyen tehlike durumu."""
+    """Mevzuat disi, operasyonel izleme kategorisi: mevcut `DEFAULT_ISG_REGULATIONS`
+    setinde dogrudan karsiligi yoktur, ancak yasakli/yetkisiz alana giris
+    saha guvenligi acisindan izlenmesi gereken yaygin bir durum oldugundan
+    enum'da tutulur. Mevzuat seti genisledikce (orn. erisim kontrolu maddesi
+    eklenirse) `EVENT_TYPE_REGULATION_MAP`'e baglanabilir."""
 
     GENEL_GOZLEM = "genel_gozlem"
     """Fallback kategori: hicbir kural kategorisi eslesmedigi durumlar icin (mevzuat karsiligi yok)."""
+
+    SINIFLANDIRILAMADI = "siniflandirilamadi"
+    """Siniflandirilamayan olay kategorisi: 8 temel ISG mevzuat kuralindan birine oturtulamayan riskli/anormal durumlar."""
 
 
 EVENT_TYPE_REGULATION_MAP: Dict[EventType, Optional[str]] = {
@@ -125,17 +139,13 @@ EVENT_TYPE_REGULATION_MAP: Dict[EventType, Optional[str]] = {
     EventType.DAR_ALAN_IHLALI: "ISG Yonetmeligi Madde 45",
     EventType.ENERJI_KESME_IHLALI: "Operasyonel Kural OK-15",
     EventType.AGIR_YUK_RISKI: "ISG Yonetmeligi Madde 52",
-    EventType.YETKISIZ_ERISIM: "Erisim Kontrol Proseduru EK-01",
-    EventType.SIZMA_YETKISIZ_ERISIM: "Erisim Kontrol Proseduru EK-01 (Cevre Guvenligi ve Sizma Tespiti)",
-    EventType.SUPHELI_PAKET_HAREKET: "Supheli Hareket ve Paket Talimati SHP-02",
-    EventType.DRONE_IHA_TEHDIDI: "Hava Savunma ve IHA/Drone Yonergesi IHA-04",
-    EventType.YARALANMA_KAZA: "Genel ISG Kanunu Madde 4 (Is Kazasi ve Acil Mudahale)",
-    EventType.SINIFLANDIRILAMADI: "8 Ana ISG Kurali Disinda Supheli Risk / Inceleme Bekliyor",
+    EventType.YETKISIZ_ERISIM: None,
     EventType.GENEL_GOZLEM: None,
+    EventType.SINIFLANDIRILAMADI: None,
 }
 """`EventType` -> ilgili mevzuat maddesinin kisa referans etiketi.
 
-Etiketler `src/memory/embedding_rag_service.py::DEFAULT_ISG_REGULATIONS`
+Etiketler `src/rag/embedding_rag_service.py::DEFAULT_ISG_REGULATIONS`
 icindeki tam metinlerin basliklarina karsilik gelir (o dosyaya bagimlilik
 eklememek icin metin burada tekrarlanmaz, yalnizca referans etiketi
 tutulur). `None` degeri, o kategorinin mevcut mevzuat setinde karsiligi
@@ -144,16 +154,72 @@ olmadigi anlamina gelir (bkz. `YETKISIZ_ERISIM`/`GENEL_GOZLEM` docstring'leri).
 
 
 class DetectedEvent(BaseModel):
-    """Event Engine'in VLM metninden cikardigi tek bir yapilandirilmis olay."""
+    """Event Engine'in VLM metninden cikardigi tek bir yapilandirilmis olay.
 
-    event_type: str = Field(description="Olay kategorisi (bkz. `EventType`).")
+    T020 (kimlik ayrimi): olayin BIRINCIL kimligi artik `event_name`dir - VLM'in
+    KENDI urettigi, ONCEDEN TANIMLI bir taksonomiyle SINIRLI OLMAYAN serbest
+    bicimli isim (orn. "yerde_hareketsiz_kisi"). `event_type`, ARTIK OPSIYONEL
+    bir "canonical" baglantidir: yalnizca VLM'in gozlemi ZATEN BILINEN 11
+    kategoriden (bkz. `EventType`) birine GERCEKTEN karsilik geliyorsa
+    doldurulur; VLM bunu doldurmak ZORUNDA DEGILDIR. `None` ise bu, deterministik
+    `RuleEngine`in bu olay icin (kasitli olarak) HICBIR RuleMatch URETMEYECEGI
+    anlamina gelir - "eslesmedi" GECERLI ve BEKLENEN bir durumdur.
+    """
+
+    event_name: str = Field(
+        description="Olayin BIRINCIL, serbest-bicimli kimligi (VLM-uretimi; ONCEDEN TANIMLI bir "
+        "taksonomiyle SINIRLI DEGIL, orn. 'yerde_hareketsiz_kisi', 'dengesiz_malzeme_istifi')."
+    )
+    event_type: Optional[str] = Field(
+        default=None,
+        description="OPSIYONEL canonical baglanti (bkz. `EventType`); yalnizca VLM'in gozlemi ZATEN "
+        "BILINEN bir kategoriye GERCEKTEN karsilik geliyorsa doldurulur. `None` = 'eslestirilemedi' "
+        "(GECERLI sonuc, otomatik bir kategoriye ZORLANMAZ).",
+    )
     description: str = Field(description="Olayin dogal dil aciklamasi (VLM metninden alinir).")
-    timestamp: float = Field(description="Olayin saniye cinsinden zaman damgasi.")
+    timestamp: float = Field(description="Olayin (baslangic) saniye cinsinden zaman damgasi.")
+    end_timestamp: Optional[float] = Field(
+        default=None, description="Olayin bitis zaman damgasi (VLM'in `end_time`i); bilinmiyorsa None."
+    )
     confidence: float = Field(ge=0.0, le=1.0, description="Tespitin guven skoru (0.0-1.0).")
+    uncertainties: List[str] = Field(default_factory=list)
+    entities: List[str] = Field(default_factory=list)
+    attributes: List[str] = Field(default_factory=list)
     matched_keywords: List[str] = Field(
         default_factory=list, description="Tespiti tetikleyen anahtar kelimeler (varsa)."
     )
     source_model: Optional[str] = Field(default=None, description="Aciklamayi ureten VLM'in model adi.")
+    vlm_event_id: Optional[str] = Field(
+        default=None, description="VLM'in bu olaya verdigi (batch-yerel veya reconcile-sonrasi global) `event_id`."
+    )
+    evidence_ids: List[str] = Field(
+        default_factory=list,
+        description="VLM'in bu olaya atadigi `EvidenceFrame.evidence_id` listesi (bkz. `EVENTS_JSON.evidence_ids`); "
+        "uydurulmus/gecersiz kimlikler `main.py` katmaninda filtrelenir.",
+    )
+    # --- C1B Provenance Alanlari ---
+    source_analysis_id: Optional[str] = Field(default=None, description="Bu olayin uretildigi ana analiz/job kimligi.")
+    source_video_id: Optional[str] = Field(default=None, description="Bu olayin ait oldugu video kimligi.")
+    source_chunk_id: Optional[str] = Field(default=None, description="Bu olayin uretildigi chunk kimligi.")
+    source_model_call_id: Optional[str] = Field(default=None, description="Bu olayi ureten model cagrisi kimligi.")
+    source_observation_id: Optional[str] = Field(default=None, description="Uygulama tarafindan atanan benzersiz ham gozlem kimligi.")
+    relative_start_sec: Optional[float] = Field(default=None, description="Chunk icindeki goreceli baslangic zamani (saniye).")
+    relative_end_sec: Optional[float] = Field(default=None, description="Chunk icindeki goreceli bitis zamani (saniye).")
+
+    # --- C1B Provenance Alanlari ---
+    source_analysis_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin analiz kimlikleri.")
+    source_video_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin video kimlikleri.")
+    source_chunk_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin chunk kimlikleri.")
+    source_model_call_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin model cagri kimlikleri.")
+    source_observation_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin ham gozlem kimlikleri.")
+
+    risk_hint: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="VLM'in verdigi KABA, ipucu niteliginde risk skoru (0-100); "
+        "NIHAI risk skoru degildir (bu, 05 LangGraph Ajaninin gorevidir).",
+    )
 
 
 class TemporalEvent(BaseModel):
@@ -168,7 +234,15 @@ class TemporalEvent(BaseModel):
     """
 
     event_id: str = Field(description="Bu `TemporalEvent`e ozgu kimlik (orn. 'evt_0').")
-    event_type: str = Field(description="Olay kategorisi (bkz. `EventType`).")
+    event_name: str = Field(
+        description="Olayin BIRINCIL, serbest-bicimli kimligi (bkz. `DetectedEvent.event_name`); "
+        "gruplama ARTIK BUNA gore yapilir (`event_type`e gore DEGIL)."
+    )
+    event_type: Optional[str] = Field(
+        default=None,
+        description="OPSIYONEL canonical baglanti (bkz. `DetectedEvent.event_type`); `None` = "
+        "'eslestirilemedi' (GECERLI, RuleEngine bu durumda hicbir RuleMatch URETMEZ).",
+    )
     description: str = Field(description="Temsili aciklama (gruptaki en son `DetectedEvent`den alinir).")
     start_timestamp: float = Field(description="Gruptaki en erken olayin zaman damgasi (saniye).")
     end_timestamp: float = Field(description="Gruptaki en son olayin zaman damgasi (saniye).")
@@ -179,6 +253,9 @@ class TemporalEvent(BaseModel):
         ge=0.0, le=1.0, description="Gruptaki en yuksek guven skoru, tekrar eden tespitler icin hafifce artirilmis."
     )
     occurrence_count: int = Field(ge=1, description="Bu `TemporalEvent`e birlesen `DetectedEvent` sayisi.")
+    uncertainties: List[str] = Field(default_factory=list)
+    entities: List[str] = Field(default_factory=list)
+    attributes: List[str] = Field(default_factory=list)
     matched_keywords: List[str] = Field(
         default_factory=list, description="Gruptaki tum tespitlerden gelen anahtar kelimelerin birlesimi."
     )
@@ -186,6 +263,29 @@ class TemporalEvent(BaseModel):
     related_events: List[str] = Field(
         default_factory=list,
         description="Zaman ekseninde yakin duran diger `TemporalEvent`lerin `event_id` listesi.",
+    )
+    evidence_ids: List[str] = Field(
+        default_factory=list,
+        description="Gruptaki tum `DetectedEvent.evidence_ids` degerlerinin birlesimi (tekrarsiz, ilk gorulme sirali).",
+    )
+    # --- C1B Provenance Alanlari ---
+    source_analysis_id: Optional[str] = Field(default=None, description="Bu olayin uretildigi ana analiz/job kimligi.")
+    source_video_id: Optional[str] = Field(default=None, description="Bu olayin ait oldugu video kimligi.")
+    source_chunk_id: Optional[str] = Field(default=None, description="Bu olayin uretildigi chunk kimligi.")
+    source_model_call_id: Optional[str] = Field(default=None, description="Bu olayi ureten model cagrisi kimligi.")
+    source_observation_id: Optional[str] = Field(default=None, description="Uygulama tarafindan atanan benzersiz ham gozlem kimligi.")
+    relative_start_sec: Optional[float] = Field(default=None, description="Chunk icindeki goreceli baslangic zamani (saniye).")
+    relative_end_sec: Optional[float] = Field(default=None, description="Chunk icindeki goreceli bitis zamani (saniye).")
+
+    # --- C1B Provenance Alanlari ---
+    source_analysis_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin analiz kimlikleri.")
+    source_video_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin video kimlikleri.")
+    source_chunk_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin chunk kimlikleri.")
+    source_model_call_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin model cagri kimlikleri.")
+    source_observation_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin ham gozlem kimlikleri.")
+
+    risk_hint: Optional[int] = Field(
+        default=None, ge=0, le=100, description="Gruptaki en yuksek `DetectedEvent.risk_hint` (VLM ipucu, nihai degil)."
     )
 
 
@@ -243,7 +343,13 @@ class StructuredEvent(BaseModel):
     source_model: Optional[str] = Field(default=None, description="Aciklamayi ureten VLM'in model adi.")
 
     # --- 05 LangGraph Agentic Loop'a giden ek baglam alanlari ---
-    event_type: str = Field(description="Olay kategorisi (bkz. `EventType`).")
+    event_name: str = Field(
+        description="Olayin BIRINCIL, serbest-bicimli kimligi (bkz. `DetectedEvent.event_name`)."
+    )
+    event_type: Optional[str] = Field(
+        default=None,
+        description="OPSIYONEL canonical baglanti (bkz. `DetectedEvent.event_type`); `None` = 'eslestirilemedi'.",
+    )
     confidence: float = Field(ge=0.0, le=1.0, description="`TemporalEvent.confidence` (tekrar-duzeltilmis guven skoru).")
     temporal_event_id: str = Field(description="Bu olayin turedigi `TemporalEvent.event_id`.")
     related_rule_matches: List[RuleMatch] = Field(
@@ -253,14 +359,29 @@ class StructuredEvent(BaseModel):
         default=1, ge=1, description="`TemporalEvent.occurrence_count` (birlesen tespit sayisi)."
     )
     duration: float = Field(default=0.0, ge=0.0, description="`TemporalEvent.duration` (saniye).")
+    evidence_ids: List[str] = Field(
+        default_factory=list, description="`TemporalEvent.evidence_ids` (bu olaya ait evidence kareleri) passthrough."
+    )
+    keywords: List[str] = Field(
+        default_factory=list,
+        description="`TemporalEvent.matched_keywords` (VLM'in serbest-bicimli, event_type taksonomisiyle "
+        "SINIRLI OLMAYAN gorsel kanit ifadeleri; bkz. `EventEngine._detect_from_structured`) passthrough. "
+        "Sabit bir sayi siniri yoktur; risk KARARI DEGILDIR.",
+    )
 
     def to_event_store_kwargs(self) -> Dict[str, object]:
         """`EventStore.add_event(...)`e dogrudan `**kwargs` olarak verilebilecek sozluk uretir.
 
+        Izlenebilirlik duzeltmesi: onceden yalnizca 5 alan (`timestamp`/
+        `description`/`risk_score`/`risk_level`/`source_model`) tasiniyordu;
+        `evidence_ids`/`temporal_event_id`/`event_name`/`event_type`/
+        `confidence`/`occurrence_count`/`duration`/`keywords` SQLite'a hic
+        yazilmiyordu (bkz. `EventStore._TRACEABILITY_COLUMNS`). Artik bu
+        alanlarin tumu de tasinir - kalici bir olay kaydinin hangi kanit
+        karelerine dayandigi SONRADAN yeniden kurulabilir.
+
         Returns:
-            `timestamp`, `description`, `risk_score`, `risk_level`,
-            `source_model` anahtarlarini iceren, `EventStore.add_event`
-            imzasiyla birebir eslesen sozluk.
+            `EventStore.add_event` imzasiyla birebir eslesen sozluk.
         """
         return {
             "timestamp": self.timestamp,
@@ -268,4 +389,15 @@ class StructuredEvent(BaseModel):
             "risk_score": self.risk_score,
             "risk_level": self.risk_level,
             "source_model": self.source_model,
+            "temporal_event_id": self.temporal_event_id,
+            "event_name": self.event_name,
+            "event_type": self.event_type,
+            "confidence": self.confidence,
+            "occurrence_count": self.occurrence_count,
+            "duration": self.duration,
+            "evidence_ids": list(self.evidence_ids),
+            "keywords": list(self.keywords),
         }
+
+
+

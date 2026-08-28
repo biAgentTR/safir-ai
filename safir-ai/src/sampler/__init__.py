@@ -1,23 +1,20 @@
-"""VLM oncesi katman: CPU uzerinde calisan adaptif kare ornekleyici, olay kumeleme ve payload olusturma."""
+"""VLM oncesi katman: CPU uzerinde calisan adaptif kare ornekleyici + VLM payload olusturma.
+
+Olay kumelemesi ARTIK bu katmanda YAPILMAZ (bkz. `adaptive_sampler`/`payload_builder`
+modul docstring'leri); kumeleme VLM katmanina tasindi.
+"""
 
 from src.sampler.adaptive_sampler import (
     AdaptiveFrameSampler,
-    ClusterMergeStats,
     SamplerRunStats,
     sampler_from_config,
 )
-from src.sampler.context import PeakFrameExporter, RepresentativeFrameExtractor
 from src.sampler.payload_builder import VLMPayloadBuilder
-from src.sampler.schema import EventCluster, EvidenceFrame, RepresentativeFrame
+from src.sampler.schema import EvidenceFrame
 
 __all__ = [
     "AdaptiveFrameSampler",
-    "ClusterMergeStats",
-    "EventCluster",
     "EvidenceFrame",
-    "PeakFrameExporter",
-    "RepresentativeFrame",
-    "RepresentativeFrameExtractor",
     "SamplerRunStats",
     "sampler_from_config",
     "VLMPayloadBuilder",

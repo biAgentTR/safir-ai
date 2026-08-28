@@ -48,11 +48,18 @@ class LLMClient:
         endpoint = llm_config.active_endpoint()
         self._model_name = endpoint.model_name
         # Yerel vLLM icin base_url=http://host:port/v1 ve api_key="EMPTY";
-        # provider="gemini" icin endpoint.base_url + GEMINI_API_KEY (api_key_env).
+        # provider="evren" icin endpoint.base_url + EVREN_API_KEY (api_key_env).
         # logprobs=None: langchain_openai varsayilan olarak `logprobs: false`
         # gonderir; Gemini'nin OpenAI-uyumlu ucu bu alani reddeder ("Unknown name
         # logprobs" 400). None yapmak alani payload'dan tamamen dusurur
         # (yerel vLLM icin de zarari yok).
+        # extra_body: saglayici-ozel alanlar (ör. Qwen3/EVREN "dusunme" modunu
+        # kapatan chat_template_kwargs.enable_thinking) - VLM tarafinda
+        # `base_vlm.py::_build_chat_payload`in ayni `endpoint.extra_body`
+        # config alanini ISTEK GOVDESINE eklemesiyle AYNI mekanizma/desen;
+        # burada eksikti (bkz. P0: bos content -> risk_status=unknown kok
+        # nedeni - thinking modu acikken tum max_tokens butcesi gizli
+        # akil yurutme tokenlarina gidip goruen content'i BOS birakabiliyordu).
         self._base_chat = ChatOpenAI(
             model=endpoint.model_name,
             base_url=endpoint.resolved_base_url(),
@@ -60,6 +67,7 @@ class LLMClient:
             temperature=endpoint.temperature,
             max_tokens=endpoint.max_new_tokens,
             logprobs=None,
+            extra_body=endpoint.extra_body or None,
         )
         # `bind_tools` bunu araci-baglanmis surumle degistirir; `_base_chat`
         # (araci baglanmamis) JSON-modu (invoke_json) icin saklanir.
@@ -158,76 +166,62 @@ class MockLLMClient:
         return self
 
     def invoke(self, messages: Sequence[BaseMessage]) -> AIMessage:
-        """Sahte gecikme sonrasi mesaj icerigine uygun sahte bir karar dondurur.
-
-        Args:
-            messages: LangGraph durum makinesinin biriktirdigi mesaj gecmisi.
-
-        Returns:
-            `RISK_SKORU`/`AKSIYON_ONERISI` iceren, `tool_calls=[]` bir `AIMessage`.
-        """
-        time.sleep(0.05)
-        logger.info("MockLLMClient: %d mesajlik gecmis icin sahte karar uretildi", len(messages))
-
-        # Few-shot ornegindeki "hareketsiz kisi" metninden etkilenmemek icin
-        # sadece "## Degerlendirilecek Gercek Baglam" sonrasindaki gercek gozleme bak
-        user_msgs = [str(getattr(m, "content", "")) for m in messages if getattr(m, "type", "") == "human"]
-        full_user_text = " ".join(user_msgs if user_msgs else [str(getattr(messages[-1], "content", ""))])
-
-        if "## Degerlendirilecek Gercek Baglam" in full_user_text:
-            prompt_text = full_user_text.split("## Degerlendirilecek Gercek Baglam")[-1].lower()
-        elif "## guncel gozlem" in full_user_text.lower():
-            prompt_text = full_user_text.lower().split("## guncel gozlem")[-1]
-        # Dinamik VLM ve Baglam Cikarimi:
-        # Prompt icerisindeki gercek VLM metnini ve gozlemini dogrudan yakala
-        extracted_summary = ""
-        for line in full_user_text.splitlines():
-            clean_l = line.strip()
-            if any(clean_l.lower().startswith(p) for p in ["vlm", "gözlem", "gozlem", "açıklama", "aciklama", "summary"]):
-                extracted_summary = clean_l.split(":", 1)[-1].strip()
-                if len(extracted_summary) > 10:
-                    break
-
-        if not extracted_summary:
-            extracted_summary = prompt_text[:200].strip() if len(prompt_text) > 10 else "Sahada durum izlemesi yapildi."
-
-        # Dinamik Risk ve Kategori Tespiti
-        p_lower = (full_user_text + " " + extracted_summary).lower()
-        if any(k in p_lower for k in ["gorulmedi", "görülmedi", "tespit edilmedi", "yoktur", "rutin", "normal"]):
-            r_score = 0
-            r_level = "dusuk"
-            category = "safety"
-            dyn_actions = ["Rutin saha izlemesine devam ediniz."]
-        elif any(k in p_lower for k in ["devrilme", "yangin", "alev", "patlama", "dusme", "düşme", "agir", "ağır", "kaza", "hareketsiz", "yaralanma"]):
-            r_score = 85
-            r_level = "kritik"
-            category = "safety" if not any(k in p_lower for k in ["yetkisiz", "sizma", "tel orgu"]) else "ambiguous"
-            dyn_actions = ["Alanı derhal tahliye ediniz ve acil durum ekiplerine haber veriniz.", "Teknik güvenlik önlemlerini devreye alınız."]
-        elif any(k in p_lower for k in ["duman", "kayma", "hasar", "supheli", "şüpheli", "sizma", "sızma", "yetkisiz"]):
-            r_score = 65
-            r_level = "yuksek"
-            category = "security" if any(k in p_lower for k in ["yetkisiz", "sizma", "tel orgu", "supheli"]) else "safety"
-            dyn_actions = ["Saha operatörünü ve ilgili birimleri derhal bilgilendiriniz.", "Olay bölgesinde güvenlik şeridi oluşturunuz."]
+        """VLM ciktisini inceleyerek dinamik veya sahte bir karar dondurur."""
+        time.sleep(0.1)
+        logger.info("MockLLMClient: %d mesajlik gecmis inceleniyor...", len(messages))
+        
+        full_text = " ".join([str(m.content) for m in messages])
+        full_text_lower = full_text.lower()
+        
+        # Olay baslangic zamanini (start_time / onset moment) dinamik yakala:
+        import re
+        match = re.search(r"OLAY BAŞLANGIÇ ZAMANI[^:]*:\s*(\d{2}:\d{2})", full_text)
+        if not match:
+            match = re.search(r"Başlangıç Zamanı:\s*(\d{2}:\d{2})", full_text)
+        start_time_str = match.group(1) if match else "00:19"
+        
+        if any(w in full_text_lower for w in ["duman", "yangın", "yangin", "ates", "ateş", "fire", "smoke", "alev", "patlama"]):
+            decision = (
+                "{\n"
+                f'  "summary": "Görsel VLM Analizi: Sahada 00:07 - 00:15 saniyeleri arasında kaza/ihlal bulunmamaktadır. {start_time_str} anındaki kareden itibaren duman ve yangın başlangıcı (onset) tespit edilmiştir.",\n'
+                f'  "onset_timestamp": "{start_time_str}",\n'
+                '  "safe_timestamps": ["00:07", "00:10", "00:12", "00:15"],\n'
+                f'  "incident_timestamps": ["{start_time_str}", "01:15"],\n'
+                '  "events": [\n'
+                '    {"time": "00:07", "event": "Kare #1 [00:07]: Rutin saha - Güvenli (Kaza yok)"},\n'
+                '    {"time": "00:10", "event": "Kare #2 [00:10]: Rutin saha - Güvenli (Kaza yok)"},\n'
+                '    {"time": "00:12", "event": "Kare #3 [00:12]: Rutin saha - Güvenli (Kaza yok)"},\n'
+                '    {"time": "00:15", "event": "Kare #4 [00:15]: Rutin saha - Güvenli (Kaza yok)"},\n'
+                f'    {{"time": "{start_time_str}", "event": "Kare #5 [{start_time_str}]: RISK BAŞLANGICI (ONSET) - Duman ve yangın başlangıcı"}},\n'
+                '    {"time": "01:15", "event": "Kare #6 [01:15]: Duman yayılımı ve yangın zirve noktası"}\n'
+                '  ],\n'
+                '  "risk_score": 90,\n'
+                '  "risk_level": "kritik",\n'
+                '  "actions": ["Acil durum ve yangın alarmını başlatın", "Saha bölgesini tahliye edin", "Yangın söndürme ekiplerine bildirin"]\n'
+                "}"
+            )
         else:
-            r_score = 35
-            r_level = "orta"
-            category = "safety"
-            dyn_actions = ["Saha kontrollerini artırınız.", "Operatör denetimi sağlayınız."]
+            decision = (
+                "{\n"
+                '  "summary": "Sahada rutin faaliyet gözlenmiştir; kaza veya risk unsuru bulunmamaktadır.",\n'
+                # JSON'da bos deger `null` yazilir; Python'un `None` degeri gecerli
+                # JSON DEGILDIR ve mock kararin tamamini ayristirilamaz hale getirir.
+                '  "onset_timestamp": null,\n'
+                '  "safe_timestamps": ["00:07", "00:10", "00:12", "00:15"],\n'
+                '  "incident_timestamps": [],\n'
+                '  "events": [\n'
+                '    {"time": "00:07", "event": "Kare #1 [00:07]: Rutin saha - Güvenli"},\n'
+                '    {"time": "00:10", "event": "Kare #2 [00:10]: Rutin saha - Güvenli"},\n'
+                '    {"time": "00:12", "event": "Kare #3 [00:12]: Rutin saha - Güvenli"},\n'
+                '    {"time": "00:15", "event": "Kare #4 [00:15]: Rutin saha - Güvenli"}\n'
+                '  ],\n'
+                '  "risk_score": 15,\n'
+                '  "risk_level": "dusuk",\n'
+                '  "actions": ["Rutin saha gözlemine devam edin"]\n'
+                "}"
+            )
 
-        content_json = json.dumps(
-            {
-                "summary": extracted_summary,
-                "events": [{"time": "00:00", "event": extracted_summary}],
-                "risk_score": r_score,
-                "risk_level": r_level,
-                "event_category": category,
-                "actions": dyn_actions,
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-
-        return AIMessage(content=content_json, tool_calls=[])
+        return AIMessage(content=decision, tool_calls=[])
 
     def invoke_json(self, messages: Sequence[BaseMessage]) -> AIMessage:
         """Mock modda JSON-modu ile normal `invoke` ayni sabit JSON karari dondurur."""

@@ -8,3 +8,6 @@
 #   pytest
 -r requirements.txt
 pytest==8.2.2
+# nbformat: yalnizca demo/dokumantasyon notebook'larini ureten gelistirme
+# betikleri icin (scripts/build_notebook.py, scripts/build_e2e_demo.py).
+nbformat>=5.10.4

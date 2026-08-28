@@ -1,139 +1,182 @@
-# SAFİR AI — Otonom Saha Güvenliği & İSG Video İnceleme Sistemi
+# SAFIR — Saha Analiz ve Farkındalık İçin Yapay Zekâ Destekli Karar Sistemi
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Python: 3.10+](https://img.shields.io/badge/Python-3.10%2B-green.svg)](https://www.python.org/)
-[![Framework: LangGraph](https://img.shields.io/badge/Framework-LangGraph-orange.svg)](https://www.langchain.com/langgraph)
-[![Status: TEKNOFEST Ready](https://img.shields.io/badge/TEKNOFEST-2026_Ready-purple.svg)]()
+Video tabanlı İSG (iş sağlığı ve güvenliği) analizi ve karar destek sistemi.
+Akış: **Video → Adaptive Frame Sampler (CPU) → VLM (görsel anlama) → Olay
+Analizi + Hibrit Bellek/RAG → LangGraph Ajanı (muhakeme) → Otomatik Eskalasyon →
+Yapılandırılmış Rapor (JSON) + Operatör Paneli**.
 
-**SAFİR AI**, kritik tesislerde, fabrika sahalarında ve askeri/sivil operasyon alanlarında **"Operasyonel Risk"** şemsiyesi altında iki temel kategoriyi kapsayan **7 katmanlı, agentic (ajan tabanlı), provider-agnostic** yapay zeka sistemidir:
-- 🏭 **SAFETY (İş Sağlığı ve Güvenliği)**: Kaza, yaralanma, KKD eksikliği, yangın/duman, ekipman arızası tespiti.
-- 🛡️ **SECURITY (Tesis ve Çevre Güvenliği)**: İzinsiz alan girişi, tel örgü/nizamiye sızması, terk edilmiş şüpheli çanta/paket, İHA/drone hava ihlali.
+> **Şartname dokümantasyonu:** mimari diyagramı, kullanılan agentic framework/LLM'ler,
+> senaryolar ve mock fonksiyonlar, ölçümleme sonuçları ve ölçekleme ihtiyaçları için
+> bkz. [`../DOKUMANTASYON.md`](../DOKUMANTASYON.md).
 
-> **Savunma Sanayi & Saha Operasyonları Notu:** Sistem hem endüstriyel tesisler (İSG/Safety) hem de savunma sanayi kritik tesisleri (Nizamiye/Perimeter/Security) için çift katmanlı bütünleşik bir operasyonel risk çözümü sunmaktadır.
+## Kurulum (native — Docker GEREKMEZ)
 
----
+Sistemde bir NVIDIA GPU + sürücü (Blackwell/RTX 5090 için ≥570) varsa yeterlidir;
+ayrı bir CUDA toolkit veya Docker kurulumuna gerek yoktur (`vllm` paketi kendi
+uyumlu torch/CUDA wheel'lerini pip ile getirir).
 
-## 🏛️ 1. Sistem Mimarisi ve Katmanlar
-
-Sistem, ham video akışını ağır tespit modellerine (YOLO/ByteTrack) sokup GPU'yu yormak yerine; tamamen CPU üzerinde çalışan **OpenCV Adaptive Frame Sampler** ile süzerek **%80-%98 oranında GPU tasarrufu** sağlar. VLM ve LLM muhakeme katmanları **LangGraph** durum makinesi ile yönetilir.
-
-Detaylı şemalar ve bileşen açıklamaları için: 📖 **[Sistem Mimari Dokümanı (`docs/ARCHITECTURE.md`)](docs/ARCHITECTURE.md)**
-
-```text
-[RTSP Canlı Kamera] 
-       │
-       ▼
-[01. CPU Frame Sampler] ── (Δ ≥ 0.001 Filtresi ile %85+ GPU Tasarrufu)
-       │
-       ▼
-[02. Peak Frame Exporter] ── (Zaman Dilimi Kümeleme & Zirve Kare Seçimi)
-       │
-       ▼
-[03. Provider-Agnostic VLM] ── (Gemini API [Dev] / Yerel vLLM + Qwen2-VL [Prod])
-       │
-       ▼
-[04. Hibrit BM25 + FAISS RAG] ── (0.5 Vektör + 0.5 Kelime, İSG & Tesis Yönergeleri)
-       │
-       ▼
-[05. LangGraph Decision Agent] ── (Birincil LLM Muhakemesi + İkincil Guardrail)
-       │
-       ▼
-[06. Escalation & Otonom Alarm] ── (Risk ≥ 51 -> POST /alerts/trigger)
-       │
-       ▼
-[07. Komuta Merkezi & Audit UI] ── (Human-on-the-Loop Operatör Denetimi)
-```
-
----
-
-## ⚡ 2. Kurulum ve Çalıştırma Rehberi
-
-### **Gereksinimler**
-- Python 3.10+ (Windows / Linux / macOS)
-- Virtualenv (`.venv`)
-- OpenCV (`opencv-python`)
-- PyTorch & FAISS (`faiss-cpu`)
-
-### **1. Depoyu Klonlayın ve Sanal Ortamı Kurun**
 ```bash
-git clone https://github.com/user/p3-project.git
-cd p3-project/safir-ai
-
-# Sanal ortam oluşturun ve aktif edin
-python -m venv .venv
-# Windows için:
-.\.venv\Scripts\activate
-# Linux/macOS için:
-source .venv/bin/activate
-
-# Bağımlılıkları yükleyin
-pip install -r requirements.txt
+cd safir-ai
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt            # backend + yerel vLLM istemcisi/servisi (tek kurulum)
+pip install -r requirements-dashboard.txt  # opsiyonel: operatör paneli (Streamlit)
 ```
 
-### **2. Ortam Değişkenlerini Yapılandırın**
-`.env.example` dosyasını `.env` olarak kopyalayın:
+## Çalıştırma
+
+Modelleri servis eden vLLM süreçlerini (VLM + LLM), ardından API'yi başlatın —
+üçü de aynı `venv` içindeki `vllm`/`python` komutlarıyla, Docker'sız:
+
 ```bash
-cp .env.example .env
-```
-`.env` dosyasındaki ayarları düzenleyin:
-```ini
-VLM_PROVIDER=gemini
-GEMINI_API_KEY=AIzaSy...your_key_here
-FAISS_WEIGHT=0.5
-BM25_WEIGHT=0.5
-ALERT_THRESHOLD=51
+# 1) VLM sunucusu (arka planda)
+vllm serve Qwen/Qwen2.5-VL-7B-Instruct --port 8001 --trust-remote-code \
+  --quantization fp8 --dtype bfloat16 --gpu-memory-utilization 0.50 \
+  --max-model-len 8192 --limit-mm-per-prompt image=12 --max-num-seqs 2 &
+
+# 2) LLM sunucusu (arka planda)
+vllm serve Qwen/Qwen2.5-3B-Instruct --port 8003 --trust-remote-code \
+  --dtype bfloat16 --gpu-memory-utilization 0.30 --max-model-len 4096 --max-num-seqs 4 &
+
+# 3) Backend (FastAPI)
+python -m src.main            # veya: uvicorn src.main:app --host 0.0.0.0 --port 8000
+
+# Operatör paneli (Streamlit, opsiyonel)
+streamlit run src/ui/dashboard.py
 ```
 
-### **3. Sunucuyu Başlatın (FastAPI Backend)**
+`configs/config.yaml` içindeki `vlm.models.qwen` / `llm.models.qwen3` altındaki
+`vllm_host`/`vllm_port` değerleri (varsayılan `127.0.0.1:8001` / `127.0.0.1:8003`)
+yukarıdaki `--port` değerleriyle eşleşmelidir. Ayrıntılı sıfırdan-kurulum adımları
+(sürücü kurulumu, `nohup` ile arka planda çalıştırma, sorun giderme) için bkz.
+[`KURULUM.md`](KURULUM.md).
+
+## Model backend'leri
+
+Sistem üç backend'i tek soyutlama üzerinden destekler (`configs/config.yaml`):
+
+| Backend | Ne zaman | Nasıl |
+|---|---|---|
+| **EVREN (TEKNOFEST servisi)** | Aktif (varsayılan) | `vlm.active_model: evren`, `llm.active_model: evren` |
+| **vLLM (yerel)** | Yerel GPU ile çalıştırmak istenirse | `vlm.active_model: qwen`, `llm.active_model: qwen3` |
+| **Mock** | GPU/ağ'sız, offline geliştirme | `app.use_mock_vlm: true`, `app.use_mock_llm: true` |
+
+### EVREN backend'i (aktif)
+
+Video **doğrudan** EVREN'in video-analiz ucuna (`model: "vlm"`) gönderilir;
+yerel GPU/vLLM gerekmez. Gerekli tek şey API anahtarı (bkz. `.env.example`):
+
 ```bash
-python -m uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
+export EVREN_API_KEY=sk-evren-teamNN-XXXXXXXX
 ```
-Swagger API Dokümantasyonu: `http://localhost:8000/docs`
 
----
+Yerel vLLM sınıfları (`qwen`/`gemma`) hiç değişmeden kalır; EVREN
+`src/vlm/evren_vlm.py` adaptörü ve `VLLMEndpointConfig.provider` alanı
+üzerinden eklenir.
 
-## 🧪 3. Test ve Benchmarking Betikleri
+## Otomatik Eskalasyon (Human-on-the-Loop)
 
-### **Çevrimdışı (Offline) Birim ve Senaryo Testlerini Çalıştırma**
-Tüm ajan muhakemesi, eskalasyon ve VLM provider testleri harici API/GPU gerektirmeden çevrimdışı koşturulabilir:
+Önceki tasarımda operatör, saha alarmını tetiklemek için "onayla" butonuna
+basmak zorundaydı (bloke edici Human-in-the-Loop kapısı). Mentör geri bildirimi
+doğrultusunda bu kapı kaldırıldı: sistem, risk skoruna göre aksiyon kademesini
+**kendisi** belirler (`src/decision/escalation.py`):
+
+- **monitor** (düşük): yalnızca kaydet, izlemeye devam.
+- **notify** (orta): kaydet + bildirim.
+- **alarm** (yüksek/kritik): saha alarmı **otomatik** tetiklenir (operatör onayı
+  beklenmez).
+
+Operatör, alarmı engellemek için değil; sonradan **denetlemek/geri almak** için
+devrededir (`POST /alerts/{alert_id}/acknowledge`). Eşikler
+`configs/config.yaml → escalation` altında ayarlanır.
+
+## Uçtan uca test
+
 ```bash
-python -m pytest
+# Tamamen offline, deterministik (mock VLM+LLM) — ağ/GPU/anahtar gerekmez:
+python scripts/e2e_smoke.py --mock
+
+# Gerçek E2E (Gemini backend'i ayarlıysa):
+export GEMINI_API_KEY=...
+python scripts/e2e_smoke.py --video data/ornek.mp4
+
+# Birim + entegrasyon testleri:
+pytest -q
 ```
 
-### **Tüm Sistemi Otomatik Benchmark Etme**
+## Adım adım Jupyter walkthrough
+
+Pipeline'ı aşama aşama görmek için (sampler → temsili kareler → VLM → olay
+tespiti → RAG → ajan → otomatik eskalasyon → nihai rapor):
+
 ```bash
-python -m evaluation.run_benchmark
+pip install notebook ipykernel
+jupyter notebook notebooks/SAFIR_walkthrough.ipynb
+# veya VS Code'da .ipynb dosyasını açıp hücreleri sırayla çalıştır
 ```
-Bu betik şunları koşturur:
-1. CPU Adaptive Frame Sampler $\Delta$ eşik duyarlılık taraması.
-2. Hibrit RAG Ağırlık duyarlılık ölçümü (FAISS/BM25).
-3. Ground Truth veri seti başarım ölçümü (Precision, Recall, F1, RTF).
 
----
+Defterin ilk hücresindeki iki anahtar:
+- `USE_MOCK`: `False` → `config.yaml`'daki backend (Gemini; `GEMINI_API_KEY` gerekir).
+  `True` → tamamen offline (sabit örnek çıktı, GPU/anahtar gerekmez).
+- `USE_FAKE_RAG`: `True` → ağır embedding modelini (bge-m3) indirmez (demo için hızlı).
 
-## 📊 4. Deneysel Ölçümleme ve Analiz Raporları
+Notebook, `scripts/build_notebook.py` ile üretilir (yeniden üretmek için:
+`python scripts/build_notebook.py`).
 
-Sistemin başarım ve verimlilik iddiaları deneysel olarak kanıtlanmış ve dokümante edilmiştir:
+## KPI / Benchmark (ölçümleme)
 
-1. 📄 **[Değerlendirme Metrikleri Raporu (`docs/METRICS.md`)](docs/METRICS.md)**
-   - Precision (%100.0), Recall (%100.0), F1-Score (%100.0), Real-Time Factor (590x RTF).
-2. 🎬 **[CPU Frame Sampler & GPU Tasarruf Analizi (`docs/FRAME_SAMPLER_ANALYSIS.md`)](docs/FRAME_SAMPLER_ANALYSIS.md)**
-   - $\Delta = 0.001$ eşik değerinde %80-%98 GPU yükü tasarrufu kanıtı ve Matplotlib grafikleri.
-3. 🧠 **[FAISS + BM25 Hibrit RAG Duyarlılık Raporu (`docs/RAG_EVALUATION.md`)](docs/RAG_EVALUATION.md)**
-   - 0.5 FAISS + 0.5 BM25 dengeli ağırlık konfigürasyonunda %100 Top-1 doğruluğu ve 1.0000 MRR kanıtı.
+Şartname kendi metriklerinizi tanımlamanızı ister. `scripts/benchmark.py`,
+etiketli klipler üzerinde tüm pipeline'ı koşup KPI'ları raporlar: olay tespiti
+precision/recall/F1 (kategori + makro/mikro), kritik olay yakalama oranı ve
+klip başı gecikme.
 
----
+```bash
+# Hazır sentetik demo (offline, mock) — harness'i ve metrikleri gösterir:
+python scripts/benchmark.py --synthetic --mock
 
-## ⚠️ 5. Karşılaşılan Zorluklar ve Çözümler (Engineering Challenges)
+# Gerçek etiketli klipler (Gemini/vLLM backend ayarlıysa):
+python scripts/benchmark.py --manifest benchmarks/manifest.json --out benchmarks/result.json
+```
 
-> **Geliştirme Mimari Notu:**
-> *"Yerel GPU kaynağı kısıtı nedeniyle geliştirme aşamasında VLM katmanı provider-agnostic tasarlandı; mevcut geliştirme Gemini API ile, teslim edilecek üretim sistemi yerel vLLM + Qwen2-VL ile çalışacaktır."*
+Manifest biçimi:
+```json
+[
+  {"video": "data/clip1.mp4", "expected_events": ["arac_yaya_yakinligi"], "critical": true},
+  {"video": "data/clip2.mp4", "expected_events": ["kkd_ihlali"]}
+]
+```
 
-- **Gereksiz VLM Çıkarım Maliyeti**: Durağan kamera görüntülerinin sürekli VLM'e gönderilmesi maliyeti artırıyordu. CPU tabanlı `AdaptiveFrameSampler` ile çözüldü (%85+ kare elendi).
-- **Yanlış Alarm (False Positive) Riski**: Kural tabanlı regex süzgeçleri ana karar mekanizması yapıldığında esneklik yitiriliyordu. Sistem **LLM-Primary Decision Engine + Secondary Guardrail Filter** mimarisine geçirildi.
+## Dayanıklılık (hata işleme)
 
----
+- VLM çağrıları geçici ağ hatalarında üstel geri-çekilmeli yeniden denenir; kalıcı
+  hatada iş çökmez, **degraded** (hata notlu) rapor üretilir ve operatör manuel
+  incelemeye yönlendirilir.
+- Ajan muhakemesi hata verirse risk uydurulmaz; güvenli bir degraded karar döner.
+- Küçük modellerin bozuk JSON'u: ajan tarafında JSON-modu yeniden-denemesi
+  (`agent.guided_json`), VLM tarafında toleranslı EVENTS_JSON ayrıştırma +
+  anahtar-kelime yedeği ile kurtarılır.
 
-## 📜 6. Lisans
+> **Bilinen sorun:** `tests/test_sampler.py` içindeki iki test
+> (`test_motion_produces_real_evidence_frames`,
+> `test_fallback_frame_used_when_no_threshold_crossed`) bu değişikliklerden
+> **önce de** başarısızdı: testler `process_video` çıktısındaki her karede
+> `saved_path` bekliyor; oysa tasarım gereği yalnızca **zirve** kareler diske
+> yazılır. Sampler'ın GPU-tasarrufu davranışını bozmamak için bu davranış
+> korundu; testlerin mi yoksa kaydetme politikasının mı güncelleneceği ayrı bir
+> karar olarak bırakıldı.
 
-Bu proje **[Apache License 2.0](LICENSE)** altında lisanslanmıştır. TEKNOFEST 2026 Yarışması şartnamelerine tam uyumludur.
+## Proje yapısı (özet)
+
+```
+src/
+  sampler/        CPU Adaptive Frame Sampler (kanıt karesi + olay kümeleme)
+  vlm/            VLM/LLM istemcileri (Qwen/Gemma/Gemini + mock), factory
+  prompts/        Merkezi istemler (VLM gözlem + ajan muhakeme/JSON)
+  event_analysis/ Olay tespiti, zamansal muhakeme, kural motoru
+  memory/         SQLite olay belleği + Embedding/FAISS RAG
+  agent/          LangGraph muhakeme ajanı (JSON karar çıktısı)
+  decision/       Otomatik eskalasyon (Human-on-the-Loop)
+  schemas/        SafirReport (şartname-uyumlu JSON)
+  ui/             Operatör paneli (OOP bileşenler: api_client, theme,
+                  report_export, components/, app)
+  main.py         FastAPI servisi + SafirPipeline orkestratörü
+```

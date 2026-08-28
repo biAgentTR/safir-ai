@@ -33,7 +33,7 @@ class _FakeRAG:
     def seed_default_regulations(self) -> None:
         return None
 
-    def query(self, question: str, top_k=None):
+    def query(self, question: str, top_k=None, keywords=None):
         return [_FakeDoc(f"[FAKE] {question}")]
 
 
@@ -41,6 +41,9 @@ class _FakeRAG:
 def data_center_env(monkeypatch, tmp_path):
     """Mock VLM/LLM + izole (tmp) AnalysisStore + izole (tmp) ConversationStore."""
     monkeypatch.setattr(main, "EmbeddingRAGService", lambda *a, **k: _FakeRAG())
+    # cfg sets both mock flags True -> SafirPipeline takes the
+    # MockEmbeddingRAGService branch (see main.py), not EmbeddingRAGService.
+    monkeypatch.setattr(main, "MockEmbeddingRAGService", lambda *a, **k: _FakeRAG())
     base = main.load_config()
     cfg = base.model_copy(update={"app": base.app.model_copy(update={"use_mock_vlm": True, "use_mock_llm": True})})
     monkeypatch.setattr(main, "_pipeline", main.SafirPipeline(cfg))
@@ -133,6 +136,22 @@ def test_system_overview_empty_state_is_all_zero(data_center_env):
         "total_messages": 0,
         "analyses_with_trace": 0,
         "stored_representative_frame_count": 0,
+        # RAG + Prompt Injection Guard telemetrisi (bkz. _RagSecurityAggregate):
+        # veri yoksa sayimlar 0, ortalamalar "N/A" anlaminda None kalir.
+        "total_events_detected": 0,
+        "critical_risk_analyses": 0,
+        "rag_query_count": 0,
+        "rag_zero_result_count": 0,
+        "avg_embedding_latency_ms": None,
+        "avg_rerank_latency_ms": None,
+        "avg_total_rag_latency_ms": None,
+        "guard_checks": 0,
+        "guard_allowed": 0,
+        "guard_quarantined": 0,
+        "guard_failures": 0,
+        "guard_fail_closed_blocks": 0,
+        "avg_guard_latency_ms": None,
+        "avg_guard_confidence": None,
     }
 
 

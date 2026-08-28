@@ -52,8 +52,15 @@ class EventStoreLike(Protocol):
         risk_level: Optional[str] = None,
         source_model: Optional[str] = None,
         video_source: Optional[str] = None,
+        **kwargs: object,
     ) -> int:
-        """Bkz. `EventStore.add_event`. Eklenen kaydin veritabani ID'sini dondurur."""
+        """Bkz. `EventStore.add_event`. Eklenen kaydin veritabani ID'sini dondurur.
+
+        `**kwargs`: izlenebilirlik alanlari (`temporal_event_id`/`event_name`/
+        `event_type`/`confidence`/`occurrence_count`/`duration`/
+        `evidence_ids`/`keywords`) - gercek `EventStore` bunlari kabul eder;
+        basit test-double'lar (`EventStoreLike`) yoksayabilir.
+        """
         ...
 
     def record_feedback(self, event_id: int, feedback: str) -> None:

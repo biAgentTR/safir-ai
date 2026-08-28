@@ -120,7 +120,9 @@ class _RecordingSink:
         raise NotImplementedError
 
 
-def test_escalation_unknown_status_forces_notify_never_alarm_or_silent_monitor() -> None:
+def test_escalation_unknown_status_forces_pending_review_never_alarm_or_silent_monitor() -> None:
+    """2026-08-25 (Human-on-the-Loop siklastirma): belirsiz durum artik sessizce NOTIFY'a
+    DEGIL, operatorun ACIK karari beklenen PENDING_REVIEW'e duser (bkz. escalation.py)."""
     config = EscalationConfig(notify_score=26, auto_alarm_score=51)
     sink = _RecordingSink()
     policy = EscalationPolicy(config, sink=sink)
@@ -133,7 +135,7 @@ def test_escalation_unknown_status_forces_notify_never_alarm_or_silent_monitor()
         risk_status="unknown",
     )
 
-    assert decision.tier is EscalationTier.NOTIFY
+    assert decision.tier is EscalationTier.PENDING_REVIEW
     assert decision.auto_dispatched is False
     assert decision.alert_id is None
     assert sink.dispatched == []  # ASLA otomatik alarm tetiklenmez
@@ -219,7 +221,7 @@ class _FakeRAG:
     def seed_default_regulations(self) -> None:
         return None
 
-    def query(self, question: str, top_k=None):
+    def query(self, question: str, top_k=None, keywords=None):
         return [_FakeDoc(f"[FAKE] {question}")]
 
 
@@ -227,6 +229,9 @@ class _FakeRAG:
 def mock_pipeline_agent_fails(monkeypatch, tmp_path):
     """mock_pipeline (test_history.py ile ayni desen) + ajan LLM'i her zaman patlar."""
     monkeypatch.setattr(main, "EmbeddingRAGService", lambda *a, **k: _FakeRAG())
+    # cfg sets both mock flags True -> SafirPipeline takes the
+    # MockEmbeddingRAGService branch (see main.py), not EmbeddingRAGService.
+    monkeypatch.setattr(main, "MockEmbeddingRAGService", lambda *a, **k: _FakeRAG())
     base = main.load_config()
     cfg = base.model_copy(update={"app": base.app.model_copy(update={"use_mock_vlm": True, "use_mock_llm": True})})
     pipeline = main.SafirPipeline(cfg)
@@ -275,7 +280,7 @@ def test_pipeline_agent_failure_yields_unknown_report_end_to_end(mock_pipeline_a
     result = polled["result"]
     assert result["risk_score"] is None
     assert result["risk_status"] == "unknown"
-    assert result["escalation_tier"] == "notify"  # ASLA otomatik alarm/monitor degil
+    assert result["escalation_tier"] == "pending_review"  # ASLA otomatik alarm/monitor degil
     assert result["auto_dispatched"] is False
 
 

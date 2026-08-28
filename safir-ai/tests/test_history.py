@@ -35,7 +35,7 @@ class _FakeRAG:
     def seed_default_regulations(self) -> None:
         return None
 
-    def query(self, question: str, top_k=None):
+    def query(self, question: str, top_k=None, keywords=None):
         return [_FakeDoc(f"[FAKE] {question}")]
 
 
@@ -43,6 +43,9 @@ class _FakeRAG:
 def mock_pipeline(monkeypatch, tmp_path):
     """Mock VLM/LLM + sahte RAG pipeline + izole (tmp) AnalysisStore."""
     monkeypatch.setattr(main, "EmbeddingRAGService", lambda *a, **k: _FakeRAG())
+    # cfg sets both mock flags True -> SafirPipeline takes the
+    # MockEmbeddingRAGService branch (see main.py), not EmbeddingRAGService.
+    monkeypatch.setattr(main, "MockEmbeddingRAGService", lambda *a, **k: _FakeRAG())
     base = main.load_config()
     cfg = base.model_copy(update={"app": base.app.model_copy(update={"use_mock_vlm": True, "use_mock_llm": True})})
     monkeypatch.setattr(main, "_pipeline", main.SafirPipeline(cfg))
@@ -196,6 +199,36 @@ def test_report_pdf_for_completed_job_is_a_real_pdf(mock_pipeline, video_in_data
     assert resp.content.startswith(b"%PDF-")  # gercek PDF dosya imzasi
     assert resp.content.rstrip().endswith(b"%%EOF")  # gecerli bir PDF govdesi tamamlanmis
     assert len(resp.content) > 500  # bos/bozuk dosya degil
+
+
+def test_report_pdf_with_turkish_characters_in_video_name(mock_pipeline):
+    """Video adinda Turkce karakter (ör. 'ı') varsa PDF indirme 500'e DUSMEMELI.
+
+    Kok neden: Content-Disposition baslik degeri Latin-1 ile sinirlidir
+    (Starlette/ASGI dogrudan encode eder); Turkce 'ı'/'ş'/'ğ' Latin-1'e
+    SIGMAZ ve `UnicodeEncodeError` firlatirdi (indirme TAMAMEN basarisiz
+    olurdu) - bkz. get_history_report_pdf'teki RFC 6266 filename*/filename
+    duzeltmesi.
+    """
+    Path("data").mkdir(exist_ok=True)
+    path = Path("data") / "kamera_şantiye_ışıklı.mp4"
+    frames = [np.full((120, 160, 3), 30, np.uint8) for _ in range(40)]
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), 25.0, (160, 120))
+    for f in frames:
+        writer.write(f)
+    writer.release()
+    try:
+        client = TestClient(app)
+        job_id = _run_to_completion(client, str(path))
+
+        resp = client.get(f"/history/{job_id}/report.pdf")
+        assert resp.status_code == 200
+        assert resp.content.startswith(b"%PDF-")
+        disposition = resp.headers["content-disposition"]
+        assert "attachment" in disposition
+        assert "filename*=UTF-8''" in disposition
+    finally:
+        path.unlink(missing_ok=True)
 
 
 def test_report_pdf_falls_back_to_persisted_history_when_job_leaves_memory(mock_pipeline, video_in_data):

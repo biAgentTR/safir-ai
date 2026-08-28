@@ -25,8 +25,8 @@ if __name__ == "__main__":
     import datetime
     import logging
 
-    from src.memory.embedding_rag_service import DEFAULT_ISG_REGULATIONS
-    from src.sampler.schema import EventCluster, EvidenceFrame
+    from src.rag.embedding_rag_service import DEFAULT_ISG_REGULATIONS
+    from src.sampler.schema import EvidenceFrame
     from src.schemas.report import SafirReport
     from src.utils.config_loader import load_config
     from src.vlm.vlm_client import MockVLMClient
@@ -37,7 +37,8 @@ if __name__ == "__main__":
 
     # --- Sahte VLM verisi (Modul 2) ---
     demo_prompt = "Sahnede riskli bir durum var mi degerlendir."
-    demo_peak_frame = EvidenceFrame(
+    demo_evidence_frame = EvidenceFrame(
+        evidence_id="ev0",
         frame_id=0,
         timestamp_sec=12.0,
         timestamp_str="00:12",
@@ -46,11 +47,8 @@ if __name__ == "__main__":
         base64_image="data:image/jpeg;base64,AA==",
         image_shape=(1, 1, 3),
     )
-    demo_cluster = EventCluster(
-        event_id=1, start_time=12.0, end_time=12.0, peak_frame=demo_peak_frame, total_candidate_frames=1
-    )
     mock_vlm = MockVLMClient()
-    vlm_response = mock_vlm.describe_events([demo_cluster], prompt=demo_prompt)
+    vlm_response = mock_vlm.analyze_evidence([demo_evidence_frame], prompt=demo_prompt)
 
     # --- Sahte RAG verisi (Modul 3'un varsayilan ISG mevzuat seti) ---
     mock_regulations = DEFAULT_ISG_REGULATIONS[:2]
@@ -65,7 +63,7 @@ if __name__ == "__main__":
     )
 
     demo_context = (
-        f"## Guncel Gozlem (t={demo_peak_frame.timestamp_sec:.1f}s)\n{vlm_response.description}\n\n"
+        f"## Guncel Gozlem (t={demo_evidence_frame.timestamp_sec:.1f}s)\n{vlm_response.description}\n\n"
         f"## Kullanici Istemi\n{demo_prompt}\n\n"
         "## Ilgili Operasyonel Mevzuat\n" + "\n".join(f"- {r}" for r in mock_regulations)
     )

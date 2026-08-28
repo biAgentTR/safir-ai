@@ -5,6 +5,22 @@ makinesi; zenginlestirilmis baglami alir, gerektiginde `Dynamic Tool
 Router` uzerinden sql_tool/retriever_tool/timeline_tool araclarini cagirir
 ve sonunda 0-100 arasi bir risk skoru ile karar/aksiyon onerisi ureten
 `AgentDecision` dondurur.
+
+Model hiyerarsisi (mentor eleştirisi: EVREN dokumantasyonu SS 6, "her gorev
+icin buyuk modeli kullanmayin, hiyerarsi kurun")
+----------------------------------------------------------------------------
+`reasoning`/`tools` dugumleri (arac secimi/cagirma, JSON uretimi) HER ZAMAN
+`llm.active_model`i ("hizli" model, `self._llm`, araclara BAGLI) kullanir -
+EVREN dokumantasyonuna gore bu gorevlerde buyuk modelle olculebilir bir fark
+yoktur (bkz. `configs/config.yaml` `llm.models.evren` yorumu). Dongu
+bittiginde (arac cagrisi kalmadi veya iterasyon siniri asildi), `decision`
+dugumu - eger `llm.decision_model` yapilandirilmissa - TEK bir ek cagriyla
+"buyuk"/otonom-karar modeline (`self._decision_llm`, ARACSIZ - bu asamada
+artik arac cagrisi beklenmez) gecer ve nihai JSON kararini SENTEZLER; bu,
+"uzun akil yurutme zincirleri ve otonom karar anlari" icin daha guclu bir
+modele ROUTE eden canli bir LangGraph dugumudur. `decision_model`
+yapilandirilmamissa (varsayilan), `decision` dugumu ONCEKI gibi bir gecis
+(no-op) kalir - davranis/cagri sayisi BIREBIR AYNI.
 """
 
 from __future__ import annotations
@@ -20,10 +36,10 @@ from langchain_core.tools import StructuredTool
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 
-from src.agent.tools import build_tool_registry
-from src.memory.embedding_rag_service import EmbeddingRAGService
+from src.agent.tools import MOCK_ACTION_TOOL_NAMES, build_tool_registry
+from src.rag.embedding_rag_service import EmbeddingRAGService
 from src.memory.event_store import EventStore
-from src.prompts import AGENT_SYSTEM_PROMPT, build_agent_user_prompt
+from src.prompts import AGENT_SYSTEM_PROMPT, DECISION_SYNTHESIS_INSTRUCTION, build_agent_user_prompt
 from src.prompts.agent_prompts import AGENT_OUTPUT_SCHEMA_HINT
 from src.utils.config_loader import AgentConfig, LLMConfig
 from src.vlm.factory import get_llm_client
@@ -43,8 +59,8 @@ _JSON_RETRY_INSTRUCTION = (
 # (eski RISK_SKORU/AKSIYON_ONERISI bicimini ve mock ciktilarini korur).
 _RISK_LINE_PATTERN = re.compile(r"(?:RISK_SKORU|risk_score)\D{0,4}(\d{1,3})", re.IGNORECASE)
 _ACTION_LINE_PATTERN = re.compile(r"AKSIYON_ONERISI:\s*(.+)", re.IGNORECASE)
-# Serbest metin icine gomulu ilk JSON nesnesini yakalar (```json blogu dahil).
-_JSON_OBJECT_PATTERN = re.compile(r"\{.*\}", re.DOTALL)
+# Markdown ```json ... ``` (veya salt ``` ... ```) kod blogunun icerigini yakalar.
+_MARKDOWN_JSON_FENCE_PATTERN = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 
 
 class AgentState(TypedDict):
@@ -73,18 +89,31 @@ class AgentDecision:
     actions: List[str] = field(default_factory=list)   # somut aksiyon onerileri listesi
     events: List[Dict[str, str]] = field(default_factory=list)  # [{"time": "MM:SS", "event": "..."}]
     risk_status: str = "assessed"                 # "assessed" | "unknown"
-    confidence: str = "yuksek"                    # "yuksek" | "orta" | "dusuk"
-    guardrail_triggered: bool = False             # ikincil guvenlik katmaninin (Guardrail) devreye girip girmedigi
-    event_category: str = "safety"               # "safety" | "security" | "ambiguous"
+    onset_timestamp: Optional[str] = None
+    safe_timestamps: List[str] = field(default_factory=list)
+    incident_timestamps: List[str] = field(default_factory=list)
+    triggered_mock_actions: List[Dict[str, Any]] = field(default_factory=list)
+    """Ajanin bu calisma sirasinda GERCEKTEN cagirdigi mock aksiyon araclari
+    (`notify_health_team_tool`/`dispatch_security_tool`/`trigger_area_lockdown_tool`
+    - bkz. `src/agent/tools.py::MOCK_ACTION_TOOL_NAMES`). Her oge
+    `{"tool": <arac adi>, "args": {...}, "result": <arac ciktisi>}` bicimindedir.
+    Bu, sartnamenin "mock fonksiyonlarin ajanin araclari olarak BASARIYLA
+    KULLANILMASI" gereksinimini somut/denetlenebilir kilar (bkz. `main.py::
+    build_report`, `SafirReport.triggered_mock_actions`) - sql/retriever/
+    timeline/verification gibi ic sorgu araclarindan farkli olarak burada
+    ayrica izlenir, cunku bunlar disariya bir "eylem" temsil eder."""
 
 
 class SafirAgent:
     """LangGraph tabanli durum makinesi uzerinde calisan risk muhakeme ajani.
 
     Dugumler:
-        reasoning  -> LLM'i (Qwen3/Gemma3) mevcut mesaj gecmisiyle cagirir.
+        reasoning  -> "Hizli" LLM'i (`llm.active_model`) mevcut mesaj
+                      gecmisiyle cagirir (arac secimi/JSON uretimi).
         tools      -> LLM'in istedigi arac cagrilarini yurutur.
-        decision   -> LLM'in son yanitindan risk skoru/seviyesi/aksiyonu cikarir.
+        decision   -> `llm.decision_model` yapilandirilmissa "buyuk" modelle
+                      TEK bir nihai karar-sentezi cagrisi yapar (bkz. modul
+                      dokustringi "Model hiyerarsisi"); aksi halde no-op gecistir.
 
     Kenarlar:
         reasoning -> tools     (arac cagrisi istendiginde)
@@ -120,9 +149,40 @@ class SafirAgent:
             event_store, rag_service, agent_config.tools
         )
         self._llm = get_llm_client(llm_config, use_mock=use_mock_llm).bind_tools(self._tools)
+        self._decision_llm = self._build_decision_llm(llm_config, use_mock_llm)
 
         self._tools_by_name = {tool.name: tool for tool in self._tools}
         self._graph = self._build_graph()
+
+    @staticmethod
+    def _build_decision_llm(llm_config: LLMConfig, use_mock_llm: bool):
+        """`llm.decision_model` yapilandirilmissa, nihai karar sentezi icin ARACSIZ bir istemci kurar.
+
+        Bkz. modul dokustringi "Model hiyerarsisi". `decision_model`
+        tanimsiz/`active_model` ile ayniysa `None` doner - `_decision_node`
+        bunu "hiyerarsi devre disi, no-op gecis" olarak yorumlar (davranis
+        ONCEKI haliyle BIREBIR AYNI kalir, EK BIR API CAGRISI YAPILMAZ).
+
+        Args:
+            llm_config: `configs/config.yaml` icindeki `llm` blogu.
+            use_mock_llm: `True` ise (GPU'suz mod) `decision_model` icin de
+                gercek vLLM/EVREN'e baglanmadan `MockLLMClient` kurulur.
+
+        Returns:
+            Araclara BAGLANMAMIS bir LLM istemcisi veya `None`.
+        """
+        decision_model = llm_config.decision_model
+        if not decision_model or decision_model == llm_config.active_model:
+            return None
+        if decision_model not in llm_config.models:
+            logger.warning(
+                "SafirAgent: llm.decision_model='%s' llm.models icinde tanimli degil; "
+                "model hiyerarsisi devre disi, tek-model davranisina donuluyor.",
+                decision_model,
+            )
+            return None
+        decision_llm_config = llm_config.model_copy(update={"active_model": decision_model})
+        return get_llm_client(decision_llm_config, use_mock=use_mock_llm)
 
     @property
     def model_name(self) -> str:
@@ -166,6 +226,14 @@ class SafirAgent:
             LLM'in yanitiyla guncellenmis durum (mesaj ve iterasyon sayaci).
         """
         response: AIMessage = self._llm.invoke(state["messages"])
+        if not response.content and not getattr(response, "tool_calls", None):
+            # Teshis: content VE tool_calls ikisi de bossa (ör. model butun
+            # max_new_tokens butcesini gizli "dusunme" tokenlarina harcadiysa),
+            # `finish_reason`/token kullanim bilgisi bunu dogrudan gosterir.
+            logger.warning(
+                "LLM yaniti bos (content ve tool_calls ikisi de bos). response_metadata=%s",
+                getattr(response, "response_metadata", None),
+            )
         return {"messages": [response], "iteration": state["iteration"] + 1}
 
     def _tools_node(self, state: AgentState) -> AgentState:
@@ -198,15 +266,28 @@ class SafirAgent:
         return {"messages": tool_messages, "iteration": state["iteration"]}
 
     def _decision_node(self, state: AgentState) -> AgentState:
-        """Son LLM yanitindan risk skoru, seviyesi ve aksiyon onerisini cikarir.
+        """Hiyerarsi yapilandirilmissa, "buyuk" modelle TEK bir nihai karar-sentezi cagrisi yapar.
+
+        `self._decision_llm is None` (varsayilan, hiyerarsi yapilandirilmamis)
+        ise ONCEKI davranisla BIREBIR AYNI: hicbir sey yapmaz, son `reasoning`
+        yanitinin icerigi `run()` tarafindan dogrudan nihai karar olarak
+        ayristirilir. Yapilandirilmissa: dongu boyunca biriken TUM mesaj
+        gecmisi (arac sonuclari dahil) + `DECISION_SYNTHESIS_INSTRUCTION`
+        ile "buyuk" modele TEK bir ek (ARACSIZ) cagri yapilir; bu yanit
+        `run()`in ayristiracagi nihai mesaj olur.
 
         Args:
-            state: Mevcut ajan durumu.
+            state: Mevcut ajan durumu (tool-routing dongusu tamamlanmis).
 
         Returns:
-            Degisiklik yapilmamis durum (karar, `run` metodunda ayrica cozumlenir).
+            `self._decision_llm is None` ise degisiklik yapilmamis durum;
+            aksi halde "buyuk" modelin nihai karar mesajiyla guncellenmis durum.
         """
-        return state
+        if self._decision_llm is None:
+            return state
+        synthesis_prompt = HumanMessage(content=DECISION_SYNTHESIS_INSTRUCTION)
+        response: AIMessage = self._decision_llm.invoke(list(state["messages"]) + [synthesis_prompt])
+        return {"messages": [response], "iteration": state["iteration"]}
 
     def _route_after_reasoning(self, state: AgentState) -> str:
         """Muhakeme dugumunden sonra arac mi yoksa karar mi calisacagini belirler.
@@ -279,7 +360,48 @@ class SafirAgent:
         if self._use_json_mode and self._extract_json(final_text) is None:
             final_text = self._guided_json_retry(final_state["messages"], final_text)
 
-        return self._parse_decision(final_text)
+        decision = self._parse_decision(final_text)
+        decision.triggered_mock_actions = self._extract_triggered_mock_actions(final_state["messages"])
+        return decision
+
+    @staticmethod
+    def _extract_triggered_mock_actions(messages: Sequence[BaseMessage]) -> List[Dict[str, Any]]:
+        """Bu calistirmada GERCEKTEN cagirilan mock aksiyon araclarini (varsa) toplar.
+
+        `_tools_node` her arac cagrisi icin bir `ToolMessage` uretir
+        (`tool_call_id` ile eslesir) - burada yalnizca adi `MOCK_ACTION_TOOL_NAMES`
+        icinde olan cagrilar (sql/retriever/timeline/verification gibi ic
+        sorgu araclari HARIC) secilip ajanin cagirdigi arac adi/argumanlari ve
+        arac ciktisiyla birlikte dondurulur (bkz. `AgentDecision.
+        triggered_mock_actions` docstring'i).
+
+        Args:
+            messages: `self._graph.invoke(...)` sonrasi biriken tam mesaj gecmisi.
+
+        Returns:
+            `{"tool", "args", "result"}` sozlukleri listesi (cagri sirasiyla);
+            hic mock aksiyon araci cagrilmadiysa bos liste.
+        """
+        tool_results: Dict[str, str] = {
+            msg.tool_call_id: str(msg.content)
+            for msg in messages
+            if isinstance(msg, ToolMessage)
+        }
+        triggered: List[Dict[str, Any]] = []
+        for msg in messages:
+            if not isinstance(msg, AIMessage):
+                continue
+            for call in getattr(msg, "tool_calls", None) or []:
+                if call.get("name") not in MOCK_ACTION_TOOL_NAMES:
+                    continue
+                triggered.append(
+                    {
+                        "tool": call["name"],
+                        "args": call.get("args", {}),
+                        "result": tool_results.get(call.get("id"), ""),
+                    }
+                )
+        return triggered
 
     def _degraded_decision(self, error: str) -> AgentDecision:
         """Muhakeme hatasinda operatoru manuel incelemeye yonlendiren guvenli karar.
@@ -318,76 +440,56 @@ class SafirAgent:
         logger.info("Ajan ciktisi gecerli JSON degil; JSON-modu ile yeniden deneniyor.")
         try:
             retry_messages = list(messages) + [HumanMessage(content=_JSON_RETRY_INSTRUCTION)]
-            response = self._llm.invoke_json(retry_messages)
+            # Nihai karari fiilen KIM uretmisse (hiyerarsi aktifse "buyuk"
+            # decision_llm, degilse hizli self._llm) retry de AYNI modelle
+            # yapilir - farkli bir modele sessizce gecmek TUTARSIZ olurdu.
+            retry_llm = self._decision_llm or self._llm
+            response = retry_llm.invoke_json(retry_messages)
             content = response.content or ""
             if self._extract_json(content) is not None:
                 return content
-            logger.warning("JSON-modu yeniden denemesi de gecerli JSON uretmedi.")
+            logger.warning(
+                "JSON-modu yeniden denemesi de gecerli JSON uretmedi. Ham cikti: %s",
+                self._truncate_for_log(content),
+            )
         except Exception as exc:  # noqa: BLE001 - retry best-effort; hata fallback'e dusurulur
             logger.warning("JSON-modu yeniden denemesi basarisiz: %s", exc)
         return fallback_text
 
-    # GUARDRAIL: Bu fonksiyon ana karar mekanizması DEĞİLDİR, LLM çıktısını doğrulayan ikincil bir güvenlik katmanıdır.
-    @staticmethod
-    def _has_active_unnegated_hazard(text: str, keywords: List[str]) -> bool:
-        """Metin icinde GERCEKTEN aktif (olumsuzlanmamis) bir tehlike/kaza olup olmadigini kontrol eder.
-
-        Türkçe cümle yapısında (SOV) olumsuzlama fiili cümlenin sonunda bulunur.
-        Aynı cümle/klanuz içinde hem tehlike kelimesi hem olumsuzlama ifadesi geçiyorsa
-        (ör. 'duman veya yangın belirtisi tespit edilmemiştir'), o tehlike OLUMSUZLANMIŞ sayılır.
-        """
-        negation_cues = {
-            "degil", "yok", "yoktur", "olmadi", "bulunmuyor", "gorulmedi",
-            "gozlemlenmedi", "gozlenmedi", "tespit edilmedi", "rastlanmadi",
-            "yokdur", "yokur", "yoktur.", "olmadigi", "yapilmadi", "yokdur",
-            "yoktur", "edilmemistir", "edilmedi", "gorulmemistir", "gozlenmemistir"
-        }
-        lowered = text.lower()
-        clauses = [c.strip() for c in re.split(r"[.!?;]+", lowered) if c.strip()]
-        for clause in clauses:
-            for kw in keywords:
-                if kw in clause:
-                    # Klanuz genelinde olumsuzlama kelimesi veya olumsuzlama eki var mı?
-                    clause_words = clause.split()
-                    has_negation_cue = any(cue in clause for cue in negation_cues) or any(
-                        w.endswith("madi") or w.endswith("medi") or w.endswith("misti") or w.endswith("misti")
-                        or w.endswith("mamasidir") or w.endswith("mamistir") or w.endswith("memistir")
-                        or w.endswith("yokdur") or w.endswith("yoktur")
-                        for w in clause_words
-                    )
-                    if not has_negation_cue:
-                        return True
-        return False
-        return False
-
     def _parse_decision(self, final_text: str) -> AgentDecision:
         """Ajanin son yanitini `AgentDecision`'a cevirir (once JSON, sonra regex fallback).
 
-        Birincil karar kaynağı LLM/LangGraph ajanının ürettiği gerekçe ve alanlardır.
-        İkincil Güvenlik Katmanı (Safety Guardrail) ise LLM çıktısını denetleyerek
-        gerekirse devreye girer (`guardrail_triggered=True`).
+        Once yanit icindeki ilk JSON nesnesi ayristirilmaya calisilir (sartname
+        semasi: summary/events/risk_score/actions). Bu basarisiz olursa eski
+        `RISK_SKORU:`/`AKSIYON_ONERISI:` bicimi regex ile okunur; boylece hem
+        yeni JSON-ureten modeller hem de eski/mock ciktilar desteklenir.
 
         Args:
             final_text: Ajanin son mesaj icerigi.
 
         Returns:
-            Ayristirilmis `AgentDecision`.
+            Ayristirilmis `AgentDecision`. Risk seviyesi her zaman config
+            esiklerinden yeniden hesaplanir (modelin iddia ettigi seviyeye
+            guvenilmez). `risk_score` gecerli sekilde cikarilamazsa (JSON'da
+            alan eksik/gecersiz VEYA regex hic eslesme bulamazsa) `None` doner
+            ve `risk_status="unknown"` olur — ASLA `0`'a (dusuk risk) SESSIZCE
+            DUSMEZ (bkz. P0 duzeltmesi).
         """
         parsed = self._extract_json(final_text)
 
         if parsed is not None:
             risk_score = self._coerce_risk_score(parsed.get("risk_score"))
-            if risk_score is None:
-                risk_score = self._coerce_risk_score(parsed.get("risk") or parsed.get("risk_level"))
             summary = str(parsed.get("summary", "")).strip()
             actions = self._coerce_actions(parsed.get("actions"))
             events = self._coerce_events(parsed.get("events"))
-            raw_conf = str(parsed.get("confidence", "yuksek")).strip().lower()
-            confidence = raw_conf if raw_conf in ("yuksek", "orta", "dusuk") else "yuksek"
-            raw_cat = str(parsed.get("event_category", parsed.get("category", ""))).strip().lower()
-            event_category = raw_cat if raw_cat in ("safety", "security", "ambiguous") else ""
+            onset_timestamp = parsed.get("onset_timestamp")
+            safe_timestamps = parsed.get("safe_timestamps") or []
+            incident_timestamps = parsed.get("incident_timestamps") or []
         else:
-            logger.warning("Ajan yaniti JSON olarak ayristirilamadi, regex fallback kullaniliyor.")
+            logger.warning(
+                "Ajan yaniti JSON olarak ayristirilamadi, regex fallback kullaniliyor. Ham cikti: %s",
+                self._truncate_for_log(final_text),
+            )
             risk_match = _RISK_LINE_PATTERN.search(final_text)
             action_match = _ACTION_LINE_PATTERN.search(final_text)
             risk_score = self._coerce_risk_score(risk_match.group(1) if risk_match else None)
@@ -395,78 +497,19 @@ class SafirAgent:
             single_action = action_match.group(1).strip() if action_match else ""
             actions = [single_action] if single_action else []
             events = []
-            confidence = "orta" if risk_score is None else "yuksek"
-            event_category = ""
-
-        if not event_category:
-            lowered_text = final_text.lower()
-            if any(k in lowered_text for k in ["ambiguous", "ikili risk"]):
-                event_category = "ambiguous"
-            elif (any(k in lowered_text for k in ["yetkisiz", "izinsiz", "sizma", "sızma", "nizamiye", "paket", "supheli", "şüpheli"])
-                  and any(k in lowered_text for k in ["dusme", "düşme", "düşüp", "dusup", "yaralanma", "hareketsiz"])):
-                event_category = "ambiguous"
-            elif any(k in lowered_text for k in ["security", "izinsiz", "sizma", "sızma", "nizamiye", "paket", "supheli", "şüpheli", "drone", "iha", "tel orgu", "tel örgü", "perimeter", "tırmanma", "tirmasma", "plaka"]):
-                event_category = "security"
-            else:
-                event_category = "safety"
+            onset_timestamp = None
+            safe_timestamps = []
+            incident_timestamps = []
 
         recommended_action = actions[0] if actions else "Ek aksiyon onerisi uretilemedi."
-        risk_status = "assessed" if risk_score is not None else "unknown"
-        guardrail_triggered = False
+        raw_status = parsed.get("risk_status") if parsed else None
+        if raw_status in ("assessed", "unclassified", "unknown"):
+            risk_status = raw_status
+        else:
+            risk_status = "assessed" if risk_score is not None else "unknown"
 
-        # GUARDRAIL: Bu fonksiyon ana karar mekanizması DEĞİLDİR, LLM çıktısını doğrulayan ikincil bir güvenlik katmanıdır.
-        _CRITICAL_INJURY_KEYWORDS = [
-            "yaralanma", "yarali", "kaza", "is kazasi", "dusme", "dustu", "dusecek",
-            "kanama", "sikisma", "ezilme", "carpma", "carpisma", "takilma", "kayma",
-            "bayilma", "hareketsiz", "acili", "yaralanan", "darbe", "kemik", "kirik",
-            "ambulans", "ilk yardim", "kesik", "can kaybi", "yere yigil", "yangin", "alev"
-        ]
-        _GENERAL_ANOMALY_KEYWORDS = [
-            "anormallik", "sizinti", "dokulme", "bozukluk", "ariza", "supheli",
-            "kontrolsuz", "tahrip", "hasar", "devrilme", "tehlikeli"
-        ]
-
-        # DİNAMİK BAĞLAMA DUYARLI DETERMINİSTİK RİSK SKORLAMA FORMÜLÜ:
-        # RiskScore = BaseScore + f(MotionChangeScore) + f(DriftTrendBonus)
-        # TEKNOFEST Şartnamesi Sayfa 8 Uyumu: Olayın şiddetine ve sinyal büyüklüğüne göre dinamik ölçeklenir,
-        # aynı video için sinyal parametreleri deterministik olduğundan 5/5 sıfır varyans üretir.
-        _FIRE_SMOKE_KEYWORDS = ["yangin", "alev", "duman", "pus"]
-        _CRITICAL_INJURY_KEYWORDS = [
-            "yaralanma", "yarali", "kaza", "is kazasi", "dusme", "dustu", "dusecek",
-            "kanama", "sikisma", "ezilme", "carpma", "carpisma", "takilma", "kayma",
-            "bayilma", "hareketsiz", "acili", "yaralanan", "darbe", "kemik", "kirik",
-            "ambulans", "ilk yardim", "kesik", "can kaybi", "yere yigil"
-        ]
-        _GENERAL_ANOMALY_KEYWORDS = [
-            "anormallik", "sizinti", "dokulme", "bozukluk", "ariza", "supheli",
-            "kontrolsuz", "tahrip", "hasar", "devrilme", "tehlikeli"
-        ]
-
-        # Sinyal büyüklüğü ve trend bilgisini metinden çıkar:
-        cs_match = re.search(r"(?:change_score|degisim)\s*[:=]\s*([0-9.]+)", final_text, re.IGNORECASE)
-        signal_change = float(cs_match.group(1)) if cs_match else 0.05
-        has_trend_signal = "has_gradual_trend=true" in final_text.lower() or "duman" in final_text.lower() or "pus" in final_text.lower()
-
-        if self._has_active_unnegated_hazard(final_text, _FIRE_SMOKE_KEYWORDS):
-            base_score = risk_score if (risk_score is not None and risk_score >= 60) else 65
-            motion_bonus = min(15, int(signal_change * 150))
-            drift_bonus = 10 if has_trend_signal else 0
-            risk_score = min(100, max(75, base_score + motion_bonus + drift_bonus))
-            risk_status = "assessed"
-        elif self._has_active_unnegated_hazard(final_text, _CRITICAL_INJURY_KEYWORDS):
-            base_score = risk_score if (risk_score is not None and risk_score >= 60) else 70
-            motion_bonus = min(20, int(signal_change * 200))
-            risk_score = min(100, max(75, base_score + motion_bonus))
-            risk_status = "assessed"
-        elif self._has_active_unnegated_hazard(final_text, _GENERAL_ANOMALY_KEYWORDS):
-            base_score = risk_score if (risk_score is not None and risk_score >= 40) else 50
-            motion_bonus = min(20, int(signal_change * 150))
-            risk_score = min(100, max(50, base_score + motion_bonus))
-            risk_status = "assessed"
-        elif risk_score is None or risk_score == 0:
-            # Hiçbir aktif tehlike yok, olumsuzlanmış veya rutin durum -> risk_score 0 (Düşük Risk)
-            risk_score = 0
-            risk_status = "assessed"
+        if risk_status == "unclassified":
+            risk_score = None
 
         return AgentDecision(
             risk_score=risk_score,
@@ -477,40 +520,122 @@ class SafirAgent:
             actions=actions,
             events=events,
             risk_status=risk_status,
-            confidence=confidence,
-            guardrail_triggered=guardrail_triggered,
-            event_category=event_category,
+            onset_timestamp=onset_timestamp,
+            safe_timestamps=safe_timestamps,
+            incident_timestamps=incident_timestamps,
         )
 
     @staticmethod
+    def _truncate_for_log(text: str, limit: int = 1000) -> str:
+        """Ham LLM ciktisini teshis amacli loglamak icin guvenli/kirpilmis `repr` uretir.
+
+        `repr` kullanmak, kacan/goze gorunmez karakterleri (ör. yanlislikla
+        eklenmis `\\n`/kontrol karakteri, cikti kesilmesi) log satirinda
+        AYIRT EDILEBILIR kilar - duz metin bunlari gizleyip teshisi zorlastirirdi.
+        """
+        if not text:
+            return "(bos)"
+        snippet = text if len(text) <= limit else text[:limit] + f"...(+{len(text) - limit} karakter)"
+        return repr(snippet)
+
+    @staticmethod
     def _extract_json(text: str) -> Optional[Dict[str, Any]]:
-        """Serbest metin icindeki ilk JSON nesnesini ayristirir; bulunamazsa None."""
-        match = _JSON_OBJECT_PATTERN.search(text)
-        if not match:
+        """Serbest metin icindeki ilk gecerli JSON nesnesini ayristirir; bulunamazsa None.
+
+        Sirasiyla dener:
+        1. Dogrudan `json.loads` (model SADECE JSON dondurmusse - beklenen yol).
+        2. Markdown ```json ... ``` kod blogunun icerigi.
+        3. Metnin herhangi bir yerindeki (baslik/aciklama ile sarili olsa da)
+           ilk DENGELI (balanced-brace) JSON nesnesi.
+
+        Eskiden kullanilan `\\{.*\\}` (greedy) regex'i, metinde birden fazla
+        `{`/`}` oldugunda (ör. kod blogu + sonrasinda ek aciklama, ic ice
+        yapi) YANLIS sinirlar secip gecerli JSON'u bile bozuk hale
+        getirebiliyordu; bu yuzden parantez derinligi + string/escape
+        farkindaligiyla calisan `_extract_balanced_json_object` kullanilir.
+        """
+        if not text:
+            return None
+
+        direct = SafirAgent._try_parse_json_object(text.strip())
+        if direct is not None:
+            return direct
+
+        fence_match = _MARKDOWN_JSON_FENCE_PATTERN.search(text)
+        if fence_match:
+            fenced_content = fence_match.group(1)
+            fenced = SafirAgent._try_parse_json_object(fenced_content.strip())
+            if fenced is not None:
+                return fenced
+            balanced_in_fence = SafirAgent._try_parse_json_object(
+                SafirAgent._extract_balanced_json_object(fenced_content)
+            )
+            if balanced_in_fence is not None:
+                return balanced_in_fence
+
+        balanced = SafirAgent._try_parse_json_object(SafirAgent._extract_balanced_json_object(text))
+        if balanced is not None:
+            return balanced
+
+        return None
+
+    @staticmethod
+    def _try_parse_json_object(candidate: Optional[str]) -> Optional[Dict[str, Any]]:
+        """`candidate` gecerli bir JSON NESNESI ise sozluk olarak dondurur, aksi halde None."""
+        if not candidate:
             return None
         try:
-            data = json.loads(match.group(0))
+            data = json.loads(candidate)
         except (json.JSONDecodeError, ValueError):
             return None
         return data if isinstance(data, dict) else None
 
     @staticmethod
+    def _extract_balanced_json_object(text: str) -> Optional[str]:
+        """Metindeki ilk `{`den baslayarak parantez derinligini sayip DENGELI JSON nesnesini bulur.
+
+        String icindeki `{`/`}` karakterlerini (ve kacis/escape edilmis
+        tirnaklari) yok sayar, boylece iceriginde suslu parantez GECEN bir
+        alan degeri (ör. `"summary": "... {ozel} ..."`) nesnenin erken
+        kapandigini varsaymaz. Bulunamazsa (dengelenmemis/kirik JSON) None doner.
+        """
+        start = text.find("{")
+        if start == -1:
+            return None
+
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+        return None
+
+    @staticmethod
     def _coerce_risk_score(value: Any) -> Optional[int]:
         """Risk skorunu 0-100 araligina kirpilmis bir tam sayiya cevirir.
 
-        Metin olarak "Yüksek", "Kritik", "Orta", "Düşük" verilirse sayisal skora cevirir
-        (TEKNOFEST 3. Senaryo Sartnamesi Sayfa 8 mock JSON uyumlulugu).
+        Deger eksik/gecersizse (ör. `None`, sayisal olmayan bir metin) artik
+        `0` DEGIL, `None` doner — cagiran taraf (`_parse_decision`) bunu
+        `risk_status="unknown"`e cevirir. Onceki davranis (`0` varsayilani),
+        "gecerli bir dusuk risk skoru" ile "skor hic uretilemedi" durumunu
+        AYIRT EDEMIYORDU (bkz. P0 duzeltmesi).
         """
-        if isinstance(value, str):
-            v_clean = value.strip().lower()
-            if v_clean in ("kritik", "critical"):
-                return 90
-            if v_clean in ("yuksek", "yüksek", "high"):
-                return 75
-            if v_clean in ("orta", "medium", "elevated"):
-                return 40
-            if v_clean in ("dusuk", "düşük", "low"):
-                return 10
         try:
             score = int(float(value))
         except (TypeError, ValueError):

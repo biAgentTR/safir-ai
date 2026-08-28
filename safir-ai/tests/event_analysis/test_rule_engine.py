@@ -1,34 +1,15 @@
 """T010 (src/event_analysis/rule_engine.py) icin GPU/ag bagimliligi gerektirmeyen birim testleri.
 
-`RuleEngine.evaluate()`'in tekli mevzuat eslestirmesini, kombinasyon
-(bilesik ihlal) kurallarini ve opsiyonel `RegulationRetriever` entegrasyonunu
-dogrular. Gercek `EmbeddingRAGService`/`RetrieverTool`'a bagimlilik yoktur;
-`RegulationRetriever` Protocol'une uyan basit bir mock kullanilir.
+`RuleEngine.evaluate()`'in tekli mevzuat eslestirmesini ve kombinasyon
+(bilesik ihlal) kurallarini dogrular. `RuleEngine` HICBIR AG/RAG CAGRISI
+YAPMAZ (2026-08-25: eski retriever-tabanli zenginlestirme KALDIRILDI - bkz.
+modul dokustringi); tamamen yerel/deterministik bir tablo/YAML eslemesidir.
 """
 
 from __future__ import annotations
 
 from src.event_analysis.rule_engine import RuleEngine
 from src.event_analysis.schemas import TemporalEvent
-
-
-class _MockRetriever:
-    """`RegulationRetriever` Protocol'une uyan, gercek RAG'a bagli olmayan test cifti."""
-
-    def __init__(self, response: str = "[MOCK] Ilgili mevzuat metni.") -> None:
-        self.response = response
-        self.calls: list[tuple[str, int]] = []
-
-    def run(self, question: str, top_k: int = 3) -> str:
-        self.calls.append((question, top_k))
-        return self.response
-
-
-class _FailingRetriever:
-    """Her cagride istisna firlatan retriever; RuleEngine'in hataya dayanikliligini test eder."""
-
-    def run(self, question: str, top_k: int = 3) -> str:
-        raise RuntimeError("retriever servisine erisilemedi")
 
 
 def _temporal_event(
@@ -39,6 +20,7 @@ def _temporal_event(
 ) -> TemporalEvent:
     return TemporalEvent(
         event_id=event_id,
+        event_name=event_type,
         event_type=event_type,
         description="test aciklamasi",
         start_timestamp=timestamp,
@@ -105,26 +87,13 @@ def test_unknown_event_type_is_skipped_gracefully() -> None:
     assert matches == []
 
 
-def test_without_retriever_rule_description_is_short_regulation_label() -> None:
+def test_rule_description_is_the_short_deterministic_regulation_label() -> None:
+    """`rule_description`, ARTIK (ve HER ZAMAN) `EVENT_TYPE_REGULATION_MAP`teki kisa,
+    deterministik etikettir - RuleEngine kendi basina bir RAG/kanit metni URETMEZ
+    (bkz. modul dokustringi: gercek mevzuat metni SADECE `EmbeddingRAGService.query()`
+    uzerinden, "RAG ve Guvenlik" panelinde/`report.relevant_regulations`de gelir)."""
     events = [_temporal_event("evt_0", "kkd_ihlali")]
-    matches = RuleEngine(retriever=None).evaluate(events)
-
-    assert matches[0].rule_description == "ISG Yonetmeligi Madde 24"
-
-
-def test_with_retriever_rule_description_uses_enriched_text() -> None:
-    retriever = _MockRetriever(response="[MOCK] KKD zorunlulugu detayli metin.")
-    events = [_temporal_event("evt_0", "kkd_ihlali")]
-
-    matches = RuleEngine(retriever=retriever).evaluate(events)
-
-    assert matches[0].rule_description == "[MOCK] KKD zorunlulugu detayli metin."
-    assert retriever.calls == [("ISG Yonetmeligi Madde 24", 1)]
-
-
-def test_retriever_failure_falls_back_to_short_label_without_raising() -> None:
-    events = [_temporal_event("evt_0", "kkd_ihlali")]
-    matches = RuleEngine(retriever=_FailingRetriever()).evaluate(events)
+    matches = RuleEngine().evaluate(events)
 
     assert matches[0].rule_description == "ISG Yonetmeligi Madde 24"
 
@@ -223,3 +192,25 @@ def test_missing_rules_path_raises_file_not_found() -> None:
 
     with pytest.raises(FileNotFoundError):
         RuleEngine(rules_path="/nonexistent/path/isg_rules.yaml")
+
+
+# --- T018: keywords, risk/mevzuat eslesmesini ETKILEMEZ (RuleEngine yalnizca event_type okur) ---
+
+
+def test_rule_engine_output_is_identical_regardless_of_matched_keywords() -> None:
+    """RuleEngine, `TemporalEvent.matched_keywords`i HICBIR ZAMAN okumaz - yalnizca
+    `event_type`e bakar. Farkli (hatta cok sayida) keyword, ayni event_type icin
+    AYNI RuleMatch sonucunu uretmeli - keywords bir risk KARARI DEGILDIR."""
+    few_keywords_event = _temporal_event("evt_0", "yangin_duman")
+    few_keywords_event.matched_keywords = ["duman"]
+
+    many_keywords_event = _temporal_event("evt_0", "yangin_duman")
+    many_keywords_event.matched_keywords = [f"terim-{i}" for i in range(20)]
+
+    matches_few = RuleEngine().evaluate([few_keywords_event])
+    matches_many = RuleEngine().evaluate([many_keywords_event])
+
+    assert len(matches_few) == len(matches_many) == 1
+    assert matches_few[0].rule_id == matches_many[0].rule_id
+    assert matches_few[0].severity == matches_many[0].severity
+    assert matches_few[0].rule_description == matches_many[0].rule_description
