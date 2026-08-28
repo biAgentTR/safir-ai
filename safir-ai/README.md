@@ -5,6 +5,10 @@ Akış: **Video → Adaptive Frame Sampler (CPU) → VLM (görsel anlama) → Ol
 Analizi + Hibrit Bellek/RAG → LangGraph Ajanı (muhakeme) → Otomatik Eskalasyon →
 Yapılandırılmış Rapor (JSON) + Operatör Paneli**.
 
+> **Şartname dokümantasyonu:** mimari diyagramı, kullanılan agentic framework/LLM'ler,
+> senaryolar ve mock fonksiyonlar, ölçümleme sonuçları ve ölçekleme ihtiyaçları için
+> bkz. [`../DOKUMANTASYON.md`](../DOKUMANTASYON.md).
+
 ## Kurulum (native — Docker GEREKMEZ)
 
 Sistemde bir NVIDIA GPU + sürücü (Blackwell/RTX 5090 için ≥570) varsa yeterlidir;
@@ -105,7 +109,7 @@ Pipeline'ı aşama aşama görmek için (sampler → temsili kareler → VLM →
 tespiti → RAG → ajan → otomatik eskalasyon → nihai rapor):
 
 ```bash
-pip install notebook ipykernel          # (requirements-gemini.txt içinde de var)
+pip install notebook ipykernel
 jupyter notebook notebooks/SAFIR_walkthrough.ipynb
 # veya VS Code'da .ipynb dosyasını açıp hücreleri sırayla çalıştır
 ```

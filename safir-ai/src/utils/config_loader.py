@@ -266,16 +266,13 @@ class VLLMEndpointConfig(BaseModel):
     """Tek bir model uc noktasi icin baglanti bilgileri (yerel vLLM veya harici saglayici).
 
     Varsayilan `provider="vllm"` ile davranis, `http://<vllm_host>:<vllm_port>/v1`
-    adresindeki yerel OpenAI-uyumlu vLLM servisine baglanmaktir (yarismanin
-    offline/yerel gereksinimi). `provider="gemini"` (veya baska bir harici
-    saglayici) secildiginde `base_url` ile tam OpenAI-uyumlu taban adres ve
-    `api_key_env` ile anahtarin okunacagi ortam degiskeni adi verilir; boylece
-    VRAM'i yetmeyen gelistiriciler ayni pipeline'i tek config anahtariyla
-    Gemini API uzerinden test edebilir.
+    adresindeki yerel OpenAI-uyumlu vLLM servisine baglanmaktir. `provider="evren"`
+    secildiginde `base_url` ile EVREN'in OpenAI-uyumlu taban adresi ve
+    `api_key_env` ile anahtarin okunacagi ortam degiskeni adi (`EVREN_API_KEY`)
+    verilir.
 
-    ONEMLI: Harici API kullanimi (Gemini) yalnizca GELISTIRME/TEST amaclidir ve
-    sartnamenin "tamamen yerel/offline calisma" gereksinimini ihlal eder;
-    yarisma teslimi icin `provider` her zaman `vllm` (yerel) olmalidir.
+    NOT: Eski Gemini/Groq saglayicilari ve bunlara ait API anahtarlari
+    KALDIRILMISTIR - sistem yalnizca yerel vLLM veya EVREN altyapisini kullanir.
     """
 
     model_name: str
@@ -285,9 +282,9 @@ class VLLMEndpointConfig(BaseModel):
     temperature: float
     top_p: float = 1.0
 
-    provider: str = "vllm"                       # vllm | gemini
+    provider: str = "vllm"                       # vllm | evren
     base_url: Optional[str] = None               # verilirse host:port yerine bu tam OpenAI-uyumlu taban kullanilir
-    api_key_env: Optional[str] = None            # anahtarin okunacagi ortam degiskeni adi (orn. "GEMINI_API_KEY")
+    api_key_env: Optional[str] = None            # anahtarin okunacagi ortam degiskeni adi (orn. "EVREN_API_KEY")
     extra_body: Dict[str, Any] = Field(default_factory=dict)
     """Istek govdesine eklenecek saglayici-ozel alanlar (vLLM guided decoding icin;
     orn. `{"guided_json": {...}}` veya `{"guided_regex": "..."}`). Varsayilan bos
@@ -544,7 +541,7 @@ class AgentConfig(BaseModel):
     tools: AgentToolsConfig
     guided_json: bool = True
     """Ajanin nihai karari gecerli JSON degilse, JSON-modu (response_format=
-    json_object; vLLM/Gemini destekler) ile TEK bir yeniden-deneme yapilir.
+    json_object; vLLM/EVREN destekler) ile TEK bir yeniden-deneme yapilir.
     Kucuk yerel modellerde bozuk JSON'u kurtarir. `false` ile devre disi."""
 
 
@@ -583,8 +580,8 @@ class GuardConfig(BaseModel):
     yalnizca Agent'a giden guvenilmeyen serbest metni (user_prompt, VLM
     aciklamasi) DETECT -> CLASSIFY -> QUARANTINE/PASS akisindan gecirir.
     `provider`: "evren" (AKTIF/production - EVREN'in OpenAI-uyumlu LLM ucu,
-    `EVREN_API_KEY`) - "gemini"/"groq" eski, gecici GELISTIRME/TEST
-    backend'leri olarak KORUNUR (aktif degil, silinmedi).
+    `EVREN_API_KEY`). Eski "gemini"/"groq" backend'leri ve API anahtarlari
+    KALDIRILMISTIR - `provider` yalnizca "evren" olabilir.
     """
 
     enabled: bool = False
@@ -593,7 +590,7 @@ class GuardConfig(BaseModel):
     fail_closed: bool = True
     confidence_threshold: float = 0.80
     api_key_env: str = "EVREN_API_KEY"
-    base_url: Optional[str] = None      # provider="evren"/"groq" icin ZORUNLU (gemini'de kullanilmaz)
+    base_url: Optional[str] = None      # provider="evren" icin ZORUNLU (EVREN taban adresi)
 
 
 class SafirConfig(BaseModel):

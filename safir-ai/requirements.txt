@@ -16,6 +16,10 @@ uvicorn[standard]>=0.30
 pydantic>=2.7,<3
 PyYAML>=6.0.1
 httpx>=0.27
+# python-dotenv: .env icindeki EVREN_* anahtarlari SURECIN BASINDA yuklenir
+# (src/main.py ve src/utils/config_loader.py ilk satirlarda `load_dotenv()`
+# cagirir) - eksikse temiz bir kurulumda uygulama ACILISTA ImportError verir.
+python-dotenv>=1.0.1
 
 # --- Hafif Suzgec Katmani (CPU) ---
 opencv-python-headless>=4.10.0.84
@@ -37,13 +41,6 @@ qdrant-client>=1.9.0
 # sentence-transformers: yalnizca opsiyonel LOKAL Cross-Encoder (src/rag/local_cross_encoder_reranker.py,
 # production'da VARSAYILAN DEGIL - bkz. src/main.py) standalone/benchmark kullanimi icin kalir.
 sentence-transformers>=3.0.0
-
-# --- Prompt Injection Guard icin (opsiyonel eski Gemini backend'i) ---
-# NOT: google-genai artik embedding/reranker icin KULLANILMIYOR (bkz. yukarida) -
-# guard AKTIF/production'da EVREN kullanir (openai>=1.35 zaten yukarida var,
-# ek bagimlilik GEREKMEZ); bu paket yalnizca guard.provider="gemini" (eski,
-# aktif olmayan test backend'i) SECILIRSE gereklidir.
-google-genai>=1.0.0
 
 # --- Rapor Disa Aktarma (PDF) ---
 # reportlab: GET /history/{job_id}/report.pdf tarafindan kullanilan

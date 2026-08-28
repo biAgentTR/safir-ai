@@ -5,14 +5,11 @@ KAPSAM DISI (bilerek): bu modul risk_score/risk_level/event_type hesaplamaz,
 RuleEngine kararini degistirmez, regulation match uretmez, RAG retrieval
 kararinin yerine gecmez. Tek gorevi: DETECT -> CLASSIFY -> QUARANTINE/PASS.
 
-Uc saglayici: `EvrenPromptInjectionGuard` (AKTIF/production - EVREN'in
+Tek saglayici: `EvrenPromptInjectionGuard` (AKTIF/production - EVREN'in
 OpenAI-uyumlu LLM ucu, `src/rag/reranker.py::EvrenReranker` ile AYNI lazy
-`openai.OpenAI` istemci deseni ve `EVREN_API_KEY`), `GeminiPromptInjectionGuard`
-(eski, gecici GELISTIRME/TEST backend'i - lazy `genai.Client`) ve
-`GroqPromptInjectionGuard` (eski, gecici GELISTIRME/TEST backend'i - AYRI
-bir `GROQ_API_KEY`/kota). Ucu de AYNI prompt/JSON semasini ve dogrulama
-kurallarini paylasir (bkz. `_build_guard_prompt`/`_parse_guard_response`) -
-yalnizca AG cagrisi saglayici-ozeldir. Modelin serbest ACIKLAMA metni ASLA
+`openai.OpenAI` istemci deseni ve `EVREN_API_KEY`). Eski Gemini/Groq
+GELISTIRME backend'leri ve bunlara ait API anahtarlari KALDIRILMISTIR -
+sistem yalnizca EVREN altyapisini kullanir. Modelin serbest ACIKLAMA metni ASLA
 quarantine karari olarak KULLANILMAZ - yalnizca ayristirilmis
 {is_injection, confidence, reason} alanlari.
 
@@ -119,24 +116,9 @@ def build_prompt_injection_guard(guard_config) -> PromptInjectionGuard:
             base_url=guard_config.base_url,
             api_key_env=guard_config.api_key_env,
         )
-    if guard_config.provider == "gemini":
-        return GeminiPromptInjectionGuard(
-            model_name=guard_config.model_name,
-            fail_closed=guard_config.fail_closed,
-            confidence_threshold=guard_config.confidence_threshold,
-            api_key_env=guard_config.api_key_env,
-        )
-    if guard_config.provider == "groq":
-        return GroqPromptInjectionGuard(
-            model_name=guard_config.model_name,
-            fail_closed=guard_config.fail_closed,
-            confidence_threshold=guard_config.confidence_threshold,
-            base_url=guard_config.base_url or "https://api.groq.com/openai/v1",
-            api_key_env=guard_config.api_key_env,
-        )
     raise GuardUnavailableError(
         f"Desteklenmeyen prompt injection guard saglayicisi: '{guard_config.provider}'. "
-        "Su an 'evren', 'gemini' veya 'groq' destekleniyor."
+        "Yalnizca 'evren' destekleniyor."
     )
 
 
@@ -322,178 +304,6 @@ class EvrenPromptInjectionGuard(PromptInjectionGuard):
         )
 
 
-class GeminiPromptInjectionGuard(PromptInjectionGuard):
-    """Gemini metin modelini SADECE yapilandirilmis JSON ile siniflandirici olarak kullanan `PromptInjectionGuard`.
-
-    ESKI, gecici GELISTIRME/TEST backend'i (AKTIF DEGIL - bkz.
-    `EvrenPromptInjectionGuard`). Dedike bir "guard/moderation" API'si
-    KULLANMAZ - mevcut Gemini API anahtarini (embedding/reranker ile AYNI
-    `GEMINI_API_KEY`) kullanir.
-    """
-
-    def __init__(
-        self,
-        model_name: str,
-        fail_closed: bool = True,
-        confidence_threshold: float = 0.80,
-        api_key_env: str = "GEMINI_API_KEY",
-    ) -> None:
-        """GeminiPromptInjectionGuard'i model adi ve politikayla kurar (AG CAGRISI YAPMAZ - istemci lazy olusturulur).
-
-        Args:
-            model_name: Gemini metin modeli adi (orn. "gemini-3.5-flash-lite").
-            fail_closed: `True` ise API/parse hatasinda icerik quarantine
-                edilir (production varsayilani); `False` ise allow edilir
-                (her iki durumda da acikca loglanir).
-            confidence_threshold: `is_injection=True` sonucunun quarantine'e
-                cevrilmesi icin gereken minimum guven skoru (0.0-1.0).
-            api_key_env: API anahtarinin okunacagi ortam degiskeni adi.
-        """
-        self._model_name = model_name
-        self._fail_closed = fail_closed
-        self._confidence_threshold = confidence_threshold
-        self._api_key_env = api_key_env
-        self._client = None
-
-    def _get_client(self):
-        if self._client is not None:
-            return self._client
-
-        api_key = os.environ.get(self._api_key_env, "").strip()
-        if not api_key:
-            raise GuardUnavailableError(
-                f"Prompt injection guard icin '{self._api_key_env}' ortam degiskeni tanimli degil."
-            )
-
-        from google import genai  # gec import: paket kurulu degilse bile modul import'u patlamasin
-
-        self._client = genai.Client(api_key=api_key)
-        return self._client
-
-    def inspect(self, text: str, source: str) -> GuardResult:
-        if not text or not text.strip():
-            return GuardResult(is_injection=False, confidence=0.0, reason=None, action="allow", source=source)
-
-        started = time.perf_counter()
-        try:
-            client = self._get_client()
-            prompt = _build_guard_prompt(text, source)
-
-            from google.genai import types
-
-            response = client.models.generate_content(
-                model=self._model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.0,
-                ),
-            )
-            raw_text = response.text or ""
-            is_injection, confidence, reason = _parse_guard_response(raw_text)
-        except Exception as exc:  # noqa: BLE001 - HERHANGI bir hata guvenli fail_closed/fail_open politikasina cevrilir
-            logger.error("GeminiPromptInjectionGuard: inspect basarisiz (source=%s): %s", source, exc)
-            latency_ms = (time.perf_counter() - started) * 1000.0
-            return _failure_result(source, self._fail_closed, latency_ms, "GeminiPromptInjectionGuard")
-
-        latency_ms = (time.perf_counter() - started) * 1000.0
-        action = "quarantine" if (is_injection and confidence >= self._confidence_threshold) else "allow"
-        return GuardResult(
-            is_injection=is_injection,
-            confidence=confidence,
-            reason=reason,
-            action=action,
-            source=source,
-            latency_ms=round(latency_ms, 1),
-        )
-
-
-class GroqPromptInjectionGuard(PromptInjectionGuard):
-    """Groq'un OpenAI-uyumlu ucunu SADECE yapilandirilmis JSON ile siniflandirici olarak kullanan `PromptInjectionGuard`.
-
-    ESKI, gecici GELISTIRME/TEST backend'i (AKTIF DEGIL - bkz.
-    `EvrenPromptInjectionGuard`). Gemini'den TAMAMEN AYRI bir API anahtari/
-    kota kullanir (`GROQ_API_KEY`). Ayni JSON semasi/dogrulama kurallari
-    (bkz. `_build_guard_prompt`/`_parse_guard_response`) - yalnizca AG
-    cagrisi farklidir (OpenAI SDK, `response_format={"type": "json_object"}`).
-    """
-
-    def __init__(
-        self,
-        model_name: str,
-        fail_closed: bool = True,
-        confidence_threshold: float = 0.80,
-        base_url: str = "https://api.groq.com/openai/v1",
-        api_key_env: str = "GROQ_API_KEY",
-    ) -> None:
-        """GroqPromptInjectionGuard'i model adi ve politikayla kurar (AG CAGRISI YAPMAZ - istemci lazy olusturulur).
-
-        Args:
-            model_name: Groq model adi (orn. "openai/gpt-oss-safeguard-20b").
-            fail_closed: `True` ise API/parse hatasinda icerik quarantine
-                edilir (production varsayilani); `False` ise allow edilir
-                (her iki durumda da acikca loglanir).
-            confidence_threshold: `is_injection=True` sonucunun quarantine'e
-                cevrilmesi icin gereken minimum guven skoru (0.0-1.0).
-            base_url: Groq'un OpenAI-uyumlu taban adresi.
-            api_key_env: API anahtarinin okunacagi ortam degiskeni adi.
-        """
-        self._model_name = model_name
-        self._fail_closed = fail_closed
-        self._confidence_threshold = confidence_threshold
-        self._base_url = base_url
-        self._api_key_env = api_key_env
-        self._client = None
-
-    def _get_client(self):
-        if self._client is not None:
-            return self._client
-
-        api_key = os.environ.get(self._api_key_env, "").strip()
-        if not api_key:
-            raise GuardUnavailableError(
-                f"Prompt injection guard icin '{self._api_key_env}' ortam degiskeni tanimli degil."
-            )
-
-        from openai import OpenAI  # gec import: paket kurulu degilse bile modul import'u patlamasin
-
-        self._client = OpenAI(api_key=api_key, base_url=self._base_url)
-        return self._client
-
-    def inspect(self, text: str, source: str) -> GuardResult:
-        if not text or not text.strip():
-            return GuardResult(is_injection=False, confidence=0.0, reason=None, action="allow", source=source)
-
-        started = time.perf_counter()
-        try:
-            client = self._get_client()
-            prompt = _build_guard_prompt(text, source)
-
-            response = client.chat.completions.create(
-                model=self._model_name,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                temperature=0.0,
-            )
-            raw_text = response.choices[0].message.content or ""
-            is_injection, confidence, reason = _parse_guard_response(raw_text)
-        except Exception as exc:  # noqa: BLE001 - HERHANGI bir hata guvenli fail_closed/fail_open politikasina cevrilir
-            logger.error("GroqPromptInjectionGuard: inspect basarisiz (source=%s): %s", source, exc)
-            latency_ms = (time.perf_counter() - started) * 1000.0
-            return _failure_result(source, self._fail_closed, latency_ms, "GroqPromptInjectionGuard")
-
-        latency_ms = (time.perf_counter() - started) * 1000.0
-        action = "quarantine" if (is_injection and confidence >= self._confidence_threshold) else "allow"
-        return GuardResult(
-            is_injection=is_injection,
-            confidence=confidence,
-            reason=reason,
-            action=action,
-            source=source,
-            latency_ms=round(latency_ms, 1),
-        )
-
-
 _QUARANTINE_TEMPLATE = (
     "[GUVENLIK UYARISI - QUARANTINE: bu metinde olasi bir talimat/komut ele gecirme "
     "(prompt injection) girisimi tespit edildi (guven={confidence:.2f}). Asagidaki icerik "
@@ -545,8 +355,6 @@ __all__ = [
     "GuardUnavailableError",
     "PromptInjectionGuard",
     "EvrenPromptInjectionGuard",
-    "GeminiPromptInjectionGuard",
-    "GroqPromptInjectionGuard",
     "build_prompt_injection_guard",
     "sanitize_untrusted_text",
 ]

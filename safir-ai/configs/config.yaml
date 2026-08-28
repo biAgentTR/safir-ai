@@ -18,8 +18,8 @@
 app:
   name: "SAFIR"
   version: "2.0.0"
-  use_mock_vlm: true
-  use_mock_llm: true
+  use_mock_vlm: false
+  use_mock_llm: false
 
 system:
   name: "SAFIR"
@@ -498,8 +498,8 @@ escalation:
 # VLM/LLM/embedding/reranker ile AYNI EVREN altyapisini (OpenAI-uyumlu LLM
 # ucu, EVREN_API_KEY) kullanir - `model_name` (`llm-fast`), `llm.models.evren`
 # ile AYNI EVREN modelidir (bkz. src/security/prompt_injection_guard.py::
-# EvrenPromptInjectionGuard). Eski gemini/groq saglayicilari hala
-# desteklenir (silinmedi) ama AKTIF DEGIL.
+# EvrenPromptInjectionGuard). Eski gemini/groq saglayicilari ve bunlara ait
+# API anahtarlari KALDIRILMISTIR - yalnizca 'evren' desteklenir.
 # NOT (varsayilan KAPALI): reranker'in aksine (yalnizca RAG sonucunu bos
 # birakir - `stage_context` icinde try/except ile yutulur), guard basarisiz
 # oldugunda fail_closed=true politikasi vlm_description/user_prompt metnini

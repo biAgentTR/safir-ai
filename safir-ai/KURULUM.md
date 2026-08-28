@@ -246,7 +246,6 @@ pkill -f "uvicorn src.main:app"
   `use_mock_llm: true`; vLLM süreçleri gerekmeden tüm pipeline çalışır (cevaplar sahte).
 
 ## Docker hakkında
-Repo'da eski/opsiyonel `Dockerfile`, `Dockerfile.dashboard` ve `docker-compose.yml`
-dosyaları bulunur; bunlar **bu native kurulum için gerekli değildir** ve
-kullanılmayacaktır. Yukarıdaki adımlar tamamen bağımsızdır — Docker kurmanıza
-gerek yoktur.
+Proje **Docker kullanmaz**. Kullanılmayan `Dockerfile`, `Dockerfile.dashboard` ve
+`docker-compose.yml` dosyaları repodan kaldırılmıştır; yukarıdaki adımlar tamamen
+bağımsızdır — Docker/container kurmanıza gerek yoktur.
