@@ -90,7 +90,13 @@ const hasMetrics = computed(
       class="relative overflow-hidden rounded-md border border-risk-crit/40 bg-risk-crit/10 pl-4 pr-4 py-2.5 text-sm font-medium text-risk-crit flex items-center gap-2"
     >
       <span class="absolute inset-y-0 left-0 w-1 bg-risk-crit animate-pulse motion-reduce:animate-none" />
-      KRİTİK RİSK TESPİT EDİLDİ — otomatik saha alarmı tetiklendi.
+      <!-- Alarmin GERCEKTEN tetiklenip tetiklenmedigi `auto_dispatched`e baglidir:
+           deterministik (RuleEngine) kanit yokken EscalationPolicy bilerek
+           `pending_review` verir ve hicbir otomatik alarm ATILMAZ. Sabit
+           "alarm tetiklendi" metni bu durumda hemen altindaki operator-onayi
+           uyarisiyla CELISIYORDU. -->
+      <span v-if="store.report.auto_dispatched">KRİTİK RİSK TESPİT EDİLDİ — otomatik saha alarmı tetiklendi.</span>
+      <span v-else>KRİTİK RİSK TESPİT EDİLDİ — otomatik alarm tetiklenmedi, operatör kararı gerekli.</span>
     </div>
 
     <!-- unknown-risk banner: analysis failed to produce a reliable decision -->

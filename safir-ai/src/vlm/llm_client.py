@@ -204,7 +204,9 @@ class MockLLMClient:
             decision = (
                 "{\n"
                 '  "summary": "Sahada rutin faaliyet gözlenmiştir; kaza veya risk unsuru bulunmamaktadır.",\n'
-                '  "onset_timestamp": None,\n'
+                # JSON'da bos deger `null` yazilir; Python'un `None` degeri gecerli
+                # JSON DEGILDIR ve mock kararin tamamini ayristirilamaz hale getirir.
+                '  "onset_timestamp": null,\n'
                 '  "safe_timestamps": ["00:07", "00:10", "00:12", "00:15"],\n'
                 '  "incident_timestamps": [],\n'
                 '  "events": [\n'

@@ -1359,7 +1359,7 @@ class SafirPipeline:
         """
         vlm = self._vlm_video if analysis_mode == "vlm_direct" else self._vlm_frames
         if getattr(vlm, "requires_frame_sampling", True):
-            return self._stage_vlm_frames(vlm, evidence_frames, user_prompt)
+            return self._stage_vlm_frames(vlm, evidence_frames, user_prompt, context)
         return self._stage_vlm_video(vlm, video_source, evidence_frames, user_prompt, on_progress, context)
 
     def _stage_vlm_video(
@@ -1399,7 +1399,13 @@ class SafirPipeline:
         response.evidence_ids = [ef.evidence_id for ef in evidence_frames]
         return response
 
-    def _stage_vlm_frames(self, vlm: BaseVLM, evidence_frames: List[EvidenceFrame], user_prompt: str) -> VLMResponse:
+    def _stage_vlm_frames(
+        self,
+        vlm: BaseVLM,
+        evidence_frames: List[EvidenceFrame],
+        user_prompt: str,
+        context: Optional[AnalysisContext] = None,
+    ) -> VLMResponse:
         """Dusuk butceli yol: evidence kareleri `vlm.batch_size` buyuklugunde batch'lere bolunup analiz edilir.
 
         `BaseVLM.analyze_evidence_batched` ile kronolojik, kayipsiz batch'lere

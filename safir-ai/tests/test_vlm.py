@@ -62,16 +62,32 @@ def test_get_vlm_client_returns_mock_when_flagged(safir_config) -> None:
 
 
 def test_mock_llm_client_produces_parseable_decision_with_no_tool_calls() -> None:
-    client = MockLLMClient().bind_tools([])
-    response = client.invoke([HumanMessage(content="Sahnede risk var mi?")])
+    """Mock LLM her iki dalda da AYRISTIRILABILIR, sartname-uyumlu JSON uretmeli.
 
-    assert response.tool_calls == []
-    # Mock artik sartname-uyumlu JSON uretir; ayristirilabilir olmali.
+    Sabit bir risk_score beklenmez (mock artik gozleme gore dallaniyor): rutin
+    sahne dusuk, duman/yangin iceren gozlem kritik skor uretir. Onemli olan
+    ciktinin gecerli JSON olmasi - `onset_timestamp` gibi bos alanlar Python'un
+    `None`'i ile degil JSON `null` ile yazilmalidir.
+    """
     import json
 
-    parsed = json.loads(response.content)
-    assert parsed["risk_score"] == 35
-    assert isinstance(parsed["actions"], list) and parsed["actions"]
+    client = MockLLMClient().bind_tools([])
+
+    safe = client.invoke([HumanMessage(content="Sahnede risk var mi?")])
+    assert safe.tool_calls == []
+    parsed_safe = json.loads(safe.content)
+    assert parsed_safe["onset_timestamp"] is None
+    assert parsed_safe["risk_level"] == "dusuk"
+    assert 0 <= parsed_safe["risk_score"] < 51
+    assert isinstance(parsed_safe["actions"], list) and parsed_safe["actions"]
+
+    risky = client.invoke([HumanMessage(content="Sahnede yogun duman ve yangin var.")])
+    assert risky.tool_calls == []
+    parsed_risky = json.loads(risky.content)
+    assert parsed_risky["risk_level"] == "kritik"
+    assert parsed_risky["risk_score"] >= 51
+    assert parsed_risky["onset_timestamp"]
+    assert isinstance(parsed_risky["actions"], list) and parsed_risky["actions"]
 
 
 def test_mock_llm_client_bind_tools_returns_self() -> None:

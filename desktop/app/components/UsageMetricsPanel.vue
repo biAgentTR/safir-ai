@@ -1,7 +1,9 @@
 ﻿<script setup lang="ts">
 import { durationMs, tokenCount } from '~/utils/format'
 
-const { isPanelOpen, metrics, keyInfo, closePanel } = useUsageMetrics()
+// Kart içeriği; çerçeve/konum/geçiş MetricsDeck.vue'da (sol alt çift kart destesi).
+const { metrics, keyInfo } = useUsageMetrics()
+const { closeDeck } = useMetricsDeck()
 
 const isRefreshing = ref(false)
 function triggerRefresh() {
@@ -13,18 +15,8 @@ function triggerRefresh() {
 </script>
 
 <template>
-  <Transition
-    enter-active-class="transition duration-200 ease-out"
-    enter-from-class="opacity-0 scale-95 translate-y-2"
-    enter-to-class="opacity-100 scale-100 translate-y-0"
-    leave-active-class="transition duration-150 ease-in"
-    leave-from-class="opacity-100 scale-100 translate-y-0"
-    leave-to-class="opacity-0 scale-95 translate-y-2"
-  >
-    <div
-      v-if="isPanelOpen"
-      class="fixed z-50 bottom-20 right-6 sm:bottom-24 sm:right-8 w-84 sm:w-96 rounded-2xl bg-surface-1/95 backdrop-blur-2xl border border-edge shadow-2xl p-4 sm:p-5 text-slate-100 transition-all duration-200 ring-1 ring-white/5"
-    >
+  <div>
+    <div>
       <!-- Header -->
       <div class="flex items-center justify-between pb-3 border-b border-edge/50">
         <div class="flex items-center gap-2">
@@ -43,7 +35,7 @@ function triggerRefresh() {
           <button
             type="button"
             class="text-slate-400 hover:text-slate-200 p-1 rounded-md transition-colors"
-            @click="closePanel"
+            @click="closeDeck"
           >
             <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/>
@@ -123,5 +115,5 @@ function triggerRefresh() {
         </button>
       </div>
     </div>
-  </Transition>
+  </div>
 </template>

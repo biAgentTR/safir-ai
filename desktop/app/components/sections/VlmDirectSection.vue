@@ -12,7 +12,7 @@
 // is the existing assumption those pages already make.
 import { summarize, riskLevelCounts, eventTypeCounts } from '~/composables/useVlmMockData'
 import { mapVlmDirectEvents } from '~/composables/useVlmDirectEvents'
-import type { VlmStageEventData, TraceEvent } from '~/types/api'
+import type { VlmStageData, VlmStageEventData, TraceEvent } from '~/types/api'
 
 const store = useAnalysisStore()
 const stream = useAnalysisStream()
@@ -133,7 +133,37 @@ const vlmProgress = computed(() => {
   return d && 'progress' in d ? d.progress : null
 })
 const events = computed(() => mapVlmDirectEvents(vlmStage.value, store.report))
+
+// VLM'in tam metin analiz çıktısı: rapor geldiyse rapordaki doğal dil özeti,
+// gelmediyse VLM aşamasının kendi çıktısı (trace `description`). İkisi de yoksa
+// kart boş durumla görünür kalır — diğer sağ sütun kartlarıyla aynı davranış.
+const vlmFullText = computed<string | null>(() => {
+  const fromReport = store.report?.natural_language_summary?.trim()
+  if (fromReport) return fromReport
+  const d = vlmStage.value?.data
+  if (d && !('progress' in d)) {
+    const desc = (d as VlmStageData).description?.trim()
+    if (desc) return desc
+  }
+  return null
+})
 const hasRunAnalysis = computed(() => store.status === 'done' || store.status === 'error')
+// Analiz bitti ama eşiği aşan olay yok — bu durumda olay listesi yerine
+// video kutusunun altında sola hizalı bir bilgi kartı gösterilir.
+const noCriticalEvent = computed(() => hasRunAnalysis.value && store.status === 'done' && !events.value.length)
+
+// Video işleme süresi — KPI tanımıyla aynı kaynak (useKpiMetrics.ts::processingTime):
+// sampler ölçümü, yoksa boru hattı adım sürelerinin toplamı. Ölçüm yoksa "—".
+const { kpis } = useKpiMetrics()
+const processingTimeKpi = computed(
+  () => kpis.value.find((k) => k.key === 'processing_time') ?? kpis.value[kpis.value.length - 1]!,
+)
+// İşleme süresinin video uzunluğuna oranı (ör. 1.9× = videonun 1.9 katı sürdü).
+const processingRatio = computed(() => {
+  const sec = processingTimeKpi.value.value
+  if (!sec || !effectiveDuration.value) return null
+  return (sec / effectiveDuration.value).toFixed(1)
+})
 
 // Marker/timeline positioning needs SOME notion of video length even when
 // there's no real <video> preview (non-Tauri dev) — fall back to the
@@ -348,6 +378,32 @@ async function doExportPdf() {
           @export-pdf="doExportPdf"
         />
 
+        <!-- VLM'in ham, tam çıktısı — olay türü dağılımının hemen altında,
+             video işleme süresi kartının üstünde. -->
+        <div class="card p-4">
+          <h3 class="text-sm font-semibold text-slate-100 mb-2">VLM Çıktısı (Tam Metin)</h3>
+          <p v-if="vlmFullText" class="text-sm text-slate-300 whitespace-pre-line leading-relaxed max-h-64 overflow-y-auto">{{ vlmFullText }}</p>
+          <div v-else class="text-sm text-slate-500 py-4 text-center">Henüz VLM çıktısı yok.</div>
+        </div>
+
+        <!-- Ajanin GERCEKTEN cagirdigi mock aksiyon araclari (src/agent/tools.py:
+             notify_health_team_tool / dispatch_security_tool /
+             trigger_area_lockdown_tool). Sartname: "mock fonksiyonlarin ajanin
+             araclari olarak kullanilmasi" — Direct modda da gorunur olmali. -->
+        <div v-if="store.report?.triggered_mock_actions?.length" class="card p-4">
+          <h3 class="text-sm font-semibold text-slate-100 mb-2">Ajanın Çağırdığı Mock Aksiyon Araçları</h3>
+          <ul class="space-y-1.5">
+            <li
+              v-for="(t, i) in store.report.triggered_mock_actions"
+              :key="i"
+              class="rounded-md border border-accent/30 bg-accent/10 px-3 py-2 text-xs text-slate-200"
+            >
+              <span class="font-mono text-accent">{{ mockActionLabel(t.tool) }}</span>
+              <span class="text-slate-400"> — {{ t.result }}</span>
+            </li>
+          </ul>
+        </div>
+
         <!-- Kalıcı işlem günlüğü -->
         <div v-if="processingLog.length || store.isRunning" class="card p-4">
           <h3 class="text-sm font-semibold text-slate-100 mb-3">İşlem Günlüğü</h3>
@@ -368,20 +424,35 @@ async function doExportPdf() {
           </p>
         </div>
 
-        <!-- VLM'in ham, tam çıktısı -->
-        <div v-if="store.report?.natural_language_summary" class="card p-4">
-          <h3 class="text-sm font-semibold text-slate-100 mb-2">VLM Çıktısı (Tam Metin)</h3>
-          <p class="text-sm text-slate-300 whitespace-pre-line leading-relaxed max-h-64 overflow-y-auto">{{ store.report.natural_language_summary }}</p>
-        </div>
       </div>
     </div>
 
-    <div v-if="hasRunAnalysis && store.status === 'done' && !events.length" class="mt-5 card p-8 text-center">
-      <p class="text-sm font-semibold text-slate-200">Kritik olay tespit edilmedi</p>
-      <p class="mt-1 text-sm text-slate-500">Analiz tamamlandı. Bu videoda tanımlı güvenlik eşiklerini aşan bir olay bulunamadı.</p>
-    </div>
-    <div v-else class="mt-5">
-      <VlmEventList :events="events" :active-event-id="activeEventId" @select="onSelectEvent" />
+    <!-- Video kutusunun altı: solda riskli olaylar (video ile aynı genişlik),
+         hemen sağında video işleme süresi (sağ sütunla aynı genişlik). -->
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-5 mt-5 items-start">
+      <div class="lg:col-span-2">
+        <div v-if="noCriticalEvent" class="card p-5 text-left">
+          <p class="text-sm font-semibold text-slate-200">Kritik olay tespit edilmedi</p>
+          <p class="mt-1 text-sm text-slate-500">Analiz tamamlandı. Bu videoda tanımlı güvenlik eşiklerini aşan bir olay bulunamadı.</p>
+        </div>
+        <VlmEventList v-else :events="events" :active-event-id="activeEventId" @select="onSelectEvent" />
+      </div>
+
+      <div class="lg:col-span-1">
+        <div class="card p-5">
+          <h3 class="text-sm font-semibold text-slate-100">Video İşleme Süresi</h3>
+          <div class="mt-3 text-3xl font-bold text-slate-100 tabular-nums font-mono">{{ processingTimeKpi.display }}</div>
+          <p class="mt-1 text-xs text-slate-500">{{ processingTimeKpi.detail }}</p>
+          <div v-if="effectiveDuration > 0" class="mt-3 pt-3 border-t border-edge/50 flex items-center justify-between text-xs text-slate-400">
+            <span>video süresi</span>
+            <span class="font-mono tabular-nums text-slate-300">{{ mmss(effectiveDuration) }}</span>
+          </div>
+          <div v-if="processingRatio" class="mt-1.5 flex items-center justify-between text-xs text-slate-400">
+            <span>gerçek zamana oran</span>
+            <span class="font-mono tabular-nums text-slate-300">{{ processingRatio }}×</span>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- nihai JSON raporu (şartname formatı) -->

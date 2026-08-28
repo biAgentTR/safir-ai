@@ -11,6 +11,9 @@ const analysisStore = useAnalysisStore()
       <slot />
     </main>
     <VlmChatPanel :job-id="analysisStore.jobId" />
-    <UsageMetricsPanel />
+
+    <!-- Ölçüm destesi: sol altta çift kart (AI Metrikleri ↔ KPI Metrikleri),
+         3'lü çekmecedeki gibi segment anahtarlı kayan geçişle. -->
+    <MetricsDeck />
   </div>
 </template>

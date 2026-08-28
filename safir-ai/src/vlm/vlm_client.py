@@ -165,6 +165,58 @@ class MockVLMClient(BaseVLM):
             structured_events=structured_events,
         )
 
+    def reconcile_events(self, batch_responses: List[VLMResponse], prompt: str) -> VLMResponse:
+        """Batch sonuclarini YEREL olarak birlestirir - hicbir HTTP cagrisi yapmaz.
+
+        `BaseVLM.reconcile_events` varsayilani IKINCI bir metin-tabanli VLM
+        cagrisi yapar; mock istemci `_MOCK_ENDPOINT` (host "mock", port 0) ile
+        kuruldugu icin bu cagri `getaddrinfo failed` ile patliyordu ve
+        `use_mock_vlm: true` modunda kare-tabanli (dusuk butceli) analizin
+        TAMAMI basarisiz oluyordu - oysa mock modun tanimi "harici hicbir sey
+        gerekmez"dir. Bu yuzden birlestirme burada tamamen yerel yapilir.
+        """
+        successful = [r for r in batch_responses if getattr(r, "status", "ok") != "failed"]
+        evidence_ids: List[str] = []
+        for r in batch_responses:  # basarisiz batch'lerin evidence'i de KORUNUR
+            for eid in getattr(r, "evidence_ids", None) or []:
+                if eid not in evidence_ids:
+                    evidence_ids.append(eid)
+
+        if not successful:
+            failed = VLMResponse(
+                # "[HATA]" oneki KASITLI: pipeline/rapor sozlesmesi basarisiz
+                # analizi bu isaretle ayirt eder (bkz. tests/test_pipeline_
+                # integration.py::test_pipeline_produces_degraded_report_when_vlm_fails).
+                description="[HATA] [MOCK] Hicbir batch analiz edilemedi; VLM cagrisi basarisiz.",
+                model_name=self.model_name,
+                frame_count=0,
+                latency_ms=0.0,
+                structured_events=[],
+                status="failed",
+            )
+            failed.evidence_ids = evidence_ids
+            return failed
+
+        merged_events = []
+        for response in successful:
+            for event in response.structured_events or []:
+                merged = dict(event)
+                merged["event_id"] = f"mock_e{len(merged_events) + 1}"
+                merged_events.append(merged)
+                for eid in merged.get("evidence_ids") or []:
+                    if eid not in evidence_ids:
+                        evidence_ids.append(eid)
+
+        result = VLMResponse(
+            description=successful[0].description,
+            model_name=self.model_name,
+            frame_count=sum(r.frame_count for r in successful),
+            latency_ms=sum(r.latency_ms for r in successful),
+            structured_events=merged_events,
+        )
+        result.evidence_ids = evidence_ids
+        return result
+
     def analyze_video(
         self, video_source: str, evidence_frames: List[EvidenceFrame], prompt: str
     ) -> VLMResponse:

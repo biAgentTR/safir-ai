@@ -80,6 +80,34 @@ class ReportExporter:
         safe_name = self._report["video_source"].replace("/", "_").replace("\\", "_")
         return f"safir_report_{safe_name}"
 
+    MOCK_ACTION_LABELS = {
+        "notify_health_team_tool": "Sağlık Ekibi Bilgilendirildi",
+        "dispatch_security_tool": "Güvenlik Ekibi Yönlendirildi",
+        "trigger_area_lockdown_tool": "Alan Tahliye/Kilitleme Tetiklendi",
+    }
+
+    def _triggered_mock_actions(self) -> List[Dict[str, Any]]:
+        """Ajanin GERCEKTEN cagirdigi mock aksiyon araclarini dondurur.
+
+        Sartname "mock fonksiyonlarin ajanin araclari olarak kullanilmasi"ni
+        istedigi icin, cagrilar rapor ciktilarinda da acikca gosterilir
+        (bkz. `src/agent/tools.py::MOCK_ACTION_TOOL_NAMES`).
+        """
+        raw = self._report.get("triggered_mock_actions") or []
+        out: List[Dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            tool = str(item.get("tool", ""))
+            out.append(
+                {
+                    "tool": tool,
+                    "label": self.MOCK_ACTION_LABELS.get(tool, tool or "(bilinmeyen arac)"),
+                    "result": str(item.get("result", "")),
+                }
+            )
+        return out
+
     def _actions(self) -> List[str]:
         """Aksiyon listesini dondurur (yoksa `recommended_action`'a duser)."""
         actions = self._report.get("actions") or []
@@ -156,6 +184,11 @@ class ReportExporter:
         ) or '<p class="empty">Kanıt karesi yok.</p>'
 
         actions_html = "".join(f"<li>{a}</li>" for a in self._actions()) or '<li class="empty">Aksiyon önerisi yok.</li>'
+
+        mock_actions_html = "".join(
+            f"<li><b>{m['label']}</b> <span class=\"muted\">({m['tool']})</span><br/>{m['result']}</li>"
+            for m in self._triggered_mock_actions()
+        ) or '<li class="empty">Bu analizde mock aksiyon aracı çağrılmadı.</li>'
 
         regulations_html = "".join(
             f"<li>{regulation}</li>" for regulation in report.get("relevant_regulations", [])
@@ -257,6 +290,11 @@ class ReportExporter:
 {self._risk_breakdown_html()}
 <p class="muted" style="margin-bottom:.4rem;">Önerilen aksiyonlar</p>
 <ul>{actions_html}</ul>
+</div>
+
+<div class="section">
+<h2>Ajanın Çağırdığı Mock Aksiyon Araçları</h2>
+<ul>{mock_actions_html}</ul>
 </div>
 
 <div class="section">
@@ -369,6 +407,22 @@ class ReportExporter:
             )
         else:
             story.append(Paragraph("Aksiyon önerisi yok.", body_style))
+
+        mock_actions = self._triggered_mock_actions()
+        story.append(Paragraph("AJANIN ÇAĞIRDIĞI MOCK AKSİYON ARAÇLARI", heading_style))
+        if mock_actions:
+            story.append(
+                ListFlowable(
+                    [
+                        ListItem(Paragraph(f"<b>{m['label']}</b> ({m['tool']}) — {m['result']}", list_style))
+                        for m in mock_actions
+                    ],
+                    bulletType="bullet",
+                    **bullet,
+                )
+            )
+        else:
+            story.append(Paragraph("Bu analizde mock aksiyon aracı çağrılmadı.", body_style))
 
         story += [
             Paragraph("VLM GÖRSEL ANLAMA ÇIKTISI", heading_style),

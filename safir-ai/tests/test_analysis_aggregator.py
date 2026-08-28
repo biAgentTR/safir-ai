@@ -2,7 +2,8 @@ import pytest
 from src.vlm.analysis_aggregator import AnalysisAggregator, AnalysisAggregateResult, SceneSummary
 from src.vlm.schemas import ChunkAnalysisResult, VLMAnalysisStatus, VLMQualitySummary
 from src.vlm.video_chunker import VideoChunk
-from src.event_analysis.schemas import AnalysisContext
+# AnalysisContext, video_chunker ile birlikte tanimlidir (event_analysis.schemas DEGIL).
+from src.vlm.video_chunker import AnalysisContext
 
 def create_chunk(id, idx):
     return VideoChunk(

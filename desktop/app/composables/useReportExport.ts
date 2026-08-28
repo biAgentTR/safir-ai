@@ -63,7 +63,25 @@ export function buildSartnameJson(r: SafirReport): Record<string, unknown> {
       method: r.llm_proposed_score != null ? 'ortalama(deterministic_score, llm_proposed_score)' : 'deterministic_score',
     },
     actions: r.actions?.length ? r.actions : r.recommended_action ? [r.recommended_action] : [],
+    // Sartname: "mock fonksiyonlarin ajanin araclari olarak kullanilmasi" —
+    // ajanin GERCEKTEN cagirdigi mock aksiyon araclari (src/agent/tools.py).
+    triggered_mock_actions: (r.triggered_mock_actions ?? []).map((t) => ({
+      tool: t.tool,
+      args: t.args ?? {},
+      result: t.result,
+    })),
   }
+}
+
+// notify_health_team_tool / dispatch_security_tool / trigger_area_lockdown_tool
+// (src/agent/tools.py) — rapor ciktilarinda da insan-okunur Turkce etiketle.
+const MOCK_ACTION_LABELS: Record<string, string> = {
+  notify_health_team_tool: 'Sağlık Ekibi Bilgilendirildi',
+  dispatch_security_tool: 'Güvenlik Ekibi Yönlendirildi',
+  trigger_area_lockdown_tool: 'Alan Tahliye/Kilitleme Tetiklendi',
+}
+export function mockActionLabel(tool: string): string {
+  return MOCK_ACTION_LABELS[tool] ?? tool
 }
 
 function esc(s: unknown): string {
@@ -76,6 +94,9 @@ function esc(s: unknown): string {
 export function buildReportHtml(r: SafirReport): string {
   const rows = (r.timeline ?? []).map((e) => `<tr><td>${mmss(e.timestamp)}</td><td>${esc(e.description)}</td></tr>`).join('')
   const actions = (r.actions ?? []).map((a) => `<li>${esc(a)}</li>`).join('')
+  const mockActions = (r.triggered_mock_actions ?? [])
+    .map((t) => `<li><b>${esc(mockActionLabel(t.tool))}</b> <span class="muted">(${esc(t.tool)})</span><br>${esc(t.result)}</li>`)
+    .join('')
   const regs = (r.relevant_regulations ?? []).map((a) => `<li>${esc(a)}</li>`).join('')
   const st = r.sampler_stats
   const isUnknownRisk = r.risk_status === 'unknown' || r.risk_score === null || r.risk_score === undefined
@@ -120,6 +141,7 @@ export function buildReportHtml(r: SafirReport): string {
 ${breakdownHtml}
 <p><b>Önerilen aksiyon:</b> ${esc(r.recommended_action)}</p></div>
 <div class="section"><h2>Aksiyonlar</h2><ul>${actions || '<li class="muted">—</li>'}</ul></div>
+<div class="section"><h2>Ajanın Çağırdığı Mock Aksiyon Araçları</h2><ul>${mockActions || '<li class="muted">Bu analizde mock aksiyon aracı çağrılmadı.</li>'}</ul></div>
 <div class="section"><h2>Zaman Çizelgesi</h2><table><tr><th>Zaman</th><th>Olay</th></tr>${rows || '<tr><td colspan=2 class="muted">—</td></tr>'}</table></div>
 <div class="section"><h2>İlgili Mevzuat (RAG)</h2><ul>${regs || '<li class="muted">—</li>'}</ul></div>
 <div class="section"><h2>Eskalasyon</h2><p>Kademe: <b>${esc(r.escalation_tier ?? '-')}</b> · otomatik: ${r.auto_dispatched ? 'evet' : 'hayır'}${r.alert_id ? ` · alert_id: ${esc(r.alert_id)}` : ''}</p></div>

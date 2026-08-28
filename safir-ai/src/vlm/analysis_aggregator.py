@@ -3,7 +3,8 @@ from pydantic import BaseModel, Field
 import logging
 from src.vlm.schemas import ChunkAnalysisResult, VLMAnalysisStatus, VLMQualitySummary
 from src.vlm.video_chunker import VideoChunk
-from src.event_analysis.schemas import AnalysisContext
+# AnalysisContext, video_chunker ile birlikte tanimlidir (event_analysis.schemas DEGIL).
+from src.vlm.video_chunker import AnalysisContext
 
 logger = logging.getLogger(__name__)
 
@@ -135,23 +136,29 @@ class AnalysisAggregator:
             agg.analysis_status = VLMAnalysisStatus.MODEL_FAILED
 
         # Quality aggregation
+        #
+        # DIKKAT: `VLMObservationQuality.visibility` modelin serbest metni de
+        # olabilir ("clear", "partial", ...) ve `coverage_confidence` hic
+        # gelmeyebilir (None). Bu yuzden sadece SAYISAL degerler toplulastirilir;
+        # sayisal olmayan/eksik degerler sessizce atlanir (eskiden `str < float`
+        # karsilastirmasi ve `None` toplama TypeError firlatiyordu).
         if qualities:
             limitations = set()
-            min_vis = 1.0
-            max_cov = 0.0
+            visibilities: List[float] = []
+            coverages: List[float] = []
             for q in qualities:
                 if q.limitations:
                     limitations.update(q.limitations)
-                if q.visibility < min_vis:
-                    min_vis = q.visibility
-                # Conservatively use average or min coverage? Let's use average
-                max_cov += q.coverage_confidence
-            avg_cov = max_cov / len(qualities) if qualities else 0.0
-            
+                if isinstance(q.visibility, (int, float)) and not isinstance(q.visibility, bool):
+                    visibilities.append(float(q.visibility))
+                if isinstance(q.coverage_confidence, (int, float)) and not isinstance(q.coverage_confidence, bool):
+                    coverages.append(float(q.coverage_confidence))
+
             agg.quality_summary = VLMQualitySummary(
-                visibility=min_vis,
-                limitations=list(limitations),
-                coverage_confidence=avg_cov
+                # En kotu (minimum) gorunurluk = muhafazakar ozet.
+                visibility=min(visibilities) if visibilities else None,
+                limitations=sorted(limitations),
+                coverage_confidence=(sum(coverages) / len(coverages)) if coverages else None,
             )
             
         # Chronological sort of valid events

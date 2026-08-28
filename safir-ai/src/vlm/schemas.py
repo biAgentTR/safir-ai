@@ -13,6 +13,18 @@ class VLMObservationQuality(BaseModel):
     visibility: Optional[str] = None
     coverage_confidence: Optional[float] = None
 
+class VLMQualitySummary(VLMObservationQuality):
+    """Cok parcali (chunk) bir analizde parca kalitelerinin BIRLESTIRILMIS ozeti.
+
+    `VLMObservationQuality` tek bir chunk'in ham model ciktisidir ve `visibility`
+    orada modelin yazdigi serbest metindir ("clear", "partial", ...). Toplulastirma
+    ise sayisal bir esik uretir; bu yuzden burada `visibility` SAYISAL olarak
+    yeniden tanimlanir (bkz. `analysis_aggregator.AnalysisAggregator.aggregate`).
+    """
+
+    visibility: Optional[float] = None
+
+
 class VLMSceneObservation(BaseModel):
     observed_label: str = Field(min_length=1)
     canonical_type: Optional[str] = None

@@ -18,8 +18,8 @@
 app:
   name: "SAFIR"
   version: "2.0.0"
-  use_mock_vlm: false
-  use_mock_llm: false
+  use_mock_vlm: true
+  use_mock_llm: true
 
 system:
   name: "SAFIR"
