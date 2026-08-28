@@ -74,6 +74,14 @@ export function buildSartnameJson(r: SafirReport): Record<string, unknown> {
     risk: r.risk_level,
     risk_score: r.risk_score,
     risk_status: r.risk_status,
+    risk_accuracy: {
+      deterministic_score: r.deterministic_score ?? null,
+      deterministic_level: r.deterministic_level ?? null,
+      llm_proposed_score: r.llm_proposed_score ?? null,
+      final_score: r.risk_score,
+      final_level: r.risk_level,
+      method: r.llm_proposed_score != null ? 'ortalama(deterministic_score, llm_proposed_score)' : 'deterministic_score',
+    },
     actions: r.actions?.length ? r.actions : r.recommended_action ? [r.recommended_action] : [],
   }
 }
@@ -94,6 +102,14 @@ export function buildReportHtml(r: SafirReport): string {
   const riskText = isUnknownRisk
     ? 'Belirsiz — analiz güvenilir şekilde tamamlanamadı, manuel inceleme gerekli'
     : `${esc(r.risk_score)} / 100 — ${esc(r.risk_level)}`
+  const hasBreakdown = r.deterministic_score != null || r.llm_proposed_score != null
+  const breakdownHtml = hasBreakdown
+    ? `<div class="risk-breakdown">
+        <span><b>Deterministik (RuleEngine):</b> ${r.deterministic_score ?? '—'}/100 (${esc(r.deterministic_level ?? '—')})</span>
+        <span><b>Ajan (LLM) taslağı:</b> ${r.llm_proposed_score ?? '—'}/100</span>
+        <span class="muted">${r.llm_proposed_score != null ? 'Nihai skor = ortalama(deterministik, ajan taslağı)' : 'Nihai skor = deterministik skor (ajan taslağı yok)'}</span>
+      </div>`
+    : ''
   return `<!doctype html><html lang="tr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SAFİR Raporu — ${esc(r.video_source)}</title>
@@ -113,6 +129,7 @@ export function buildReportHtml(r: SafirReport): string {
   .muted{color:var(--muted);font-size:.82rem}
   ul{margin:.3rem 0;padding-left:1.15rem}
   li{margin-bottom:.35rem}
+  .risk-breakdown{display:flex;gap:1.5rem;flex-wrap:wrap;font-size:.82rem;margin:.6rem 0 0;padding:.6rem .8rem;background:#f6f8fa;border-radius:8px;border:1px solid var(--border)}
 </style></head><body>
 <header>
   <h1>SAFİR — Saha Analiz Raporu</h1>
@@ -120,6 +137,7 @@ export function buildReportHtml(r: SafirReport): string {
 </header>
 <div class="section"><h2>Özet</h2><p>${esc(r.summary || r.natural_language_summary)}</p></div>
 <div class="section"><h2>Risk</h2><p class="risk">${riskText}</p>
+${breakdownHtml}
 <p><b>Önerilen aksiyon:</b> ${esc(r.recommended_action)}</p></div>
 <div class="section"><h2>Aksiyonlar</h2><ul>${actions || '<li class="muted">—</li>'}</ul></div>
 <div class="section"><h2>Zaman Çizelgesi</h2><table><tr><th>Zaman</th><th>Olay</th></tr>${rows || '<tr><td colspan=2 class="muted">—</td></tr>'}</table></div>

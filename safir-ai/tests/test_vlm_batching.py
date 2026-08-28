@@ -184,7 +184,8 @@ def test_reconcile_unassigned_evidence_preserves_leftover_evidence() -> None:
     cleaned = _reconcile_unassigned_evidence(structured_events, frames, batch_responses=[])
 
     unassigned = next(e for e in cleaned if e["event_id"] == "unassigned")
-    assert unassigned["type"] == "siniflandirilamadi"
+    assert unassigned["canonical_event_type"] == "siniflandirilamadi"
+    assert unassigned["event_name"] == "siniflandirilamadi"
     assert set(unassigned["evidence_ids"]) == {"ev1", "ev2"}
 
 
@@ -208,7 +209,8 @@ def test_reconcile_unassigned_evidence_merges_into_existing_unassigned_record() 
     structured_events = [
         {
             "event_id": "unassigned",
-            "type": "siniflandirilamadi",
+            "event_name": "siniflandirilamadi",
+            "canonical_event_type": "siniflandirilamadi",
             "evidence_ids": ["ev0"],
         },
     ]

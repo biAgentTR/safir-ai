@@ -95,6 +95,53 @@ class ReportExporter:
             return "Belirsiz (analiz güvenilir şekilde tamamlanamadı — manuel inceleme gerekli)"
         return f"{score}/100"
 
+    def _risk_breakdown_html(self) -> str:
+        """Deterministik + Ajan skorlarının AYRI AYRI gösterildiği açıklanabilirlik bloğu (şartname gereği)."""
+        report = self._report
+        det_score = report.get("deterministic_score")
+        llm_score = report.get("llm_proposed_score")
+        if det_score is None and llm_score is None:
+            return ""
+        method = (
+            "Nihai skor = ortalama(deterministik, ajan taslağı)"
+            if llm_score is not None
+            else "Nihai skor = deterministik skor (ajan taslağı yok)"
+        )
+        return (
+            '<div class="risk-breakdown">'
+            f'<span><b>Deterministik (RuleEngine):</b> {det_score if det_score is not None else "—"}/100'
+            f' ({report.get("deterministic_level") or "—"})</span>'
+            f'<span><b>Ajan (LLM) taslağı:</b> {llm_score if llm_score is not None else "—"}/100</span>'
+            f'<span class="muted">{method}</span>'
+            "</div>"
+        )
+
+    def _risk_breakdown_flowables(self, subtitle_style, heading_style, body_style) -> list:
+        """PDF icin deterministik + ajan skorlarinin AYRI AYRI gosterildigi paragraf listesi (bkz. `_risk_breakdown_html`)."""
+        from reportlab.platypus import Paragraph, Spacer
+        from reportlab.lib.units import cm
+
+        report = self._report
+        det_score = report.get("deterministic_score")
+        llm_score = report.get("llm_proposed_score")
+        if det_score is None and llm_score is None:
+            return []
+        method = (
+            "Nihai skor = ortalama(deterministik, ajan taslağı)"
+            if llm_score is not None
+            else "Nihai skor = deterministik skor (ajan taslağı yok)"
+        )
+        return [
+            Spacer(1, 0.1 * cm),
+            Paragraph(
+                f"Deterministik (RuleEngine): {det_score if det_score is not None else '—'}/100 "
+                f"({report.get('deterministic_level') or '—'}) &nbsp;·&nbsp; "
+                f"Ajan (LLM) taslağı: {llm_score if llm_score is not None else '—'}/100",
+                subtitle_style,
+            ),
+            Paragraph(method, subtitle_style),
+        ]
+
     def to_html(self) -> str:
         """Kanit goruntulerini gomulu iceren, bagimsiz, modern bir HTML ozet raporu uretir."""
         report = self._report
@@ -170,6 +217,7 @@ class ReportExporter:
   .risk-row {{ display: flex; align-items: center; gap: .9rem; flex-wrap: wrap; margin-bottom: .6rem; }}
   .risk-score {{ font-size: 1.3rem; font-weight: 700; }}
   .risk-badge {{ display: inline-block; padding: .3rem .95rem; border-radius: 999px; color: #fff; font-weight: 700; font-size: .78rem; letter-spacing: .05em; }}
+  .risk-breakdown {{ display: flex; gap: 1.5rem; flex-wrap: wrap; font-size: .82rem; margin: .4rem 0 .9rem; padding: .6rem .8rem; background: #f6f8fa; border-radius: 8px; border: 1px solid var(--border); }}
   ul {{ margin: 0; padding-left: 1.15rem; }}
   li {{ margin-bottom: .45rem; }}
   li.empty, p.empty {{ color: var(--muted); font-style: italic; list-style: none; margin-left: -1.15rem; }}
@@ -206,6 +254,7 @@ class ReportExporter:
   <span class="risk-badge" style="background-color:{risk_color};">{report['risk_level'].upper()}</span>
   <span class="muted">Eskalasyon: {report.get('escalation_tier') or '—'}{' · otomatik alarm tetiklendi' if report.get('auto_dispatched') else ''}</span>
 </div>
+{self._risk_breakdown_html()}
 <p class="muted" style="margin-bottom:.4rem;">Önerilen aksiyonlar</p>
 <ul>{actions_html}</ul>
 </div>
@@ -307,6 +356,7 @@ class ReportExporter:
                 + (" (otomatik alarm tetiklendi)" if report.get("auto_dispatched") else ""),
                 body_style,
             ),
+            *self._risk_breakdown_flowables(subtitle_style, heading_style, body_style),
         ]
 
         actions = self._actions()

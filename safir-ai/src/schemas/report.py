@@ -220,7 +220,29 @@ class SafirReport(BaseModel):
         default="", description="Ajanin urettigi, operatore yonelik sade Turkce durum ozeti (sartname 'summary')."
     )
     risk_score: Optional[int] = Field(
-        default=None, ge=0, le=100, description="0-100 arasi hesaplanmis risk skoru; guvenilir karar uretilemediyse None."
+        default=None,
+        ge=0,
+        le=100,
+        description=(
+            "0-100 arasi NIHAI (blended) risk skoru; guvenilir karar uretilemediyse None. "
+            "RISK ENGINE V2.1: `deterministic_score` VE `llm_proposed_score` (ikisi de "
+            "mevcutsa) ARITMETIK ORTALAMASIDIR - bkz. `risk_resolver.RiskProvenance.risk_score`."
+        ),
+    )
+    deterministic_score: Optional[int] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description=(
+            "SADECE RuleEngine + risk_model formulunden turemis, Agent'in (LLM) tahmininden "
+            "TAMAMEN BAGIMSIZ risk skoru - `risk_score` (nihai/blended) ile KARISTIRILMAMALIDIR. "
+            "Sartname 'Aciklanabilir Cikti' gerekliligi geregi operatore/rapora `llm_proposed_score` "
+            "ile birlikte AYRI AYRI gosterilir (bkz. `risk_resolver.RiskProvenance.deterministic_score`)."
+        ),
+    )
+    deterministic_level: Optional[str] = Field(
+        default=None,
+        description="`deterministic_score`e karsilik gelen risk seviyesi (blended `risk_level`den FARKLI olabilir).",
     )
     risk_level: str = Field(description="dusuk | orta | yuksek | kritik | unknown")
     risk_status: str = Field(
@@ -236,8 +258,10 @@ class SafirReport(BaseModel):
         default=None,
         description=(
             "Nihai `risk_score`/`risk_level`in HANGI mekanizmadan geldigi (izlenebilirlik): "
-            "'rule_engine' (deterministik RuleEngine eslesmesi, HER ZAMAN Agent'in kendi tahminini "
-            "EZER), 'agent' (hicbir kural eslesmedi, Agent'in KENDI dogrulanmamis tahmini korundu), "
+            "'rule_engine' (deterministik RuleEngine eslesmesi bulundu; nihai skor bu deterministik "
+            "deger ile `llm_proposed_score`un ORTALAMASI alinarak - bkz. RISK ENGINE V2.1, "
+            "`deterministic_score`/`llm_proposed_score` alanlarina AYRI AYRI bakiniz), 'agent' "
+            "(hicbir kural eslesmedi, Agent'in KENDI dogrulanmamis tahmini korundu), "
             "'unknown' (analiz basarisiz oldu, risk hic belirlenemedi)."
         ),
     )
@@ -443,6 +467,14 @@ class SafirReport(BaseModel):
             "risk": self.risk_level,
             "risk_score": self.risk_score,
             "risk_status": self.risk_status,
+            "risk_accuracy": {
+                "deterministic_score": self.deterministic_score,
+                "deterministic_level": self.deterministic_level,
+                "llm_proposed_score": self.llm_proposed_score,
+                "final_score": self.risk_score,
+                "final_level": self.risk_level,
+                "method": "ortalama(deterministic_score, llm_proposed_score)" if self.llm_proposed_score is not None else "deterministic_score",
+            },
             "actions": self.actions or ([self.recommended_action] if self.recommended_action else []),
         }
 

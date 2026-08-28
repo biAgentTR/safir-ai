@@ -32,7 +32,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from src.event_analysis.risk_model import RiskScoreBreakdown, compute_risk_score
+from src.event_analysis.risk_model import (
+    _CRITICAL_HAZARD_FLOOR,
+    RiskScoreBreakdown,
+    compute_risk_score,
+    score_to_risk_level,
+)
 from src.event_analysis.schemas import RuleMatch, TemporalEvent
 
 _SEVERITY_ORDER = ["dusuk", "orta", "yuksek", "kritik"]
@@ -55,14 +60,29 @@ class RiskProvenance:
     """
 
     risk_level: Optional[str]
+    """NIHAI (blended) risk seviyesi - bkz. `risk_score` aciklamasi."""
     risk_score: Optional[int]
+    """NIHAI, RAPORLANAN risk skoru: `deterministic_score` VE `llm_proposed_score`
+    (ikisi de mevcutsa) ARITMETIK ORTALAMASIDIR - `round((deterministic_score +
+    llm_proposed_score) / 2)`. `llm_proposed_score` verilmediyse (Agent
+    basarisiz oldu veya cagirilmadi) dogrudan `deterministic_score`e esittir.
+    Kritik bir fiziksel tehlike icin guvenlik tabani devreye girdiyse
+    (`safety_floor_applied`), ortalama bu tabanin ALTINA DUSURULMEZ - Agent'in
+    dusuk bir tahmini, ZATEN kanitlanmis kritik bir tehlikeyi maskeleyemez."""
     rule_ids: List[str] = field(default_factory=list)
     rule_severities: List[str] = field(default_factory=list)
     contributing_event_ids: List[str] = field(default_factory=list)
 
     scoring_method: str = "safir_evidence_weighted_v2"
     final_score: Optional[float] = None
-    """Yuvarlanmamis, hassas 0.0-100.0 skor (`risk_score` bunun `round()`una esittir)."""
+    """Yuvarlanmamis, hassas 0.0-100.0 NIHAI (blended) skor (`risk_score` bunun `round()`una esittir)."""
+    deterministic_score: Optional[int] = None
+    """SADECE RuleEngine + risk_model formulunden turemis, Agent'in tahmininden
+    TAMAMEN BAGIMSIZ skor - `risk_score` (nihai/blended) ile KARISTIRILMAMALIDIR.
+    Operatore/rapora HER IKI degerin de (bu + `llm_proposed_score`) AYRI AYRI
+    gosterilmesi gerekir (bkz. gorev tanimi - risk hesaplama seffafligi)."""
+    deterministic_level: Optional[str] = None
+    """`deterministic_score`e karsilik gelen risk seviyesi (blended `risk_level`den FARKLI olabilir)."""
     features: Optional[Dict[str, Optional[float]]] = None
     """`risk_model.RiskFeatures.as_dict()` - severity/likelihood/exposure/duration/
     recurrence/protection_gap/rule_support/regulatory_support (0.0-1.0, `None`=olculemedi)."""
@@ -72,7 +92,8 @@ class RiskProvenance:
     """`risk_model.RiskScoreBreakdown.as_contributions_dict()` - base_risk + her `*_factor` + raw_score."""
     llm_proposed_score: Optional[int] = None
     """Agent'in (05 LangGraph) KENDI, dogrulanmamis taslak `risk_score`u - bkz. gorev
-    tanimi 8. bolum. ASLA `final_score`u BELIRLEMEZ; yalnizca KARSILASTIRMA/izleme icindir."""
+    tanimi 8. bolum. `deterministic_score` ile ORTALAMASI alinarak nihai
+    `risk_score`e (blended) katkida bulunur - bkz. `risk_score` aciklamasi."""
     regulatory_evidence_ids: List[str] = field(default_factory=list)
     """Bu hesaplamada `regulatory_support` feature'ina katkida bulunan (dogrulanmis,
     source_verified) RAG kaynaklarinin `chunk_id`leri."""
@@ -82,10 +103,11 @@ class RiskProvenance:
     + gercek `matched_keywords` kanitina dayanir, `llm_proposed_score`den ASLA turemez."""
 
     def explanation(self) -> str:
-        """Deterministik, LLM'e SORULMAMIS Turkce gerekce cumlesi uretir.
+        """Risk hesabinin SEFFAF, adim-adim Turkce gerekce cumlesi uretir.
 
-        Formul-tabanli hesaplama varsa (`_breakdown` mevcutsa) `risk_model`in
-        KENDI aciklamasini kullanir; yoksa (hicbir kural eslesmedi) sabit
+        Formul-tabanli hesaplama varsa (`deterministic_score` mevcutsa)
+        `risk_model`in KENDI aciklamasini VE Agent'in taslak skoruyla nasil
+        ORTALANDIGINI acikca gosterir; yoksa (hicbir kural eslesmedi) sabit
         bir "belirlenemedi" mesaji doner - yeni bir bilgi/tahmin UYDURMAZ.
         """
         if self.risk_level is None:
@@ -93,21 +115,31 @@ class RiskProvenance:
         rule_list = ", ".join(self.rule_ids) if self.rule_ids else "(bilinmeyen kural)"
         rule_severity = self.rule_severities[0] if self.rule_severities else "(bilinmeyen)"
         base = (
-            f"Risk seviyesi '{self.risk_level}' ({self.risk_score}/100) olarak belirlendi: "
-            f"en yuksek siddetli eslesme(ler) {rule_list} (RuleEngine siddeti: '{rule_severity}') "
-            f"'{self.scoring_method}' matematiksel modeliyle degerlendirildi - risk_level, "
-            "yalnizca RuleEngine siddetinden DEGIL, TUM feature'lardan hesaplanan nihai skordan turer."
+            f"Deterministik (RuleEngine) skor: {self.deterministic_score}/100 "
+            f"('{self.deterministic_level}') - en yuksek siddetli eslesme(ler) {rule_list} "
+            f"(RuleEngine siddeti: '{rule_severity}'), '{self.scoring_method}' matematiksel "
+            "modeliyle hesaplandi."
         )
+        if self.llm_proposed_score is not None:
+            base += (
+                f" Ajanin (LLM) taslak skoru: {self.llm_proposed_score}/100. "
+                f"Nihai risk skoru, bu iki degerin ORTALAMASI alinarak "
+                f"{self.risk_score}/100 ('{self.risk_level}') olarak belirlendi."
+            )
+            if self.safety_floor_applied:
+                base += (
+                    f" Not: kritik bir fiziksel tehlike guvenlik tabani devrede oldugundan "
+                    f"({int(_CRITICAL_HAZARD_FLOOR)}/100), nihai skor bu tabanin ALTINA "
+                    "DUSURULMEDI."
+                )
+        else:
+            base += " Ajanin bir taslak skoru olmadigi icin nihai skor dogrudan bu deterministik degere esittir."
         if self.features is not None:
             feature_bits = ", ".join(
                 f"{name}={value:.2f}" if value is not None else f"{name}=notr(olculemedi)"
                 for name, value in self.features.items()
             )
-            base += f" Feature'lar: {feature_bits}."
-        base += (
-            " Bu karar VLM/LLM'in kendi tahmininden BAGIMSIZDIR - yalnizca RuleEngine "
-            "eslesmelerinden VE yapilandirilmis kanittan deterministik olarak turetilmistir."
-        )
+            base += f" Deterministik skorun feature'lari: {feature_bits}."
         return base
 
 
@@ -125,7 +157,13 @@ def _pick_provenance(
     """
     known = [match for match in rule_matches if match.severity in _SEVERITY_RANK]
     if not known:
-        return RiskProvenance(risk_level=None, risk_score=None, llm_proposed_score=llm_proposed_score)
+        return RiskProvenance(
+            risk_level=None,
+            risk_score=None,
+            deterministic_score=None,
+            deterministic_level=None,
+            llm_proposed_score=llm_proposed_score,
+        )
 
     top_rank = max(_SEVERITY_RANK[match.severity] for match in known)
     contributing = [match for match in known if _SEVERITY_RANK[match.severity] == top_rank]
@@ -184,9 +222,34 @@ def _pick_provenance(
         if getattr(src, "source_verified", True) and getattr(src, "chunk_id", None) is not None
     ]
 
+    # RISK ENGINE V2.1 (2026-08-27, kullanici talebi): nihai raporlanan risk
+    # artik SADECE deterministik (RuleEngine + risk_model) skor DEGIL -
+    # Agent'in (LLM) kendi taslak skoruyla ORTALANIR. Deterministik deger
+    # `deterministic_score`/`deterministic_level` alanlarinda AYRICA (blended
+    # degerden BAGIMSIZ, ham) saklanir - boylece operatore/rapora HER IKI
+    # deger de tek tek gosterilebilir (seffaflik/aciklanabilirlik gerekliligi).
+    deterministic_score = round(breakdown.final_score)
+    deterministic_level = breakdown.risk_level
+
+    if llm_proposed_score is not None:
+        blended_score = round((deterministic_score + llm_proposed_score) / 2)
+    else:
+        blended_score = deterministic_score
+
+    # Guvenlik tabani: Agent'in dusuk bir tahmini, ZATEN RuleEngine siddeti +
+    # gercek matched_keywords kanitiyla dogrulanmis kritik bir fiziksel
+    # tehlikeyi ORTALAMA yoluyla MASKELEYEMEZ.
+    if breakdown.safety_floor_applied:
+        blended_score = max(blended_score, int(_CRITICAL_HAZARD_FLOOR))
+
+    blended_score = max(0, min(100, blended_score))
+    blended_level = score_to_risk_level(blended_score)
+
     return RiskProvenance(
-        risk_level=breakdown.risk_level,
-        risk_score=round(breakdown.final_score),
+        risk_level=blended_level,
+        risk_score=blended_score,
+        deterministic_score=deterministic_score,
+        deterministic_level=deterministic_level,
         rule_ids=contributing_rule_ids,
         rule_severities=[match.severity for match in contributing],
         contributing_event_ids=contributing_event_ids,

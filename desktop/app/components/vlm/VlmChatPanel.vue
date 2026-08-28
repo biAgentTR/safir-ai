@@ -15,6 +15,7 @@ const props = withDefaults(
 
 const api = useSafirApi()
 const askStream = useAskStream()
+const analysisStore = useAnalysisStore()
 
 interface ChatMessage {
   id: string
@@ -31,7 +32,25 @@ const sendError = ref<string | null>(null)
 const lastSources = ref<AskSource[]>([])
 const showSources = ref(false)
 
-const canSend = computed(() => question.value.trim().length > 0 && !sending.value)
+// Video analizi hâlâ CALIŞIYORKEN gönderilen bir soru, backend'e HEMEN
+// atılmaz — analiz tamamlanana kadar burada bekletilir, ardından otomatik
+// gönderilir (bkz. `submit()`/watch aşağıda). Aynı anda yalnızca TEK bir
+// bekleyen soru tutulur.
+const queuedQuestion = ref<string | null>(null)
+const waitingForAnalysis = computed(() => queuedQuestion.value !== null)
+
+const canSend = computed(() => question.value.trim().length > 0 && !sending.value && !waitingForAnalysis.value)
+
+watch(
+  () => analysisStore.isRunning,
+  (isRunning, wasRunning) => {
+    if (wasRunning && !isRunning && queuedQuestion.value) {
+      const q = queuedQuestion.value
+      queuedQuestion.value = null
+      sendNow(q, { skipUserBubble: true })
+    }
+  },
+)
 
 const STATIC_SUGGESTIONS = [
   'Bu videoda ne oldu, özetler misin?',
@@ -80,11 +99,35 @@ async function submit() {
   const q = question.value.trim()
   question.value = ''
   sendError.value = ''
+
+  if (analysisStore.isRunning) {
+    // Video hâlâ analiz edilirken /ask'a gitmek hem EVREN üzerinde gereksiz
+    // yük oluşturur hem de henüz tamamlanmamış bir analize dayanan, tutarsız
+    // bir cevap üretebilir - soru burada bekletilir, analiz bitince (bkz.
+    // yukarıdaki `watch`) otomatik gönderilir.
+    queuedQuestion.value = q
+    messages.value = [
+      ...messages.value,
+      { id: `u-${Date.now()}`, role: 'user', content: q },
+      {
+        id: `sys-${Date.now()}`,
+        role: 'assistant',
+        content: 'Analiz devam ediyor — bu soru, analiz tamamlanınca otomatik olarak gönderilecek.',
+      },
+    ]
+    scrollToBottom()
+    return
+  }
+
+  await sendNow(q)
+}
+
+async function sendNow(q: string, opts: { skipUserBubble?: boolean } = {}) {
   sending.value = true
 
   const userMsg: ChatMessage = { id: `u-${Date.now()}`, role: 'user', content: q }
   const assistantMsg: ChatMessage = { id: `a-${Date.now()}`, role: 'assistant', content: '', pending: true }
-  messages.value = [...messages.value, userMsg, assistantMsg]
+  messages.value = opts.skipUserBubble ? [...messages.value, assistantMsg] : [...messages.value, userMsg, assistantMsg]
   scrollToBottom()
 
   try {
@@ -222,6 +265,7 @@ onBeforeUnmount(() => askStream.stop())
         </div>
 
         <p v-if="sendError" class="mx-4 mb-2 text-xs text-risk-crit shrink-0">{{ sendError }}</p>
+        <p v-if="waitingForAnalysis" class="mx-4 mb-2 text-xs text-accent shrink-0">Analiz bitince otomatik gönderilecek…</p>
 
         <!-- input -->
         <div class="p-3 border-t border-edge shrink-0 flex gap-2">
@@ -229,12 +273,12 @@ onBeforeUnmount(() => askStream.stop())
             v-model="question"
             rows="2"
             class="field-input resize-none flex-1 text-sm"
-            placeholder="Video hakkında bir soru sorun…"
-            :disabled="sending"
+            :placeholder="waitingForAnalysis ? 'Soru analiz bitince gönderilecek…' : 'Video hakkında bir soru sorun…'"
+            :disabled="sending || waitingForAnalysis"
             @keydown.enter.exact.prevent="submit"
           />
           <button type="button" class="btn-primary self-stretch px-4" :disabled="!canSend" @click="submit">
-            <span v-if="sending">…</span><span v-else>↑</span>
+            <span v-if="sending || waitingForAnalysis">…</span><span v-else>↑</span>
           </button>
         </div>
       </div>

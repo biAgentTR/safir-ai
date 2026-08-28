@@ -41,7 +41,10 @@ export function mapVlmDirectEvents(
       .map((e, i) => ({
         id: e.event_id || `vlm-evt-${i}`,
         timestamp: e.start_time ?? 0,
-        type: e.type || 'Tespit Edilen Olay',
+        // `event_name` is the model's own free-form label and is ALWAYS
+        // present (bkz. types/api.ts VlmEvent) — `canonical_event_type` is
+        // only a fallback for the rare case a caller strips it.
+        type: e.event_name || e.canonical_event_type || 'Tespit Edilen Olay',
         description: e.description || '—',
         riskLevel: riskLevelFromScore(e.risk_score),
         confidence: toConfidencePct(e.confidence),

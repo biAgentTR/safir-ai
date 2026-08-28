@@ -21,7 +21,7 @@ sinifi hala `rule_severities` alaninda AYRICA korunur.
 
 from __future__ import annotations
 
-from src.event_analysis.risk_model import score_to_risk_level
+from src.event_analysis.risk_model import _CRITICAL_HAZARD_FLOOR, score_to_risk_level
 from src.event_analysis.risk_resolver import (
     resolve_deterministic_risk,
     resolve_deterministic_risk_with_provenance,
@@ -201,8 +201,12 @@ def test_provenance_feature_values_match_the_values_actually_used_in_calculation
     assert provenance.risk_score == round(breakdown.final_score)
 
 
-def test_llm_proposed_score_is_recorded_but_never_determines_final_score() -> None:
-    """HEDEF 11: LLM'in taslak skoru (99) NE KADAR YUKSEK/DUSUK olursa olsun, final_score'u DEGISTIRMEZ."""
+def test_llm_proposed_score_is_averaged_into_final_risk_score() -> None:
+    """RISK ENGINE V2.1: LLM'in taslak skoru, deterministik skorla ORTALANARAK nihai `risk_score`u belirler.
+
+    `deterministic_score`/`final_score` (ham RuleEngine cikisi) llm_proposed_score'dan
+    HER ZAMAN BAGIMSIZ kalir - yalnizca blended `risk_score`/`risk_level` degisir.
+    """
     match = _match("ISG-M24", "dusuk")
 
     provenance_high_llm = resolve_deterministic_risk_with_provenance([match], llm_proposed_score=99)
@@ -211,9 +215,19 @@ def test_llm_proposed_score_is_recorded_but_never_determines_final_score() -> No
 
     assert provenance_high_llm.llm_proposed_score == 99
     assert provenance_low_llm.llm_proposed_score == 1
-    # final_score/risk_score UCUNDE de AYNI - llm_proposed_score hesaplamayi ETKILEMEDI.
+    # Ham deterministik deger (final_score/deterministic_score) HER ZAMAN AYNI - llm_proposed_score
+    # deterministik hesaplamanin KENDISINI hicbir zaman ETKILEMEZ.
     assert provenance_high_llm.final_score == provenance_low_llm.final_score == provenance_no_llm.final_score
-    assert provenance_high_llm.risk_score == provenance_low_llm.risk_score == provenance_no_llm.risk_score
+    assert (
+        provenance_high_llm.deterministic_score
+        == provenance_low_llm.deterministic_score
+        == provenance_no_llm.deterministic_score
+    )
+    # Blended `risk_score` ise llm_proposed_score'a gore DEGISIR (ortalama).
+    assert provenance_high_llm.risk_score == round((provenance_high_llm.deterministic_score + 99) / 2)
+    assert provenance_low_llm.risk_score == round((provenance_low_llm.deterministic_score + 1) / 2)
+    # llm_proposed_score verilmediginde blended deger dogrudan deterministik degere esittir.
+    assert provenance_no_llm.risk_score == provenance_no_llm.deterministic_score
 
 
 def test_temporal_events_enrich_the_calculation_when_provided() -> None:
@@ -484,9 +498,15 @@ def test_real_escalating_fire_scenario_end_to_end_through_event_engine_and_rule_
     assert provenance.safety_floor_applied is True
     assert provenance.features["hazard_escalation"] == 1.0
     assert set(provenance.contributing_event_ids) == {te.event_id for te in temporal_events}
-    # LLM'in taslak skoru (llm_proposed_score) BAGIMSIZ kalir, sonucu DEGISTIRMEZ.
+    # RISK ENGINE V2.1: llm_proposed_score artik blended `risk_score`e katkida
+    # bulunur, ama `deterministic_score` (ham RuleEngine cikisi) HER ZAMAN
+    # BAGIMSIZ kalir ve guvenlik tabani (kritik fiziksel tehlike) ortalamanin
+    # ALTINA DUSMESINI engeller.
     provenance_llm_85 = resolve_deterministic_risk_with_provenance(
         rule_matches, temporal_events=temporal_events, llm_proposed_score=85
     )
-    assert provenance_llm_85.risk_score == provenance.risk_score
+    assert provenance_llm_85.deterministic_score == provenance.deterministic_score == round(provenance.final_score)
     assert provenance_llm_85.llm_proposed_score == 85
+    expected_blend = max(round((provenance.deterministic_score + 85) / 2), int(_CRITICAL_HAZARD_FLOOR))
+    assert provenance_llm_85.risk_score == expected_blend
+    assert provenance_llm_85.risk_score >= 80  # guvenlik tabani ASLA delinmez

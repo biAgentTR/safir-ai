@@ -260,8 +260,14 @@ def test_run_writes_structured_event_to_real_event_store(
     assert len(rows) == 1
     row = rows[0]
     assert row["id"] == report.event_id
-    assert row["risk_score"] == report.risk_score
-    assert row["risk_level"] == report.risk_level
+    # RISK ENGINE V2.1: SQLite'a yazilan satir, EventBuilder'in KENDI olay-bazli
+    # deterministik hesaplamasindan gelir (Agent taslak skoruyla ORTALANMAZ) -
+    # `report.risk_score`/`report.risk_level` ise ARTIK cagri-geneli BLENDED
+    # (deterministic_score + llm_proposed_score ortalamasi) degerdir, bu yuzden
+    # ikisi ARTIK esit OLMAK ZORUNDA DEGIL. Satirin, cagri-geneli DETERMINISTIK
+    # degerle (`report.deterministic_score`) eslesmesi beklenir.
+    assert row["risk_score"] == report.deterministic_score
+    assert row["risk_level"] == report.deterministic_level
     assert "OK-07" in row["description"]
     assert "YG-03" not in row["description"]
 
@@ -487,8 +493,14 @@ def test_high_risk_auto_dispatches_alarm_in_pipeline(
 
     # Deterministik rule engine sonucu, LLM'in dusuk kararini GEZIP nihai raporu belirler.
     assert report.risk_source == "rule_engine"
-    assert report.llm_proposed_score == 5  # LLM'in taslagi IZLENDI ama KULLANILMADI
-    assert report.risk_score is not None and report.risk_score >= 51  # ALARM esigi
+    assert report.llm_proposed_score == 5  # LLM'in taslagi izlenir VE nihai (blended) skora katilir
+    # RISK ENGINE V2.1: `deterministic_score` (HAM RuleEngine cikisi) ALARM esigini asiyor -
+    # otomatik alarm KARARI bu HAM degere dayanir (bkz. `stage_escalate`), Agent'in dusuk
+    # taslak tahmininin ORTALAMA yoluyla alarmi SESSIZCE bastirmasina izin VERILMEZ.
+    assert report.deterministic_score is not None and report.deterministic_score >= 51  # ALARM esigi
+    # Operatore GOSTERILEN nihai `risk_score` ise seffaf sekilde deterministik + agent
+    # ortalamasidir (bu senaryoda agent'in cok dusuk taslagi yuzunden dusuktur).
+    assert report.risk_score == round((report.deterministic_score + 5) / 2)
     assert report.escalation_tier == "alarm"
     assert report.auto_dispatched is True
     assert report.alert_id is not None

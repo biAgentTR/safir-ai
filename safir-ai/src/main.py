@@ -26,6 +26,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 import re
 import threading
 import time
+import urllib.parse
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -67,6 +68,7 @@ from src.schemas.report import EventSummary, EvidenceFrameOut, RagContext, Safir
 from src.utils.config_loader import SafirConfig, load_config
 from src.vlm.base_vlm import BaseVLM, VLMResponse
 from src.vlm.factory import get_llm_client, get_vlm_client
+from src.vlm.sudden_event_analyzer import analyze_sudden_events
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -775,7 +777,7 @@ def _reconcile_unassigned_evidence(
             (
                 e
                 for e in cleaned_events
-                if e.get("event_id") == "unassigned" or e.get("type") == "siniflandirilamadi"
+                if e.get("event_id") == "unassigned" or e.get("canonical_event_type") == "siniflandirilamadi"
             ),
             None,
         )
@@ -785,7 +787,13 @@ def _reconcile_unassigned_evidence(
             cleaned_events.append(
                 {
                     "event_id": "unassigned",
-                    "type": "siniflandirilamadi",
+                    # `event_name`/`canonical_event_type` - GERCEK VLM olaylariyla
+                    # AYNI sema (bkz. prompts/vlm_prompts.py EVENTS_JSON semasi);
+                    # eski `"type"` alani hicbir zaman var olmayan bir anahtardi
+                    # (frontend'in VlmEventList.vue "Tur" kolonu hep bunu okuyup
+                    # hep bos donuyordu - bkz. desktop/app/types/api.ts VlmEvent).
+                    "event_name": "siniflandirilamadi",
+                    "canonical_event_type": "siniflandirilamadi",
                     "start_time": min(f.timestamp_sec for f in leftover_frames),
                     "end_time": max(f.timestamp_sec for f in leftover_frames),
                     "evidence_ids": leftover_ids,
@@ -1138,6 +1146,37 @@ class SafirPipeline:
             video_source, evidence_frames, user_prompt, on_progress=_on_vlm_progress, analysis_mode=analysis_mode
         )
         _emit("vlm", {"vlm_response": vlm_response, "evidence_frames": evidence_frames, "user_prompt": user_prompt})
+
+        # Ani Olay Tespiti (bkz. src/vlm/sudden_event_detector.py +
+        # sudden_event_analyzer.py): VLM Direct'te ana VLM'e TUM video TEK
+        # seferde gonderilir - modelin kendisi kare-kare fark HESAPLAMAZ, bu
+        # yuzden cok kisa/ani gecen olaylar (bir kapinin aniden kapanmasi,
+        # bir kisinin sikismasi vb.) uzun anlatinin icinde KAYBOLABILIR. Bu
+        # katman TAMAMEN EK/BAGIMSIZDIR: OpenCV ile videoyu ONCEDEN tarayip
+        # ani kare-farki "sicramalari" bulur, her adayi (ONCESI/SONRASI kare
+        # cifti) `self._vlm_frames` (zaten var olan, dusuk-butceli mod icin
+        # kurulmus goruntu-kabul eden istemci) ile DOGRULATIR ve yalnizca
+        # GERCEKTEN onemli bulunanlari ana VLM'in `structured_events`
+        # listesine EKLER - asagi akis (EventEngine/RuleEngine/rapor) HICBIR
+        # DEGISIKLIGE UGRAMAZ, cunku eklenen sozlukler AYNI EVENTS_JSON
+        # semasindadir. Canli yayin (rtsp/http) kaynaklari HIC TARANMAZ
+        # (tam-video taramasi sonsuz surer); zaten VLM Direct'in aktif
+        # saglayicisi (EvrenVLM) bu kaynaklari `vlm_response` asamasindan
+        # ONCE reddeder, ama burada da AYRICA guvenlik icin kontrol edilir.
+        if analysis_mode == "vlm_direct" and not video_source.strip().lower().startswith(
+            ("rtsp://", "http://", "https://")
+        ):
+            try:
+                confirmed_sudden_events = analyze_sudden_events(video_source, self._vlm_frames)
+            except Exception:  # noqa: BLE001 - bu katman ASLA ana analizi COKERTMEMELI
+                logger.exception("Ani olay tespit/dogrulama katmani basarisiz; ana VLM sonucu etkilenmedi.")
+                confirmed_sudden_events = []
+            if confirmed_sudden_events:
+                vlm_response.structured_events = list(vlm_response.structured_events) + confirmed_sudden_events
+                logger.info(
+                    "Ani olay tespiti: %d dogrulanmis olay ana olay listesine eklendi.",
+                    len(confirmed_sudden_events),
+                )
 
         # VLM Direct'te sampler hic calismadigi (evidence_frames=[]) icin
         # kanit karesi burada, dogrudan kaynak videodan uretilir - bkz.
@@ -1515,20 +1554,26 @@ class SafirPipeline:
         return self._agent.run(prompt_block)
 
     def stage_finalize_risk(self, decision, rule_matches, temporal_events=None, semantic_rag_sources=None):
-        """07c: RISK ENGINE V2 - `RuleEngine`+kanit-tabanli matematiksel modelin (`risk_model.py`) kararini nihai risk kaynagi olarak uygular.
+        """07c: RISK ENGINE V2.1 - deterministik (RuleEngine+`risk_model.py`) skor ile Agent'in taslak skorunun ORTALAMASINI nihai risk olarak uygular.
 
-        Mimari karar: VLM ve `05 LangGraph Agent`taki LLM risk KARARI vermez,
-        yalnizca gozlem/ozet uretir (bu taslak, `RiskProvenance.llm_proposed_score`
-        olarak izlenir - final skoru ASLA BELIRLEMEZ). Nihai `risk_score`/
-        `risk_level`, `RuleEngine.evaluate(...)` ciktisindan (`rule_matches`)
-        VE mevcut diger yapilandirilmis kanittan (`temporal_events`,
-        `semantic_rag_sources`) `resolve_deterministic_risk_with_provenance`
-        ile matematiksel olarak turetilir (bkz. `src/event_analysis/risk_model.py`).
-        Bu cagriya ait HICBIR kural eslesmediyse (`rule_matches` bos veya
-        taninmayan siddette), LLM Agent'in karari (`decision.risk_score`/
-        `risk_level`/`risk_status`) DEGISTIRILMEDEN korunur - boylece
-        deterministik sinyal yokken sistem sessizce "dusuk risk" UYDURMAZ,
-        LLM'in (varsa) degerlendirmesine ya da "unknown" durumuna duser.
+        Mimari karar (2026-08-27 guncellemesi - kullanici talebi): VLM ve
+        `05 LangGraph Agent`taki LLM tek basina risk KARARI vermez, ama
+        kendi taslak tahmini (`RiskProvenance.llm_proposed_score`) ARTIK
+        nihai skora KATKIDA BULUNUR - `RuleEngine.evaluate(...)` ciktisindan
+        (`rule_matches`) VE mevcut diger yapilandirilmis kanittan
+        (`temporal_events`, `semantic_rag_sources`) turetilen deterministik
+        skor ile ORTALAMASI alinir (bkz. `risk_resolver._pick_provenance`).
+        Deterministik deger, blended degerden BAGIMSIZ olarak
+        `RiskProvenance.deterministic_score`/`deterministic_level` alanlarinda
+        AYRICA saklanir - iki deger operatore/rapora AYRI AYRI gosterilir.
+        Kritik bir fiziksel tehlike icin guvenlik tabani (bkz.
+        `risk_model._CRITICAL_HAZARD_FLOOR`) devredeyse, ortalama bu tabanin
+        ALTINA DUSURULMEZ. Bu cagriya ait HICBIR kural eslesmediyse
+        (`rule_matches` bos veya taninmayan siddette), LLM Agent'in karari
+        (`decision.risk_score`/`risk_level`/`risk_status`) DEGISTIRILMEDEN
+        korunur - boylece deterministik sinyal yokken sistem sessizce
+        "dusuk risk" UYDURMAZ, LLM'in (varsa) degerlendirmesine ya da
+        "unknown" durumuna duser.
 
         Onemli guvenlik istisnasi: `decision.risk_status == "unknown"` ise
         (05 LangGraph Agent muhakemesi TAMAMEN basarisiz oldu, bkz.
@@ -1580,11 +1625,28 @@ class SafirPipeline:
         kanit YOK sayilir - bu durumda (dusuk risk haricinde) otomatik islem/
         alarm YAPILMAZ, `PENDING_REVIEW`e dusulur (bkz. `EscalationPolicy.
         evaluate` docstring'i).
+
+        RISK ENGINE V2.1 (2026-08-27) guvenlik notu: `report.risk_score`
+        (operatore GOSTERILEN nihai deger) artik deterministik skorla Agent'in
+        taslak skorunun ORTALAMASIDIR (bkz. `risk_resolver.py`) - ama OTOMATIK
+        alarm tetikleme KARARI kasitli olarak BUNU KULLANMAZ: Agent'in dusuk
+        (yanlis/naif) bir taslak tahmini, ZATEN RuleEngine tarafindan
+        dogrulanmis kritik bir fiziksel tehlikenin otomatik alarmini
+        ORTALAMA yoluyla SESSIZCE BASTIRAMAZ. Bu yuzden mumkunse
+        `risk_provenance.deterministic_score/deterministic_level` (HAM,
+        Agent'ten bagimsiz deger) kullanilir; yalnizca hicbir deterministik
+        kural eslesmediyse (`deterministic_score is None`) Agent'in kendi
+        (blended'a esit) degerine dusulur.
         """
         has_deterministic_backing = bool(risk_provenance and risk_provenance.rule_ids)
+        escalation_score = decision.risk_score
+        escalation_level = decision.risk_level
+        if risk_provenance is not None and risk_provenance.deterministic_score is not None:
+            escalation_score = risk_provenance.deterministic_score
+            escalation_level = risk_provenance.deterministic_level
         escalation = self._escalation.evaluate(
-            risk_score=decision.risk_score,
-            risk_level=decision.risk_level,
+            risk_score=escalation_score,
+            risk_level=escalation_level,
             recommended_action=decision.recommended_action,
             summary=decision.summary or vlm_response.description,
             risk_status=decision.risk_status,
@@ -1804,6 +1866,8 @@ class SafirPipeline:
             risk_features=risk_provenance.features,
             risk_feature_contributions=risk_provenance.feature_contributions,
             llm_proposed_score=risk_provenance.llm_proposed_score,
+            deterministic_score=risk_provenance.deterministic_score,
+            deterministic_level=risk_provenance.deterministic_level,
             cross_encoder_status=cross_encoder_status,
             relevance_weights=relevance_weights,
             relevance_threshold=relevance_threshold,
@@ -2629,10 +2693,24 @@ def get_history_report_pdf(job_id: str) -> Response:
 
     video_name = str(report_dict.get("video_source") or job_id)
     video_name = video_name.replace("/", "_").replace("\\", "_")
+    filename = f"safir_report_{video_name}.pdf"
+    # HTTP baslik degerleri Latin-1 ile SINIRLIDIR (Starlette/ASGI bunu
+    # dogrudan encode eder) - video adi Turkce karakter icerirse (ör. "ı",
+    # "ş", "ğ") bu ASLA Latin-1'e sigmaz ve `UnicodeEncodeError` ile 500
+    # dondurur (indirme TAMAMEN basarisiz olur). RFC 6266/5987 cozumu: ASCII
+    # bir yedek `filename` (Turkce karakterler duz ASCII'ye indirgenir) +
+    # tam-sadakatli, yuzde-kodlanmis bir `filename*` birlikte verilir; Latin-1
+    # sinirini asan hicbir karakter dogrudan baslikta YER ALMAZ.
+    ascii_filename = filename.encode("ascii", "replace").decode("ascii")
+    encoded_filename = urllib.parse.quote(filename)
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="safir_report_{video_name}.pdf"'},
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{encoded_filename}'
+            )
+        },
     )
 
 

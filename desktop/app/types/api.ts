@@ -113,6 +113,23 @@ export interface SafirReport {
   /** 'rule_engine' | 'agent' | 'unknown' - bkz. src/main.py::build_report. */
   risk_source?: string | null
   risk_explanation?: string | null
+  /** Agent'in (LLM) kendi taslak risk skoru — bkz. RiskProvenance.llm_proposed_score. */
+  llm_proposed_score?: number | null
+  /** SADECE RuleEngine + risk_model formülünden türemiş, Agent'ten BAĞIMSIZ skor. */
+  deterministic_score?: number | null
+  /** deterministic_score'a karşılık gelen risk seviyesi. */
+  deterministic_level?: string | null
+  /** Nihai risk_level'i belirleyen RuleMatch(ler)in rule_id'leri. */
+  contributing_rule_ids?: string[]
+  /** Nihai skoru üreten matematiksel modelin kimliği (örn. 'safir_evidence_weighted_v2'). */
+  scoring_method?: string | null
+  /** 8 normalize edilmiş (0.0-1.0) feature: severity/likelihood/exposure/duration/
+   *  recurrence/protection_gap/rule_support/regulatory_support + ayrıca
+   *  hazard_escalation (boost_factor'a dahil değil, güvenlik tabanını besler).
+   *  null = ölçülemedi. */
+  risk_features?: Record<string, number | null> | null
+  /** Skora giden ara çarpım adımları (base_risk + *_factor + raw_score). */
+  risk_feature_contributions?: Record<string, number> | null
   recommended_action: string
   actions: string[]
   /** Ajanın gerçekten çağırdığı mock aksiyon araçları (bkz. TriggeredMockAction). */
@@ -200,13 +217,28 @@ export interface SamplerStageData {
 }
 
 /** A single VLM-clustered event from EVENTS_JSON (src/prompts/vlm_prompts.py). */
+/**
+ * A single VLM-clustered event, exactly as parsed from the model's own
+ * EVENTS_JSON block (src/vlm/base_vlm.py::parse_structured_events) — these
+ * dicts are forwarded to the frontend UNCHANGED (src/observability/
+ * trace_serializer.py), so the field names here MUST match the prompt's
+ * schema (src/prompts/vlm_prompts.py::_EVENTS_JSON_INSTRUCTION) exactly.
+ * There is NO `type` field — an earlier version of this interface declared
+ * one, which was always `undefined` at runtime and silently broke the "Tür"
+ * column in VlmEventList.vue (always fell back to a generic label).
+ */
 export interface VlmEvent {
   event_id: string
-  type: string
+  /** Free-form, model-chosen short name (e.g. "forklift_geri_manevra") — always present. */
+  event_name: string
+  /** One of EventType's known categories, or null if none genuinely applies. */
+  canonical_event_type: string | null
   start_time: number
   end_time: number
   evidence_ids: string[]
   description: string
+  /** Short risk phrases (NOT bare object names) — see prompt docstring. */
+  keywords?: string[]
   risk_score: number | null
   confidence: number
 }
