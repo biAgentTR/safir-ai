@@ -41,7 +41,7 @@ function onKeydown(e: KeyboardEvent) {
   <section class="relative" aria-label="Yeni analiz başlat">
     <div class="relative max-w-3xl mx-auto text-center px-4 py-10 sm:py-14">
       <!-- Title Ambient Glow Aura -->
-      <div class="heading-glow-hero" />
+      <div class="pointer-events-none absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[480px] max-w-[90vw] h-[220px] rounded-full bg-gradient-to-r from-accent/25 via-cyan-500/20 to-teal-400/25 dark:from-accent/20 dark:via-cyan-500/15 dark:to-teal-500/20 blur-[90px] -z-10" />
 
       <div class="eyebrow !text-accent mb-3 relative z-10">Yapay zekâ destekli operasyonel farkındalık</div>
       <h1 class="text-3xl sm:text-4xl font-bold tracking-tight text-slate-100 leading-tight relative z-10">

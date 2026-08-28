@@ -14,15 +14,6 @@ const riskFilter = ref<'all' | VlmRiskLevel>('all')
 const typeFilter = ref<'all' | string>('all')
 const sortBy = ref<'time' | 'risk' | 'confidence'>('time')
 
-// Açıklama sütunu VLM'in gerçek çıktısını KISALTIYORDU (truncate) - operatör
-// tam metni görmek isteyebilir (bkz. kullanıcı talebi "VLM çıktısı da burada
-// yer almalı"). Satıra tıklamak videoyu o ana atlıyor (select emit) - bu
-// yüzden tam metni AYRI bir toggle ile açıyoruz, satır tıklamasıyla çakışmasın.
-const expandedId = ref<string | null>(null)
-function toggleExpand(id: string) {
-  expandedId.value = expandedId.value === id ? null : id
-}
-
 const types = computed(() => [...new Set(props.events.map((e) => e.type))])
 
 const RISK_ORDER: Record<VlmRiskLevel, number> = { crit: 3, high: 2, mid: 1, low: 0 }
@@ -75,39 +66,24 @@ const RISK_LABEL: Record<VlmRiskLevel, string> = { low: 'Düşük', mid: 'Orta',
             <th class="py-2 pr-3 font-medium">Açıklama</th>
             <th class="py-2 pr-3 font-medium">Risk</th>
             <th class="py-2 pr-3 font-medium">Güven</th>
-            <th class="py-2 pr-3 font-medium w-8"></th>
           </tr>
         </thead>
         <tbody class="divide-y divide-edge">
-          <template v-for="ev in filtered" :key="ev.id">
-            <tr
-              class="cursor-pointer hover:bg-surface-2/60 transition-colors"
-              :class="activeEventId === ev.id ? 'bg-accent-soft/40' : ''"
-              @click="emit('select', ev.id)"
-            >
-              <td class="py-2 pr-3 font-mono text-xs text-slate-400 whitespace-nowrap">{{ mmss(ev.timestamp) }}</td>
-              <td class="py-2 pr-3 text-slate-200 whitespace-nowrap">{{ ev.type }}</td>
-              <td class="py-2 pr-3 text-slate-400 max-w-md truncate">{{ ev.description }}</td>
-              <td class="py-2 pr-3 whitespace-nowrap">
-                <span class="text-xs font-semibold" :class="RISK_TEXT[ev.riskLevel]">{{ RISK_LABEL[ev.riskLevel] }}</span>
-              </td>
-              <td class="py-2 pr-3 text-xs text-slate-400 whitespace-nowrap">%{{ ev.confidence }}</td>
-              <td class="py-2 pr-1 text-right">
-                <button
-                  type="button"
-                  class="text-slate-500 hover:text-accent transition-colors px-1"
-                  :aria-label="expandedId === ev.id ? 'VLM çıktısını gizle' : 'VLM çıktısının tamamını göster'"
-                  @click.stop="toggleExpand(ev.id)"
-                >{{ expandedId === ev.id ? '▾' : '▸' }}</button>
-              </td>
-            </tr>
-            <tr v-if="expandedId === ev.id" class="bg-surface-2/40">
-              <td colspan="6" class="py-3 px-3">
-                <div class="text-[11px] uppercase tracking-wide text-slate-500 mb-1">VLM çıktısı (tam metin)</div>
-                <p class="text-sm text-slate-200 whitespace-pre-line leading-relaxed">{{ ev.description }}</p>
-              </td>
-            </tr>
-          </template>
+          <tr
+            v-for="ev in filtered"
+            :key="ev.id"
+            class="cursor-pointer hover:bg-surface-2/60 transition-colors"
+            :class="activeEventId === ev.id ? 'bg-accent-soft/40' : ''"
+            @click="emit('select', ev.id)"
+          >
+            <td class="py-2 pr-3 font-mono text-xs text-slate-400 whitespace-nowrap">{{ mmss(ev.timestamp) }}</td>
+            <td class="py-2 pr-3 text-slate-200 whitespace-nowrap">{{ ev.type }}</td>
+            <td class="py-2 pr-3 text-slate-400 max-w-md truncate">{{ ev.description }}</td>
+            <td class="py-2 pr-3 whitespace-nowrap">
+              <span class="text-xs font-semibold" :class="RISK_TEXT[ev.riskLevel]">{{ RISK_LABEL[ev.riskLevel] }}</span>
+            </td>
+            <td class="py-2 pr-3 text-xs text-slate-400 whitespace-nowrap">%{{ ev.confidence }}</td>
+          </tr>
         </tbody>
       </table>
     </div>
@@ -126,11 +102,8 @@ const RISK_LABEL: Record<VlmRiskLevel, string> = { low: 'Düşük', mid: 'Orta',
             <span class="text-xs font-semibold" :class="RISK_TEXT[ev.riskLevel]">{{ RISK_LABEL[ev.riskLevel] }}</span>
           </div>
           <div class="mt-1 text-sm text-slate-200">{{ ev.type }}</div>
-          <div class="mt-0.5 text-xs text-slate-400" :class="expandedId === ev.id ? 'whitespace-pre-line' : 'truncate'">{{ ev.description }}</div>
-          <div class="mt-1 flex items-center justify-between">
-            <span class="text-[11px] text-slate-500">Güven: %{{ ev.confidence }}</span>
-            <span class="text-[11px] text-accent" @click.stop="toggleExpand(ev.id)">{{ expandedId === ev.id ? 'Kısalt ▾' : 'Tamamını gör ▸' }}</span>
-          </div>
+          <div class="mt-0.5 text-xs text-slate-400">{{ ev.description }}</div>
+          <div class="mt-1 text-[11px] text-slate-500">Güven: %{{ ev.confidence }}</div>
         </button>
       </li>
     </ul>

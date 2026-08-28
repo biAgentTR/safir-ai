@@ -86,12 +86,6 @@ function resetForNewAnalysis() {
   currentTime.value = 0
   activeEventId.value = null
   submitError.value = null
-  showJsonReport.value = false
-  exportPhase.json = 'idle'
-  exportPhase.html = 'idle'
-  exportPhase.pdf = 'idle'
-  chunkingDoneNotice.value = null
-  processingLog.value = []
 }
 onMounted(resetForNewAnalysis)
 watch(newAnalysisTrigger, (v) => {
@@ -138,74 +132,6 @@ const vlmProgress = computed(() => {
   const d = vlmStage.value?.data
   return d && 'progress' in d ? d.progress : null
 })
-
-// "Video parçalanıyor/gönderiliyor" ilerleme kutusu SADECE aktif ilerleme
-// varken görünür - son parça gönderildiğinde bu kutu sessizce KAYBOLUYORDU,
-// operatöre "bitti" diye AYRI bir bildirim gitmiyordu. Son parçanın
-// `chunk_done` bilgisi geldiği an ayrı, kalıcı bir "tamamlandı" bandı
-// gösterip birkaç saniye sonra kendiliğinden kapatıyoruz.
-const chunkingDoneNotice = ref<string | null>(null)
-let chunkingDoneTimer: ReturnType<typeof setTimeout> | null = null
-
-// Kalıcı işlem günlüğü — üstteki geçici banner("chunkingDoneNotice") her
-// tık sonra kaybolur; operatör "chunk bitti/başladı" adımlarının TAMAMINI
-// geriye dönük görebilsin diye her ilerleme tıkını (chunking/chunk_start/
-// chunk_done/chunk_failed) burada BİRİKTİRİYORUZ (en yeni en üstte).
-interface VlmLogEntry {
-  id: string
-  text: string
-  tone: 'info' | 'success' | 'error'
-}
-const processingLog = ref<VlmLogEntry[]>([])
-
-watch(vlmProgress, (p) => {
-  if (!p) return
-  const id = `${p.phase}-${p.chunk_index ?? 0}-${processingLog.value.length}`
-  // KRITIK: kisa/tek-parcali videolarda (`total_chunks === 1`, ör. ~20-30s'lik
-  // bir klip) backend `phase="chunking"` olayini HIC yaymaz (bkz. evren_vlm.py
-  // `analyze_video` - bu olay yalnizca video GERCEKTEN birden fazla parcaya
-  // bolunduyse yayinlanir) - ama `chunk_start`/`chunk_done` HER ZAMAN
-  // (chunk_index=1, total_chunks=1 ile de) yayinlanir. Önceki mantık
-  // "tamamlandı" bildirimini yalnızca `total_chunks > 1` iken tetikliyordu -
-  // bu yüzden en yaygın durumda (tek parçalı, kısa klip) operatör HİÇBİR
-  // "bitti" bildirimi GÖRMÜYORDU. Artık `total_chunks > 1` şartı YOK -
-  // tek/çok parça FARK ETMEKSİZİN her zaman tetiklenir.
-  if ((p.phase === 'chunking' || (p.phase === 'chunk_start' && p.chunk_index === 1))) {
-    // yeni bir video-gönderimi basladi (ör. yeni analiz) - eski bildirimi/günlüğü temizle
-    chunkingDoneNotice.value = null
-    processingLog.value = []
-  }
-  if (p.phase === 'chunking' && p.total_chunks) {
-    processingLog.value = [{ id, text: `Video ${p.total_chunks} parçaya bölünüyor ve EVREN'e gönderiliyor…`, tone: 'info' }]
-  } else if (p.phase === 'chunk_start') {
-    const label = p.total_chunks && p.total_chunks > 1 ? `Parça ${p.chunk_index}/${p.total_chunks}` : 'Video'
-    processingLog.value = [
-      { id, text: `${label} EVREN'e gönderiliyor${p.video_mb ? ` (~${p.video_mb} MB)` : ''}…`, tone: 'info' },
-      ...processingLog.value,
-    ]
-  } else if (p.phase === 'chunk_done') {
-    const label = p.total_chunks && p.total_chunks > 1 ? `Parça ${p.chunk_index}/${p.total_chunks}` : 'Video'
-    processingLog.value = [
-      { id, text: `${label} işlendi${p.elapsed_sec != null ? ` (${p.elapsed_sec}s)` : ''}.`, tone: 'success' },
-      ...processingLog.value,
-    ]
-    if (p.total_chunks && p.chunk_index === p.total_chunks) {
-      chunkingDoneNotice.value =
-        p.total_chunks > 1
-          ? `Video ${p.total_chunks} parçaya bölünüp tamamı EVREN'e gönderildi, sonuç işleniyor…`
-          : `Video EVREN'e gönderildi ve işlendi, sonuç hazırlanıyor…`
-      if (chunkingDoneTimer) clearTimeout(chunkingDoneTimer)
-      chunkingDoneTimer = setTimeout(() => (chunkingDoneNotice.value = null), 8000)
-    }
-  } else if (p.phase === 'chunk_failed') {
-    const label = p.total_chunks && p.total_chunks > 1 ? `Parça ${p.chunk_index}/${p.total_chunks}` : 'Video'
-    processingLog.value = [
-      { id, text: `${label} gönderimi başarısız: ${p.error ?? 'bilinmeyen hata'}`, tone: 'error' },
-      ...processingLog.value,
-    ]
-  }
-})
-
 const events = computed(() => mapVlmDirectEvents(vlmStage.value, store.report))
 const hasRunAnalysis = computed(() => store.status === 'done' || store.status === 'error')
 
@@ -221,75 +147,13 @@ const effectiveDuration = computed(() => {
 const summary = computed(() => summarize(events.value))
 const riskCounts = computed(() => riskLevelCounts(events.value))
 const typeCounts = computed(() => eventTypeCounts(events.value))
-
-// ---- report export (Olay Türü Dağılımı panel) — JSON/HTML/PDF from the
-// same SafirReport backing Workspace's FinalReport.vue (useReportExport.ts).
-// Clicking JSON additionally opens the raw report below the dashboard; all
-// three also open in a new tab right away (useReportExport's download())
-// and show an explicit "indirildi, kontrol edin" confirmation here — bir
-// indirmenin sessizce Indirilenler klasorune duşup fark edilmemesi yerine. ----
-const { exportJson, exportHtml, exportPdf } = useReportExport()
-const reportReady = computed(() => !!store.report)
-const showJsonReport = ref(false)
-
-type ExportKind = 'json' | 'html' | 'pdf'
-const exportPhase = reactive<Record<ExportKind, 'idle' | 'loading' | 'ok' | 'error'>>({
-  json: 'idle',
-  html: 'idle',
-  pdf: 'idle',
-})
-const exportMessage = reactive<Record<ExportKind, string>>({ json: '', html: '', pdf: '' })
-const exportOkTimers: Record<ExportKind, ReturnType<typeof setTimeout> | null> = { json: null, html: null, pdf: null }
-
-function markExported(kind: ExportKind, filename: string) {
-  exportPhase[kind] = 'ok'
-  exportMessage[kind] = `${filename} — yeni sekmede açıldı, lütfen dosyayı kontrol edin.`
-  if (exportOkTimers[kind]) clearTimeout(exportOkTimers[kind]!)
-  exportOkTimers[kind] = setTimeout(() => {
-    if (exportPhase[kind] === 'ok') exportPhase[kind] = 'idle'
-  }, 6000)
-}
-function markExportFailed(kind: ExportKind, e: unknown) {
-  exportPhase[kind] = 'error'
-  exportMessage[kind] = e instanceof Error ? e.message : 'Dışa aktarma başarısız oldu.'
-}
-
-function doExportJson() {
-  if (!store.report) return
-  exportPhase.json = 'loading'
-  try {
-    const filename = exportJson(store.report)
-    showJsonReport.value = true
-    markExported('json', filename)
-  } catch (e: unknown) {
-    markExportFailed('json', e)
-  }
-}
-function doExportHtml() {
-  if (!store.report) return
-  exportPhase.html = 'loading'
-  try {
-    markExported('html', exportHtml(store.report))
-  } catch (e: unknown) {
-    markExportFailed('html', e)
-  }
-}
-async function doExportPdf() {
-  if (!store.report) return
-  exportPhase.pdf = 'loading'
-  try {
-    markExported('pdf', await exportPdf(store.jobId, store.report))
-  } catch (e: unknown) {
-    markExportFailed('pdf', e)
-  }
-}
 </script>
 
 <template>
   <div id="vlm-direct" class="scroll-mt-16 max-w-7xl mx-auto px-6 py-6">
     <div class="mb-6 text-center max-w-2xl mx-auto relative">
       <!-- Title Ambient Glow Aura -->
-      <div class="heading-glow-section" />
+      <div class="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[360px] max-w-[85vw] h-[140px] rounded-full bg-gradient-to-r from-accent/25 via-cyan-500/20 to-teal-400/25 dark:from-accent/20 dark:via-cyan-500/15 dark:to-teal-500/20 blur-[80px] -z-10" />
 
       <h2 class="text-2xl sm:text-3xl font-bold tracking-tight text-slate-100 relative z-10">Direct Analiz</h2>
       <p class="mt-1.5 text-sm sm:text-base text-slate-400 relative z-10">Video doğrudan görsel-dil modeline (EVREN) gönderilerek analiz edilir.</p>
@@ -345,10 +209,6 @@ async function doExportPdf() {
         {{ vlmProgress.chunk_index ?? '—' }} / {{ vlmProgress.total_chunks }}
       </span>
     </div>
-    <div v-if="chunkingDoneNotice" class="mb-5 rounded-md border border-risk-low/30 bg-risk-low/10 px-4 py-3 flex items-center gap-3 text-sm text-risk-low">
-      <span aria-hidden="true">✓</span>
-      <span class="flex-1">{{ chunkingDoneNotice }}</span>
-    </div>
 
     <div class="mb-5">
       <VlmStatCards :summary="summary" :duration-seconds="effectiveDuration" />
@@ -369,48 +229,8 @@ async function doExportPdf() {
           @select-event="onSelectEvent"
         />
       </div>
-      <div class="lg:col-span-1 space-y-4">
-        <VlmRiskCharts
-          :risk-counts="riskCounts"
-          :type-counts="typeCounts"
-          :report-ready="reportReady"
-          :export-phase="exportPhase"
-          :export-message="exportMessage"
-          @export-json="doExportJson"
-          @export-html="doExportHtml"
-          @export-pdf="doExportPdf"
-        />
-
-        <!-- Kalıcı işlem günlüğü: "video gönderildi mi/gitti mi/hâlâ sürüyor mu"
-             sorusuna HER ZAMAN net bir cevap versin diye "Analizi Başlat"a
-             basılır basılmaz (ilk SSE tıkı gelmeden ÖNCE bile) görünür olur;
-             "chunk başladı/bitti" TÜM adımları, üstteki geçici banner
-             kaybolduktan SONRA da geriye dönük görülebilir. -->
-        <div v-if="processingLog.length || store.isRunning" class="card p-4">
-          <h3 class="text-sm font-semibold text-slate-100 mb-3">İşlem Günlüğü</h3>
-          <ul v-if="processingLog.length" class="space-y-1.5 max-h-56 overflow-y-auto">
-            <li
-              v-for="entry in processingLog"
-              :key="entry.id"
-              class="text-xs flex items-start gap-2"
-              :class="entry.tone === 'error' ? 'text-risk-crit' : entry.tone === 'success' ? 'text-risk-low' : 'text-slate-400'"
-            >
-              <span aria-hidden="true">{{ entry.tone === 'error' ? '✕' : entry.tone === 'success' ? '✓' : '…' }}</span>
-              <span>{{ entry.text }}</span>
-            </li>
-          </ul>
-          <p v-else class="text-xs text-slate-400 flex items-center gap-2">
-            <span class="inline-block w-3 h-3 border-2 border-accent border-t-transparent rounded-full animate-spin shrink-0 motion-reduce:animate-none" />
-            Analiz başlatıldı, video EVREN'e gönderiliyor…
-          </p>
-        </div>
-
-        <!-- VLM'in ham, tam çıktısı — event listesindeki kısaltılmış açıklamanın
-             aksine, operatörün mutlaka görebilmesi gereken TAM analiz metni. -->
-        <div v-if="store.report?.natural_language_summary" class="card p-4">
-          <h3 class="text-sm font-semibold text-slate-100 mb-2">VLM Çıktısı (Tam Metin)</h3>
-          <p class="text-sm text-slate-300 whitespace-pre-line leading-relaxed max-h-64 overflow-y-auto">{{ store.report.natural_language_summary }}</p>
-        </div>
+      <div class="lg:col-span-1">
+        <VlmRiskCharts :risk-counts="riskCounts" :type-counts="typeCounts" />
       </div>
     </div>
 
@@ -420,17 +240,6 @@ async function doExportPdf() {
     </div>
     <div v-else class="mt-5">
       <VlmEventList :events="events" :active-event-id="activeEventId" @select="onSelectEvent" />
-    </div>
-
-    <!-- nihai JSON raporu (şartname formatı) — "Olay Türü Dağılımı"
-         panelindeki JSON düğmesine basılınca burada, dashboard'un altında
-         açılır; indirilen dosyayla BİREBİR AYNI içerik (bkz. buildSartnameJson). -->
-    <div v-if="showJsonReport && store.report" class="mt-5 card p-4">
-      <div class="flex items-center justify-between mb-2">
-        <h3 class="text-sm font-semibold text-slate-100">Nihai JSON Raporu (Şartname Formatı)</h3>
-        <button type="button" class="btn-ghost text-xs px-2 py-1" @click="showJsonReport = false">Kapat</button>
-      </div>
-      <pre class="text-[11px] font-mono text-slate-400 bg-surface-2 border border-edge rounded-md p-3 max-h-96 overflow-auto">{{ JSON.stringify(buildSartnameJson(store.report), null, 2) }}</pre>
     </div>
   </div>
 </template>

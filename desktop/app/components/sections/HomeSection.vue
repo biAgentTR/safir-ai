@@ -50,7 +50,7 @@ function onCardClick(l: QuickLink) {
   <div id="ana-sayfa" class="scroll-mt-16 relative">
     <div class="relative max-w-4xl mx-auto px-6 py-16 sm:py-20 text-center">
       <!-- Hero Title Ambient Glow Aura -->
-      <div class="heading-glow-hero" />
+      <div class="pointer-events-none absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[520px] max-w-[90vw] h-[240px] rounded-full bg-gradient-to-r from-accent/25 via-cyan-500/20 to-teal-400/25 dark:from-accent/20 dark:via-cyan-500/15 dark:to-teal-500/20 blur-[100px] -z-10" />
 
       <img src="~/assets/images/logo.png" alt="" class="w-12 h-12 object-contain mx-auto mb-5 relative z-10" />
       <div class="eyebrow !text-accent mb-3 relative z-10">Yapay zekâ destekli operasyonel farkındalık</div>

@@ -40,8 +40,6 @@ export function useTheme() {
     resolved.value = pref === 'system' ? systemTheme() : pref
     if (typeof document !== 'undefined') {
       document.documentElement.setAttribute('data-theme', resolved.value)
-      document.documentElement.classList.toggle('dark', resolved.value === 'dark')
-      document.documentElement.classList.toggle('light', resolved.value === 'light')
     }
   }
 

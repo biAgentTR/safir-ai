@@ -45,28 +45,17 @@ async function loadOverview() {
   }
 }
 
-// ---- sayfalama: her tabloda (Analizler/Konuşmalar) sayfa başına 20 kayıt ----
-const PAGE_SIZE = 20
-
 // ---- Analizler ----
 const analyses = ref<HistoryListItem[]>([])
 const analysesLoading = ref(true)
 const analysesError = ref<string | null>(null)
 const expandedJobId = ref<string | null>(null)
-const analysesPage = ref(1)
-
-const analysesTotalPages = computed(() => Math.max(1, Math.ceil(analyses.value.length / PAGE_SIZE)))
-const paginatedAnalyses = computed(() => {
-  const start = (analysesPage.value - 1) * PAGE_SIZE
-  return analyses.value.slice(start, start + PAGE_SIZE)
-})
 
 async function loadAnalyses() {
   analysesLoading.value = true
   analysesError.value = null
   try {
-    analyses.value = await api.getHistory(500)
-    analysesPage.value = 1
+    analyses.value = await api.getHistory(100)
   } catch (e) {
     analysesError.value = humanError(e, 'Analizler yüklenemedi.')
   } finally {
@@ -102,20 +91,12 @@ const expandedConversationId = ref<string | null>(null)
 const conversationDetail = ref<ConversationDetail | null>(null)
 const conversationDetailLoading = ref(false)
 const conversationDetailError = ref<string | null>(null)
-const conversationsPage = ref(1)
-
-const conversationsTotalPages = computed(() => Math.max(1, Math.ceil(conversations.value.length / PAGE_SIZE)))
-const paginatedConversations = computed(() => {
-  const start = (conversationsPage.value - 1) * PAGE_SIZE
-  return conversations.value.slice(start, start + PAGE_SIZE)
-})
 
 async function loadConversations() {
   conversationsLoading.value = true
   conversationsError.value = null
   try {
-    conversations.value = await api.getConversations(500)
-    conversationsPage.value = 1
+    conversations.value = await api.getConversations(100)
   } catch (e) {
     conversationsError.value = humanError(e, 'Konuşmalar yüklenemedi.')
   } finally {
@@ -237,23 +218,18 @@ onMounted(() => {
       {{ overviewError }}
       <button class="btn-ghost ml-2" @click="loadOverview">Tekrar dene</button>
     </div>
-    <div v-else-if="overview" class="card relative overflow-hidden p-5 mb-5">
-      <div class="absolute inset-x-0 top-0 h-[2px] bg-gradient-to-r from-transparent via-accent/60 to-transparent" />
-      <h3 class="text-sm font-semibold text-slate-300 mb-3">Genel Özet</h3>
-      <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
-        <MetricCell label="Toplam analiz" :value="overview.totals.total_analyses" />
-        <MetricCell label="Tamamlanan" :value="overview.totals.completed_analyses" />
-        <MetricCell label="Başarısız" :value="overview.totals.failed_analyses" />
-        <MetricCell label="Toplam konuşma" :value="overview.totals.total_conversations" />
-        <MetricCell label="Saklanan pipeline izi" :value="overview.totals.analyses_with_trace" />
-        <MetricCell label="Saklanan kanıt karesi" :value="overview.totals.stored_representative_frame_count" />
-      </div>
+    <div v-else-if="overview" class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 mb-6">
+      <MetricCell label="Toplam analiz" :value="overview.totals.total_analyses" />
+      <MetricCell label="Tamamlanan" :value="overview.totals.completed_analyses" />
+      <MetricCell label="Başarısız" :value="overview.totals.failed_analyses" />
+      <MetricCell label="Toplam konuşma" :value="overview.totals.total_conversations" />
+      <MetricCell label="Saklanan pipeline izi" :value="overview.totals.analyses_with_trace" />
+      <MetricCell label="Saklanan kanıt karesi" :value="overview.totals.stored_representative_frame_count" />
     </div>
 
     <!-- AI Güvenlik & Bilgi Katmanı: RAG + Prompt Injection Guard KPI'ları (persisted trace_events'ten, gerçek toplamlar) -->
-    <div v-if="overview" class="card relative overflow-hidden p-5 mb-5">
-      <div class="absolute inset-x-0 top-0 h-[2px] bg-gradient-to-r from-transparent via-accent/60 to-transparent" />
-      <h3 class="text-sm font-semibold text-slate-300 mb-3">AI Güvenlik &amp; Bilgi Katmanı</h3>
+    <div v-if="overview" class="mb-6">
+      <h3 class="text-sm font-semibold text-slate-300 mb-2">AI Güvenlik &amp; Bilgi Katmanı</h3>
       <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
         <MetricCell label="Toplam olay" :value="overview.totals.total_events_detected" />
         <MetricCell label="Kritik risk analizi" :value="overview.totals.critical_risk_analyses" />
@@ -264,14 +240,14 @@ onMounted(() => {
         <MetricCell label="Guard quarantine" :value="overview.totals.guard_quarantined" />
         <MetricCell label="Guard hatası" :value="overview.totals.guard_failures" />
       </div>
-      <p class="mt-3 pt-3 border-t border-edge text-xs text-slate-500">
+      <p class="mt-2 text-xs text-slate-500">
         Semantik retrieval yalnızca ilgili olabilecek mevzuat kaynaklarını sağlar. Risk skoru ve deterministik kural
         eşleşmeleri RuleEngine tarafından belirlenir; yukarıdaki RAG/Guard metrikleri risk kararını ETKİLEMEZ.
       </p>
     </div>
 
     <!-- tabs -->
-    <div class="card relative overflow-hidden shadow-2xl border-edge">
+    <div class="card relative overflow-hidden shadow-2xl border-edge/90">
       <!-- Top Luminous Hairline Accent -->
       <div class="absolute inset-x-0 top-0 h-[2px] bg-gradient-to-r from-transparent via-accent/60 to-transparent" />
 
@@ -307,7 +283,7 @@ onMounted(() => {
                 </tr>
               </thead>
               <tbody>
-                <template v-for="a in paginatedAnalyses" :key="a.job_id">
+                <template v-for="a in analyses" :key="a.job_id">
                   <tr
                     class="border-b border-edge/60 hover:bg-surface-2/60 cursor-pointer"
                     @click="toggleExpand(a.job_id)"
@@ -337,24 +313,6 @@ onMounted(() => {
               </tbody>
             </table>
           </div>
-          <div v-if="analysesTotalPages > 1" class="mt-3 pt-3 flex items-center justify-between border-t border-edge text-xs text-slate-500">
-            <span>Toplam {{ analyses.length }} analiz</span>
-            <div class="flex items-center gap-2">
-              <button
-                type="button"
-                class="px-2.5 py-1 rounded bg-surface-2 hover:bg-surface-3 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                :disabled="analysesPage <= 1"
-                @click="analysesPage--"
-              >❮ Önceki</button>
-              <span class="font-mono text-slate-400">{{ analysesPage }} / {{ analysesTotalPages }}</span>
-              <button
-                type="button"
-                class="px-2.5 py-1 rounded bg-surface-2 hover:bg-surface-3 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                :disabled="analysesPage >= analysesTotalPages"
-                @click="analysesPage++"
-              >Sonraki ❯</button>
-            </div>
-          </div>
         </div>
 
         <!-- Konuşmalar -->
@@ -377,7 +335,7 @@ onMounted(() => {
                 </tr>
               </thead>
               <tbody>
-                <template v-for="c in paginatedConversations" :key="c.conversation_id">
+                <template v-for="c in conversations" :key="c.conversation_id">
                   <tr
                     class="border-b border-edge/60 hover:bg-surface-2/60 cursor-pointer"
                     @click="toggleConversation(c.conversation_id)"
@@ -407,24 +365,6 @@ onMounted(() => {
                 </template>
               </tbody>
             </table>
-          </div>
-          <div v-if="conversationsTotalPages > 1" class="mt-3 pt-3 flex items-center justify-between border-t border-edge text-xs text-slate-500">
-            <span>Toplam {{ conversations.length }} sohbet</span>
-            <div class="flex items-center gap-2">
-              <button
-                type="button"
-                class="px-2.5 py-1 rounded bg-surface-2 hover:bg-surface-3 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                :disabled="conversationsPage <= 1"
-                @click="conversationsPage--"
-              >❮ Önceki</button>
-              <span class="font-mono text-slate-400">{{ conversationsPage }} / {{ conversationsTotalPages }}</span>
-              <button
-                type="button"
-                class="px-2.5 py-1 rounded bg-surface-2 hover:bg-surface-3 text-slate-300 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                :disabled="conversationsPage >= conversationsTotalPages"
-                @click="conversationsPage++"
-              >Sonraki ❯</button>
-            </div>
           </div>
         </div>
 
@@ -481,7 +421,7 @@ onMounted(() => {
               Bu analiz için kalıcı olarak saklanmış kanıt karesi bulunmuyor.
             </div>
             <div v-else class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-              <figure v-for="f in storedFrames" :key="f.frame_id" class="border border-edge hover:border-accent/40 rounded-lg overflow-hidden bg-surface-2 transition-colors">
+              <figure v-for="f in storedFrames" :key="f.frame_id" class="border border-edge rounded-lg overflow-hidden bg-surface-2">
                 <img :src="api.getFrameUrl(selectedJobId!, f.frame_id)" :alt="f.frame_id" class="w-full h-28 object-cover" loading="lazy" />
                 <figcaption class="px-2 py-1.5 text-[11px] text-slate-400">
                   <div class="text-slate-300">{{ f.evidence_id }}</div>

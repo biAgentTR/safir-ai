@@ -204,6 +204,9 @@ body {
 
 @layer components {
   /* ---- surfaces ---- */
+  /* Glassy by default (semi-transparent + blur) so every panel, on every
+     screen, reads as part of the same ambient/glow system as the launch
+     hero and admin login (BackgroundScene sits behind the whole app shell —
   .card {
     @apply bg-surface-1/85 backdrop-blur-md border border-edge rounded-xl shadow-lg transition-all duration-200;
   }
@@ -486,66 +489,6 @@ body {
 .dropdown-slide-leave-to {
   opacity: 0;
   transform: translateY(-8px) scale(0.97);
-}
-
-/* ========================================================================= */
-/* ✨ HIGH-IMPACT AMBIENT HEADING & BOX GLOW UTILITIES (Light & Dark) ✨ */
-/* ========================================================================= */
-
-.heading-glow-hero {
-  position: absolute;
-  pointer-events: none;
-  top: 35%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 520px;
-  max-width: 90vw;
-  height: 240px;
-  border-radius: 9999px;
-  background: radial-gradient(ellipse at center, rgba(13, 148, 136, 0.45) 0%, rgba(6, 182, 212, 0.32) 40%, rgba(56, 189, 248, 0.14) 70%, transparent 88%);
-  filter: blur(48px);
-  z-index: 0;
-}
-
-:root[data-theme='dark'] .heading-glow-hero {
-  background: radial-gradient(ellipse at center, rgba(20, 184, 166, 0.35) 0%, rgba(6, 182, 212, 0.22) 45%, transparent 75%);
-  filter: blur(65px);
-}
-
-.heading-glow-section {
-  position: absolute;
-  pointer-events: none;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 420px;
-  max-width: 85vw;
-  height: 180px;
-  border-radius: 9999px;
-  background: radial-gradient(ellipse at center, rgba(13, 148, 136, 0.42) 0%, rgba(6, 182, 212, 0.28) 40%, rgba(56, 189, 248, 0.12) 70%, transparent 88%);
-  filter: blur(42px);
-  z-index: 0;
-}
-
-:root[data-theme='dark'] .heading-glow-section {
-  background: radial-gradient(ellipse at center, rgba(20, 184, 166, 0.32) 0%, rgba(6, 182, 212, 0.18) 45%, transparent 75%);
-  filter: blur(55px);
-}
-
-/* Light Theme Card & Drawer Ambient Glow Shadows */
-:root[data-theme='light'] .deck-active-card {
-  border-color: rgba(13, 148, 136, 0.38) !important;
-  box-shadow:
-    0 16px 40px -6px rgba(13, 148, 136, 0.18),
-    0 0 28px 2px rgba(6, 182, 212, 0.16),
-    0 2px 8px rgba(15, 23, 42, 0.06) !important;
-}
-
-:root[data-theme='light'] .card,
-:root[data-theme='light'] .glass-panel {
-  box-shadow:
-    0 8px 30px -4px rgba(15, 23, 42, 0.07),
-    0 0 20px rgba(13, 148, 136, 0.08);
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -205,8 +205,7 @@ VLM_OBSERVER_SYSTEM_PROMPT = (
     "`keywords` içinde KISA bir risk ifadesiyle yansıt (ör. "
     "\"discarded_cigarette_ignition_source\", \"spark_near_flammable_material\", "
     "\"unattended_open_valve\") - bu da diğer keyword'ler gibi SERBEST BİÇİMLİ "
-    "ve SANA AİTTİR, önceden tanımlı bir liste YOKTUR."
-    + _EVENTS_JSON_INSTRUCTION
+    "ve SANA AİTTİR, önceden tanımlı bir liste YOKTUR.\n"
 )
 
 VLM_RECONCILIATION_SYSTEM_PROMPT = (
