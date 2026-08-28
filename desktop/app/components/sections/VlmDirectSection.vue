@@ -137,6 +137,51 @@ const hasRunAnalysis = computed(() => store.status === 'done' || store.status ==
 
 // Marker/timeline positioning needs SOME notion of video length even when
 // there's no real <video> preview (non-Tauri dev) — fall back to the
+// Video chunking progress & logs
+const processingLog = ref<{ id: number; text: string; tone: 'info' | 'success' | 'error' }[]>([])
+let logSeq = 0
+const chunkingDoneNotice = ref<string | null>(null)
+let chunkingDoneTimer: ReturnType<typeof setTimeout> | null = null
+
+watch(
+  () => store.status,
+  (s) => {
+    if (s === 'running') {
+      processingLog.value = []
+      chunkingDoneNotice.value = null
+    }
+  },
+)
+
+watch(vlmProgress, (p) => {
+  if (!p) return
+  const id = ++logSeq
+  if (p.phase === 'chunk_start') {
+    const label = p.total_chunks && p.total_chunks > 1 ? `Parça ${p.chunk_index}/${p.total_chunks}` : 'Video'
+    processingLog.value = [{ id, text: `${label} EVREN'e gönderiliyor…`, tone: 'info' }, ...processingLog.value]
+  } else if (p.phase === 'chunk_done') {
+    const label = p.total_chunks && p.total_chunks > 1 ? `Parça ${p.chunk_index}/${p.total_chunks}` : 'Video'
+    processingLog.value = [
+      { id, text: `${label} işlendi${p.elapsed_sec != null ? ` (${p.elapsed_sec}s)` : ''}.`, tone: 'success' },
+      ...processingLog.value,
+    ]
+    if (p.total_chunks && p.chunk_index === p.total_chunks) {
+      chunkingDoneNotice.value =
+        p.total_chunks > 1
+          ? `Video ${p.total_chunks} parçaya bölünüp tamamı EVREN'e gönderildi, sonuç işleniyor…`
+          : `Video EVREN'e gönderildi ve işlendi, sonuç hazırlanıyor…`
+      if (chunkingDoneTimer) clearTimeout(chunkingDoneTimer)
+      chunkingDoneTimer = setTimeout(() => (chunkingDoneNotice.value = null), 8000)
+    }
+  } else if (p.phase === 'chunk_failed') {
+    const label = p.total_chunks && p.total_chunks > 1 ? `Parça ${p.chunk_index}/${p.total_chunks}` : 'Video'
+    processingLog.value = [
+      { id, text: `${label} gönderimi başarısız: ${p.error ?? 'bilinmeyen hata'}`, tone: 'error' },
+      ...processingLog.value,
+    ]
+  }
+})
+
 // furthest event timestamp so the timeline strip still renders sensibly.
 const effectiveDuration = computed(() => {
   if (duration.value > 0) return duration.value
@@ -147,6 +192,64 @@ const effectiveDuration = computed(() => {
 const summary = computed(() => summarize(events.value))
 const riskCounts = computed(() => riskLevelCounts(events.value))
 const typeCounts = computed(() => eventTypeCounts(events.value))
+
+// ---- report export (Olay Türü Dağılımı panel) — JSON/HTML/PDF from the
+// same SafirReport backing Workspace's FinalReport.vue (useReportExport.ts).
+const { exportJson, exportHtml, exportPdf } = useReportExport()
+const reportReady = computed(() => !!store.report)
+const showJsonReport = ref(false)
+
+type ExportKind = 'json' | 'html' | 'pdf'
+const exportPhase = reactive<Record<ExportKind, 'idle' | 'loading' | 'ok' | 'error'>>({
+  json: 'idle',
+  html: 'idle',
+  pdf: 'idle',
+})
+const exportMessage = reactive<Record<ExportKind, string>>({ json: '', html: '', pdf: '' })
+const exportOkTimers: Record<ExportKind, ReturnType<typeof setTimeout> | null> = { json: null, html: null, pdf: null }
+
+function markExported(kind: ExportKind, filename: string) {
+  exportPhase[kind] = 'ok'
+  exportMessage[kind] = `${filename} — yeni sekmede açıldı, lütfen dosyayı kontrol edin.`
+  if (exportOkTimers[kind]) clearTimeout(exportOkTimers[kind]!)
+  exportOkTimers[kind] = setTimeout(() => {
+    if (exportPhase[kind] === 'ok') exportPhase[kind] = 'idle'
+  }, 6000)
+}
+function markExportFailed(kind: ExportKind, e: unknown) {
+  exportPhase[kind] = 'error'
+  exportMessage[kind] = e instanceof Error ? e.message : 'Dışa aktarma başarısız oldu.'
+}
+
+function doExportJson() {
+  if (!store.report) return
+  exportPhase.json = 'loading'
+  try {
+    const filename = exportJson(store.report)
+    showJsonReport.value = true
+    markExported('json', filename)
+  } catch (e: unknown) {
+    markExportFailed('json', e)
+  }
+}
+function doExportHtml() {
+  if (!store.report) return
+  exportPhase.html = 'loading'
+  try {
+    markExported('html', exportHtml(store.report))
+  } catch (e: unknown) {
+    markExportFailed('html', e)
+  }
+}
+async function doExportPdf() {
+  if (!store.report) return
+  exportPhase.pdf = 'loading'
+  try {
+    markExported('pdf', await exportPdf(store.jobId, store.report))
+  } catch (e: unknown) {
+    markExportFailed('pdf', e)
+  }
+}
 </script>
 
 <template>
@@ -201,13 +304,17 @@ const typeCounts = computed(() => eventTypeCounts(events.value))
     <p v-if="submitError && (hasRunAnalysis || store.isRunning)" class="-mt-3 mb-5 text-sm text-risk-crit">{{ submitError }}</p>
     <p v-if="store.status === 'error'" class="-mt-3 mb-5 text-sm text-risk-crit">Analiz tamamlanamadı{{ store.error ? `: ${store.error}` : '.' }}</p>
 
-    <!-- step-by-step VLM progress (video parçalanıyor/gönderiliyor) — bkz. StageCard.vue'daki eşdeğeri -->
+    <!-- step-by-step VLM progress (video parçalanıyor/gönderiliyor) -->
     <div v-if="vlmProgress" class="mb-5 rounded-md border border-accent/30 bg-accent/10 px-4 py-3 flex items-center gap-3">
       <span class="inline-block w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin shrink-0 motion-reduce:animate-none" />
       <span class="text-sm text-slate-100 flex-1">{{ vlmStage?.summary }}</span>
       <span v-if="vlmProgress.total_chunks && vlmProgress.total_chunks > 1" class="text-xs font-mono text-slate-400 shrink-0">
         {{ vlmProgress.chunk_index ?? '—' }} / {{ vlmProgress.total_chunks }}
       </span>
+    </div>
+    <div v-if="chunkingDoneNotice" class="mb-5 rounded-md border border-risk-low/30 bg-risk-low/10 px-4 py-3 flex items-center gap-3 text-sm text-risk-low">
+      <span aria-hidden="true">✓</span>
+      <span class="flex-1">{{ chunkingDoneNotice }}</span>
     </div>
 
     <div class="mb-5">
@@ -229,8 +336,43 @@ const typeCounts = computed(() => eventTypeCounts(events.value))
           @select-event="onSelectEvent"
         />
       </div>
-      <div class="lg:col-span-1">
-        <VlmRiskCharts :risk-counts="riskCounts" :type-counts="typeCounts" />
+      <div class="lg:col-span-1 space-y-4">
+        <VlmRiskCharts
+          :risk-counts="riskCounts"
+          :type-counts="typeCounts"
+          :report-ready="reportReady"
+          :export-phase="exportPhase"
+          :export-message="exportMessage"
+          @export-json="doExportJson"
+          @export-html="doExportHtml"
+          @export-pdf="doExportPdf"
+        />
+
+        <!-- Kalıcı işlem günlüğü -->
+        <div v-if="processingLog.length || store.isRunning" class="card p-4">
+          <h3 class="text-sm font-semibold text-slate-100 mb-3">İşlem Günlüğü</h3>
+          <ul v-if="processingLog.length" class="space-y-1.5 max-h-56 overflow-y-auto">
+            <li
+              v-for="entry in processingLog"
+              :key="entry.id"
+              class="text-xs flex items-start gap-2"
+              :class="entry.tone === 'error' ? 'text-risk-crit' : entry.tone === 'success' ? 'text-risk-low' : 'text-slate-400'"
+            >
+              <span aria-hidden="true">{{ entry.tone === 'error' ? '✕' : entry.tone === 'success' ? '✓' : '…' }}</span>
+              <span>{{ entry.text }}</span>
+            </li>
+          </ul>
+          <p v-else class="text-xs text-slate-400 flex items-center gap-2">
+            <span class="inline-block w-3 h-3 border-2 border-accent border-t-transparent rounded-full animate-spin shrink-0 motion-reduce:animate-none" />
+            Analiz başlatıldı, video EVREN'e gönderiliyor…
+          </p>
+        </div>
+
+        <!-- VLM'in ham, tam çıktısı -->
+        <div v-if="store.report?.natural_language_summary" class="card p-4">
+          <h3 class="text-sm font-semibold text-slate-100 mb-2">VLM Çıktısı (Tam Metin)</h3>
+          <p class="text-sm text-slate-300 whitespace-pre-line leading-relaxed max-h-64 overflow-y-auto">{{ store.report.natural_language_summary }}</p>
+        </div>
       </div>
     </div>
 
@@ -240,6 +382,15 @@ const typeCounts = computed(() => eventTypeCounts(events.value))
     </div>
     <div v-else class="mt-5">
       <VlmEventList :events="events" :active-event-id="activeEventId" @select="onSelectEvent" />
+    </div>
+
+    <!-- nihai JSON raporu (şartname formatı) -->
+    <div v-if="showJsonReport && store.report" class="mt-5 card p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-sm font-semibold text-slate-100">Nihai JSON Raporu (Şartname Formatı)</h3>
+        <button type="button" class="btn-ghost text-xs px-2 py-1" @click="showJsonReport = false">Kapat</button>
+      </div>
+      <pre class="text-[11px] font-mono text-slate-400 bg-surface-2 border border-edge rounded-md p-3 max-h-96 overflow-auto">{{ JSON.stringify(buildSartnameJson(store.report), null, 2) }}</pre>
     </div>
   </div>
 </template>

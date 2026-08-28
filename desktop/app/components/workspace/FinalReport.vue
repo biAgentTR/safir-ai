@@ -16,7 +16,7 @@ type ExportPhase = 'idle' | 'loading' | 'ok' | 'error'
 const exportPhase = reactive<Record<ExportKind, ExportPhase>>({ json: 'idle', html: 'idle', pdf: 'idle' })
 const exportError = reactive<Record<ExportKind, string>>({ json: '', html: '', pdf: '' })
 
-async function runExport(kind: ExportKind, fn: () => void | Promise<void>) {
+async function runExport(kind: ExportKind, fn: () => unknown) {
   exportPhase[kind] = 'loading'
   exportError[kind] = ''
   try {
