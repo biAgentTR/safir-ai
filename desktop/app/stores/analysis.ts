@@ -21,7 +21,7 @@ export const STAGE_ORDER: TraceStage[] = [
   'sampler',
   'vlm',
   'events',
-  'agent_context',
+  'rag_security',
   'decision',
   'escalation',
   'report',
@@ -132,6 +132,13 @@ export const useAnalysisStore = defineStore('analysis', {
     },
     hasAutoAlert(): boolean {
       return !!(this.report && this.report.auto_dispatched && this.report.alert_id)
+    },
+    /** Human-on-the-Loop (2026-08-25): risk_status belirsiz VEYA deterministik
+     * (RuleEngine) kanit yokken hicbir otomatik islem/alarm yapilmadi - operatorun
+     * ACIK karari (manuel alarm / geri cevirme) bekleniyor. Bkz. `EscalationPolicy.
+     * evaluate` (backend, src/decision/escalation.py). */
+    needsHumanReview(): boolean {
+      return !!this.report && this.report.escalation_tier === 'pending_review'
     },
   },
 
@@ -248,11 +255,22 @@ export const useAnalysisStore = defineStore('analysis', {
       }
     },
 
+    /**
+     * Fire-and-forget from the caller (never awaited/cancelled directly), so
+     * without the this.jobId checks below, resetJob() (e.g. "start a new VLM
+     * Direct analysis" from Ana Sayfa) does NOT stop this loop — a moment
+     * later its next tick calls applyStatus() with the OLD job's status and
+     * silently clobbers the fresh reset (the operator sees the just-finished
+     * analysis' "ANALİZ ÇALIŞIYOR" state reappear instead of a clean form).
+     * Bail out as soon as this.jobId no longer matches the job we're polling.
+     */
     async pollUntilDone(jobId: string, intervalMs = 500, timeoutMs = 120_000) {
       const api = useSafirApi()
       const deadline = Date.now() + timeoutMs
       while (Date.now() < deadline) {
+        if (this.jobId !== jobId) return
         const s = await api.getJob(jobId)
+        if (this.jobId !== jobId) return
         this.applyStatus(s)
         if (s.status === 'done' || s.status === 'error') return
         await new Promise((r) => setTimeout(r, intervalMs))

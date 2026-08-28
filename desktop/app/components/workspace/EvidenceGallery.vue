@@ -35,7 +35,7 @@ function url(id: string) {
         </button>
         <figcaption class="px-3 py-2">
           <div class="text-xs font-mono text-slate-300">{{ f.timestamp_str }}</div>
-          <div class="text-[11px] text-slate-500">change score {{ f.change_score }}<span v-if="f.is_fallback" class="text-risk-mid"> · fallback</span></div>
+          <div class="text-[11px] text-slate-500">değişim skoru {{ f.change_score }}<span v-if="f.is_fallback" class="text-risk-mid"> · yedek</span></div>
         </figcaption>
       </figure>
     </div>
@@ -47,12 +47,12 @@ function url(id: string) {
         class="btn-ghost !border-risk-low/40 !text-risk-low"
         :disabled="store.feedback.state === 'pending'"
         @click="store.submitFeedback('true_positive')"
-      >✅ Doğru İhbar</button>
+      >Doğru İhbar</button>
       <button
         class="btn-ghost !border-risk-crit/40 !text-risk-crit"
         :disabled="store.feedback.state === 'pending'"
         @click="store.submitFeedback('false_positive')"
-      >❌ Yanlış Alarm</button>
+      >Yanlış Alarm</button>
       <span
         v-if="store.feedback.message"
         class="text-xs"

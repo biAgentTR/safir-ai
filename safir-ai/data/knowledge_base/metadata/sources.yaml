@@ -1,0 +1,183 @@
+# SAFIR Knowledge Base - kaynak plani (T017-sonrasi RAG genisletmesi).
+#
+# DURUM (2026-08-22): 11 dokumandan 10'u PDF, 1'i .doc (elektrik ic tesisleri)
+# olarak kullanicidan yuklendi ve TEK TEK ACILIP dogrulandi: her dosyanin
+# ilk sayfasindaki/metadata'sindaki gercek baslik, asagidaki `title` alanina
+# karsilik geldigi teyit edildi (bkz. her kaydin `verified_title_snippet`i -
+# dosyadan birebir alinmis, UYDURULMAMIS metin). `madde`/`article` bilgisi
+# hala KASITLI olarak YOK - hicbir madde numarasi iddia edilmiyor; ingestion
+# asamasinda gercek metinden cikarilmasi gerekecek.
+#
+# source_url alanlari onceki arastirma turunde (WebSearch) dogrulanmis resmi
+# adreslerdir; bu oturumun ag politikasi mevzuat.gov.tr/resmigazete.gov.tr'yi
+# hala ENGELLIYOR (bkz. onceki tur), dolayisiyla bu URL'lerin HALA kendim
+# indirip indirmedigimi teyit edemedim - dosyalar kullanicidan geldi, ben
+# yalnizca ICERIKLERINI acip basliklarla eslestirdim.
+
+documents:
+  - id: isg_kanunu_6331
+    title: "6331 Sayılı İş Sağlığı ve Güvenliği Kanunu"
+    document_type: official_regulation
+    institution: "TBMM / Resmî Gazete"
+    source_url: "https://www.mevzuat.gov.tr/mevzuat?MevzuatNo=6331&MevzuatTur=1&MevzuatTertip=5"
+    source_url_alt_pdf: "https://www.mevzuat.gov.tr/MevzuatMetin/1.5.6331.pdf"
+    publication_date: "2012-06-30"
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
+    target_filename: "official/6331_isg_kanunu.pdf"
+    page_count: 28
+    verified_title_snippet: "İŞ SAĞLIĞI VE GÜVENLİĞİ KANUNU / Kanun Numarası : 6331 / Kabul Tarihi : 20/6/2012"
+
+  - id: kkd_yonetmeligi
+    title: "Kişisel Koruyucu Donanımların İşyerlerinde Kullanılması Hakkında Yönetmelik"
+    document_type: official_regulation
+    institution: "Çalışma ve Sosyal Güvenlik Bakanlığı (ÇSGB)"
+    source_url: "https://www.resmigazete.gov.tr/eskiler/2013/07/20130702-2.htm"
+    source_url_alt_pdf: "https://www.mevzuat.gov.tr/File/GeneratePdf?mevzuatNo=31465&mevzuatTur=KurumVeKurulusYonetmeligi&mevzuatTertip=5"
+    publication_date: "2013-07-02"
+    retrieved_at: "2026-08-22"
+    retrieval_status: removed_no_ocr
+    target_filename: null
+    page_count: 24
+    ingestion_note: >
+      Onceki dosya (official/kkd_yonetmeligi.pdf) goruntu-tabanli/taranmis
+      bir PDF'ti (metin katmani yoktu). OCR (tesseract + tur dil paketi)
+      denendi ve TEKNIK OLARAK CALISTI (orn. sayfa 1'de "Ek-I Kişisel
+      Koruyucu Donanımların Risk Kategorileri" listesi, sayfa 3'te "1.3.
+      Rahatlık ve Etkinlik" madde metni basariyla okundu) - ancak demo
+      kapsaminda OCR yolunu ilerletmemeye karar verildi ve dosya knowledge
+      base'den CIKARILDI. Bu doküman kaynagi hala gecerli/resmi (bkz.
+      source_url); yalnizca bu ortamdaki KB'ye dahil EDILMEDI. Ileride
+      tekrar eklenmek istenirse: farkli bir resmi kaynaktan (orn.
+      mevzuat.gov.tr'nin guncel/metin-tabanli surumu) veya OCR pipeline'i
+      ile yeniden denenebilir.
+
+  - id: yapi_isleri_isg_yonetmeligi
+    title: "Yapı İşlerinde İş Sağlığı ve Güvenliği Yönetmeliği"
+    document_type: official_regulation
+    institution: "Çalışma ve Sosyal Güvenlik Bakanlığı (ÇSGB)"
+    source_url: "https://www.mevzuat.gov.tr/mevzuat?MevzuatNo=18928&MevzuatTur=7&MevzuatTertip=5"
+    publication_date: "2013-10-05"
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
+    target_filename: "official/yapi_isleri_isg_yonetmeligi.pdf"
+    page_count: 11
+    verified_title_snippet: "YAPI İŞLERİNDE İŞ SAĞLIĞI VE GÜVENLİĞİ YÖNETMELİĞİ"
+
+  - id: is_ekipmanlari_yonetmeligi
+    title: "İş Ekipmanlarının Kullanımında Sağlık ve Güvenlik Şartları Yönetmeliği"
+    document_type: official_regulation
+    institution: "Çalışma ve Sosyal Güvenlik Bakanlığı (ÇSGB)"
+    source_url: "https://www.mevzuat.gov.tr/MevzuatMetin/yonetmelik/7.5.18318.pdf"
+    publication_date: "2013-04-25"
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
+    target_filename: "official/is_ekipmanlari_yonetmeligi.pdf"
+    page_count: 28
+    verified_title_snippet: "İŞ EKİPMANLARININ KULLANIMINDA SAĞLIK VE GÜVENLİK ŞARTLARI YÖNETMELİĞİ"
+    covers_categories: ["kaldirma/vinc", "forklift/arac-yaya (genel ekipman guvenligi)", "enerji kesme (LOTO'nun Turkiye karsiligi - bagimsiz yonetmelik degil)"]
+
+  - id: bykhy
+    title: "Binaların Yangından Korunması Hakkında Yönetmelik (BYKHY)"
+    document_type: official_regulation
+    institution: "Çevre, Şehircilik ve İklim Değişikliği Bakanlığı"
+    source_url: "https://www.mevzuat.gov.tr/mevzuat?MevzuatNo=200712937&MevzuatTur=21&MevzuatTertip=5"
+    publication_date: "2007-11-27"
+    publication_date_note: "Dosyanin kendi metnindeki 'Bakanlar Kurulu Kararının Tarihi: 27/11/2007 No: 2007/12937' esas alindi; sonraki degisiklikler (en son goruleni 2025-07-01) ayrica takip edilmeli."
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
+    target_filename: "official/bykhy.pdf"
+    page_count: 104
+    verified_title_snippet: "BİNALARIN YANGINDAN KORUNMASI HAKKINDA YÖNETMELİK / Bakanlar Kurulu Kararının Tarihi: 27/11/2007 No: 2007/12937"
+
+  - id: elektrik_kuvvetli_akim_yonetmeligi
+    title: "Elektrik Kuvvetli Akım Tesisleri Yönetmeliği"
+    document_type: official_regulation
+    institution: "Enerji ve Tabii Kaynaklar Bakanlığı"
+    source_url: "https://www.mevzuat.gov.tr/mevzuat?MevzuatNo=9949&MevzuatTur=7&MevzuatTertip=5"
+    publication_date: null
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
+    target_filename: "official/elektrik_kuvvetli_akim_yonetmeligi.pdf"
+    page_count: 46
+    verified_title_snippet: "ELEKTRİK KUVVETLİ AKIM TESİSLERİ YÖNETMELİĞİ"
+
+  - id: elektrik_ic_tesisleri_yonetmeligi
+    title: "Elektrik İç Tesisleri Yönetmeliği"
+    document_type: official_regulation
+    institution: "Enerji ve Tabii Kaynaklar Bakanlığı"
+    source_url: "https://www.mevzuat.gov.tr/mevzuat?MevzuatNo=10391&MevzuatTur=7&MevzuatTertip=5"
+    publication_date: null
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
+    target_filename: "official/elektrik_ic_tesisleri_yonetmeligi.pdf"
+    original_source_filename: "official/elektrik_ic_tesisleri_yonetmeligi.doc"
+    file_format: "pdf (converted from the original .doc via LibreOffice headless --convert-to pdf; original .doc kept alongside as the source-of-record)"
+    page_count: 85
+    verified_title_snippet: "Page 1 metni (PDF'e cevrildikten sonra dogrudan okunabilir hale geldi): 'ELEKTRİK İÇ TESİSLERİ YÖNETMELİĞİ / I.YÖNETMELİĞİN KAPSAMI / KAPSAM / Madde 1 – ...'; mevzuatNo=10391 ile eslesiyor. 86 'Madde' tespiti, 197312 karakter temiz metin."
+    ingestion_note: >
+      Orijinal .doc bu ortamda (libreoffice-writer eksikti) once acilamadi;
+      paket kurulumundan sonra `soffice --headless --convert-to pdf` ile
+      basariyla PDF'e cevrildi ve icerik/MADDE yapisi diger dokumanlarla
+      ayni sekilde dogrulandi. Digerlerinden farkli tek nokta: kaynak format
+      .doc idi, .pdf'e donusturulerek eklendi (orijinal .doc de korunuyor).
+
+  - id: patlayici_ortamlar_yonetmeligi
+    title: "Çalışanların Patlayıcı Ortamların Tehlikelerinden Korunması Hakkında Yönetmelik"
+    document_type: official_regulation
+    institution: "Çalışma ve Sosyal Güvenlik Bakanlığı (ÇSGB)"
+    source_url: "https://www.mevzuat.gov.tr/mevzuat?MevzuatNo=18335&MevzuatTur=7&MevzuatTertip=5"
+    publication_date: "2013-04-30"
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
+    target_filename: "official/patlayici_ortamlar_yonetmeligi.pdf"
+    page_count: 5
+    verified_title_snippet: "ÇALIŞANLARIN PATLAYICI ORTAMLARIN TEHLİKELERİNDEN KORUNMASI HAKKINDA YÖNETMELİK"
+    covers_categories: ["sicak calisma izni / atesli is", "kivilcim/patlayici ortam"]
+
+  - id: kimyasal_maddeler_yonetmeligi
+    title: "Kimyasal Maddelerle Çalışmalarda Sağlık ve Güvenlik Önlemleri Hakkında Yönetmelik"
+    document_type: official_regulation
+    institution: "Çalışma ve Sosyal Güvenlik Bakanlığı (ÇSGB)"
+    source_url: "https://www.mevzuat.gov.tr/mevzuat?MevzuatNo=18709&MevzuatTur=7&MevzuatTertip=5"
+    publication_date: "2013-08-12"
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
+    target_filename: "official/kimyasal_maddeler_yonetmeligi.pdf"
+    page_count: 19
+    verified_title_snippet: "KİMYASAL MADDELERLE ÇALIŞMALARDA SAĞLIK VE GÜVENLİK ÖNLEMLERİ HAKKINDA YÖNETMELİK"
+
+  - id: acil_durumlar_yonetmeligi
+    title: "İşyerlerinde Acil Durumlar Hakkında Yönetmelik"
+    document_type: official_regulation
+    institution: "Çalışma ve Sosyal Güvenlik Bakanlığı (ÇSGB)"
+    source_url: "https://mevzuat.gov.tr/File/GeneratePdf?mevzuatNo=18493&mevzuatTur=KurumVeKurulusYonetmeligi&mevzuatTertip=5"
+    publication_date: null
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
+    target_filename: "official/acil_durumlar_yonetmeligi.pdf"
+    page_count: 4
+    verified_title_snippet: "İŞYERLERİNDE ACİL DURUMLAR HAKKINDA YÖNETMELİK"
+
+  - id: risk_degerlendirmesi_yonetmeligi
+    title: "İş Sağlığı ve Güvenliği Risk Değerlendirmesi Yönetmeliği"
+    document_type: official_regulation
+    institution: "Çalışma ve Sosyal Güvenlik Bakanlığı (ÇSGB)"
+    source_url: "http://www.mevzuat.gov.tr/Metin.Aspx?MevzuatKod=7.5.16925"
+    publication_date: "2012-12-29"
+    retrieved_at: "2026-08-22"
+    retrieval_status: verified_content_match
+    target_filename: "official/risk_degerlendirmesi_yonetmeligi.pdf"
+    page_count: 4
+    verified_title_snippet: "İŞ SAĞLIĞI VE GÜVENLİĞİ RİSK DEĞERLENDİRMESİ YÖNETMELİĞİ"
+
+# Arastirilan ama resmi/bagimsiz karsiligi BULUNAMAYAN kategoriler (bkz.
+# onceki audit raporu "GAPS" bolumu) - knowledge base'e dahil EDILMEDI:
+#   - Dar/kapali alan calismasi: Turkiye'de bagimsiz bir yonetmelik yok;
+#     yalnizca isg_kanunu_6331 + risk_degerlendirmesi_yonetmeligi genel
+#     cercevesi kapsiyor.
+#   - LOTO (kilitleme/etiketleme): bagimsiz yonetmelik yok; yalnizca
+#     is_ekipmanlari_yonetmeligi'nin bakim/enerji-kesme hukumleri dolayli
+#     kapsiyor.
+#   - Forklift-yaya gecidi / "unauthorized_presence_in_critical_area":
+#     tesise ozgu ic politika niteliginde, resmi ISG mevzuati karsiligi zayif.

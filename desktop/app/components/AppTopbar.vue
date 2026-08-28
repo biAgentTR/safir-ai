@@ -1,46 +1,113 @@
 <script setup lang="ts">
+// Top bar with route-derived title, section tabs, and status/auth controls.
 const { state, system } = useBackendHealth()
-const { isDark, toggleTheme } = useTheme()
+const route = useRoute()
+const auth = useAuthStore()
+const { goToSection } = useSectionNav()
+onMounted(() => auth.init())
+
+const isHidden = ref(false)
+let lastScrollTop = 0
+const MIN_DELTA = 6
+
+function onScroll(e: Event) {
+  const el = e.target as HTMLElement | null
+  if (!el) return
+  const current = el.scrollTop
+
+  // Near the top of the page: always show
+  if (current <= 10) {
+    isHidden.value = false
+    lastScrollTop = current
+    return
+  }
+
+  const diff = current - lastScrollTop
+
+  if (diff > MIN_DELTA) {
+    // Scrolling down -> hide header
+    isHidden.value = true
+  } else if (diff < -MIN_DELTA) {
+    // Scrolling up -> reveal header
+    isHidden.value = false
+  }
+
+  lastScrollTop = current
+}
+
+onMounted(() => {
+  nextTick(() => {
+    const region = document.getElementById('app-scroll-region')
+    region?.addEventListener('scroll', onScroll, { passive: true })
+  })
+})
+
+onBeforeUnmount(() => {
+  const region = document.getElementById('app-scroll-region')
+  region?.removeEventListener('scroll', onScroll)
+})
+
+const initials = computed(() => {
+  const name = auth.username ?? ''
+  const parts = name.split(/[@.\s]+/).filter(Boolean)
+  return (parts[0]?.[0] ?? 'Y').toUpperCase() + (parts[1]?.[0] ?? '').toUpperCase()
+})
+
+const title = computed(() => {
+  const p = route.path
+  if (p.startsWith('/workspace')) return 'Analiz Çalışma Alanı'
+  if (p.startsWith('/reports/')) return 'Rapor Detayı'
+  if (p.startsWith('/admin/login')) return 'Giriş'
+  return 'SAFİR'
+})
+
+const label = computed(() => {
+  if (state.value === 'online') return 'Bağlı'
+  if (state.value === 'offline') return 'Çevrimdışı'
+  return 'Kontrol Ediliyor'
+})
+const dot = computed(() => ({
+  online: 'bg-risk-low',
+  offline: 'bg-risk-crit',
+  checking: 'bg-slate-500',
+}[state.value]))
 </script>
 
 <template>
-  <header class="h-16 shrink-0 bg-surface-1 border-b border-edge flex items-center justify-between px-6 select-none transition-colors duration-200">
-    <!-- Left Title / System Branding -->
-    <div class="flex items-center gap-3">
-      <span class="text-sm font-extrabold tracking-tight">SAFİR AI — Saha Analiz &amp; Karar Destek Platformu</span>
+  <header
+    class="fixed top-0 left-0 right-0 h-14 bg-surface-1/95 backdrop-blur-md border-b border-edge flex items-center px-5 gap-6 z-30 transition-transform duration-300 ease-out transform"
+    :class="isHidden ? '-translate-y-full' : 'translate-y-0 shadow-sm'"
+  >
+    <div class="flex items-center gap-6 h-full min-w-0">
+      <h1 class="text-sm font-semibold tracking-wide text-slate-100 shrink-0">SAFİR</h1>
+      <AppTabNav />
     </div>
 
-    <!-- Right Topbar Controls & Status -->
-    <div class="flex items-center gap-3 text-xs">
-      <!-- System Health Indicator -->
-      <div class="px-3 py-1.5 rounded-full bg-surface-2 border border-edge font-mono text-[11px] flex items-center gap-2">
-        <span class="w-2.5 h-2.5 rounded-full" :class="state === 'online' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'" />
-        <span>SİSTEM HAZIR {{ system ? `(${system})` : '' }}</span>
+    <div class="ml-auto flex items-center gap-3 shrink-0">
+      <!-- Live status indicator on the left side of topbar controls -->
+      <div class="flex items-center gap-1.5 pr-2 text-xs text-slate-400">
+        <span
+          class="status-dot"
+          :class="dot"
+        />
+        <span class="font-normal">{{ label }}</span>
       </div>
 
-      <!-- Quick RAG Assistant Link -->
-      <NuxtLink
-        to="/assistant"
-        class="px-3.5 py-1.5 rounded-xl border border-edge bg-surface-2 hover:bg-surface-3 font-semibold text-xs flex items-center gap-2 transition-colors"
-      >
-        <span>🤖</span>
-        <span>SAFİR RAG Asistanı</span>
+      <ModeSwitcher />
+      <ThemeToggle />
+
+      <NuxtLink v-if="!auth.isAuthenticated" to="/admin/login" class="btn-ghost !py-1.5 !px-3 text-xs">
+        <span>Giriş</span>
       </NuxtLink>
-
-      <!-- Theme Switcher Topbar Toggle -->
       <button
+        v-else
         type="button"
-        class="p-2 rounded-xl border border-edge bg-surface-2 hover:bg-surface-3 text-sm flex items-center justify-center transition-colors"
-        :title="isDark ? 'Açık Moda Geç' : 'Koyu Moda Geç'"
-        @click="toggleTheme"
+        class="w-8 h-8 rounded-full bg-accent-soft border border-accent/30 text-accent text-xs font-bold flex items-center justify-center shrink-0"
+        :title="auth.username ?? 'Yönetici'"
+        @click="goToSection('sistem')"
       >
-        <span>{{ isDark ? '☀️' : '🌙' }}</span>
+        {{ initials }}
       </button>
-
-      <!-- User Avatar Badge -->
-      <div class="w-8 h-8 rounded-full bg-blue-600 text-white font-black text-xs flex items-center justify-center shadow-md shrink-0">
-        SF
-      </div>
     </div>
   </header>
 </template>

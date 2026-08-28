@@ -30,7 +30,58 @@ function download(filename: string, content: string | Blob, mime?: string) {
   document.body.appendChild(a)
   a.click()
   a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
+  try {
+    window.open(url, '_blank')
+  } catch {
+    // yoksay
+  }
+  setTimeout(() => URL.revokeObjectURL(url), 10_000)
+}
+
+function mmss(seconds: number): string {
+  const total = Math.round(seconds)
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`
+}
+
+export function buildSartnameJson(r: SafirReport): Record<string, unknown> {
+  const onsetTimestamp = r.onset_timestamp_str || (r.timeline?.length ? mmss(r.timeline[0].timestamp) : '00:00')
+  return {
+    summary: r.summary || r.natural_language_summary,
+    onset_timestamp: onsetTimestamp,
+    safe_timestamps: r.safe_timestamps ?? [],
+    incident_timestamps: r.incident_timestamps ?? [],
+    events: (r.timeline ?? []).map((entry) => ({ time: mmss(entry.timestamp), event: entry.description })),
+    risk: r.risk_level,
+    risk_score: r.risk_score,
+    risk_status: r.risk_status,
+    risk_accuracy: {
+      deterministic_score: r.deterministic_score ?? null,
+      deterministic_level: r.deterministic_level ?? null,
+      llm_proposed_score: r.llm_proposed_score ?? null,
+      final_score: r.risk_score,
+      final_level: r.risk_level,
+      method: r.llm_proposed_score != null ? 'ortalama(deterministic_score, llm_proposed_score)' : 'deterministic_score',
+    },
+    actions: r.actions?.length ? r.actions : r.recommended_action ? [r.recommended_action] : [],
+    // Sartname: "mock fonksiyonlarin ajanin araclari olarak kullanilmasi" —
+    // ajanin GERCEKTEN cagirdigi mock aksiyon araclari (src/agent/tools.py).
+    triggered_mock_actions: (r.triggered_mock_actions ?? []).map((t) => ({
+      tool: t.tool,
+      args: t.args ?? {},
+      result: t.result,
+    })),
+  }
+}
+
+// notify_health_team_tool / dispatch_security_tool / trigger_area_lockdown_tool
+// (src/agent/tools.py) — rapor ciktilarinda da insan-okunur Turkce etiketle.
+const MOCK_ACTION_LABELS: Record<string, string> = {
+  notify_health_team_tool: 'Sağlık Ekibi Bilgilendirildi',
+  dispatch_security_tool: 'Güvenlik Ekibi Yönlendirildi',
+  trigger_area_lockdown_tool: 'Alan Tahliye/Kilitleme Tetiklendi',
+}
+export function mockActionLabel(tool: string): string {
+  return MOCK_ACTION_LABELS[tool] ?? tool
 }
 
 function esc(s: unknown): string {
@@ -41,78 +92,83 @@ function esc(s: unknown): string {
 }
 
 export function buildReportHtml(r: SafirReport): string {
-  const mmssLocal = (sec: number) => {
-    const t = Math.round(sec)
-    return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`
-  }
-  const rows = (r.timeline ?? []).map((e) => `<tr><td>${mmssLocal(e.timestamp)}</td><td>${esc(e.description)}</td></tr>`).join('')
+  const rows = (r.timeline ?? []).map((e) => `<tr><td>${mmss(e.timestamp)}</td><td>${esc(e.description)}</td></tr>`).join('')
   const actions = (r.actions ?? []).map((a) => `<li>${esc(a)}</li>`).join('')
+  const mockActions = (r.triggered_mock_actions ?? [])
+    .map((t) => `<li><b>${esc(mockActionLabel(t.tool))}</b> <span class="muted">(${esc(t.tool)})</span><br>${esc(t.result)}</li>`)
+    .join('')
   const regs = (r.relevant_regulations ?? []).map((a) => `<li>${esc(a)}</li>`).join('')
   const st = r.sampler_stats
-
-  const isUnclassified = r.risk_status === 'unclassified' || (r.detected_event_types ?? []).includes('siniflandirilamadi')
-  const isUnknownRisk = !isUnclassified && (r.risk_status === 'unknown' || r.risk_score === null || r.risk_score === undefined)
-
-  let riskText = `${esc(r.risk_score)} / 100 — ${esc(r.risk_level)}`
-  if (isUnclassified) {
-    riskText = 'Sınıflandırılamayan Risk (null) — 8 Ana İSG kuralı dışında şüpheli anormallik'
-  } else if (isUnknownRisk) {
-    riskText = 'Belirsiz — analiz güvenilir şekilde tamamlanamadı, manuel inceleme gerekli'
-  }
-
-  const onsetHtml = r.onset_timestamp_str ? `<p><b>📍 Olay Başlangıç Anı (Onset):</b> <span style="color:#d97706;font-weight:bold">${esc(r.onset_timestamp_str)}</span></p>` : ''
-  const safeHtml = (r.safe_timestamps ?? []).length ? `<p><b>🟢 Rutin Kareler (Safe):</b> ${r.safe_timestamps.map(t => `<code style="background:#e6f4ea;color:#137333;padding:2px 6px;border-radius:4px">${esc(t)}</code>`).join(' ')}</p>` : ''
-  const incidentHtml = (r.incident_timestamps ?? []).length ? `<p><b>🔴 Olay Kareleri (Incident):</b> ${r.incident_timestamps.map(t => `<code style="background:#fce8e6;color:#c5221f;padding:2px 6px;border-radius:4px">${esc(t)}</code>`).join(' ')}</p>` : ''
-
-  const unclassifiedBox = isUnclassified
-    ? `<div style="background:#fffbeb;border:1px solid #fef3c7;padding:12px;border-radius:6px;margin:1rem 0;color:#92400e">
-        <b>🏷️ 8 Ana İSG Kuralı Dışında Şüpheli Risk / İnceleme Bekliyor</b>
-        <p style="margin:4px 0 0 0;font-size:13px">Sahada anormallik/şüpheli olay tespit edilmiştir ancak tanımlı 8 temel İSG mevzuat kategorisinden birine eşleştirilememiştir. Risk skoru null olarak işaretlenmiştir.</p>
-       </div>`
+  const isUnknownRisk = r.risk_status === 'unknown' || r.risk_score === null || r.risk_score === undefined
+  const riskText = isUnknownRisk
+    ? 'Belirsiz — analiz güvenilir şekilde tamamlanamadı, manuel inceleme gerekli'
+    : `${esc(r.risk_score)} / 100 — ${esc(r.risk_level)}`
+  const hasBreakdown = r.deterministic_score != null || r.llm_proposed_score != null
+  const breakdownHtml = hasBreakdown
+    ? `<div class="risk-breakdown">
+        <span><b>Deterministik (RuleEngine):</b> ${r.deterministic_score ?? '—'}/100 (${esc(r.deterministic_level ?? '—')})</span>
+        <span><b>Ajan (LLM) taslağı:</b> ${r.llm_proposed_score ?? '—'}/100</span>
+        <span class="muted">${r.llm_proposed_score != null ? 'Nihai skor = ortalama(deterministik, ajan taslağı)' : 'Nihai skor = deterministik skor (ajan taslağı yok)'}</span>
+      </div>`
     : ''
-
   return `<!doctype html><html lang="tr"><head><meta charset="utf-8">
-<title>SAFİR — Saha Analiz Raporu</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAFİR Raporu — ${esc(r.video_source)}</title>
 <style>
-  body{font-family:system-ui,Arial,sans-serif;color:#111;margin:2rem;line-height:1.5}
-  h1{font-size:22px;letter-spacing:.1em;color:#0f172a;border-bottom:2px solid #0f172a;padding-bottom:6px}
-  h2{font-size:14px;margin-top:1.5rem;text-transform:uppercase;color:#475569;border-bottom:1px solid #cbd5e1;padding-bottom:4px}
-  .risk{font-size:24px;font-weight:700;color:#0f172a} table{border-collapse:collapse;width:100%} td,th{border:1px solid #cbd5e1;padding:6px 8px;text-align:left;font-size:13px}
-  .muted{color:#64748b;font-size:12px} ul{margin:.3rem 0}
+  :root{color-scheme:light;--accent:#0d9488;--ink:#0f172a;--muted:#64748b;--border:#e2e8f0}
+  *{box-sizing:border-box}
+  body{font-family:"Segoe UI","Inter","DejaVu Sans",Arial,sans-serif;color:var(--ink);background:#f6f8fa;margin:0;padding:2.5rem 3rem 4rem;line-height:1.6}
+  header{background:linear-gradient(120deg,var(--ink) 0%,#14343f 100%);color:#f1f5f9;border-radius:14px;padding:1.75rem 2rem;margin-bottom:1.5rem;box-shadow:0 8px 24px rgba(15,23,42,.18)}
+  header h1{margin:0 0 .35rem;font-size:1.4rem;letter-spacing:.05em}
+  header p{margin:0;color:#94a3b8;font-size:.85rem}
+  h2{font-size:.75rem;text-transform:uppercase;letter-spacing:.09em;color:var(--accent);margin:0 0 .8rem}
+  .section{margin-top:1.1rem;background:#fff;padding:1.3rem 1.6rem;border-radius:12px;border:1px solid var(--border);box-shadow:0 1px 2px rgba(15,23,42,.04)}
+  .risk{font-size:1.6rem;font-weight:700}
+  table{border-collapse:collapse;width:100%}
+  td,th{border-bottom:1px solid var(--border);padding:.5rem .3rem;text-align:left;font-size:.85rem}
+  th{color:var(--muted);text-transform:uppercase;font-size:.7rem;letter-spacing:.05em}
+  .muted{color:var(--muted);font-size:.82rem}
+  ul{margin:.3rem 0;padding-left:1.15rem}
+  li{margin-bottom:.35rem}
+  .risk-breakdown{display:flex;gap:1.5rem;flex-wrap:wrap;font-size:.82rem;margin:.6rem 0 0;padding:.6rem .8rem;background:#f6f8fa;border-radius:8px;border:1px solid var(--border)}
 </style></head><body>
-<h1>SAFİR — Saha Analiz ve İSG Denetim Raporu</h1>
-<p class="muted">Video Kaynağı: ${esc(r.video_source)} · Tarih: ${esc(r.generated_at)}</p>
-<h2>Executive Summary</h2><p>${esc(r.summary || r.natural_language_summary)}</p>
-${unclassifiedBox}
-<h2>Risk Değerlendirmesi</h2><p class="risk">${riskText}</p>
-${onsetHtml}
-${safeHtml}
-${incidentHtml}
-<p style="margin-top:1rem"><b>Önerilen Aksiyon:</b> ${esc(r.recommended_action)}</p>
-<h2>Önerilen Somut Aksiyonlar</h2><ul>${actions || '<li class="muted">—</li>'}</ul>
-<h2>Zaman Çizelgesi</h2><table><tr><th>Zaman</th><th>Olay Açıklaması</th></tr>${rows || '<tr><td colspan=2 class="muted">—</td></tr>'}</table>
-<h2>İlgili Mevzuat (RAG / FAISS)</h2><ul>${regs || '<li class="muted">—</li>'}</ul>
-<h2>Eskalasyon & Bildirim</h2><p>Kademe: <b>${esc(r.escalation_tier ?? '-')}</b> · Otomatik Alarm: ${r.auto_dispatched ? 'Evet' : 'Hayır'}${r.alert_id ? ` · Alert ID: ${esc(r.alert_id)}` : ''}</p>
-<h2>Teknik Metrikler & Performans</h2>
-<p class="muted">VLM Modeli: ${esc(r.vlm_model ?? '-')} · LLM Modeli: ${esc(r.llm_model ?? '-')}${st ? ` · Taranan Kare: ${esc(st.total_frames_scanned)} · GPU Tasarrufu: %${esc(st.gpu_savings_ratio_pct)} · Analiz Süresi: ${esc(st.elapsed_sec)}s` : ''}</p>
+<header>
+  <h1>SAFİR — Saha Analiz Raporu</h1>
+  <p>${esc(r.video_source)} · ${esc(r.generated_at)}</p>
+</header>
+<div class="section"><h2>Özet</h2><p>${esc(r.summary || r.natural_language_summary)}</p></div>
+<div class="section"><h2>Risk</h2><p class="risk">${riskText}</p>
+${breakdownHtml}
+<p><b>Önerilen aksiyon:</b> ${esc(r.recommended_action)}</p></div>
+<div class="section"><h2>Aksiyonlar</h2><ul>${actions || '<li class="muted">—</li>'}</ul></div>
+<div class="section"><h2>Ajanın Çağırdığı Mock Aksiyon Araçları</h2><ul>${mockActions || '<li class="muted">Bu analizde mock aksiyon aracı çağrılmadı.</li>'}</ul></div>
+<div class="section"><h2>Zaman Çizelgesi</h2><table><tr><th>Zaman</th><th>Olay</th></tr>${rows || '<tr><td colspan=2 class="muted">—</td></tr>'}</table></div>
+<div class="section"><h2>İlgili Mevzuat (RAG)</h2><ul>${regs || '<li class="muted">—</li>'}</ul></div>
+<div class="section"><h2>Eskalasyon</h2><p>Kademe: <b>${esc(r.escalation_tier ?? '-')}</b> · otomatik: ${r.auto_dispatched ? 'evet' : 'hayır'}${r.alert_id ? ` · alert_id: ${esc(r.alert_id)}` : ''}</p></div>
+<div class="section"><h2>Teknik Metrikler</h2>
+<p class="muted">VLM: ${esc(r.vlm_model ?? '-')} · LLM: ${esc(r.llm_model ?? '-')}${st ? ` · taranan kare: ${esc(st.total_frames_scanned)} · GPU tasarrufu: %${esc(st.gpu_savings_ratio_pct)} · süre: ${esc(st.elapsed_sec)}s` : ''}</p></div>
 </body></html>`
 }
 
 export function useReportExport() {
   const api = useSafirApi()
 
-  function exportJson(r: SafirReport) {
-    download(`${fileStub(r)}.json`, JSON.stringify(r, null, 2), 'application/json')
+  function exportJson(r: SafirReport): string {
+    const filename = `${fileStub(r)}.json`
+    download(filename, JSON.stringify(buildSartnameJson(r), null, 2), 'application/json')
+    return filename
   }
-  function exportHtml(r: SafirReport) {
-    download(`${fileStub(r)}.html`, buildReportHtml(r), 'text/html')
+  function exportHtml(r: SafirReport): string {
+    const filename = `${fileStub(r)}.html`
+    download(filename, buildReportHtml(r), 'text/html')
+    return filename
   }
   /**
    * Real backend PDF. Needs `jobId` (live job still in memory OR already
    * persisted to History — the endpoint tries both). Throws a human-readable
    * error on failure; callers surface it (no silent no-op).
    */
-  async function exportPdf(jobId: string | null, r: SafirReport) {
+  async function exportPdf(jobId: string | null, r: SafirReport): Promise<string> {
     if (!jobId) throw new Error('PDF dışa aktarmak için analiz kimliği bulunamadı.')
     let blob: Blob
     try {
@@ -121,7 +177,9 @@ export function useReportExport() {
       const detail = (e as { data?: { detail?: string } })?.data?.detail
       throw new Error(detail ?? 'PDF oluşturulamadı. Backend\'e ulaşılamıyor olabilir.')
     }
-    download(`${fileStub(r)}.pdf`, blob)
+    const filename = `${fileStub(r)}.pdf`
+    download(filename, blob)
+    return filename
   }
   return { exportJson, exportHtml, exportPdf }
 }

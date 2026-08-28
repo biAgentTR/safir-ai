@@ -12,6 +12,7 @@ const store = useAnalysisStore()
 const stream = useAnalysisStream()
 const { maybeAlarm } = useAlarm()
 const { state: backendHealth } = useBackendHealth()
+const { goToSection } = useSectionNav()
 
 type Tab = 'evidence' | 'timeline' | 'report'
 const tab = ref<Tab>('report')
@@ -61,30 +62,27 @@ onBeforeUnmount(() => stream.stop())
   <div class="px-6 py-5 space-y-5 max-w-[1500px] mx-auto">
     <!-- header -->
     <div class="flex items-center gap-4">
-      <NuxtLink :to="isHistory ? '/history' : '/new-analysis'" class="btn-ghost">← {{ isHistory ? 'Geçmiş' : 'Yeni' }}</NuxtLink>
+      <button type="button" class="btn-ghost" @click="goToSection(isHistory ? 'gecmis' : 'yeni-analiz')">← {{ isHistory ? 'Geçmiş' : 'Yeni' }}</button>
       <div class="min-w-0">
-        <div class="text-[11px] uppercase tracking-wide text-slate-500">Job</div>
+        <div class="eyebrow">İş Kimliği</div>
         <div class="font-mono text-sm text-slate-300 truncate">{{ jobId }}</div>
       </div>
       <div class="ml-auto flex items-center gap-4 text-sm">
         <!-- HISTORY badge -->
-        <span
-          v-if="isHistory"
-          class="text-[11px] px-2 py-0.5 rounded border border-edge bg-surface-2 text-slate-300 uppercase tracking-wide"
-        >Geçmiş Analiz</span>
+        <span v-if="isHistory" class="badge-neutral">Geçmiş Analiz</span>
         <div class="flex items-center gap-2">
-          <span class="w-2 h-2 rounded-full" :class="running ? 'bg-accent animate-pulse' : overall === 'done' ? 'bg-risk-low' : overall === 'error' ? 'bg-risk-crit' : 'bg-slate-600'" />
-          <span class="uppercase tracking-wide text-xs" :class="running ? 'text-accent' : 'text-slate-300'">
-            {{ running ? 'Analysis running' : overall === 'done' ? 'Completed' : overall === 'error' ? 'Error' : overall }}
+          <span class="status-dot" :class="running ? 'bg-accent animate-pulse' : overall === 'done' ? 'bg-risk-low' : overall === 'error' ? 'bg-risk-crit' : 'bg-slate-600'" />
+          <span class="uppercase tracking-wide text-xs font-semibold" :class="running ? 'text-accent' : 'text-slate-300'">
+            {{ running ? 'Analiz Çalışıyor' : overall === 'done' ? 'Tamamlandı' : overall === 'error' ? 'Hata' : 'Kuyrukta' }}
           </span>
         </div>
-        <span v-if="!isHistory" class="text-xs text-slate-500">{{ connLabel }} · {{ store.completedCount }}/7</span>
+        <span v-if="!isHistory" class="text-xs text-slate-500 font-mono">{{ connLabel }} · {{ store.completedCount }}/7</span>
       </div>
     </div>
 
     <!-- degraded: backend offline -->
     <div v-if="backendHealth === 'offline'" class="rounded-md border border-risk-crit/40 bg-risk-crit/10 px-4 py-2.5 text-sm text-risk-crit">
-      Backend'e ulaşılamıyor. Analiz servisi çevrimdışı olabilir.
+      Arka uca ulaşılamıyor. Analiz servisi çevrimdışı olabilir.
     </div>
 
     <!-- history: loading / error / failed-analysis -->
@@ -93,7 +91,7 @@ onBeforeUnmount(() => stream.stop())
       {{ store.historyError }}
     </div>
     <div v-else-if="isHistory && store.status === 'error'" class="rounded-md border border-risk-crit/40 bg-risk-crit/10 px-4 py-3 text-sm text-slate-200">
-      Bu analiz başarısız tamamlandı (failed) — kalıcı rapor bulunmuyor.
+      Bu analiz başarısız durumda tamamlandı — kalıcı rapor bulunmuyor.
     </div>
 
     <!-- degraded: analysis error (LIVE) -->

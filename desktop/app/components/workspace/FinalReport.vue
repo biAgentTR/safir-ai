@@ -16,7 +16,7 @@ type ExportPhase = 'idle' | 'loading' | 'ok' | 'error'
 const exportPhase = reactive<Record<ExportKind, ExportPhase>>({ json: 'idle', html: 'idle', pdf: 'idle' })
 const exportError = reactive<Record<ExportKind, string>>({ json: '', html: '', pdf: '' })
 
-async function runExport(kind: ExportKind, fn: () => void | Promise<void>) {
+async function runExport(kind: ExportKind, fn: () => unknown) {
   exportPhase[kind] = 'loading'
   exportError[kind] = ''
   try {
@@ -40,13 +40,25 @@ function doExportHtml() {
 function doExportPdf() {
   if (r.value) runExport('pdf', () => exportPdf(store.jobId, r.value as NonNullable<typeof r.value>))
 }
+
+// notify_health_team_tool/dispatch_security_tool/trigger_area_lockdown_tool
+// (src/agent/tools.py) — sabit, insan-okunur Türkçe etiketler; bilinmeyen bir
+// arac adi gelirse adin kendisi fallback olarak kalır.
+const MOCK_ACTION_LABELS: Record<string, string> = {
+  notify_health_team_tool: 'Sağlık Ekibi Bilgilendirildi',
+  dispatch_security_tool: 'Güvenlik Ekibi Yönlendirildi',
+  trigger_area_lockdown_tool: 'Alan Tahliye/Kilitleme Tetiklendi',
+}
+function mockActionLabel(tool: string): string {
+  return MOCK_ACTION_LABELS[tool] ?? tool
+}
 </script>
 
 <template>
   <div v-if="r" class="space-y-6">
     <!-- executive summary -->
     <section>
-      <div class="field-label">Executive summary</div>
+      <div class="field-label">Yönetici Özeti</div>
       <p class="text-sm text-slate-200 leading-relaxed">{{ r.summary || r.natural_language_summary || '—' }}</p>
     </section>
 
@@ -56,9 +68,9 @@ function doExportPdf() {
         <div>
           <div class="field-label">Risk</div>
           <div v-if="isUnknownRisk" class="text-2xl font-bold" :class="RISK_TEXT[tone]">
-            Risk Belirsiz <span class="uppercase text-base font-normal text-slate-400">— manuel inceleme gerekli</span>
+            Risk Belirsiz <span class="uppercase text-base font-normal text-slate-400">— MANUEL İNCELEME GEREKLİ</span>
           </div>
-          <div v-else class="text-2xl font-bold" :class="RISK_TEXT[tone]">{{ r.risk_score }} / 100 · <span class="uppercase text-base">{{ r.risk_level }}</span></div>
+          <div v-else class="text-2xl font-bold" :class="RISK_TEXT[tone]">{{ r.risk_score }} / 100 · <span class="uppercase text-base">{{ trUpper(r.risk_level) }}</span></div>
         </div>
         <div>
           <div class="field-label">Önerilen aksiyonlar</div>
@@ -66,6 +78,19 @@ function doExportPdf() {
             <li v-for="(a, i) in r.actions" :key="i">{{ a }}</li>
           </ol>
           <p v-else class="text-sm text-slate-400">{{ r.recommended_action || '—' }}</p>
+        </div>
+        <div v-if="r.triggered_mock_actions?.length">
+          <div class="field-label">Ajanın Çağırdığı Mock Aksiyon Araçları</div>
+          <ul class="space-y-1.5">
+            <li
+              v-for="(t, i) in r.triggered_mock_actions"
+              :key="i"
+              class="rounded-md border border-accent/30 bg-accent/10 px-3 py-2 text-xs text-slate-200"
+            >
+              <span class="font-mono text-accent">{{ mockActionLabel(t.tool) }}</span>
+              <span class="text-slate-400"> — {{ t.result }}</span>
+            </li>
+          </ul>
         </div>
       </section>
 
@@ -109,8 +134,8 @@ function doExportPdf() {
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <MetricCell label="VLM" :value="r.vlm_model ?? '—'" mono />
         <MetricCell label="LLM" :value="r.llm_model ?? '—'" mono />
-        <MetricCell label="Event id" :value="r.event_id ?? '—'" mono />
-        <MetricCell label="Auto dispatched" :value="r.auto_dispatched ? 'evet' : 'hayır'" />
+        <MetricCell label="Olay Kimliği" :value="r.event_id ?? '—'" mono />
+        <MetricCell label="Otomatik Yönlendirildi" :value="r.auto_dispatched ? 'evet' : 'hayır'" />
       </div>
     </section>
 
@@ -122,32 +147,30 @@ function doExportPdf() {
       </details>
     </section>
 
-    <!-- export section -->
-    <section class="pt-4 border-t border-edge space-y-2">
-      <div class="flex flex-wrap items-center gap-3">
-        <span class="text-xs font-semibold uppercase tracking-wider text-slate-400">Resmi Rapor Dışa Aktarma:</span>
-        <button class="btn-primary" :disabled="exportPhase.pdf === 'loading'" @click="doExportPdf">
-          <span v-if="exportPhase.pdf === 'loading'">📄 PDF Hazırlanıyor…</span>
-          <span v-else-if="exportPhase.pdf === 'ok'">✓ PDF İndirildi</span>
-          <span v-else>📄 Tek Tıkla PDF Rapor İndir</span>
+    <!-- export -->
+    <section class="pt-2 border-t border-edge">
+      <div class="flex items-center gap-3">
+        <span class="text-xs text-slate-500">Dışa aktar:</span>
+        <button class="btn-ghost" :disabled="exportPhase.json === 'loading'" @click="doExportJson">
+          <span v-if="exportPhase.json === 'loading'">…</span>
+          <span v-else-if="exportPhase.json === 'ok'">✓ JSON</span>
+          <span v-else>JSON</span>
         </button>
-        <button class="btn-ghost border border-edge" :disabled="exportPhase.html === 'loading'" @click="doExportHtml">
-          <span v-if="exportPhase.html === 'loading'">🌐 HTML Hazırlanıyor…</span>
-          <span v-else-if="exportPhase.html === 'ok'">✓ HTML İndirildi</span>
-          <span v-else>🌐 HTML Rapor</span>
+        <button class="btn-ghost" :disabled="exportPhase.html === 'loading'" @click="doExportHtml">
+          <span v-if="exportPhase.html === 'loading'">…</span>
+          <span v-else-if="exportPhase.html === 'ok'">✓ HTML</span>
+          <span v-else>HTML</span>
         </button>
-        <button class="btn-ghost border border-edge" :disabled="exportPhase.json === 'loading'" @click="doExportJson">
-          <span v-if="exportPhase.json === 'loading'">💾 JSON…</span>
-          <span v-else-if="exportPhase.json === 'ok'">✓ JSON İndirildi</span>
-          <span v-else>💾 Veri (JSON)</span>
+        <button class="btn-ghost" :disabled="exportPhase.pdf === 'loading'" @click="doExportPdf">
+          <span v-if="exportPhase.pdf === 'loading'">PDF oluşturuluyor…</span>
+          <span v-else-if="exportPhase.pdf === 'ok'">✓ PDF</span>
+          <span v-else>PDF</span>
         </button>
+        <span class="text-[11px] text-slate-600 ml-2">(JSON/HTML gerçek rapor verisinden; PDF backend'de reportlab ile üretilir)</span>
       </div>
-      <p class="text-xs text-slate-500">
-        PDF çıktısı resmi İSG denetim raporu standartlarındadır; HTML ve JSON anında yerel veriden üretilir.
-      </p>
-      <p v-if="exportPhase.json === 'error'" class="mt-1 text-xs text-risk-crit">JSON Hata: {{ exportError.json }}</p>
-      <p v-if="exportPhase.html === 'error'" class="mt-1 text-xs text-risk-crit">HTML Hata: {{ exportError.html }}</p>
-      <p v-if="exportPhase.pdf === 'error'" class="mt-1 text-xs text-risk-crit">PDF Hata: {{ exportError.pdf }}</p>
+      <p v-if="exportPhase.json === 'error'" class="mt-2 text-xs text-risk-crit">JSON: {{ exportError.json }}</p>
+      <p v-if="exportPhase.html === 'error'" class="mt-2 text-xs text-risk-crit">HTML: {{ exportError.html }}</p>
+      <p v-if="exportPhase.pdf === 'error'" class="mt-2 text-xs text-risk-crit">PDF: {{ exportError.pdf }}</p>
     </section>
   </div>
 

@@ -67,9 +67,9 @@ export function useAnalysisStream() {
       const data = (msg as MessageEvent).data
       if (data) {
         try {
-          store.setStreamError((JSON.parse(data) as { detail?: string }).detail ?? 'stream error')
+          store.setStreamError((JSON.parse(data) as { detail?: string }).detail ?? 'akış hatası')
         } catch {
-          store.setStreamError('stream error')
+          store.setStreamError('akış hatası')
         }
         store.setConnection('error')
         stop()

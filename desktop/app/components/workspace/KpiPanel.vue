@@ -7,11 +7,16 @@ import type { SamplerStageData } from '~/types/api'
 const store = useAnalysisStore()
 
 // Prefer the final report's sampler_stats; fall back to the live sampler trace.
+// When the active VLM is video-based (EVREN) the sampler stage is skipped
+// entirely (see BaseVLM.requires_frame_sampling) — its stats are an empty
+// object in that case, not real data, so treat it as "no stats" rather than
+// rendering a misleading all-zero KPI strip.
 const stats = computed(() => {
   const rep = store.report?.sampler_stats
   if (rep) return rep
   const s = store.eventForStage('sampler')?.data as SamplerStageData | undefined
-  return s?.stats
+  if (!s || s.skipped) return undefined
+  return s.stats
 })
 
 const msPerFrame = computed(() => {
@@ -25,12 +30,30 @@ const evidenceCount = computed(
 </script>
 
 <template>
-  <div v-if="stats" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-    <MetricCell label="Frames scanned" :value="stats.total_frames_scanned ?? 0" />
-    <MetricCell label="Frames evaluated" :value="stats.sampled_frames_evaluated ?? 0" />
-    <MetricCell label="Evidence frames" :value="evidenceCount" />
-    <MetricCell label="GPU savings" :value="`%${(stats.gpu_savings_ratio_pct ?? 0).toFixed?.(1) ?? stats.gpu_savings_ratio_pct}`" />
-    <MetricCell label="Duration" :value="`${(stats.elapsed_sec ?? 0)}s`" />
-    <MetricCell label="ms / frame" :value="msPerFrame.toFixed(1)" />
+  <div v-if="stats" class="instrument-strip">
+    <div class="instrument-cell">
+      <div class="eyebrow">Taranan Kare</div>
+      <div class="mt-0.5 text-lg font-semibold text-slate-100 tabular-nums">{{ stats.total_frames_scanned ?? 0 }}</div>
+    </div>
+    <div class="instrument-cell">
+      <div class="eyebrow">Değerlendirilen</div>
+      <div class="mt-0.5 text-lg font-semibold text-slate-100 tabular-nums">{{ stats.sampled_frames_evaluated ?? 0 }}</div>
+    </div>
+    <div class="instrument-cell">
+      <div class="eyebrow">Kanıt Karesi</div>
+      <div class="mt-0.5 text-lg font-semibold text-slate-100 tabular-nums">{{ evidenceCount }}</div>
+    </div>
+    <div class="instrument-cell">
+      <div class="eyebrow">GPU Tasarrufu</div>
+      <div class="mt-0.5 text-lg font-semibold text-accent tabular-nums">%{{ (stats.gpu_savings_ratio_pct ?? 0).toFixed?.(1) ?? stats.gpu_savings_ratio_pct }}</div>
+    </div>
+    <div class="instrument-cell">
+      <div class="eyebrow">Süre</div>
+      <div class="mt-0.5 text-lg font-semibold text-slate-100 tabular-nums font-mono">{{ stats.elapsed_sec ?? 0 }}s</div>
+    </div>
+    <div class="instrument-cell">
+      <div class="eyebrow">ms / Kare</div>
+      <div class="mt-0.5 text-lg font-semibold text-slate-100 tabular-nums font-mono">{{ msPerFrame.toFixed(1) }}</div>
+    </div>
   </div>
 </template>

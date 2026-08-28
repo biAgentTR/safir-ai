@@ -2,60 +2,153 @@
 @tailwind components;
 @tailwind utilities;
 
-/* =============================================================================
-   SAFIR AI — CSS Custom Properties & Dual Theme Variables (Light/Dark)
-   ============================================================================= */
-
-:root,
-[data-theme="light"] {
-  color-scheme: light;
-
-  --bg-primary: #f8fafc;
-  --bg-secondary: #f1f5f9;
-  --bg-surface-0: #f8fafc;
-  --bg-surface-1: #ffffff;
-  --bg-surface-2: #f1f5f9;
-  --bg-surface-3: #e2e8f0;
-  --bg-card: #ffffff;
-  --text-primary: #0f172a;
-  --text-secondary: #334155;
-  --text-muted: #64748b;
-  --border-edge: #cbd5e1;
-  --border-glass: rgba(0, 0, 0, 0.08);
-
-  --accent-primary: #2563eb;
-  --accent-hover: #1d4ed8;
-
-  --risk-low: #16a34a;
-  --risk-mid: #d97706;
-  --risk-high: #ea580c;
-  --risk-crit: #dc2626;
-}
-
-.dark,
-[data-theme="dark"] {
+/*
+ * SAFİR design tokens — "industrial command center", not a SaaS/AI-chat
+ * dashboard. One semantic palette, two renderings (dark / light).
+ *
+ * Deliberate choices vs. a generic AI-template look:
+ * - Near-black graphite background (not navy/indigo-tinted).
+ * - Brand/interactive accent is a controlled steel-teal — NOT the
+ *   blue/purple hue every "AI powered" SaaS dashboard defaults to. `info`
+ *   is a separate, sparingly-used blue reserved for neutral content tags.
+ * - Risk semantics stay exactly as specified: crit=red, warning=amber,
+ *   normal=green, info=blue — never repurposed for decoration.
+ * - Every color below resolves through a CSS custom property (see
+ *   tailwind.config.ts) so the same class names (bg-surface-1, text-slate-400,
+ *   text-risk-crit, bg-accent, text-info, ...) render correctly in both
+ *   themes without any call site needing a `dark:` variant.
+ *
+ * Precedence: :root (dark, the historical default) is overridden by
+ * `prefers-color-scheme: light` for users who never chose explicitly, and
+ * by `[data-theme]` for an explicit choice (persisted by useTheme.ts). The
+ * blocking script in nuxt.config.ts sets [data-theme] before first paint,
+ * so there is no flash of the wrong theme.
+ */
+:root {
   color-scheme: dark;
 
-  --bg-primary: #0b0f14;
-  --bg-secondary: #0f141b;
-  --bg-surface-0: #0b0f14;
-  --bg-surface-1: #111827;
-  --bg-surface-2: #1f2937;
-  --bg-surface-3: #374151;
-  --bg-card: #111827;
-  --text-primary: #f8fafc;
-  --text-secondary: #cbd5e1;
-  --text-muted: #94a3b8;
-  --border-edge: #334155;
-  --border-glass: rgba(255, 255, 255, 0.1);
+  /* surfaces — near-black graphite, not blue/navy-tinted */
+  --c-bg: 9 11 14;
+  --c-surface-1: 14 17 21;
+  --c-surface-2: 19 23 29;
+  --c-surface-3: 26 31 39;
+  --c-edge: 34 40 49;
+  --c-edge-strong: 51 59 71;
 
-  --accent-primary: #3b82f6;
-  --accent-hover: #60a5fa;
+  /* brand/interactive accent — steel-teal (deliberately not AI-blue/purple) */
+  --c-accent: 20 184 166;
+  --c-accent-soft: 11 43 41;
 
-  --risk-low: #22c55e;
-  --risk-mid: #eab308;
-  --risk-high: #f97316;
-  --risk-crit: #ef4444;
+  /* informational blue — reserved for neutral content tags, never interactive */
+  --c-info: 59 130 246;
+  --c-info-soft: 26 41 66;
+
+  /* semantic status */
+  --c-risk-low: 34 197 94;
+  --c-risk-mid: 217 158 20;
+  --c-risk-high: 234 88 12;
+  --c-risk-crit: 220 38 38;
+
+  /* text ramp (replaces Tailwind's static slate-100..700 app-wide) */
+  --c-slate-100: 241 245 249;
+  --c-slate-200: 226 232 240;
+  --c-slate-300: 203 213 225;
+  --c-slate-400: 148 163 184;
+  --c-slate-500: 100 116 139;
+  --c-slate-600: 71 85 105;
+  --c-slate-700: 51 65 85;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    color-scheme: light;
+
+    --c-bg: 246 247 249;
+    --c-surface-1: 255 255 255;
+    --c-surface-2: 241 243 246;
+    --c-surface-3: 230 233 238;
+    --c-edge: 214 219 227;
+    --c-edge-strong: 191 198 209;
+
+    --c-accent: 13 148 136;
+    --c-accent-soft: 219 240 238;
+
+    --c-info: 37 99 235;
+    --c-info-soft: 219 234 254;
+
+    --c-risk-low: 22 163 74;
+    --c-risk-mid: 161 98 7;
+    --c-risk-high: 194 65 12;
+    --c-risk-crit: 185 28 28;
+
+    --c-slate-100: 15 23 42;
+    --c-slate-200: 30 41 59;
+    --c-slate-300: 51 65 85;
+    --c-slate-400: 71 85 105;
+    --c-slate-500: 100 116 139;
+    --c-slate-600: 148 163 184;
+    --c-slate-700: 203 213 225;
+  }
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --c-bg: 246 247 249;
+  --c-surface-1: 255 255 255;
+  --c-surface-2: 241 243 246;
+  --c-surface-3: 230 233 238;
+  --c-edge: 214 219 227;
+  --c-edge-strong: 191 198 209;
+
+  --c-accent: 13 148 136;
+  --c-accent-soft: 219 240 238;
+
+  --c-info: 37 99 235;
+  --c-info-soft: 219 234 254;
+
+  --c-risk-low: 22 163 74;
+  --c-risk-mid: 161 98 7;
+  --c-risk-high: 194 65 12;
+  --c-risk-crit: 185 28 28;
+
+  --c-slate-100: 15 23 42;
+  --c-slate-200: 30 41 59;
+  --c-slate-300: 51 65 85;
+  --c-slate-400: 71 85 105;
+  --c-slate-500: 100 116 139;
+  --c-slate-600: 148 163 184;
+  --c-slate-700: 203 213 225;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --c-bg: 9 11 14;
+  --c-surface-1: 14 17 21;
+  --c-surface-2: 19 23 29;
+  --c-surface-3: 26 31 39;
+  --c-edge: 34 40 49;
+  --c-edge-strong: 51 59 71;
+
+  --c-accent: 20 184 166;
+  --c-accent-soft: 11 43 41;
+
+  --c-info: 59 130 246;
+  --c-info-soft: 26 41 66;
+
+  --c-risk-low: 34 197 94;
+  --c-risk-mid: 217 158 20;
+  --c-risk-high: 234 88 12;
+  --c-risk-crit: 220 38 38;
+
+  --c-slate-100: 241 245 249;
+  --c-slate-200: 226 232 240;
+  --c-slate-300: 203 213 225;
+  --c-slate-400: 148 163 184;
+  --c-slate-500: 100 116 139;
+  --c-slate-600: 71 85 105;
+  --c-slate-700: 51 65 85;
 }
 
 html,
@@ -65,85 +158,360 @@ body,
 }
 
 body {
-  background-color: var(--bg-surface-0);
-  color: var(--text-primary);
-  @apply antialiased transition-colors duration-200;
+  @apply bg-surface-0 text-slate-200 antialiased;
   font-feature-settings: 'tnum' 1;
   overflow: hidden; /* desktop shell: inner regions scroll, not the window */
 }
 
-/* Slim, technical scrollbars */
+/* Slim, technical scrollbars for the desktop feel. */
 ::-webkit-scrollbar {
-  width: 7px;
-  height: 7px;
+  width: 9px;
+  height: 9px;
 }
 ::-webkit-scrollbar-thumb {
-  background-color: var(--border-edge);
-  border-radius: 4px;
+  @apply bg-surface-3 rounded;
 }
 ::-webkit-scrollbar-track {
-  background: transparent;
+  @apply bg-transparent;
+}
+
+/* Hide scrollbar utility */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Visible, on-brand focus rings for keyboard navigation everywhere. */
+:focus-visible {
+  outline: 2px solid rgb(var(--c-accent));
+  outline-offset: 2px;
+}
+
+/* Respect the OS-level reduced-motion preference: keep affordances, drop the motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 @layer components {
+  /* ---- surfaces ---- */
+  /* Glassy by default (semi-transparent + blur) so every panel, on every
+     screen, reads as part of the same ambient/glow system as the launch
+     hero and admin login (BackgroundScene sits behind the whole app shell —
   .card {
-    background-color: var(--bg-surface-1);
-    border: 1px solid var(--border-edge);
-    @apply rounded-xl shadow-sm transition-all duration-200;
+    @apply bg-surface-1/85 backdrop-blur-md border border-edge rounded-xl shadow-lg transition-all duration-200;
+  }
+  .glass-panel {
+    @apply bg-surface-1/85 backdrop-blur-md border border-edge rounded-xl shadow-xl transition-all duration-200;
   }
 
-  .card-hover {
-    @apply hover:border-blue-500/50 hover:shadow-md transition-all duration-200;
+  /* Full-bleed panel with a heavier top rule — used for the operator-facing
+     status band (RiskSummary) instead of a floating rounded card, so the
+     single most important reading on screen doesn't look like just another
+     tile among many. */
+  .panel-band {
+    @apply bg-surface-1/85 backdrop-blur-md border border-edge border-t-2 rounded-xl shadow-lg;
   }
 
-  .glass-card {
-    background-color: var(--bg-surface-1);
-    border: 1px solid var(--border-edge);
-    @apply backdrop-blur-xl rounded-2xl shadow-xl transition-all duration-200;
+  /* ---- typography ---- */
+  .eyebrow {
+    @apply text-[10.5px] font-semibold uppercase tracking-[0.09em] text-slate-500;
   }
-
   .field-label {
-    color: var(--text-secondary);
-    @apply block text-xs font-bold uppercase tracking-wider mb-1.5;
+    @apply block text-xs font-medium uppercase tracking-wide text-slate-400 mb-1;
   }
-
   .field-input {
-    background-color: var(--bg-surface-2);
-    border: 1px solid var(--border-edge);
-    color: var(--text-primary);
-    @apply w-full rounded-xl px-4 py-2.5 text-sm
-           placeholder:text-slate-400
-           focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500
-           transition-all duration-200;
+    @apply w-full bg-surface-2 border border-edge rounded-md px-3 py-2 text-sm
+           text-slate-100 placeholder:text-slate-500
+           focus:outline-none focus:ring-1 focus:ring-accent focus:border-accent
+           transition-colors duration-150;
   }
 
+  /* ---- buttons ---- */
   .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600
-           px-5 py-2.5 text-xs font-bold text-white shadow-md shadow-blue-500/20
-           hover:bg-blue-500 hover:shadow-lg hover:shadow-blue-500/30
-           active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100
-           transition-all duration-200;
+    @apply inline-flex items-center justify-center gap-2 rounded-md bg-accent
+           px-4 py-2 text-sm font-medium text-white
+           hover:brightness-110 active:brightness-95 disabled:opacity-50 disabled:cursor-not-allowed
+           transition-[filter] duration-150;
   }
-
   .btn-ghost {
-    background-color: var(--bg-surface-2);
-    border: 1px solid var(--border-edge);
-    color: var(--text-primary);
-    @apply inline-flex items-center justify-center gap-2 rounded-xl
-           px-4 py-2.5 text-xs font-bold
-           hover:bg-surface-3 active:scale-[0.98]
-           transition-all duration-200;
+    @apply inline-flex items-center justify-center gap-2 rounded-md border border-edge
+           bg-surface-2 px-3 py-2 text-sm text-slate-100 hover:bg-surface-3 hover:border-edge-strong
+           disabled:opacity-50 disabled:cursor-not-allowed
+           transition-colors duration-150;
   }
 
-  .btn-danger {
-    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-red-600
-           px-5 py-2.5 text-xs font-bold text-white shadow-md shadow-red-500/20
-           hover:bg-red-500 hover:shadow-lg hover:shadow-red-500/30
-           active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed
-           transition-all duration-200;
-  }
-
+  /* ---- status badges: one small, consistent pill family used for every
+     status/risk/action tag across the app (replaces ad-hoc inline classes) ---- */
   .badge {
-    @apply inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium tracking-wide border;
+    @apply inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10.5px] font-semibold uppercase tracking-wide border;
+  }
+  .badge-crit {
+    @apply badge text-risk-crit bg-risk-crit/10 border-risk-crit/30;
+  }
+  .badge-high {
+    @apply badge text-risk-high bg-risk-high/10 border-risk-high/30;
+  }
+  .badge-mid {
+    @apply badge text-risk-mid bg-risk-mid/10 border-risk-mid/30;
+  }
+  .badge-low {
+    @apply badge text-risk-low bg-risk-low/10 border-risk-low/30;
+  }
+  .badge-info {
+    @apply badge text-info bg-info/10 border-info/30;
+  }
+  .badge-neutral {
+    @apply badge text-slate-400 bg-surface-2 border-edge;
+  }
+  .badge-accent {
+    @apply badge text-accent bg-accent/10 border-accent/30;
+  }
+
+  /* ---- live/status dot (topbar health, running indicators) ---- */
+  .status-dot {
+    @apply inline-block w-2 h-2 rounded-full shrink-0;
+  }
+
+  /* ---- dense operational table (Geçmiş, Sistem Verileri) ---- */
+  .op-table {
+    @apply w-full text-sm border-collapse;
+  }
+  .op-table thead th {
+    @apply text-left eyebrow py-2 pr-3 border-b border-edge font-semibold;
+  }
+  .op-table tbody tr {
+    @apply border-b border-edge/70 transition-colors duration-150;
+  }
+  .op-table tbody tr[data-clickable] {
+    @apply cursor-pointer hover:bg-surface-2/70;
+  }
+  .op-table td {
+    @apply py-2.5 pr-3 align-middle;
+  }
+
+  /* ---- instrument strip: a single-row KPI band with vertical dividers
+     instead of N separate boxed cards (status strip, KpiPanel) ---- */
+  .instrument-strip {
+    @apply flex flex-wrap bg-surface-1 border border-edge rounded-md divide-x divide-edge;
+  }
+  .instrument-cell {
+    @apply flex-1 min-w-[7rem] px-4 py-3;
+  }
+
+  /* ---- glass panel: used for standalone screens (admin login) that sit on
+     top of the ambient background rather than inside the dense data shell ---- */
+  .glass-panel {
+    @apply bg-surface-1/70 border border-edge backdrop-blur-md shadow-2xl shadow-black/40;
+  }
+}
+
+/* ---- ambient background: faint grid + two slow-drifting light rings.
+   Decorative only (aria-hidden at the call site), GPU-cheap (opacity/transform
+   only, no layout thrash), and fully stilled under prefers-reduced-motion via
+   the global rule above. ---- */
+.grid-texture {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(to right, rgb(var(--c-edge) / 0.5) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(var(--c-edge) / 0.5) 1px, transparent 1px);
+  background-size: 40px 40px;
+  mask-image: radial-gradient(ellipse at center, black 0%, transparent 75%);
+}
+
+.ambient-rings {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ambient-ring {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(60px);
+  opacity: 0.14;
+  will-change: transform;
+  animation: ambient-drift 22s ease-in-out infinite;
+}
+.ambient-ring-a {
+  width: 32rem;
+  height: 32rem;
+  top: -10rem;
+  left: -6rem;
+  background: rgb(var(--c-accent));
+}
+.ambient-ring-b {
+  width: 26rem;
+  height: 26rem;
+  bottom: -8rem;
+  right: -4rem;
+  background: rgb(var(--c-info));
+  animation-duration: 28s;
+  animation-delay: -6s;
+}
+@keyframes ambient-drift {
+  0%, 100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(2rem, 1.5rem) scale(1.08);
+  }
+}
+
+/* ---- scan line: swept across an actively-running pipeline stage to read as
+   "analysis in progress" without a spinner-only affordance. ---- */
+.scan-line {
+  position: relative;
+  overflow: hidden;
+}
+.scan-line::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgb(var(--c-accent) / 0.35), transparent);
+  width: 40%;
+  animation: scan-sweep 1.8s linear infinite;
+}
+@keyframes scan-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+/* ---- glowing animated tab: used for floating drawers like 'SAFİR'e Sor' ---- */
+.glow-tab {
+  position: fixed;
+  border-style: solid !important;
+  border-width: 1px 0px 1px 1px !important;
+  animation: dynamic-tab-glow 5.5s ease-in-out infinite !important;
+}
+
+@keyframes dynamic-tab-glow {
+  0%, 100% {
+    border-color: rgb(var(--c-accent) / 0.4) !important;
+    box-shadow: 
+      -2px 0 10px rgb(var(--c-accent) / 0.25),
+      0 4px 15px rgba(0, 0, 0, 0.2);
+    transform: translateY(-50%) translateX(0px);
+  }
+  50% {
+    border-color: rgb(var(--c-accent) / 0.95) !important;
+    box-shadow: 
+      -5px 0 22px rgb(var(--c-accent) / 0.6),
+      -1px 0 35px rgb(var(--c-accent) / 0.3),
+      0 6px 22px rgba(0, 0, 0, 0.3),
+      inset 2px 0 12px rgb(var(--c-accent) / 0.2);
+    transform: translateY(-50%) translateX(-2.5px);
+  }
+}
+
+/* ---- mode crossfade: smooth transition between Lite and Direct modes ---- */
+.mode-crossfade-enter-active,
+.mode-crossfade-leave-active {
+  transition: opacity 0.35s cubic-bezier(0.16, 1, 0.3, 1), transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.mode-crossfade-enter-from {
+  opacity: 0;
+  transform: translateY(12px) scale(0.99);
+}
+.mode-crossfade-leave-to {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.99);
+}
+
+/* ---- skeleton shimmer: dynamic sweeping light effect for mode & pagination transitions ---- */
+@keyframes shimmer-sweep {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.skeleton-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(var(--c-surface-2), 0.75) 0%,
+    rgba(var(--c-surface-3), 0.95) 35%,
+    rgba(var(--c-accent), 0.2) 50%,
+    rgba(var(--c-surface-3), 0.95) 65%,
+    rgba(var(--c-surface-2), 0.75) 100%
+  ) !important;
+  background-size: 200% 100% !important;
+  animation: shimmer-sweep 1.4s ease-in-out infinite !important;
+}
+
+.skeleton-shimmer-accent {
+  background: linear-gradient(
+    90deg,
+    rgba(var(--c-accent), 0.25) 0%,
+    rgba(var(--c-accent), 0.55) 50%,
+    rgba(var(--c-accent), 0.25) 100%
+  ) !important;
+  background-size: 200% 100% !important;
+  animation: shimmer-sweep 1.4s ease-in-out infinite !important;
+}
+
+/* ---- page crossfade: smooth transition between pagination pages ---- */
+.page-crossfade-enter-active,
+.page-crossfade-leave-active {
+  transition: opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1), transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.page-crossfade-enter-from {
+  opacity: 0;
+  transform: translateY(6px) scale(0.995);
+}
+.page-crossfade-leave-to {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.995);
+}
+
+/* ---- dropdown slide: ultra smooth custom dropdown menu animation ---- */
+.dropdown-slide-enter-active,
+.dropdown-slide-leave-active {
+  transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.dropdown-slide-enter-from,
+.dropdown-slide-leave-to {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.97);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ambient-ring {
+    animation: none;
+  }
+  .scan-line::after {
+    animation: none;
+    display: none;
+  }
+  .glow-tab {
+    animation: none;
+  }
+  .skeleton-shimmer,
+  .skeleton-shimmer-accent {
+    animation: none;
+  }
+  .mode-crossfade-enter-active,
+  .mode-crossfade-leave-active,
+  .page-crossfade-enter-active,
+  .page-crossfade-leave-active,
+  .dropdown-slide-enter-active,
+  .dropdown-slide-leave-active {
+    transition: none;
   }
 }

@@ -30,9 +30,15 @@ export function useAskStream() {
     }
   }
 
-  function start(question: string, jobId: string | null, conversationId: string | null, cb: AskStreamCallbacks) {
+  function start(
+    question: string,
+    jobId: string | null,
+    conversationId: string | null,
+    cb: AskStreamCallbacks,
+    useVideo = false,
+  ) {
     stop()
-    es = new EventSource(askStreamUrl(question, jobId, conversationId))
+    es = new EventSource(askStreamUrl(question, jobId, conversationId, useVideo))
 
     // First default (unnamed) event is the meta payload (sources/job_id/context_used);
     // every subsequent one carries { delta }. Both arrive as plain `data:` lines.

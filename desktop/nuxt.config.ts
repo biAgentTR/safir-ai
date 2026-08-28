@@ -14,10 +14,6 @@ export default defineNuxtConfig({
 
   modules: ['@nuxtjs/tailwindcss', '@pinia/nuxt'],
 
-  experimental: {
-    appManifest: false,
-  },
-
   // Flat component names regardless of subfolder (StageCard, not WorkspaceStageCard).
   components: [{ path: '~/components', pathPrefix: false }],
 
@@ -27,6 +23,18 @@ export default defineNuxtConfig({
     head: {
       title: 'SAFIR',
       meta: [{ name: 'viewport', content: 'width=device-width, initial-scale=1' }],
+      // Blocking, pre-hydration theme resolution: reads the persisted choice
+      // (or falls back to the OS preference) and stamps [data-theme] on <html>
+      // before anything paints, so there is no flash of the wrong theme.
+      // Kept intentionally tiny and dependency-free; app/composables/useTheme.ts
+      // is the single source of truth after hydration.
+      script: [
+        {
+          innerHTML:
+            "(function(){try{var s=localStorage.getItem('safir-theme');var t=(s==='light'||s==='dark')?s:(window.matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');document.documentElement.setAttribute('data-theme',t);document.documentElement.classList.toggle('dark',t==='dark');document.documentElement.classList.toggle('light',t==='light');}catch(e){}})();",
+          tagPosition: 'head',
+        },
+      ],
     },
   },
 

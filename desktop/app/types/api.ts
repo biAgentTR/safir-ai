@@ -58,7 +58,8 @@ export interface TimelineEvent extends TimelineEntry {
 
 /** src/schemas/report.py: EvidenceFrameOut (final report — carries base64). */
 export interface EvidenceFrameOut {
-  event_id: number
+  /** VLM event_id this frame belongs to (bkz. EVENTS_JSON.event_id) — string, not a positional label. */
+  event_id: string
   timestamp_sec: number
   timestamp_str: string
   change_score: number
@@ -78,13 +79,26 @@ export interface SamplerStats {
 }
 
 export type RiskLevel = 'dusuk' | 'orta' | 'yuksek' | 'kritik' | 'unknown'
-export type EscalationTier = 'monitor' | 'notify' | 'alarm'
+export type EscalationTier = 'monitor' | 'notify' | 'alarm' | 'pending_review'
 /**
  * 'assessed': risk_score/risk_level guvenilir sekilde hesaplandi (0 dahil gecerli deger).
  * 'unknown': VLM/LLM/ajan karar zincirinde hata olustu; risk_score=null, ASLA dusuk risk
  * olarak yorumlanmamali (bkz. src/agent/langgraph_agent.py: AgentDecision.risk_status).
  */
 export type RiskStatus = 'assessed' | 'unknown'
+
+/**
+ * A mock action tool the 05 LangGraph Agent actually CALLED (tool_call), not
+ * just a text suggestion in `actions` — see src/agent/tools.py:
+ * notify_health_team_tool / dispatch_security_tool / trigger_area_lockdown_tool.
+ * `args`/`result` shape depends on which tool was called.
+ */
+export interface TriggeredMockAction {
+  /** 'notify_health_team_tool' | 'dispatch_security_tool' | 'trigger_area_lockdown_tool' (bkz. yukarisi). */
+  tool: string
+  args: Record<string, unknown>
+  result: string
+}
 
 /** src/schemas/report.py: SafirReport (the polling `result`). */
 export interface SafirReport {
@@ -96,9 +110,34 @@ export interface SafirReport {
   risk_score: number | null
   risk_level: RiskLevel | string
   risk_status: RiskStatus | string
-  confidence?: 'yuksek' | 'orta' | 'dusuk' | string | null
+  /** 'rule_engine' | 'agent' | 'unknown' - bkz. src/main.py::build_report. */
+  risk_source?: string | null
+  risk_explanation?: string | null
+  /** Agent'in (LLM) kendi taslak risk skoru — bkz. RiskProvenance.llm_proposed_score. */
+  llm_proposed_score?: number | null
+  /** SADECE RuleEngine + risk_model formülünden türemiş, Agent'ten BAĞIMSIZ skor. */
+  deterministic_score?: number | null
+  /** deterministic_score'a karşılık gelen risk seviyesi. */
+  deterministic_level?: string | null
+  /** Nihai risk_level'i belirleyen RuleMatch(ler)in rule_id'leri. */
+  contributing_rule_ids?: string[]
+  /** Nihai skoru üreten matematiksel modelin kimliği (örn. 'safir_evidence_weighted_v2'). */
+  scoring_method?: string | null
+  /** 8 normalize edilmiş (0.0-1.0) feature: severity/likelihood/exposure/duration/
+   *  recurrence/protection_gap/rule_support/regulatory_support + ayrıca
+   *  hazard_escalation (boost_factor'a dahil değil, güvenlik tabanını besler).
+   *  null = ölçülemedi. */
+  risk_features?: Record<string, number | null> | null
+  /** Skora giden ara çarpım adımları (base_risk + *_factor + raw_score). */
+  risk_feature_contributions?: Record<string, number> | null
   recommended_action: string
   actions: string[]
+  /** Ajanın gerçekten çağırdığı mock aksiyon araçları (bkz. TriggeredMockAction). */
+  triggered_mock_actions?: TriggeredMockAction[]
+  /** "MM:SS" — bkz. src/schemas/report.py::SafirReport.to_sartname_json. */
+  onset_timestamp_str?: string | null
+  safe_timestamps?: string[]
+  incident_timestamps?: string[]
   detected_event_types: string[]
   timeline: TimelineEntry[]
   evidence_frames: EvidenceFrameOut[]
@@ -118,7 +157,7 @@ export type TraceStage =
   | 'sampler'
   | 'vlm'
   | 'events'
-  | 'agent_context'
+  | 'rag_security'
   | 'decision'
   | 'escalation'
   | 'report'
@@ -152,8 +191,14 @@ export interface TraceEvent<D = Record<string, unknown>> {
 
 // --- per-stage `data` payloads (from the serializers) ---
 
-/** Frame reference inside sampler stage — points to the frame endpoint. */
+/**
+ * Frame reference inside sampler stage — points to the frame endpoint.
+ * The sampler no longer clusters: every threshold-passing frame is sent
+ * here, in chronological order, with no positional role attached. Event
+ * clustering happens downstream, in the VLM stage.
+ */
 export interface EvidenceFrameRef {
+  evidence_id: string
   frame_id: string
   timestamp_sec: number
   timestamp_str: string
@@ -164,25 +209,23 @@ export interface EvidenceFrameRef {
   thumbnail_url: string | null
 }
 
-export interface RepresentativeFrameRef {
-  label: string
-  timestamp_str: string
-  frame_id: string
-  thumbnail_url: string | null
-}
-
-export interface EventGroupRef {
-  event_id: number
-  start_time: number
-  end_time: number
-  total_candidate_frames: number
-  representative_frames: RepresentativeFrameRef[]
-}
-
 export interface SamplerStageData {
   stats: Partial<SamplerStats>
   evidence_frames: EvidenceFrameRef[]
-  event_groups: EventGroupRef[]
+  /** true when the active VLM is video-based (EVREN) and this stage was intentionally skipped — see BaseVLM.requires_frame_sampling. */
+  skipped?: boolean
+}
+
+/** A single VLM-clustered event from EVENTS_JSON (src/prompts/vlm_prompts.py). */
+export interface VlmEvent {
+  event_id: string
+  type: string
+  start_time: number
+  end_time: number
+  evidence_ids: string[]
+  description: string
+  risk_score: number | null
+  confidence: number
 }
 
 export interface VlmStageData {
@@ -192,8 +235,33 @@ export interface VlmStageData {
   user_prompt: string
   frames_sent: number
   description: string
-  structured_events: unknown[]
+  structured_events: VlmEvent[]
+  vlm_status: string
 }
+
+/**
+ * Step-by-step VLM progress (src/vlm/evren_vlm.py::VlmProgressCallback via
+ * src/main.py::run's _on_vlm_progress). Emitted as one or more `status:
+ * "running"` trace events on the SAME "vlm" stage key, BEFORE the final
+ * `VlmStageData` "completed"/"failed" event — e.g. while EVREN splits a long
+ * video into chunks and sends each one separately. `phase` drives which
+ * other fields are present; treat unknown phases as "still working" (the
+ * `summary` string is always safe to show regardless).
+ */
+export interface VlmProgressData {
+  progress: {
+    phase: 'chunking' | 'chunk_start' | 'chunk_done' | 'chunk_failed' | string
+    total_chunks?: number
+    chunk_index?: number
+    range_label?: string | null
+    elapsed_sec?: number
+    video_mb?: number
+    error?: string
+  }
+}
+
+/** The "vlm" stage's trace `data` is either a progress tick or the final result — narrow on `'progress' in data`. */
+export type VlmStageEventData = VlmStageData | VlmProgressData
 
 /** decision stage — NOTE: raw_response is intentionally absent server-side. */
 export interface Decision {
@@ -204,6 +272,8 @@ export interface Decision {
   recommended_action: string
   actions: string[]
   events: unknown[]
+  /** Ajanın bu çalışmada gerçekten çağırdığı mock aksiyon araçları (bkz. TriggeredMockAction). */
+  triggered_mock_actions?: TriggeredMockAction[]
 }
 
 export interface Escalation {
@@ -215,6 +285,7 @@ export interface Escalation {
 
 /** events stage: detected_events[] (trace_serializer.serialize_events). */
 export interface DetectedEvent {
+  event_name: string
   event_type: string
   timestamp: number
   confidence: number
@@ -240,10 +311,88 @@ export interface EventsStageData {
   rule_matches: RuleMatch[]
 }
 
-/** agent_context stage. */
-export interface ContextStageData {
-  prompt_block: string
-  length: number
+
+/**
+ * rag_security stage: src/observability/trace_serializer.py serialize_rag_security.
+ *
+ * `embedding_score` (E5/FAISS semantic similarity), `relevance_score`
+ * (deterministic weighted-hybrid: semantic+lexical+keyword+metadata+phrase)
+ * and `cross_encoder_score` (local Cross-Encoder re-ranking signal, only
+ * present when the query-level `cross_encoder_status` is `'used'`) are
+ * DELIBERATELY separate fields — never merge them, never label any of them
+ * "risk"/"confidence"/"probability". The old `rerank_score` field name from
+ * the removed Gemini/Groq LLM-as-judge reranker no longer exists backend-side.
+ */
+export interface RagResultTelemetry {
+  rank: number | null
+  final_rank: number | null
+  chunk_id: string | null
+  document_id: string | null
+  document_title: string | null
+  article_number: string | null
+  source_url: string | null
+  embedding_score: number
+  relevance_score: number | null
+  /** Five components `relevance_score` is computed from (bkz. deterministic_reranker.py). `null` = relevance scoring was disabled/not computed for this candidate — never fabricated. */
+  semantic_score: number | null
+  lexical_score: number | null
+  keyword_score: number | null
+  metadata_score: number | null
+  phrase_score: number | null
+  /** Local Cross-Encoder relevance signal — a ranking signal only, not a risk/confidence value. `null` when the query's cross_encoder_status is not 'used'. */
+  cross_encoder_score: number | null
+  relevance_status: 'accepted' | 'rejected' | null
+  relevance_reason: string | null
+  selected: boolean
+  text: string
+}
+
+export interface RelevanceWeights {
+  semantic: number
+  lexical: number
+  keyword: number
+  metadata: number
+  phrase: number
+}
+
+/**
+ * RAG retrieval telemetrisi for tek bir semantik sorgu. `null` = bu turda hic
+ * RAG sorgusu yapilmadi (VLM keyword uretmedi) — "0 sonuc" ile KARISTIRILMAZ.
+ */
+export interface RagTelemetry {
+  query_length: number
+  candidate_count: number
+  final_count: number
+  zero_result: boolean
+  retrieval_status: 'relevance_scored' | 'embedding_only' | 'insufficient_evidence' | 'empty_index' | string
+  threshold: number | null
+  embedding_latency_ms: number
+  rerank_latency_ms: number | null
+  total_latency_ms: number
+  avg_embedding_score: number | null
+  avg_relevance_score: number | null
+  /** Weights `deterministic_reranker.score_candidate()` actually used for this query (read from config, not hardcoded). `null` if unavailable. */
+  relevance_weights: RelevanceWeights | null
+  /** 'used' | 'unavailable' | 'disabled' — whether the local Cross-Encoder ran for this query. See RagResultTelemetry docstring. */
+  cross_encoder_status: 'used' | 'unavailable' | 'disabled' | string
+  results: RagResultTelemetry[]
+}
+
+/** Tek bir Prompt Injection Guard kontrolunun GUVENLI (ham metin icermeyen) telemetrisi. */
+export interface SecurityGuardCheck {
+  source: 'user_prompt' | 'vlm_description' | 'vlm_event_description' | string
+  is_injection: boolean
+  confidence: number
+  action: 'allow' | 'quarantine'
+  /** Gemini'nin kisa gerekce metni (bilgi amacli — karar mekanizmasi DEGIL, karari `action`/`confidence` belirler). */
+  reason: string | null
+  guard_failed: boolean
+  latency_ms: number
+}
+
+export interface RagSecurityStageData {
+  rag: RagTelemetry | null
+  security: SecurityGuardCheck[]
 }
 
 /** report stage (compact; full report comes from the polling endpoint). */
@@ -324,11 +473,13 @@ export interface HistoryDetail {
 export interface AskRequest {
   question: string
   job_id?: string | null
+  /** Ask the VIDEO directly (EVREN prefix-cache follow-up); falls back to text silently if unavailable. */
+  use_video?: boolean
 }
 
 /** A grounded source in the answer (src/assistant: Source). Only real fields. */
 export interface AskSource {
-  type: 'analysis' | 'regulation' | string
+  type: 'analysis' | 'regulation' | 'document' | 'video' | string
   text?: string | null
   score?: number | null
   label?: string | null
@@ -340,6 +491,11 @@ export interface AskResponse {
   sources: AskSource[]
   job_id: string | null
   context_used: string[]
+}
+
+/** GET /ask/suggestions response (src/main.py: AskSuggestionsResponse) — report-specific follow-up chips. */
+export interface AskSuggestionsResponse {
+  suggestions: string[]
 }
 
 /** POST /alerts/trigger */
@@ -442,6 +598,26 @@ export interface SystemOverviewTotals {
   total_messages: number
   analyses_with_trace: number
   stored_representative_frame_count: number
+  /**
+   * RAG + Prompt Injection Guard telemetrisi (persisted trace_events'in
+   * "rag_security" asamasindan toplanir). Sayim alanlari her zaman gercek
+   * (veri yoksa 0); ortalama alanlari veri yoksa `null` ("N/A") doner —
+   * ASLA uydurulmuş bir sayi degildir.
+   */
+  total_events_detected: number
+  critical_risk_analyses: number
+  rag_query_count: number
+  rag_zero_result_count: number
+  avg_embedding_latency_ms: number | null
+  avg_rerank_latency_ms: number | null
+  avg_total_rag_latency_ms: number | null
+  guard_checks: number
+  guard_allowed: number
+  guard_quarantined: number
+  guard_failures: number
+  guard_fail_closed_blocks: number
+  avg_guard_latency_ms: number | null
+  avg_guard_confidence: number | null
 }
 
 /** GET /system/overview yaniti (src/main.py: SystemOverviewResponse). */
@@ -467,3 +643,37 @@ export interface SseTraceEnvelope {
   event: TraceEvent
 }
 export type SseMessage = SseTraceEnvelope | SseEndEvent | SseErrorEvent
+
+// -------------------------------------------------- usage metrics -----------
+
+export interface UsageCategoryBreakdown {
+  key: string
+  label: string
+  count: number
+  tokens: number | null
+  duration_ms: number
+}
+
+export interface UsageMetrics {
+  elapsed_ms: number
+  total_calls: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  last_latency_ms: number
+  avg_latency_ms: number
+  categories: UsageCategoryBreakdown[]
+}
+
+export interface UsageKeyInfo {
+  key_name: string
+  cost_usd: number
+}
+
+export interface KpiMetric {
+  key: string
+  label: string
+  value: string | number
+  unit?: string
+  change_pct?: number
+}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Cumulative pipeline rail. All 7 stages are always shown, in canonical order;
+// Cumulative pipeline rail. All stages (STAGE_META) are always shown, in canonical order;
 // completed stages stay visible. Clicking a stage selects it for the detail
 // panel. Real status comes from the store's trace events.
 import type { TraceStage, TraceStatus } from '~/types/api'
@@ -39,7 +39,7 @@ function tone(s: string): string {
 
 <template>
   <div class="card p-3">
-    <div class="px-2 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Pipeline</div>
+    <div class="px-2 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">ANALİZ HATTI</div>
     <ol class="relative">
       <li
         v-for="(m, i) in STAGE_META"
