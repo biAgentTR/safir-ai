@@ -67,6 +67,110 @@ _FFMPEG_TIMEOUT_FLOOR_SEC = 60.0
 _cuda_encoder_cache: Optional[bool] = None
 
 
+@dataclass(frozen=True)
+class AnalysisContext:
+    """Tek bir mantiksal video analizi isine (job) ait kimlik bilgileri."""
+    analysis_id: str
+    video_id: str
+
+@dataclass(frozen=True)
+class SegmentPlan:
+    """Fiziksel video kesim plani modeli."""
+    index: int
+    start_sec: float
+    end_sec: float
+    overlap_left_sec: float = 0.0
+    overlap_right_sec: float = 0.0
+
+    @property
+    def duration_sec(self) -> float:
+        return self.end_sec - self.start_sec
+
+def plan_segments(duration_sec: float, window_sec: float, overlap_sec: float = 0.0) -> List[SegmentPlan]:
+    """Videoyu sabit zaman pencerelerine bolmek icin kesim plani uretir.
+
+    Sifir veya pozitif overlap degerlerini destekler. Gercek FFT kesimi (Materialization)
+    bu fonksiyondan donen plana gore yapilir.
+
+    Args:
+        duration_sec: Videonun gercek suresi (saniye).
+        window_sec: Hedef parca uzunlugu (saniye).
+        overlap_sec: Pencereler arasi bindirme payi (saniye).
+
+    Returns:
+        Uretilen segment planlari listesi.
+    """
+    if duration_sec <= 0.0 or math.isnan(duration_sec) or math.isinf(duration_sec):
+        raise ValueError(f"Gecersiz duration_sec: {duration_sec}")
+    if window_sec <= 0.0 or math.isnan(window_sec) or math.isinf(window_sec):
+        raise ValueError(f"Gecersiz window_sec: {window_sec}")
+    if overlap_sec < 0.0 or overlap_sec >= window_sec or math.isnan(overlap_sec) or math.isinf(overlap_sec):
+        raise ValueError(f"Gecersiz overlap_sec: {overlap_sec}")
+
+    step_sec = window_sec - overlap_sec
+    
+    # Güvenlik üst sınırı: Çok küçük step ile devasa segment oluşumunu engelle
+    # 60 saniyelik standart operasyonda 24 saatlik video bile 1440 segment üretir.
+    # 100,000 güvenli ve pratik bir donanımsal üst limittir.
+    estimated_segments = (duration_sec / step_sec) + 1
+    if estimated_segments > 100000:
+        raise ValueError(f"Too many segments estimated ({estimated_segments}). duration={duration_sec}, step={step_sec}")
+
+    plans = []
+    index = 0
+
+    while True:
+        # Kümülatif floating-point sapmalarini onlemek icin index uzerinden hesapla
+        start = index * step_sec
+        if start >= duration_sec:
+            break
+            
+        end = min(start + window_sec, duration_sec)
+        
+        # Matematiksel olarak hic ilerleme yoksa sonsuz donguyu kir
+        if end <= start:
+            raise RuntimeError(
+                f"Segment planner failed to make progress: index={index} start={start} end={end} "
+                f"duration_sec={duration_sec} window_sec={window_sec} overlap_sec={overlap_sec} step_sec={step_sec}"
+            )
+            
+        # Gercek overlap hesaplamasi (komsu segmentlerle fiziksel kesisim)
+        if index > 0:
+            prev_start = (index - 1) * step_sec
+            prev_end = min(prev_start + window_sec, duration_sec)
+            overlap_left_sec = max(0.0, min(end, prev_end) - max(start, prev_start))
+        else:
+            overlap_left_sec = 0.0
+            
+        if end >= duration_sec:
+            overlap_right_sec = 0.0
+        else:
+            next_start = (index + 1) * step_sec
+            if next_start < duration_sec:
+                next_end = min(next_start + window_sec, duration_sec)
+                overlap_right_sec = max(0.0, min(end, next_end) - max(start, next_start))
+            else:
+                overlap_right_sec = 0.0
+            
+        plans.append(SegmentPlan(
+            index=index,
+            start_sec=start,
+            end_sec=end,
+            overlap_left_sec=overlap_left_sec,
+            overlap_right_sec=overlap_right_sec
+        ))
+        
+        if end >= duration_sec:
+            break
+            
+        index += 1
+
+    return plans
+
+def generate_chunk_id(analysis_id: str, index: int) -> str:
+    """Bir chunk icin deterministik ve kalici kimlik uretir."""
+    return f"{analysis_id}:chunk:{index:06d}"
+
 @dataclass
 class VideoChunk:
     """Bolunmus bir video parcasi: dosya yolu + orijinal videodaki zaman araligi."""
@@ -85,6 +189,16 @@ class VideoChunk:
     video hic kodlanmadi/bolunmedi). Operator paneline (bkz. `SafirPipeline.
     run`in "sampler" asamasina eklenen `chunking` ozeti) gozlemlenebilirlik
     icin tasinir."""
+
+    # Faz C1A: Provenance ve Planlama Alanlari
+    analysis_id: Optional[str] = None
+    video_id: Optional[str] = None
+    chunk_id: Optional[str] = None
+    plan: Optional[SegmentPlan] = None
+    planned_start_sec: Optional[float] = None
+    planned_end_sec: Optional[float] = None
+    overlap_left_sec: float = 0.0
+    overlap_right_sec: float = 0.0
 
 
 def _ffmpeg_available() -> bool:
@@ -200,16 +314,18 @@ def _ffmpeg_extract_chunk(
 
 
 def _split_with_ffmpeg(
-    video_path: str, chunk_duration_sec: float, total_duration_sec: float, out_dir: str
+    video_path: str, chunk_duration_sec: float, total_duration_sec: float, chunk_overlap_sec: float, out_dir: str,
+    context: Optional[AnalysisContext] = None
 ) -> Optional[List[VideoChunk]]:
     """`ffmpeg` ile (mumkunse CUDA/NVENC) sabit sureli parcalar uretir; herhangi bir parca basarisiz olursa `None` doner (cagiran taraf OpenCV'ye duser)."""
     use_cuda = _probe_cuda_encoder()
-    num_chunks = math.ceil(total_duration_sec / chunk_duration_sec)
+    plans = plan_segments(total_duration_sec, chunk_duration_sec, chunk_overlap_sec)
     chunks: List[VideoChunk] = []
 
-    for i in range(num_chunks):
-        start = i * chunk_duration_sec
-        duration = min(chunk_duration_sec, total_duration_sec - start)
+    for plan in plans:
+        start = plan.start_sec
+        duration = plan.duration_sec
+        i = plan.index
         chunk_path = os.path.join(out_dir, f"chunk_{i:03d}.mp4")
 
         ok = _ffmpeg_extract_chunk(video_path, start, duration, chunk_path, use_cuda=use_cuda)
@@ -231,6 +347,14 @@ def _split_with_ffmpeg(
                 end_offset_sec=start + duration,
                 index=i,
                 encoder="cuda" if use_cuda else "cpu",
+                analysis_id=context.analysis_id if context else None,
+                video_id=context.video_id if context else None,
+                chunk_id=generate_chunk_id(context.analysis_id, i) if context else None,
+                plan=plan,
+                planned_start_sec=plan.start_sec,
+                planned_end_sec=plan.end_sec,
+                overlap_left_sec=plan.overlap_left_sec,
+                overlap_right_sec=plan.overlap_right_sec
             )
         )
 
@@ -245,7 +369,7 @@ def _split_with_ffmpeg(
     return chunks
 
 
-def _split_with_opencv(video_path: str, chunk_duration_sec: float, out_dir: Optional[str] = None) -> List[VideoChunk]:
+def _split_with_opencv(video_path: str, chunk_duration_sec: float, chunk_overlap_sec: float = 0.0, out_dir: Optional[str] = None, context: Optional[AnalysisContext] = None) -> List[VideoChunk]:
     """Eski, kare-kare OpenCV implementasyonu - YALNIZCA `ffmpeg` kullanilamadiginda/basarisiz oldugunda geri-dusme (fallback) olarak kullanilir."""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -263,69 +387,60 @@ def _split_with_opencv(video_path: str, chunk_duration_sec: float, out_dir: Opti
                 )
             ]
 
+        plans = plan_segments(total_duration, chunk_duration_sec, chunk_overlap_sec)
+        
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        frames_per_chunk = max(1, int(round(chunk_duration_sec * fps)))
         out_dir = out_dir or tempfile.mkdtemp(prefix="safir_vlm_chunks_")
         os.makedirs(out_dir, exist_ok=True)
 
         chunks: List[VideoChunk] = []
-        writer: Optional[cv2.VideoWriter] = None
-        chunk_path = ""
-        chunk_start_frame = 0
-        chunk_idx = 0
-        frame_idx = 0
-
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            if frame_idx % frames_per_chunk == 0:
-                if writer is not None:
-                    writer.release()
-                    chunks.append(
-                        VideoChunk(
-                            path=chunk_path,
-                            start_offset_sec=chunk_start_frame / fps,
-                            end_offset_sec=frame_idx / fps,
-                            index=chunk_idx,
-                            encoder="opencv",
-                        )
-                    )
-                    chunk_idx += 1
-                chunk_start_frame = frame_idx
-                chunk_path = os.path.join(out_dir, f"chunk_{chunk_idx:03d}.mp4")
-                writer = cv2.VideoWriter(chunk_path, _FOURCC, fps, (width, height))
-            assert writer is not None
-            writer.write(frame)
-            frame_idx += 1
-
-        if writer is not None:
+        
+        for plan in plans:
+            chunk_path = os.path.join(out_dir, f"chunk_{plan.index:03d}.mp4")
+            writer = cv2.VideoWriter(chunk_path, _FOURCC, fps, (width, height))
+            
+            start_frame = int(round(plan.start_sec * fps))
+            end_frame = int(round(plan.end_sec * fps))
+            
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            frames_written = 0
+            
+            for _ in range(end_frame - start_frame):
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                writer.write(frame)
+                frames_written += 1
+                
             writer.release()
+            
             chunks.append(
                 VideoChunk(
                     path=chunk_path,
-                    start_offset_sec=chunk_start_frame / fps,
-                    end_offset_sec=frame_idx / fps,
-                    index=chunk_idx,
+                    start_offset_sec=plan.start_sec,
+                    end_offset_sec=plan.start_sec + (frames_written / fps if fps > 0 else 0.0),
+                    index=plan.index,
                     encoder="opencv",
+                    analysis_id=context.analysis_id if context else None,
+                    video_id=context.video_id if context else None,
+                    chunk_id=generate_chunk_id(context.video_id, plan.index) if context else None,
+                    plan=plan,
+                    planned_start_sec=plan.start_sec,
+                    planned_end_sec=plan.end_sec,
+                    overlap_left_sec=plan.overlap_left_sec,
+                    overlap_right_sec=plan.overlap_right_sec
                 )
             )
 
-        logger.info(
-            "Video %s OpenCV (CPU, kare-kare) ile parcalara bolundu: %.1fs -> %d parca (%.1fs/parca)",
-            video_path,
-            total_duration,
-            len(chunks),
-            chunk_duration_sec,
-        )
         return chunks
+
     finally:
         cap.release()
 
 
 def split_video_into_chunks(
-    video_path: str, chunk_duration_sec: float, out_dir: Optional[str] = None
+    video_path: str, chunk_duration_sec: float, chunk_overlap_sec: float = 0.0, out_dir: Optional[str] = None, context: Optional[AnalysisContext] = None
 ) -> List[VideoChunk]:
     """Bir video dosyasini sabit sureli, kronolojik/kayipsiz parcalara boler.
 
@@ -352,30 +467,43 @@ def split_video_into_chunks(
         ValueError: Video dosyasi hicbir yontemle (ffprobe VE OpenCV) acilamazsa/okunamazsa.
     """
     if chunk_duration_sec <= 0:
-        return [VideoChunk(path=video_path, start_offset_sec=0.0, end_offset_sec=0.0, index=0, is_original=True)]
+        chunk_id = generate_chunk_id(context.analysis_id, 0) if context else None
+        return [VideoChunk(
+            path=video_path, start_offset_sec=0.0, end_offset_sec=0.0, index=0, is_original=True,
+            analysis_id=context.analysis_id if context else None,
+            video_id=context.video_id if context else None,
+            chunk_id=chunk_id
+        )]
 
     if not _ffmpeg_available():
         logger.info("ffmpeg/ffprobe PATH'te bulunamadi; video parcalama OpenCV (CPU, kare-kare) ile yapilacak.")
-        return _split_with_opencv(video_path, chunk_duration_sec, out_dir)
+        return _split_with_opencv(video_path, chunk_duration_sec, chunk_overlap_sec, out_dir, context)
 
     total_duration = _probe_duration_sec(video_path)
     if total_duration is None:
         logger.warning("ffprobe video suresini okuyamadi (%s); OpenCV-tabanli parcalamaya donuluyor.", video_path)
-        return _split_with_opencv(video_path, chunk_duration_sec, out_dir)
+        return _split_with_opencv(video_path, chunk_duration_sec, chunk_overlap_sec, out_dir, context)
 
     if total_duration <= chunk_duration_sec:
+        chunk_id = generate_chunk_id(context.analysis_id, 0) if context else None
         return [
             VideoChunk(
-                path=video_path, start_offset_sec=0.0, end_offset_sec=total_duration, index=0, is_original=True
+                path=video_path, start_offset_sec=0.0, end_offset_sec=total_duration, index=0, is_original=True,
+                analysis_id=context.analysis_id if context else None,
+                video_id=context.video_id if context else None,
+                chunk_id=chunk_id,
+                plan=SegmentPlan(0, 0.0, total_duration, 0.0, 0.0),
+                planned_start_sec=0.0,
+                planned_end_sec=total_duration
             )
         ]
 
     out_dir = out_dir or tempfile.mkdtemp(prefix="safir_vlm_chunks_")
     os.makedirs(out_dir, exist_ok=True)
 
-    chunks = _split_with_ffmpeg(video_path, chunk_duration_sec, total_duration, out_dir)
+    chunks = _split_with_ffmpeg(video_path, chunk_duration_sec, total_duration, chunk_overlap_sec, out_dir, context)
     if chunks is None:
-        return _split_with_opencv(video_path, chunk_duration_sec, out_dir)
+        return _split_with_opencv(video_path, chunk_duration_sec, chunk_overlap_sec, out_dir, context)
     return chunks
 
 

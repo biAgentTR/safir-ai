@@ -30,7 +30,8 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Deque, Dict, List, Literal, Optional, Tuple
+from src.vlm.schemas import ChunkAnalysisResult, VLMAnalysisStatus
+from typing import Any, Literal, Callable, Deque, Dict, List, Literal, Optional, Tuple
 
 import cv2
 
@@ -52,6 +53,7 @@ from src.event_analysis.risk_resolver import RiskProvenance, resolve_determinist
 from src.event_analysis.rule_engine import RuleEngine
 from src.event_analysis.schemas import DetectedEvent, EventEngineInput, RuleMatch, TemporalEvent
 from src.event_analysis.temporal_reasoner import DEFAULT_RELATION_WINDOW_SEC, TemporalReasoner
+from src.event_analysis.event_merger import EventMerger
 from src.memory.analysis_store import AnalysisStore
 from src.memory.context_builder import ContextBuilder
 from src.memory.conversation_store import ConversationStore
@@ -124,7 +126,11 @@ def _prune_stale_events(
 def _select_current_call_events(
     temporal_events: List[TemporalEvent],
     latest_timestamp: float,
-    detected_events: Optional[List[DetectedEvent]] = None,
+    current_model_call_ids: set[str],
+    current_chunk_ids: set[str],
+    current_analysis_id: Optional[str],
+    current_evidence_ids: set[str],
+    allow_legacy_timestamp_fallback: bool = False,
 ) -> List[TemporalEvent]:
     """Bu pipeline cagrisinda uretilen/guncellenen TUM `TemporalEvent`leri secer.
 
@@ -158,15 +164,43 @@ def _select_current_call_events(
         listesi. Bos olabilir (teorik olarak; `EventEngine` her zaman en az
         bir `DetectedEvent` urettigi icin pratikte bos donmez).
     """
-    current_call_evidence_ids = {eid for d in (detected_events or []) for eid in d.evidence_ids}
-
     def _belongs_to_current_call(te: TemporalEvent) -> bool:
-        if current_call_evidence_ids and te.evidence_ids:
-            return bool(set(te.evidence_ids) & current_call_evidence_ids)
-        return abs(te.end_timestamp - latest_timestamp) <= _CURRENT_CALL_TIMESTAMP_TOLERANCE
+        # Guvenlik Kontrolu: Eger olay baska bir analysis ID'ye aitse KESINLIKLE reddet!
+        if te.source_analysis_ids:
+            if not current_analysis_id:
+                return False
+            if current_analysis_id not in te.source_analysis_ids:
+                return False
+
+        # 1. Model Call ID kesisimi (Kesin)
+        if current_model_call_ids and te.source_model_call_ids:
+            if set(te.source_model_call_ids) & current_model_call_ids:
+                return True
+                
+        # 2. Chunk ID kesisimi
+        if current_chunk_ids and te.source_chunk_ids:
+            if set(te.source_chunk_ids) & current_chunk_ids:
+                return True
+                
+        # 3. Evidence ID kesisimi (Eski kare modu veya fallback)
+        if current_evidence_ids and te.evidence_ids:
+            if set(te.evidence_ids) & current_evidence_ids:
+                return True
+                
+        # 4. Geriye uyumluluk (Yalnizca opt-in)
+        if allow_legacy_timestamp_fallback and not te.source_model_call_ids and not te.source_chunk_ids and not te.evidence_ids:
+            import logging
+            logging.getLogger(__name__).warning("Legacy timestamp fallback is being used!")
+            return abs(te.end_timestamp - latest_timestamp) <= _CURRENT_CALL_TIMESTAMP_TOLERANCE
+            
+        return False
 
     current_call_events = [te for te in temporal_events if _belongs_to_current_call(te)]
-    current_call_events.sort(key=lambda te: te.confidence, reverse=True)
+    
+    # Siralama sorumlulugu: Selector yalnizca uyelik secer, gizli siralamayi iptal ediyoruz
+    # Siralama veya kronolojik order'i baska yerde yapacagiz veya burada saf kronolojik dondurecegiz.
+    # Prompt: "Timeline kronolojik siralanmali. Selector icinde gizli confidence sort bulunmamali."
+    current_call_events.sort(key=lambda te: te.start_timestamp)
     return current_call_events
 
 
@@ -974,6 +1008,7 @@ class SafirPipeline:
         )
         self._event_engine = EventEngine(classifier=event_classifier_llm)
         self._temporal_reasoner = TemporalReasoner(relation_window_sec=DEFAULT_RELATION_WINDOW_SEC)
+        self._event_merger = EventMerger(config.system.merger)
         # 2026-08-25: RuleEngine ARTIK hicbir RAG/AG cagrisi yapmaz (retriever
         # kaldirildi) - tamamen yerel, deterministik event_type -> kisa mevzuat
         # etiketi/siddet eslemesidir. Mevzuatin GERCEK metni SADECE gercek
@@ -1012,7 +1047,8 @@ class SafirPipeline:
         sample_fps_override: Optional[int] = None,
         min_change_threshold_override: Optional[float] = None,
         trace: Optional[TraceCallback] = None,
-        analysis_mode: str = "vlm_direct",
+        analysis_mode: Literal["vlm_direct", "low_budget"] = "vlm_direct",
+        context: Optional[AnalysisContext] = None,
     ) -> SafirReport:
         """Video kaynagindan nihai `SafirReport`'a kadar tum pipeline'i calistirir.
 
@@ -1149,7 +1185,8 @@ class SafirPipeline:
         )
 
         prompt_block, context = self.stage_context(
-            vlm_response, user_prompt, latest_timestamp, rule_matches, temporal_events
+            vlm_response, user_prompt, latest_timestamp, rule_matches, temporal_events,
+            analysis_mode=analysis_mode, context=context
         )
         # 2026-08-25: "agent_context" (eski "Baglam ve RAG") trace stage'i ARTIK
         # EMIT EDILMIYOR - `stage_context()`in KENDISI (prompt_block/context uretimi,
@@ -1248,7 +1285,8 @@ class SafirPipeline:
         evidence_frames: List[EvidenceFrame],
         user_prompt: str,
         on_progress: Optional[VlmProgressCallback] = None,
-        analysis_mode: str = "vlm_direct",
+        analysis_mode: Literal["vlm_direct", "low_budget"] = "vlm_direct",
+        context: Optional[AnalysisContext] = None,
     ) -> VLMResponse:
         """03: VLM gorsel anlama + OLAY KUMELEME.
 
@@ -1283,7 +1321,7 @@ class SafirPipeline:
         vlm = self._vlm_video if analysis_mode == "vlm_direct" else self._vlm_frames
         if getattr(vlm, "requires_frame_sampling", True):
             return self._stage_vlm_frames(vlm, evidence_frames, user_prompt)
-        return self._stage_vlm_video(vlm, video_source, evidence_frames, user_prompt, on_progress)
+        return self._stage_vlm_video(vlm, video_source, evidence_frames, user_prompt, on_progress, context)
 
     def _stage_vlm_video(
         self,
@@ -1292,12 +1330,13 @@ class SafirPipeline:
         evidence_frames: List[EvidenceFrame],
         user_prompt: str,
         on_progress: Optional[VlmProgressCallback] = None,
+        context: Optional[AnalysisContext] = None,
     ) -> VLMResponse:
         """VLM Direct yolu (DEGISMEDI): video kaynagi TEK bir istekte, dogrudan VLM'e gonderilir."""
         try:
             analyze = getattr(vlm, "analyze_video")
             try:
-                response = analyze(video_source, evidence_frames, prompt=user_prompt, on_progress=on_progress)
+                response = analyze(video_source, evidence_frames, prompt=user_prompt, on_progress=on_progress, context=context)
             except TypeError:
                 # Geriye-donuk uyumluluk: `on_progress` desteklemeyen bir
                 # implementasyon (ör. testlerdeki eski sahte/mock VLM).
@@ -1311,6 +1350,11 @@ class SafirPipeline:
                 latency_ms=0.0,
                 structured_events=[],
                 status="failed",
+                chunk_analysis_result=ChunkAnalysisResult(
+                    analysis_status=VLMAnalysisStatus.MODEL_FAILED,
+                    parse_status="pipeline_exception",
+                    analysis_id=context.analysis_id if context else None
+                )
             )
 
         response.evidence_ids = [ef.evidence_id for ef in evidence_frames]
@@ -1352,6 +1396,11 @@ class SafirPipeline:
                 latency_ms=0.0,
                 structured_events=[],
                 status="failed",
+                chunk_analysis_result=ChunkAnalysisResult(
+                    analysis_status=VLMAnalysisStatus.MODEL_FAILED,
+                    parse_status="pipeline_exception",
+                    analysis_id=context.analysis_id if context else None
+                )
             )
 
     def stage_events(self, vlm_response: VLMResponse, evidence_frames: List[EvidenceFrame]):
@@ -1388,6 +1437,7 @@ class SafirPipeline:
         _prune_stale_events(self._event_history_buffer, latest_timestamp, self._event_buffer_retention_sec)
 
         temporal_events = self._temporal_reasoner.reason(list(self._event_history_buffer))
+        temporal_events = self._event_merger.merge(temporal_events)
         rule_matches = self._rule_engine.evaluate(temporal_events)
         return detected_events, temporal_events, rule_matches, latest_timestamp
 
@@ -1398,6 +1448,8 @@ class SafirPipeline:
         latest_timestamp: float,
         rule_matches,
         temporal_events: Optional[List] = None,
+        analysis_mode: Literal["vlm_direct", "low_budget"] = "vlm_direct",
+        context: Optional[AnalysisContext] = None,
     ):
         """04: ContextBuilder (SQLite + GERCEK semantik RAG) -> ajan istem blogu.
 
@@ -1563,6 +1615,7 @@ class SafirPipeline:
         detected_events: Optional[List[DetectedEvent]] = None,
         risk_provenance: Optional[RiskProvenance] = None,
         precomputed_evidence_frames: Optional[List[EvidenceFrameOut]] = None,
+        analysis_mode: Literal["vlm_direct", "low_budget"] = "vlm_direct",
     ) -> SafirReport:
         """06-07: Olay kaydi (EventBuilder/History/Store) + nihai `SafirReport` insasi.
 
@@ -1604,7 +1657,46 @@ class SafirPipeline:
             else None
         )
 
-        current_call_events = _select_current_call_events(temporal_events, latest_timestamp, detected_events)
+        current_model_call_ids = set()
+        current_chunk_ids = set()
+        current_analysis_ids = set()
+        current_evidence_ids = set()
+        
+        for d in (detected_events or []):
+            if d.source_model_call_id:
+                current_model_call_ids.add(d.source_model_call_id)
+            if d.source_chunk_id:
+                current_chunk_ids.add(d.source_chunk_id)
+            if d.source_analysis_id:
+                current_analysis_ids.add(d.source_analysis_id)
+            if d.evidence_ids:
+                current_evidence_ids.update(d.evidence_ids)
+                
+        if len(current_analysis_ids) > 1:
+            import logging
+            logging.getLogger(__name__).error(f"Security/Invariant violation: Multiple analysis IDs detected in a single pipeline call: {current_analysis_ids}")
+            # Controlled failure: Drop mixed events to prevent contamination.
+            detected_events = []
+            current_analysis_ids.clear()
+            if hasattr(vlm_response, "chunk_analysis_result") and vlm_response.chunk_analysis_result:
+                from src.vlm.schemas import VLMAnalysisStatus
+                vlm_response.chunk_analysis_result.analysis_status = VLMAnalysisStatus.PARTIAL
+                vlm_response.chunk_analysis_result.parse_status = "provenance_integrity_failed"
+
+            
+        final_analysis_id = current_analysis_ids.pop() if current_analysis_ids else None
+        
+        current_call_events = _select_current_call_events(
+            temporal_events=temporal_events,
+            latest_timestamp=latest_timestamp,
+            current_model_call_ids=current_model_call_ids,
+            current_chunk_ids=current_chunk_ids,
+            current_analysis_id=final_analysis_id,
+            current_evidence_ids=current_evidence_ids,
+            allow_legacy_timestamp_fallback=False
+        )
+        if getattr(vlm_response, 'aggregate_result', None):
+            vlm_response.aggregate_result.event_count_after_merge = len(current_call_events)
         detected_event_names = sorted({te.event_name for te in current_call_events})
         detected_event_types = sorted({te.event_type for te in current_call_events if te.event_type})
         structured_events = self._event_builder.build_batch(current_call_events, rule_matches)
@@ -1976,7 +2068,7 @@ def _run_job(
     user_prompt: str,
     sample_fps_override: Optional[int] = None,
     min_change_threshold_override: Optional[float] = None,
-    analysis_mode: str = "vlm_direct",
+    analysis_mode: Literal["vlm_direct", "low_budget"] = "vlm_direct",
 ) -> None:
     """Arka plan thread'inde pipeline'i calistirip `JobState`'i gunceller.
 

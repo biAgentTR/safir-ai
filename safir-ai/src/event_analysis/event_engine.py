@@ -454,6 +454,7 @@ class EventEngine:
                 # tip yoksa (serbest/yeni olay) taksonomi-fallback UYGULANAMAZ
                 # - bos liste kalir, hicbir terim UYDURULMAZ.
                 keywords = self._extract_keywords_for_type(event_type, evidence)
+            prov = item.get("_provenance", {})
             detections.append(
                 DetectedEvent(
                     event_name=event_name,
@@ -467,6 +468,13 @@ class EventEngine:
                     vlm_event_id=str(item.get("event_id")) if item.get("event_id") is not None else None,
                     evidence_ids=evidence_ids,
                     risk_hint=self._coerce_risk_hint(item.get("risk_score")),
+                    source_analysis_id=prov.get("source_analysis_id"),
+                    source_video_id=prov.get("source_video_id"),
+                    source_chunk_id=prov.get("source_chunk_id"),
+                    source_model_call_id=prov.get("source_model_call_id"),
+                    source_observation_id=prov.get("source_observation_id"),
+                    relative_start_sec=prov.get("relative_start_sec"),
+                    relative_end_sec=prov.get("relative_end_sec"),
                 )
             )
         return detections

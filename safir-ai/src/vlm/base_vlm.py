@@ -126,6 +126,9 @@ class VLMResponse:
     evidence_ids: List[str] = field(default_factory=list)
     """Bu yanitin kapsadigi (gonderilen) `EvidenceFrame.evidence_id` degerleri
     (bkz. `analyze_evidence_batched`); tek-cagri (eski/agrege) yanitlarda bos olabilir."""
+    chunk_analysis_result: Optional[Any] = None
+    aggregate_result: Optional[Any] = None
+    """Modelin cikti basarimini gosteren tipli sozlesme (bkz. ChunkAnalysisResult)."""
     chunking_summary: Optional[Dict[str, Any]] = None
     """YALNIZCA video-dogrudan (`EvrenVLM.analyze_video`) yolunda doldurulur:
     `{"total_chunks", "encoder", "chunk_duration_sec", "video_duration_sec",
@@ -523,9 +526,47 @@ class BaseVLM(ABC):
                 f"VLM cagrisi {_MAX_INFERENCE_RETRIES + 1} denemede basarisiz ({self.model_name}): {last_exc}"
             ) from last_exc
 
-        # Modelin urettigi makine-okunur EVENTS_JSON blogunu ayristir; insan-okur
-        # aciklamadan ayir (bos ise EventEngine anahtar-kelime fallback'ine duser).
-        description, structured_events = parse_structured_events(raw_content)
+        # Yeni Typed Parser kullanimi (Legacy Adapter destekli)
+        from src.vlm.parser import parse_vlm_response
+        from src.vlm.time_normalizer import normalize_observation_time
+        from src.vlm.schemas import VLMAnalysisStatus
+        
+        description, chunk_res = parse_vlm_response(raw_content)
+        
+        structured_events = []
+        has_invalid = False
+        all_invalid = True
+        
+        if chunk_res.report and chunk_res.report.observations:
+            for obs in chunk_res.report.observations:
+                # EvrenFrames veya diger frame-tabanli cagrilar tum videoyu tek bir 'chunk' olarak 
+                # (veya cercevelerin gercek video zamanlarini) kabul ettigi icin offset 0.
+                norm = normalize_observation_time(obs, 0.0, None)
+                
+                if norm.time_status == "invalid":
+                    has_invalid = True
+                    chunk_res.analysis_status = VLMAnalysisStatus.PARTIAL
+                    continue
+                    
+                all_invalid = False
+                
+                structured_events.append({
+                    "event_name": obs.observed_label,
+                    "confidence": obs.confidence,
+                    "start_time": norm.global_start_sec,
+                    "end_time": norm.global_end_sec,
+                    "evidence_ids": obs.evidence,
+                    "normalized_relative_start_sec": norm.normalized_relative_start_sec,
+                    "normalized_relative_end_sec": norm.normalized_relative_end_sec,
+                    "was_adjusted": norm.was_adjusted,
+                    "adjustment_reasons": norm.adjustment_reasons,
+                    "time_status": norm.time_status,
+                    "time_base": norm.time_base,
+                })
+        
+        if chunk_res.report and chunk_res.report.observations and all_invalid:
+            chunk_res.analysis_status = VLMAnalysisStatus.PARTIAL
+            chunk_res.parse_status = "all_times_invalid"
 
         latency_ms = (time.perf_counter() - started_at) * 1000
         image_count = sum(
@@ -537,6 +578,7 @@ class BaseVLM(ABC):
             frame_count=image_count,
             latency_ms=latency_ms,
             structured_events=structured_events,
+            chunk_analysis_result=chunk_res,
         )
 
     def health_check_impl(self) -> bool:

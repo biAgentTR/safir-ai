@@ -182,6 +182,9 @@ class DetectedEvent(BaseModel):
         default=None, description="Olayin bitis zaman damgasi (VLM'in `end_time`i); bilinmiyorsa None."
     )
     confidence: float = Field(ge=0.0, le=1.0, description="Tespitin guven skoru (0.0-1.0).")
+    uncertainties: List[str] = Field(default_factory=list)
+    entities: List[str] = Field(default_factory=list)
+    attributes: List[str] = Field(default_factory=list)
     matched_keywords: List[str] = Field(
         default_factory=list, description="Tespiti tetikleyen anahtar kelimeler (varsa)."
     )
@@ -194,6 +197,22 @@ class DetectedEvent(BaseModel):
         description="VLM'in bu olaya atadigi `EvidenceFrame.evidence_id` listesi (bkz. `EVENTS_JSON.evidence_ids`); "
         "uydurulmus/gecersiz kimlikler `main.py` katmaninda filtrelenir.",
     )
+    # --- C1B Provenance Alanlari ---
+    source_analysis_id: Optional[str] = Field(default=None, description="Bu olayin uretildigi ana analiz/job kimligi.")
+    source_video_id: Optional[str] = Field(default=None, description="Bu olayin ait oldugu video kimligi.")
+    source_chunk_id: Optional[str] = Field(default=None, description="Bu olayin uretildigi chunk kimligi.")
+    source_model_call_id: Optional[str] = Field(default=None, description="Bu olayi ureten model cagrisi kimligi.")
+    source_observation_id: Optional[str] = Field(default=None, description="Uygulama tarafindan atanan benzersiz ham gozlem kimligi.")
+    relative_start_sec: Optional[float] = Field(default=None, description="Chunk icindeki goreceli baslangic zamani (saniye).")
+    relative_end_sec: Optional[float] = Field(default=None, description="Chunk icindeki goreceli bitis zamani (saniye).")
+
+    # --- C1B Provenance Alanlari ---
+    source_analysis_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin analiz kimlikleri.")
+    source_video_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin video kimlikleri.")
+    source_chunk_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin chunk kimlikleri.")
+    source_model_call_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin model cagri kimlikleri.")
+    source_observation_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin ham gozlem kimlikleri.")
+
     risk_hint: Optional[int] = Field(
         default=None,
         ge=0,
@@ -234,6 +253,9 @@ class TemporalEvent(BaseModel):
         ge=0.0, le=1.0, description="Gruptaki en yuksek guven skoru, tekrar eden tespitler icin hafifce artirilmis."
     )
     occurrence_count: int = Field(ge=1, description="Bu `TemporalEvent`e birlesen `DetectedEvent` sayisi.")
+    uncertainties: List[str] = Field(default_factory=list)
+    entities: List[str] = Field(default_factory=list)
+    attributes: List[str] = Field(default_factory=list)
     matched_keywords: List[str] = Field(
         default_factory=list, description="Gruptaki tum tespitlerden gelen anahtar kelimelerin birlesimi."
     )
@@ -246,6 +268,22 @@ class TemporalEvent(BaseModel):
         default_factory=list,
         description="Gruptaki tum `DetectedEvent.evidence_ids` degerlerinin birlesimi (tekrarsiz, ilk gorulme sirali).",
     )
+    # --- C1B Provenance Alanlari ---
+    source_analysis_id: Optional[str] = Field(default=None, description="Bu olayin uretildigi ana analiz/job kimligi.")
+    source_video_id: Optional[str] = Field(default=None, description="Bu olayin ait oldugu video kimligi.")
+    source_chunk_id: Optional[str] = Field(default=None, description="Bu olayin uretildigi chunk kimligi.")
+    source_model_call_id: Optional[str] = Field(default=None, description="Bu olayi ureten model cagrisi kimligi.")
+    source_observation_id: Optional[str] = Field(default=None, description="Uygulama tarafindan atanan benzersiz ham gozlem kimligi.")
+    relative_start_sec: Optional[float] = Field(default=None, description="Chunk icindeki goreceli baslangic zamani (saniye).")
+    relative_end_sec: Optional[float] = Field(default=None, description="Chunk icindeki goreceli bitis zamani (saniye).")
+
+    # --- C1B Provenance Alanlari ---
+    source_analysis_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin analiz kimlikleri.")
+    source_video_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin video kimlikleri.")
+    source_chunk_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin chunk kimlikleri.")
+    source_model_call_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin model cagri kimlikleri.")
+    source_observation_ids: List[str] = Field(default_factory=list, description="Bu zamanlanmis olayi olusturan tespitlerin ham gozlem kimlikleri.")
+
     risk_hint: Optional[int] = Field(
         default=None, ge=0, le=100, description="Gruptaki en yuksek `DetectedEvent.risk_hint` (VLM ipucu, nihai degil)."
     )
@@ -360,5 +398,6 @@ class StructuredEvent(BaseModel):
             "evidence_ids": list(self.evidence_ids),
             "keywords": list(self.keywords),
         }
+
 
 

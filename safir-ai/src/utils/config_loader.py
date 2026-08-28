@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "config.yaml"
@@ -29,7 +29,25 @@ DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "config.yaml"
 load_dotenv(PROJECT_ROOT / ".env")
 
 
+class EventMergerConfig(BaseModel):
+    enabled: bool = True
+    min_temporal_iou: float = 0.0
+    max_boundary_gap_sec: float = 5.0
+    min_label_similarity: float = 0.5
+    require_type_compatibility: bool = True
+
+    @model_validator(mode="after")
+    def validate_merger(self):
+        if self.min_temporal_iou < 0.0 or self.min_temporal_iou > 1.0:
+            raise ValueError("min_temporal_iou 0.0 ile 1.0 arasinda olmali")
+        if self.max_boundary_gap_sec < 0.0:
+            raise ValueError("max_boundary_gap_sec negatif olamaz")
+        if self.min_label_similarity < 0.0 or self.min_label_similarity > 1.0:
+            raise ValueError("min_label_similarity 0.0 ile 1.0 arasinda olmali")
+        return self
+
 class SystemConfig(BaseModel):
+    merger: EventMergerConfig = Field(default_factory=EventMergerConfig)
     """Genel sistem ayarlari (donanim, ortam, loglama)."""
 
     name: str
@@ -275,6 +293,7 @@ class VLLMEndpointConfig(BaseModel):
     orn. `{"guided_json": {...}}` veya `{"guided_regex": "..."}`). Varsayilan bos
     (davranis degismez). Cekirdek alanlari (model/messages/...) EZMEZ."""
     chunk_duration_sec: Optional[float] = None
+    chunk_overlap_sec: float = 0.0
     """2026-08-25 (EVREN "video cozunurluk zarfi" duzeltmesi): yalnizca video-
     tabanli saglayicilar (bkz. `src/vlm/evren_vlm.py::EvrenVLM`) tarafindan
     okunur - EVREN, gonderilen videonun TAMAMINA TEK bir piksel butcesi
@@ -322,10 +341,26 @@ class VLLMEndpointConfig(BaseModel):
         return {}
 
 
+class ChunkingConfig(BaseModel):
+    window_sec: float = 60.0
+    overlap_sec: float = 5.0
+    
+    @model_validator(mode="after")
+    def validate_overlap(self):
+        import math
+        if not math.isfinite(self.window_sec) or self.window_sec <= 0:
+            raise ValueError("window_sec finite ve > 0 olmali")
+        if not math.isfinite(self.overlap_sec) or self.overlap_sec < 0:
+            raise ValueError("overlap_sec finite ve >= 0 olmali")
+        if self.overlap_sec >= self.window_sec:
+            raise ValueError("overlap_sec < window_sec olmali")
+        return self
+
 class VLMConfig(BaseModel):
     """Aktif VLM secimini ve tum VLM tanimlarini tutar (Factory Pattern icin)."""
 
     active_model: str
+    chunking: Optional[ChunkingConfig] = None
     """"VLM Direct" analiz modu (`AnalyzeRequest.analysis_mode="vlm_direct"`) icin
     kullanilacak model anahtari (bkz. `models`) - video DOGRUDAN, TEK istekte gonderilir."""
 
@@ -351,7 +386,11 @@ class VLMConfig(BaseModel):
         """Config icinde secilen aktif VLM'in baglanti bilgisini dondurur."""
         if self.active_model not in self.models:
             raise KeyError(f"Tanimsiz VLM secimi: '{self.active_model}'")
-        return self.models[self.active_model]
+        endpoint = self.models[self.active_model]
+        if self.chunking:
+            endpoint.chunk_duration_sec = self.chunking.window_sec
+            endpoint.chunk_overlap_sec = self.chunking.overlap_sec
+        return endpoint
 
 
 class LLMConfig(BaseModel):

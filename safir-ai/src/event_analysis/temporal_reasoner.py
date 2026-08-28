@@ -227,6 +227,11 @@ class TemporalReasoner:
             source_model=latest.source_model,
             related_events=[],
             evidence_ids=self._union_evidence_ids(group),
+            source_analysis_ids=self._union_provenance(group, "source_analysis_id"),
+            source_video_ids=self._union_provenance(group, "source_video_id"),
+            source_chunk_ids=self._union_provenance(group, "source_chunk_id"),
+            source_model_call_ids=self._union_provenance(group, "source_model_call_id"),
+            source_observation_ids=self._union_provenance(group, "source_observation_id"),
             risk_hint=max(risk_hints) if risk_hints else None,
         )
 
@@ -245,6 +250,16 @@ class TemporalReasoner:
             for keyword in event.matched_keywords:
                 if keyword not in seen:
                     seen.append(keyword)
+        return seen
+
+
+    @staticmethod
+    def _union_provenance(group: List[DetectedEvent], field_name: str) -> List[str]:
+        seen = []
+        for event in group:
+            val = getattr(event, field_name, None)
+            if val is not None and val not in seen:
+                seen.append(val)
         return seen
 
     @staticmethod
