@@ -168,14 +168,18 @@ Manifest biçimi:
   (`agent.guided_json`), VLM tarafında toleranslı EVENTS_JSON ayrıştırma +
   anahtar-kelime yedeği ile kurtarılır.
 
-> **Bilinen sorun:** `tests/test_sampler.py` içindeki iki test
-> (`test_motion_produces_real_evidence_frames`,
-> `test_fallback_frame_used_when_no_threshold_crossed`) bu değişikliklerden
-> **önce de** başarısızdı: testler `process_video` çıktısındaki her karede
-> `saved_path` bekliyor; oysa tasarım gereği yalnızca **zirve** kareler diske
-> yazılır. Sampler'ın GPU-tasarrufu davranışını bozmamak için bu davranış
-> korundu; testlerin mi yoksa kaydetme politikasının mı güncelleneceği ayrı bir
-> karar olarak bırakıldı.
+> **Test durumu (2026-09-20):** paket **tamamen yeşildir** — 848 test geçer,
+> başarısız test yoktur. Bu notun önceki hâli `tests/test_sampler.py` içinde
+> bilinen başarısız testler olduğunu söylüyordu; o testler bu tarihte
+> düzeltildi. Sorunların hiçbiri üretim kodunda değildi:
+>
+> - `test_sampler`: testin izin verdiği `selection_reason` listesi elle
+>   yazılmıştı ve sampler'a sonradan eklenen `single_frame_change` gerekçesini
+>   içermiyordu; yani test, üretim kodunun **geçerli** bir çıktısını
+>   "beklenmeyen" sayıyordu. Liste artık sabitlerin kendisinden türetilir.
+> - Diğerleri: eski bir `VideoChunk` imzasına göre yazılmış bayat testler,
+>   Windows'a özgü yol ayracı/SQLite dosya-kilidi varsayımları ve `__init__`'i
+>   atlayan bir mock kurulumu.
 
 ## Proje yapısı (özet)
 

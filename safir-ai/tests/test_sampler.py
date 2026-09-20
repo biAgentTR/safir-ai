@@ -17,8 +17,32 @@ import cv2
 import numpy as np
 import pytest
 
-from src.sampler.adaptive_sampler import AdaptiveFrameSampler, sampler_from_config
+from src.sampler.adaptive_sampler import (
+    _SELECTION_REASON_COVERAGE,
+    _SELECTION_REASON_EARLY_CHANGE,
+    _SELECTION_REASON_FALLBACK,
+    _SELECTION_REASON_SIGNIFICANT_CHANGE,
+    _SELECTION_REASON_SINGLE_FRAME_CHANGE,
+    _SELECTION_REASON_THRESHOLD,
+    AdaptiveFrameSampler,
+    sampler_from_config,
+)
 from src.sampler.schema import EvidenceFrame
+
+# Sampler'in uretebilecegi TUM secim gerekceleri. Liste, sabitlerin
+# KENDISINDEN turetilir: daha once buraya string'ler ELLE yazilmisti ve
+# `single_frame_change` gerekcesi sonradan eklendiginde liste GUNCELLENMEDI -
+# test, uretim kodunun GECERLI bir ciktisini "beklenmeyen" sayip kirildi.
+# Kaynaktan turetince yeni bir gerekce eklendiginde test kendiliginden dogru
+# kalir.
+ALL_SELECTION_REASONS = {
+    _SELECTION_REASON_THRESHOLD,
+    _SELECTION_REASON_COVERAGE,
+    _SELECTION_REASON_EARLY_CHANGE,
+    _SELECTION_REASON_SIGNIFICANT_CHANGE,
+    _SELECTION_REASON_SINGLE_FRAME_CHANGE,
+    _SELECTION_REASON_FALLBACK,
+}
 
 
 def _write_video(path: Path, frames: list) -> None:
@@ -869,13 +893,7 @@ def test_density_mechanism_produces_no_event_clustering_or_boundaries(tmp_path: 
         assert "end_time" not in field_names
         assert "label" not in field_names
         assert "frame_role" not in field_names
-        assert f.selection_reason in {
-            "threshold_exceeded",
-            "temporal_coverage",
-            "early_change",
-            "significant_change",
-            "fallback",
-        }
+        assert f.selection_reason in ALL_SELECTION_REASONS
 
 
 def test_density_config_fields_are_ratio_or_config_driven_not_hardcoded(safir_config) -> None:
