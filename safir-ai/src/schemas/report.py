@@ -454,7 +454,30 @@ class SafirReport(BaseModel):
         return f"{total // 60:02d}:{total % 60:02d}"
 
     def to_sartname_json(self) -> dict:
-        """Raporu sartnamedeki mock ornekle birebir ayni sekle indirger."""
+        """Raporu sartnamenin bekledigi cikti seklinde dondurur.
+
+        Sartnamenin ornek mock JSON'u DORT anahtar icerir: `summary`,
+        `events[{time,event}]`, `risk`, `actions`. Dordu de asagida AYNEN
+        uretilir. Ustune, sartnamenin BASKA maddelerinin acikca istedigi
+        kanitlar eklenir - bu yuzden cikti ornegin GENISLETILMIS halidir,
+        indirgenmis hali DEGIL:
+          - `risk_accuracy`  -> "model tabanli karar mekanizmalari" (nihai
+            skorun deterministik + ajan skorunun ortalamasi oldugunu, her iki
+            bileseni ayri ayri gostererek kanitlar).
+          - `triggered_mock_actions` -> "mock fonksiyonlarin ajanin araclari
+            olarak basariyla kullanilmasi" (ajanin GERCEKTEN yaptigi
+            arac-cagrilari; `actions`teki metin onerilerinden farklidir).
+          - `onset_timestamp`/`safe_timestamps`/`incident_timestamps` ->
+            "kritik anlarin zaman bilgisiyle belirlenmesi".
+
+        NOT: bu metodun onceki dokustringi "birebir ayni sekle indirger"
+        diyordu; bu YANLISTI - cikti hicbir zaman dort anahtara indirgenmedi.
+
+        Bu sozluk, `desktop/app/composables/useReportExport.ts::
+        buildSartnameJson` ile AYNI anahtar kumesini uretmek ZORUNDADIR:
+        operator raporu arayuzden indirdiginde de, backend trace'inden
+        (`sartname_json`) aldiginda da AYNI belgeyi gormelidir.
+        """
         return {
             "summary": self.summary or self.natural_language_summary,
             "onset_timestamp": self.onset_timestamp_str or (self._seconds_to_mmss(self.timeline[0].timestamp) if self.timeline else "00:00"),
@@ -476,6 +499,20 @@ class SafirReport(BaseModel):
                 "method": "ortalama(deterministic_score, llm_proposed_score)" if self.llm_proposed_score is not None else "deterministic_score",
             },
             "actions": self.actions or ([self.recommended_action] if self.recommended_action else []),
+            # Sartname: "mock fonksiyonlarin ajanin araclari olarak basariyla
+            # kullanilmasi". Bu alan ONCEDEN yalnizca frontend'in urettigi
+            # kopyada vardi; backend'in `sartname_json`i onsuz doneyordu, yani
+            # AYNI rapor nereden alindigina gore FARKLI gorunuyordu. Sartnamede
+            # puanlanan bir maddenin kaniti oldugu icin bu ayrisma ciddiydi.
+            "triggered_mock_actions": [
+                {
+                    "tool": action.get("tool"),
+                    "args": action.get("args") or {},
+                    "result": action.get("result"),
+                }
+                for action in (self.triggered_mock_actions or [])
+                if isinstance(action, dict)
+            ],
         }
 
     def to_json_file(self, path: str) -> None:

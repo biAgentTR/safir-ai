@@ -115,3 +115,92 @@ def test_detected_event_names_and_types_are_independent_lists() -> None:
 
     assert "yerde_hareketsiz_kisi" in report.detected_event_names
     assert "yerde_hareketsiz_kisi" not in report.detected_event_types
+
+
+# --------------------------- sartname cikti bicimi ---------------------------
+#
+# Sartnamenin ornek mock JSON'u (Bolum 5) DORT anahtar ister:
+#   {"summary": ..., "events": [{"time","event"}], "risk": ..., "actions": [...]}
+# `to_sartname_json()` bunlari uretir VE sartnamenin diger maddelerinin
+# istedigi kanitlari (risk_accuracy, triggered_mock_actions, zaman damgalari)
+# ekler. Asagidaki testler iki seyi kilitler:
+#   1. Dort zorunlu alan HER ZAMAN dogru sekilde uretilir.
+#   2. Anahtar kumesi, frontend'deki ikiz uygulamayla (useReportExport.ts::
+#      buildSartnameJson) AYNI kalir - ikisi sessizce ayrisamaz.
+
+
+SARTNAME_JSON_KEYS = {
+    # sartnamenin ornek mock JSON'undaki DORT zorunlu anahtar
+    "summary",
+    "events",
+    "risk",
+    "actions",
+    # sartnamenin diger maddelerine kanit olan ek alanlar
+    "onset_timestamp",
+    "safe_timestamps",
+    "incident_timestamps",
+    "risk_score",
+    "risk_status",
+    "risk_accuracy",
+    "triggered_mock_actions",
+}
+
+
+def test_sartname_json_has_the_four_mandatory_keys() -> None:
+    """Sartnamenin ornek ciktisindaki dort anahtar her zaman uretilir."""
+    payload = _minimal_report(summary="ozet", actions=["Saglik ekibini cagir"]).to_sartname_json()
+
+    assert payload["summary"] == "ozet"
+    assert payload["risk"] == "dusuk"
+    assert payload["actions"] == ["Saglik ekibini cagir"]
+    assert isinstance(payload["events"], list)
+
+
+def test_sartname_json_events_use_mmss_time_and_event_text() -> None:
+    """`events` ogeleri sartnamedeki gibi {"time": "MM:SS", "event": ...} seklindedir."""
+    from src.schemas.report import TimelineEntry
+
+    report = _minimal_report(timeline=[TimelineEntry(timestamp=75.0, description="Forklift devrildi")])
+    events = report.to_sartname_json()["events"]
+
+    assert events == [{"time": "01:15", "event": "Forklift devrildi"}]
+
+
+def test_sartname_json_falls_back_to_recommended_action() -> None:
+    """`actions` bos ise tek oneri sartname `actions` listesine donusur."""
+    payload = _minimal_report(actions=[], recommended_action="Alani guvenlik altina al").to_sartname_json()
+
+    assert payload["actions"] == ["Alani guvenlik altina al"]
+
+
+def test_sartname_json_carries_triggered_mock_actions() -> None:
+    """Ajanin GERCEKTEN cagirdigi mock araclar cikti da yer alir.
+
+    Bu alan ONCEDEN yalnizca frontend'in urettigi kopyada vardi; backend'in
+    `sartname_json`i onsuz doneyordu. Sartnamede PUANLANAN bir maddenin
+    ("mock fonksiyonlarin ajanin araclari olarak basariyla kullanilmasi")
+    kaniti oldugu icin bu ayrisma ciddiydi.
+    """
+    report = _minimal_report(
+        triggered_mock_actions=[
+            {"tool": "notify_health_team_tool", "args": {"urgency": "high"}, "result": "ok"}
+        ]
+    )
+    payload = report.to_sartname_json()
+
+    assert payload["triggered_mock_actions"] == [
+        {"tool": "notify_health_team_tool", "args": {"urgency": "high"}, "result": "ok"}
+    ]
+
+
+def test_sartname_json_key_set_is_locked_against_frontend_drift() -> None:
+    """Anahtar kumesi, frontend ikiziyle AYNI kalmalidir.
+
+    Ayni belge iki yerde uretiliyor: burada (backend) ve
+    `desktop/app/composables/useReportExport.ts::buildSartnameJson`. Operator
+    raporu nereden alirsa alsin AYNI belgeyi gormelidir. Bu test, birinde
+    yapilan bir degisikligin digerine tasinmasini ZORUNLU kilar - kume
+    degistiginde burasi kirilir ve TS tarafinin da guncellenmesi gerektigini
+    hatirlatir.
+    """
+    assert set(_minimal_report().to_sartname_json()) == SARTNAME_JSON_KEYS
