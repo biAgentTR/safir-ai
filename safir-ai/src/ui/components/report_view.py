@@ -162,13 +162,24 @@ class AgentRagPanel:
 
         llm_proposed_score = report.get("llm_proposed_score")
         if llm_proposed_score is not None:
+            deterministic_score = report.get("deterministic_score")
+            deterministic_text = (
+                f"Deterministik motor: **{deterministic_score}/100** "
+                if deterministic_score is not None
+                else "Deterministik motor skoru "
+            )
             st.info(
                 f"🤖 **Model Önerisi (llm_proposed_score): {llm_proposed_score}/100** — bu, Agent'ın "
-                f"KENDİ taslak değerlendirmesidir, RESMİ DEĞİLDİR ve final risk kararını BELİRLEMEZ. "
-                f"Sistemin resmi kararı yukarıdaki **Risk Skoru: {report['risk_score']}/100** "
-                f"({report['risk_level'].upper()}) alanıdır - deterministik risk motoru tarafından "
-                f"(RuleEngine şiddeti + temporal kanıt + hazard escalation + doğrulanmış RAG mevzuat "
-                f"desteği) hesaplanmıştır ve Agent'ın önerisinden BAĞIMSIZDIR."
+                f"KENDİ taslak değerlendirmesidir ve TEK BAŞINA resmi karar DEĞİLDİR.\n\n"
+                f"Resmi **Risk Skoru: {report['risk_score']}/100** ({report['risk_level'].upper()}), "
+                f"iki bağımsız katmanın ARİTMETİK ORTALAMASIDIR:\n"
+                f"- {deterministic_text}(RuleEngine şiddeti + temporal kanıt + hazard escalation + "
+                f"doğrulanmış RAG mevzuat desteği)\n"
+                f"- Ajanın taslak skoru: {llm_proposed_score}/100\n\n"
+                f"İki güvenlik kilidi ortalamanın üzerindedir: kritik tehlike güvenlik tabanı "
+                f"ortalamayla AŞAĞI ÇEKİLEMEZ ve **otomatik saha alarmı kararı ortalamaya değil, "
+                f"HAM deterministik skora** dayanır — yani Agent'ın düşük bir tahmini, kanıtlanmış "
+                f"bir alarmı sessizce bastıramaz."
             )
 
         st.subheader("🧠 VLM Gorsel Anlama Ciktisi (Turkce)")

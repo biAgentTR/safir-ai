@@ -57,13 +57,38 @@ kaybolur) ve BILEREK bu degisikligin kapsami DISINDA birakildi;
 `EVENT_TYPE_REGULATION_MAP`in etiketleri GUNCELLENMEDI - RuleEngine'in
 deterministik event_type->mevzuat eslemesi ayri, gelecekteki bir adimdir.
 
-MIMARI AYRIM (ONEMLI): Bu serviste uretilen `embedding_score`/`relevance_score`
-DEGERLERI, `RuleEngine`in deterministik risk_score/risk_level/escalation
-kararina ASLA girdi OLMAZ (bkz. `src/event_analysis/risk_resolver.py`,
-degistirilmedi). Bu servis yalnizca (A) `RuleEngine._describe_regulation`
-icin kisa-etiket lookup'i ve (B) ajanin opsiyonel `retriever_tool` cagrisi
-VE (C) `ContextBuilder`in `semantically_related_chunks` alani icin
-KULLANILIR - hicbiri risk kararini degistirmez.
+RISK KARARINDAKI ROLU (2026-09-18 - ONCEKI "ASLA GIRMEZ" IDDIASI YANLISTI):
+Bu modulun docstring'i uzun sure `relevance_score`un risk kararina "ASLA
+girdi OLMADIGINI" iddia ediyordu; ancak kod bunu YAPMIYORDU - iddia, kodun
+GERCEK davranisiyla CELISIYORDU ve bir denetimde "sistem kendi kendine yalan
+soyluyor" bulgusu olarak isaretlendi. Iddia duzeltildi, DAVRANIS degil:
+getirilen mevzuatin `relevance_score`u, `risk_model._regulatory_support_
+feature()` uzerinden `regulatory_support` ozelligine donusur ve nihai risk
+skoruna %15 agirlikla (`_W_REGULATORY_SUPPORT`) KATILIR. Bu BILINCLI bir
+tasarimdir: bir tehlikeyi GERCEK mevzuat metniyle dogrulayabilmek, o
+tehlikenin ciddiyetine dair anlamli bir kanittir.
+
+Kanit hicbir zaman UYDURULMAZ: `regulatory_support`, yalnizca `source_
+verified` (gercek kaynak URL'siyle dogrulanmis) parcalardan hesaplanir;
+mevzuat bulunamazsa ozellik `None` kalir ve skora katkisi SIFIRDIR (notr) -
+RAG'in sessiz kalmasi riski ASLA YUKSELTMEZ.
+
+NIHAI SKORUN OLUSUMU (tam zincir, bkz. `src/event_analysis/risk_resolver.py`):
+  deterministic_score = RuleEngine/risk_model formulu (RAG %15 dahil)
+  llm_proposed_score  = LangGraph ajaninin kendi taslak skoru
+  risk_score (NIHAI)  = round((deterministic_score + llm_proposed_score) / 2)
+Ajan skor uretemezse nihai skor DOGRUDAN `deterministic_score`a esittir.
+Iki guvenlik kilidi ortalamanin uzerindedir:
+  (1) `_CRITICAL_HAZARD_FLOOR` devreye girdiyse ortalama bu tabanin ALTINA
+      DUSURULEMEZ (risk_resolver.py) - ajanin dusuk bir tahmini kanitlanmis
+      kritik bir tehlikeyi yumusatamaz;
+  (2) OTOMATIK saha alarmi karari ortalamaya DEGIL, HAM `deterministic_score`a
+      bakar (src/main.py::stage_escalate) - ajan bir alarmi sessizce
+      bastiramaz.
+
+Bu servis ayrica (A) `RuleEngine._describe_regulation` icin kisa-etiket
+lookup'i, (B) ajanin opsiyonel `retriever_tool` cagrisi ve (C)
+`ContextBuilder`in `semantically_related_chunks` alani icin kullanilir.
 """
 
 from __future__ import annotations
