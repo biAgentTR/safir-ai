@@ -21,6 +21,23 @@ function logout() {
 
 type Tab = 'analizler' | 'konusmalar' | 'pipeline' | 'kanitlar'
 const tab = ref<Tab>('analizler')
+
+// ---- Sayfalama ----
+// Sistem Verileri sekmeleri ONCEDEN listenin TAMAMINI tek seferde ciziyordu;
+// yuzlerce analiz/iz kaydi biriktiginde sayfa hem cok uzuyor hem yavasliyordu.
+// Her sekme KENDI sayfa numarasini tutar (sekme degistirince digerinin yeri
+// kaybolmaz) ve liste yeniden yuklendiginde 1'e doner.
+const PAGE_SIZE = 25
+const analysesPage = ref(1)
+const conversationsPage = ref(1)
+const tracePage = ref(1)
+const framesPage = ref(1)
+
+/** Listeyi gecerli sayfaya gore dilimler. */
+function pageSlice<T>(items: T[], page: number): T[] {
+  const start = (page - 1) * PAGE_SIZE
+  return items.slice(start, start + PAGE_SIZE)
+}
 const TABS: { key: Tab; label: string }[] = [
   { key: 'analizler', label: 'Analizler' },
   { key: 'konusmalar', label: 'Konuşmalar' },
@@ -163,6 +180,21 @@ const storedFrames = computed<StoredFrameRow[]>(() => {
   }))
 })
 
+// ---- Sayfalanmis gorunumler ----
+// Sablon ARTIK ham listeleri degil bunlari dolasir; ham listeler (toplam
+// sayi, `<select>` secenekleri vb.) oldugu gibi kullanilmaya devam eder.
+const pagedAnalyses = computed(() => pageSlice(analyses.value, analysesPage.value))
+const pagedConversations = computed(() => pageSlice(conversations.value, conversationsPage.value))
+const pagedTraceEvents = computed(() => pageSlice(traceEvents.value, tracePage.value))
+const pagedStoredFrames = computed(() => pageSlice(storedFrames.value, framesPage.value))
+
+// Liste yeniden yuklendiginde/degistiginde sayfayi basa al: aksi halde
+// kullanici 4. sayfadayken kisa bir listeye gecildiginde BOS bir tablo
+// gorur ve bunu "veri yok" saniyabilir.
+watch(() => analyses.value.length, () => { analysesPage.value = 1 })
+watch(() => conversations.value.length, () => { conversationsPage.value = 1 })
+watch(selectedJobId, () => { tracePage.value = 1; framesPage.value = 1 })
+
 function humanError(e: unknown, fallback: string): string {
   return (e as { data?: { detail?: string } })?.data?.detail ?? (e as Error)?.message ?? fallback
 }
@@ -198,7 +230,14 @@ onMounted(() => {
       <NuxtLink to="/admin/login" class="btn-primary mt-4 inline-flex">Yönetici girişi →</NuxtLink>
     </div>
 
-    <div v-else>
+    <!-- Dikdortgen cerceve: ustteki "Analiz Gecmisi" / "SAFIR Asistan" /
+         "Raporlar" kartlariyla AYNI gorsel dil (bkz. TripleDrawerSection'daki
+         aktif kart sinifleri) - Sistem Verileri de artik sayfada basibos bir
+         blok degil, ayni cerceve ailesine ait bir panel olarak durur. -->
+    <div
+      v-else
+      class="rounded-2xl border border-accent/60 bg-surface-1/95 backdrop-blur-md p-6 ring-1 ring-accent/40 shadow-[0_20px_50px_-12px_rgba(0,0,0,0.6),0_0_25px_-5px_rgba(20,184,166,0.22)] relative overflow-hidden"
+    >
     <div class="mb-5 flex flex-wrap items-start justify-between gap-4">
       <div>
         <h2 class="text-xl font-bold tracking-tight text-slate-100">Sistem Verileri</h2>
@@ -283,7 +322,7 @@ onMounted(() => {
                 </tr>
               </thead>
               <tbody>
-                <template v-for="a in analyses" :key="a.job_id">
+                <template v-for="a in pagedAnalyses" :key="a.job_id">
                   <tr
                     class="border-b border-edge/60 hover:bg-surface-2/60 cursor-pointer"
                     @click="toggleExpand(a.job_id)"
@@ -312,6 +351,7 @@ onMounted(() => {
                 </template>
               </tbody>
             </table>
+            <DataPager v-model:page="analysesPage" :total="analyses.length" :page-size="PAGE_SIZE" noun="analiz" />
           </div>
         </div>
 
@@ -335,7 +375,7 @@ onMounted(() => {
                 </tr>
               </thead>
               <tbody>
-                <template v-for="c in conversations" :key="c.conversation_id">
+                <template v-for="c in pagedConversations" :key="c.conversation_id">
                   <tr
                     class="border-b border-edge/60 hover:bg-surface-2/60 cursor-pointer"
                     @click="toggleConversation(c.conversation_id)"
@@ -365,6 +405,12 @@ onMounted(() => {
                 </template>
               </tbody>
             </table>
+            <DataPager
+              v-model:page="conversationsPage"
+              :total="conversations.length"
+              :page-size="PAGE_SIZE"
+              noun="sohbet"
+            />
           </div>
         </div>
 
@@ -403,7 +449,7 @@ onMounted(() => {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="(e, i) in traceEvents" :key="i" class="border-b border-edge/60">
+                  <tr v-for="(e, i) in pagedTraceEvents" :key="i" class="border-b border-edge/60">
                     <td class="py-2 pr-3 text-slate-200">{{ stageLabel(e.stage) }}</td>
                     <td class="py-2 pr-3" :class="e.status === 'failed' ? 'text-risk-crit' : e.status === 'completed' ? 'text-risk-low' : 'text-slate-400'">{{ statusLabel[e.status] ?? e.status }}</td>
                     <td class="py-2 pr-3 text-slate-400 font-mono text-xs">{{ fmtDate(e.timestamp) }}</td>
@@ -412,6 +458,7 @@ onMounted(() => {
                   </tr>
                 </tbody>
               </table>
+              <DataPager v-model:page="tracePage" :total="traceEvents.length" :page-size="PAGE_SIZE" noun="aşama" />
             </div>
           </template>
 
@@ -420,14 +467,17 @@ onMounted(() => {
             <div v-if="!storedFrames.length" class="text-sm text-slate-500 text-center py-8">
               Bu analiz için kalıcı olarak saklanmış kanıt karesi bulunmuyor.
             </div>
-            <div v-else class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-              <figure v-for="f in storedFrames" :key="f.frame_id" class="border border-edge rounded-lg overflow-hidden bg-surface-2">
+            <div v-else>
+            <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+              <figure v-for="f in pagedStoredFrames" :key="f.frame_id" class="border border-edge rounded-lg overflow-hidden bg-surface-2">
                 <img :src="api.getFrameUrl(selectedJobId!, f.frame_id)" :alt="f.frame_id" class="w-full h-28 object-cover" loading="lazy" />
                 <figcaption class="px-2 py-1.5 text-[11px] text-slate-400">
                   <div class="text-slate-300">{{ f.evidence_id }}</div>
                   <div class="font-mono">{{ f.timestamp_str }} · {{ f.frame_id }}</div>
                 </figcaption>
               </figure>
+            </div>
+            <DataPager v-model:page="framesPage" :total="storedFrames.length" :page-size="PAGE_SIZE" noun="kanıt karesi" />
             </div>
           </template>
         </div>
