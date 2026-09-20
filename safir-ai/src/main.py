@@ -2276,8 +2276,35 @@ def _warmup_evren_models_on_startup() -> None:
 
 @app.get("/health")
 def health() -> dict:
-    """Servisin ayakta oldugunu bildiren basit saglik kontrolu uc noktasi."""
-    return {"status": "ok", "system": "SAFIR"}
+    """Servisin ayakta oldugunu ve HANGI modellerin aktif oldugunu bildirir.
+
+    `models` alani (2026-09-18 eklendi, GERIYE DONUK UYUMLU - eski `status`/
+    `system` alanlari aynen durur): operator panelindeki metinlerin saglayici
+    adini SABIT YAZMASINI onler. Arayuz onceden "Video EVREN'e gonderiliyor..."
+    gibi cumlelerle saglayici adini KODA GOMUYORDU; saglayici degistiginde
+    (EVREN -> Gemini) bu metinler sessizce YANLIS hale geliyordu. Artik arayuz
+    burada bildirilen GERCEK model adini gosterir - config neyi aktif ederse
+    ekranda o yazar.
+
+    Returns:
+        `status`/`system` ve katman basina aktif model adlarini iceren sozluk.
+        Config okunamazsa `models` BOS sozluk doner (uc nokta yine de 200
+        dondurur - saglik kontrolu model adi yuzunden BASARISIZ OLMAZ).
+    """
+    models: dict = {}
+    try:
+        config = load_config()
+        models = {
+            "vlm": config.vlm.active_endpoint().model_name,
+            "vlm_frames": config.vlm.models[config.vlm.frames_model].model_name,
+            "llm": config.llm.active_endpoint().model_name,
+            "embedding": config.memory.embedding.model_name,
+            "guard": config.guard.model_name if config.guard.enabled else None,
+        }
+    except Exception:  # noqa: BLE001 - saglik kontrolu model adi yuzunden DUSMEZ
+        logger.warning("/health: aktif model adlari okunamadi; 'models' bos donuyor.", exc_info=True)
+
+    return {"status": "ok", "system": "SAFIR", "models": models}
 
 
 @app.post("/analyze", response_model=SafirReport)
