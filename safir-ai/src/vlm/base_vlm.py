@@ -25,7 +25,7 @@ import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -39,6 +39,148 @@ logger = logging.getLogger(__name__)
 # Gecici ag hatalarinda VLM cagrisinin kac kez yeniden deneneceği ve geri-cekilme tabani.
 _MAX_INFERENCE_RETRIES = 2
 _RETRY_BACKOFF_BASE_SEC = 0.5
+
+# Yeniden denenmesi ANLAMLI olan HTTP durum kodlari. Bunun DISINDAKI 4xx'ler
+# (400 bozuk istek, 401/403 gecersiz anahtar, 404, 413 cok buyuk govde, 422)
+# tekrar denemekle DUZELMEZ - yeniden denemek yalnizca hata suresini katlar ve
+# kota harcar; bu yuzden ANINDA yukseltilir.
+#   408 Request Timeout | 409 Conflict | 425 Too Early | 429 Too Many Requests
+#   500/502/503/504 sunucu tarafi gecici hatalar
+_RETRYABLE_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+
+# Saglayici bir bekleme suresi dayatirsa (429/503 + `Retry-After`), ustel
+# geri-cekilme yerine ONUN degeri kullanilir - ancak cok uzun bloklanmayi
+# onlemek icin bu tavanla sinirlanir.
+_MAX_HONORED_RETRY_AFTER_SEC = 30.0
+
+
+def is_retryable_error(exc: BaseException) -> bool:
+    """Bir istisnanin GECICI (yeniden denenebilir) olup olmadigini soyler.
+
+    Args:
+        exc: `httpx` cagrisindan yakalanan istisna.
+
+    Returns:
+        Ag/baglanti/timeout hatalari ve `_RETRYABLE_STATUS_CODES` icindeki HTTP
+        durumlari icin `True`; kalici istemci hatalari (400/401/403/404/413/422)
+        icin `False`.
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in _RETRYABLE_STATUS_CODES
+    # `RequestError`: connect/read/write/pool timeout'lari ve baglanti hatalari
+    # (DNS, TLS, kopan soket). Hicbiri istegin ICERIGIYLE ilgili degildir.
+    return isinstance(exc, httpx.RequestError)
+
+
+def _retry_after_seconds(exc: BaseException) -> Optional[float]:
+    """`Retry-After` basligini (saniye biciminde verilmisse) saniye olarak dondurur.
+
+    HTTP-date bicimindeki degerler BILEREK yok sayilir (saat farki/kayma riski);
+    o durumda cagiran taraf kendi ustel geri-cekilmesine duser.
+
+    Args:
+        exc: Yakalanan istisna (yalnizca `HTTPStatusError` anlamlidir).
+
+    Returns:
+        Tavanla sinirlanmis bekleme suresi veya `None`.
+    """
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    raw = exc.response.headers.get("Retry-After")
+    if not raw:
+        return None
+    try:
+        seconds = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    if seconds < 0:
+        return None
+    return min(seconds, _MAX_HONORED_RETRY_AFTER_SEC)
+
+
+def send_with_retry(
+    send: Callable[[], httpx.Response],
+    *,
+    source: str,
+    max_retries: int = _MAX_INFERENCE_RETRIES,
+    on_retry: Optional[Callable[[Dict[str, Any]], None]] = None,
+) -> httpx.Response:
+    """HER VLM/LLM HTTP cagrisi icin ORTAK yeniden-deneme sarmalayicisi.
+
+    NEDEN TEK BIR YERDE: yeniden deneme mantigi daha once YALNIZCA kare-tabanli
+    ("hafif") yolda, `_post_chat_completion` icinde SATIR ICI vardi; video-
+    dogrudan ("agir") yolda HIC YOKTU - tek bir gecici ag hatasi tum analizi
+    dusuruyordu. Ayni mantigi ikinci kez kopyalamak yerine buraya alindi;
+    boylece iki yol AYNI politikayi (hangi hata gecicidir, ne kadar beklenir,
+    `Retry-After` onurlandirilir mi) paylasir ve politika tek noktadan degisir.
+
+    `send()` yalnizca istegi ATMALIDIR; `raise_for_status()` BURADA cagrilir -
+    aksi halde HTTP durum hatalari `send` icinde yakalanip yeniden-deneme
+    karari verilemezdi.
+
+    Args:
+        send: Istegi atip `httpx.Response` donduren, parametresiz cagrilabilir.
+            Her denemede YENIDEN cagrilir (govde tekrar gonderilir).
+        source: Teshis/loglama kimligi (model adi veya video yolu).
+        max_retries: EK deneme sayisi (toplam deneme = `max_retries + 1`).
+        on_retry: Her yeniden denemeden ONCE cagrilan opsiyonel bildirim
+            (ör. operator paneline "yeniden deneniyor" bilgisi dusurmek icin).
+            Sozluk alanlari: `attempt`, `max_attempts`, `delay_sec`, `error`.
+
+    Returns:
+        Basarili (2xx) `httpx.Response`.
+
+    Raises:
+        httpx.HTTPError: Hata KALICI ise (yeniden denenmez) oldugu gibi
+            yukseltilir - cagiran taraf mevcut hata yollarini (degrade rapor,
+            parca basarisizligi) DEGISTIRMEDEN kullanmaya devam eder.
+        RuntimeError: Tum denemeler tukendiginde, son hatayi zincirleyerek.
+    """
+    last_exc: Optional[BaseException] = None
+    total_attempts = max_retries + 1
+
+    for attempt in range(total_attempts):
+        try:
+            response = send()
+            response.raise_for_status()
+            return response
+        except (httpx.HTTPStatusError, httpx.RequestError) as exc:
+            if not is_retryable_error(exc):
+                # KALICI hata: hic beklemeden, oldugu gibi yukselt.
+                logger.error(
+                    "VLM cagrisi KALICI hatayla basarisiz (yeniden denenmeyecek) - kaynak=%s: %s",
+                    source,
+                    exc,
+                )
+                raise
+            last_exc = exc
+            if attempt >= total_attempts - 1:
+                break
+            delay = _retry_after_seconds(exc)
+            if delay is None:
+                delay = _RETRY_BACKOFF_BASE_SEC * (2**attempt)
+            logger.warning(
+                "VLM cagrisi basarisiz (deneme %d/%d, kaynak=%s): %s - %.1fs sonra yeniden denenecek",
+                attempt + 1,
+                total_attempts,
+                source,
+                exc,
+                delay,
+            )
+            if on_retry is not None:
+                on_retry(
+                    {
+                        "attempt": attempt + 1,
+                        "max_attempts": total_attempts,
+                        "delay_sec": round(delay, 1),
+                        "error": str(exc),
+                    }
+                )
+            time.sleep(delay)
+
+    raise RuntimeError(
+        f"VLM cagrisi {total_attempts} denemede basarisiz (kaynak={source}): {last_exc}"
+    ) from last_exc
 
 
 def apply_extra_body(payload: Dict[str, Any], extra_body: Dict[str, Any]) -> None:
@@ -490,41 +632,26 @@ class BaseVLM(ABC):
                 bicimde gelirse.
         """
         started_at = time.perf_counter()
-        # Gecici ag hatalarina (baglanti/timeout/5xx) karsi ustel geri-cekilmeli
-        # yeniden deneme; bozuk yanit (KeyError/IndexError) yeniden denenmez.
-        last_exc: Exception | None = None
-        for attempt in range(_MAX_INFERENCE_RETRIES + 1):
-            try:
-                response = httpx.post(
-                    f"{self.base_url}/chat/completions",
-                    json=payload,
-                    headers=self._endpoint.auth_headers(),
-                    timeout=60.0,
-                )
-                response.raise_for_status()
-                data = response.json()
-                raw_content = data["choices"][0]["message"]["content"]
-                raise_if_empty_content(raw_content, self.model_name, data)
-                break
-            except (KeyError, IndexError) as exc:
-                raise RuntimeError(f"VLM yaniti beklenmedik bicimde ({self.model_name}): {exc}") from exc
-            except httpx.HTTPError as exc:
-                last_exc = exc
-                if attempt < _MAX_INFERENCE_RETRIES:
-                    backoff = _RETRY_BACKOFF_BASE_SEC * (2**attempt)
-                    logger.warning(
-                        "VLM cagrisi basarisiz (deneme %d/%d, %s): %s — %.1fs sonra yeniden denenecek",
-                        attempt + 1,
-                        _MAX_INFERENCE_RETRIES + 1,
-                        self.model_name,
-                        exc,
-                        backoff,
-                    )
-                    time.sleep(backoff)
-        else:
-            raise RuntimeError(
-                f"VLM cagrisi {_MAX_INFERENCE_RETRIES + 1} denemede basarisiz ({self.model_name}): {last_exc}"
-            ) from last_exc
+        # Yeniden deneme politikasi ORTAK `send_with_retry`den gelir (ayni
+        # politika video-dogrudan/"agir" yolda da kullanilir - bkz.
+        # `src/vlm/gemini_vlm.py::GeminiVLM._generate`). Bozuk yanit
+        # (KeyError/IndexError) ve bos icerik yeniden DENENMEZ: bunlar ag
+        # kaynakli gecici hatalar degildir.
+        response = send_with_retry(
+            lambda: httpx.post(
+                f"{self.base_url}/chat/completions",
+                json=payload,
+                headers=self._endpoint.auth_headers(),
+                timeout=60.0,
+            ),
+            source=self.model_name,
+        )
+        try:
+            data = response.json()
+            raw_content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError) as exc:
+            raise RuntimeError(f"VLM yaniti beklenmedik bicimde ({self.model_name}): {exc}") from exc
+        raise_if_empty_content(raw_content, self.model_name, data)
 
         # Yeni Typed Parser kullanimi (Legacy Adapter destekli)
         from src.vlm.parser import parse_vlm_response
@@ -550,8 +677,26 @@ class BaseVLM(ABC):
                     
                 all_invalid = False
                 
+                # `canonical_event_type` + `keywords`: modelin KENDI urettigi
+                # taksonomi eslemesi ve serbest terimler. Bu iki alan onceden
+                # BURADA dusuruluyordu; sonucta `EventEngine`e giden her olay
+                # `keywords=[]` ile ulasiyor ve sistem sabit `_KEYWORD_RULES`
+                # (10 kategori) taksonomisine geri dusuyordu. Esleme mantigi
+                # artik `src/vlm/parser.py::observations_to_structured_events`
+                # ile AYNI sozlesmeyi izler (video-dogrudan yol da onu kullanir).
+                _keywords: List[str] = []
+                for _term in list(obs.attributes or []) + list(obs.entities or []):
+                    _cleaned = str(_term).strip()
+                    if _cleaned and _cleaned not in _keywords:
+                        _keywords.append(_cleaned)
+
                 structured_events.append({
                     "event_name": obs.observed_label,
+                    "canonical_event_type": obs.canonical_type,
+                    "taxonomy_status": getattr(obs.taxonomy_status, "value", obs.taxonomy_status),
+                    "keywords": _keywords,
+                    "description": obs.observed_label,
+                    "uncertainties": list(obs.uncertainties or []),
                     "confidence": obs.confidence,
                     "start_time": norm.global_start_sec,
                     "end_time": norm.global_end_sec,
