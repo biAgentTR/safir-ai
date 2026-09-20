@@ -43,6 +43,41 @@ export function useSafirApi() {
   // new field addition, not from anything unusual in that change.
 
   /**
+   * POST /uploads/video yaniti (bkz. `src/main.py::VideoUploadResponse`).
+   */
+  interface VideoUploadResult {
+    /** Analiz isteklerinde `video_source` olarak kullanilacak referans. */
+    video_source: string
+    /** Operatorun sectigi ozgun dosya adi (yalnizca gosterim icin). */
+    original_filename: string
+    size_bytes: number
+  }
+
+  /**
+   * POST /uploads/video -> { video_source, original_filename, size_bytes }
+   *
+   * Surukle-birak ile secilen videoyu sunucuya yukler. Donen `video_source`,
+   * analiz isteklerinde DOGRUDAN kullanilir - dosyanin `data/` altinda
+   * onceden durmasi GEREKMEZ. Hedef dosya adi sunucuda uretilir; bizim
+   * gonderdigimiz ad yalnizca gosterim icindir.
+   *
+   * `signal` verilmezse yukleme iptal EDILEMEZ; buyuk videolarda cagiran
+   * taraf bir `AbortController` gecirmelidir.
+   */
+  async function uploadVideo(file: File, signal?: AbortSignal): Promise<VideoUploadResult> {
+    const form = new FormData()
+    form.append('file', file)
+    // Tip parametresi ACIKCA verilir: parametresiz birakildiginda Nuxt'in
+    // route-tabanli `$fetch` tip cikarimi "Excessive stack depth" hatasi
+    // veriyor (dosyadaki diger cagrilar da ayni nedenle acik tiplidir).
+    return await $fetch<VideoUploadResult>(url('/uploads/video'), {
+      method: 'POST',
+      body: form,
+      signal,
+    })
+  }
+
+  /**
    * GET /health -> { status, system, models }
    *
    * `models`: o an AKTIF olan model adlari (bkz. `useActiveModels`). Arayuz
@@ -258,6 +293,7 @@ export function useSafirApi() {
   return {
     base,
     health,
+    uploadVideo,
     createAnalysis,
     getJob,
     streamJobUrl,

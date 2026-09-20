@@ -2307,6 +2307,99 @@ def health() -> dict:
     return {"status": "ok", "system": "SAFIR", "models": models}
 
 
+class VideoUploadResponse(BaseModel):
+    """`POST /uploads/video` yaniti."""
+
+    video_source: str = Field(
+        description=(
+            "Analiz isteklerinde (`/analyze`, `/analyze/jobs`) `video_source` olarak KULLANILACAK "
+            "deger. Sunucudaki gercek yol DEGIL, yalnizca dosya adidir; `normalize_video_source` "
+            "bunu `data/` altina cozer."
+        )
+    )
+    original_filename: str = Field(description="Operatorun yukledigi dosyanin ozgun adi (yalnizca gosterim icin).")
+    size_bytes: int = Field(description="Diske yazilan dosyanin boyutu.")
+
+
+# Yuklenebilir video uzantilari ve azami boyut. Uzanti listesi, operator
+# panelindeki dosya secicinin filtresiyle (bkz. VlmDirectSection.pickVideo)
+# AYNI tutulur.
+_ALLOWED_VIDEO_EXTENSIONS = {"mp4", "avi", "mov", "mkv", "webm"}
+_MAX_VIDEO_UPLOAD_BYTES = 512 * 1024 * 1024  # 512 MB
+
+
+@app.post("/uploads/video", response_model=VideoUploadResponse)
+async def upload_video(file: UploadFile = File(...)) -> VideoUploadResponse:
+    """Bir video dosyasini sunucuya yukler ve analizde kullanilacak referansi dondurur.
+
+    NEDEN VAR: analiz istekleri `video_source` alaninda dosyanin SUNUCUDA
+    ZATEN bulunmasini bekliyordu (`data/<ad>`) veya masaustu kabugunun
+    (Tauri) verdigi MUTLAK bir yolu aliyordu. Tarayicida calisan bir
+    operatorun video secmesinin HICBIR yolu yoktu - dosya secici sessizce
+    hicbir sey yapmiyordu. Bu uc nokta, surukle-birak ile yuklemeyi mumkun
+    kilar ve videonun onceden `data/` altinda durmasi zorunlulugunu kaldirir.
+
+    GUVENLIK: hedef dosya adi TAMAMEN sunucuda uretilir (`upload_<uuid4>`);
+    istemcinin gonderdigi ad yola HIC girmez. Bu iki sorunu birden onler:
+    (1) yol gecisi (`../`), (2) ayni adli farkli videolarin `data/` altinda
+    birbirini EZMESI - gecmiste yasanmis bir hata.
+
+    BELLEK: dosya parca parca okunup DOGRUDAN diske akitilir; tamami bellege
+    ALINMAZ. Sinir asilirsa yazim durdurulur ve yarim dosya SILINIR.
+
+    Args:
+        file: Yuklenen video (multipart/form-data, alan adi `file`).
+
+    Returns:
+        Analizde kullanilacak `video_source` referansi ve dosya bilgileri.
+
+    Raises:
+        HTTPException: Uzanti desteklenmiyorsa/dosya bossa (422) veya dosya
+            azami boyutu asiyorsa (413).
+    """
+    original = (file.filename or "").strip() or "video"
+    ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
+    if ext not in _ALLOWED_VIDEO_EXTENSIONS:
+        allowed = "/".join(sorted(_ALLOWED_VIDEO_EXTENSIONS))
+        raise HTTPException(
+            status_code=422,
+            detail=f"Desteklenmeyen video turu: .{ext or '?'} (yalnizca {allowed})",
+        )
+
+    os.makedirs(_DATA_DIR, exist_ok=True)
+    stored_name = f"upload_{uuid.uuid4().hex}.{ext}"
+    target = Path(_DATA_DIR) / stored_name
+
+    total = 0
+    try:
+        with open(target, "wb") as out:
+            while True:
+                piece = await file.read(1024 * 1024)
+                if not piece:
+                    break
+                total += len(piece)
+                if total > _MAX_VIDEO_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            f"Video cok buyuk (azami {_MAX_VIDEO_UPLOAD_BYTES // (1024 * 1024)} MB)."
+                        ),
+                    )
+                out.write(piece)
+    except Exception:
+        # Yarim yazilmis dosya BIRAKILMAZ - hem diski sisirir hem de gecerli
+        # bir video sanilip analize sokulabilirdi.
+        target.unlink(missing_ok=True)
+        raise
+
+    if total == 0:
+        target.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail="Yuklenen dosya bos.")
+
+    logger.info("Video yuklendi: %s -> %s (%.1f MB)", original, stored_name, total / (1024 * 1024))
+    return VideoUploadResponse(video_source=stored_name, original_filename=original, size_bytes=total)
+
+
 @app.post("/analyze", response_model=SafirReport)
 def analyze(request: AnalyzeRequest) -> SafirReport:
     """Verilen video kaynagini uctan uca (senkron) isleyip yapilandirilmis rapor uretir.

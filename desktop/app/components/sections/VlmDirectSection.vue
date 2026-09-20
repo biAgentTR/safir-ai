@@ -35,6 +35,71 @@ const videoUrl = ref<string | null>(null)
 const fileName = ref<string | null>(null)
 const userPrompt = ref('Sahnede riskli bir durum var mi degerlendir.')
 
+// ---- Surukle-birak / tarayici uzerinden video yukleme ----
+// Tauri'nin yerel dosya secicisi (asagidaki `pickVideo`) yalnizca masaustu
+// kabugunda calisir ve MUTLAK bir yol verir; tarayicida sessizce hicbir sey
+// yapmiyordu. Buradaki yol, dosyayi `POST /uploads/video` ile sunucuya
+// yukleyip donen referansi kullanir - video artik `data/` altinda ONCEDEN
+// durmak ZORUNDA DEGILDIR.
+const api = useSafirApi()
+const uploading = ref(false)
+const uploadError = ref<string | null>(null)
+const isDragging = ref(false)
+let uploadAbort: AbortController | null = null
+
+const ACCEPTED_VIDEO_EXTENSIONS = ['mp4', 'avi', 'mov', 'mkv', 'webm']
+
+/** Secilen/birakilan bir dosyayi yukler ve analiz icin hazir hale getirir. */
+async function acceptVideoFile(file: File) {
+  const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+  if (!ACCEPTED_VIDEO_EXTENSIONS.includes(ext)) {
+    uploadError.value = `Desteklenmeyen dosya türü: .${ext || '?'} (yalnızca ${ACCEPTED_VIDEO_EXTENSIONS.join('/')})`
+    return
+  }
+
+  uploadAbort?.abort()
+  uploadAbort = new AbortController()
+  uploading.value = true
+  uploadError.value = null
+  try {
+    const res = await api.uploadVideo(file, uploadAbort.signal)
+    videoPath.value = res.video_source
+    fileName.value = res.original_filename
+    // Onizleme, YUKLENEN dosyadan dogrudan uretilir (sunucuya ikinci bir
+    // istek atmadan); boylece operator analizi baslatmadan once videoyu
+    // gorebilir.
+    if (videoUrl.value?.startsWith('blob:')) URL.revokeObjectURL(videoUrl.value)
+    videoUrl.value = URL.createObjectURL(file)
+    duration.value = 0
+    currentTime.value = 0
+  } catch (e: unknown) {
+    // Iptal edilen yukleme bir HATA DEGILDIR (kullanici yeni bir dosya birakti).
+    if ((e as Error)?.name === 'AbortError') return
+    uploadError.value =
+      (e as { data?: { detail?: string } })?.data?.detail ?? 'Video yüklenemedi. Arka uca ulaşılamıyor olabilir.'
+  } finally {
+    uploading.value = false
+  }
+}
+
+function onVideoDrop(event: DragEvent) {
+  isDragging.value = false
+  const file = event.dataTransfer?.files?.[0]
+  if (file) void acceptVideoFile(file)
+}
+
+/** Tarayicida (Tauri disinda) standart dosya secicisini acar. */
+function openBrowserFilePicker() {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = ACCEPTED_VIDEO_EXTENSIONS.map((e) => `.${e}`).join(',')
+  input.onchange = () => {
+    const file = input.files?.[0]
+    if (file) void acceptVideoFile(file)
+  }
+  input.click()
+}
+
 async function pickVideo() {
   try {
     const dialog = await import('@tauri-apps/plugin-dialog')
@@ -52,9 +117,11 @@ async function pickVideo() {
       videoUrl.value = null // non-Tauri browser dev — no preview, analysis still works
     }
   } catch {
-    // Not running inside Tauri (or plugin unavailable) — no picker available;
-    // operator has no way to enter a path here (unlike new-analysis.vue's
-    // manual text field), since this dashboard is built around a real preview.
+    // Tauri disinda (tarayici) calisiyoruz: ONCEDEN burasi SESSIZCE hicbir
+    // sey yapmiyordu, yani operatorun video secmesinin hicbir yolu yoktu.
+    // Artik standart bir dosya seciciye duser ve secilen dosya sunucuya
+    // yuklenir (bkz. `acceptVideoFile`).
+    openBrowserFilePicker()
   }
   duration.value = 0
   currentTime.value = 0
@@ -320,6 +387,11 @@ async function doExportPdf() {
       v-if="!hasRunAnalysis && !store.isRunning"
       v-model="userPrompt"
       :video-label="fileName"
+      :uploading="uploading"
+      :upload-error="uploadError"
+      :is-dragging="isDragging"
+      @drop-video="onVideoDrop"
+      @drag-state="(v: boolean) => (isDragging = v)"
       :can-submit="canSubmit"
       :submitting="store.submitting"
       :error="submitError"

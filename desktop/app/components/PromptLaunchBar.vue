@@ -10,12 +10,22 @@ const props = defineProps<{
   canSubmit: boolean
   submitting: boolean
   error: string | null
+  /** Video sunucuya yukleniyor (surukle-birak veya dosya secici). */
+  uploading?: boolean
+  /** Yukleme hatasi (desteklenmeyen tur, cok buyuk dosya, arka uc erisilemez). */
+  uploadError?: string | null
+  /** Uzerine bir dosya suruklendi mi (birakma alanini vurgulamak icin). */
+  isDragging?: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'update:modelValue', value: string): void
   (e: 'pick-file'): void
   (e: 'submit'): void
+  /** Composer uzerine bir dosya birakildi. */
+  (e: 'drop-video', event: DragEvent): void
+  /** Suruklenme durumu degisti (birakma alanini vurgulamak icin). */
+  (e: 'drag-state', dragging: boolean): void
 }>()
 
 const SUGGESTIONS = [
@@ -64,7 +74,30 @@ function onKeydown(e: KeyboardEvent) {
       </p>
 
       <!-- Glass Composer Box with glowing border effects -->
-      <form class="mt-7 relative overflow-hidden glass-panel rounded-2xl p-3 text-left border border-edge/90 hover:border-accent/50 shadow-2xl hover:shadow-[0_16px_36px_-8px_rgba(20,184,166,0.18)] transition-all duration-300" @submit.prevent="$emit('submit')">
+      <!-- Composer AYNI ZAMANDA bir birakma alanidir: operator videoyu
+           dogrudan buraya surukleyebilir. `dragover`da varsayilan davranis
+           engellenmezse tarayici dosyayi YENI SEKMEDE ACAR ve birakma hic
+           gerceklesmez - bu yuzden `.prevent` zorunludur. -->
+      <form
+        class="mt-7 relative overflow-hidden glass-panel rounded-2xl p-3 text-left border shadow-2xl transition-all duration-300"
+        :class="
+          isDragging
+            ? 'border-accent ring-2 ring-accent/40 shadow-[0_16px_36px_-8px_rgba(20,184,166,0.35)]'
+            : 'border-edge/90 hover:border-accent/50 hover:shadow-[0_16px_36px_-8px_rgba(20,184,166,0.18)]'
+        "
+        @submit.prevent="$emit('submit')"
+        @dragover.prevent="$emit('drag-state', true)"
+        @dragenter.prevent="$emit('drag-state', true)"
+        @dragleave.prevent="$emit('drag-state', false)"
+        @drop.prevent="$emit('drop-video', $event)"
+      >
+        <!-- Suruklerken tum alani kaplayan gecici katman -->
+        <div
+          v-if="isDragging"
+          class="absolute inset-0 z-20 flex items-center justify-center rounded-2xl bg-surface-1/90 backdrop-blur-sm pointer-events-none"
+        >
+          <span class="text-sm font-medium text-accent">Videoyu buraya bırakın</span>
+        </div>
         <!-- Top Luminous Hairline Accent -->
         <div class="absolute inset-x-0 top-0 h-[2px] bg-gradient-to-r from-transparent via-accent/60 to-transparent" />
 
@@ -80,8 +113,11 @@ function onKeydown(e: KeyboardEvent) {
         <div class="flex items-center gap-2.5 px-1.5 pb-1">
           <button type="button" class="btn-ghost !py-1.5 !px-3 text-xs flex items-center gap-1.5" @click="$emit('pick-file')">
             <span aria-hidden="true">📎</span>
-            {{ videoLabel ? 'Videoyu Değiştir' : 'Video Ekle' }}
+            {{ uploading ? 'Yükleniyor…' : videoLabel ? 'Videoyu Değiştir' : 'Video Ekle' }}
           </button>
+          <span v-if="!videoLabel && !uploading" class="hidden sm:inline text-xs text-slate-500">
+            …veya videoyu buraya sürükleyip bırakın
+          </span>
           <span v-if="videoLabel" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-surface-2 border border-accent/30 text-xs font-mono text-accent truncate max-w-xs shadow-sm">
             <span class="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
             <span class="truncate">{{ videoLabel }}</span>
@@ -99,6 +135,9 @@ function onKeydown(e: KeyboardEvent) {
         </div>
       </form>
 
+      <p v-if="uploadError" role="alert" class="mt-3 text-sm text-risk-crit flex items-center justify-center gap-1.5">
+        {{ uploadError }}
+      </p>
       <p v-if="error" role="alert" class="mt-3 text-sm text-risk-crit flex items-center justify-center gap-1.5">
         <span aria-hidden="true">⚠</span>{{ error }}
       </p>
