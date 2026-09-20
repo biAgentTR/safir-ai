@@ -225,8 +225,18 @@ def test_build_prompt_injection_guard_evren_requires_base_url() -> None:
         build_prompt_injection_guard(_FakeGuardConfig())
 
 
-def test_build_prompt_injection_guard_from_real_config_yaml_builds_evren_guard() -> None:
-    """`configs/config.yaml`nin GERCEK `guard:` blogu - EVREN AKTIF/production saglayicidir.
+def test_build_prompt_injection_guard_from_real_config_yaml_builds_groq_guard() -> None:
+    """`configs/config.yaml`nin GERCEK `guard:` blogu - GROQ AKTIF/production saglayicidir.
+
+    2026-09-18: EVREN takima kapatildi. Model/anlama katmani (VLM+LLM+embedding)
+    Gemini'ye, GUVENLIK katmani ise BILINCLI OLARAK AYRI bir saglayiciya (Groq)
+    tasindi - boylece bir saglayicidaki kota/kesinti guvenlik katmanini da
+    birlikte dusurmez.
+
+    Kurulan sinif HALA `EvrenPromptInjectionGuard`tir - bu sinif saglayiciya
+    OZEL hicbir alan kullanmayan, saf OpenAI-uyumlu bir `/chat/completions`
+    istemcisidir (bkz. `build_prompt_injection_guard`); degisen yalnizca taban
+    adres, model adi ve anahtar ortam degiskenidir.
 
     `GuardConfig`nin `base_url` alani (RerankerConfig/EmbeddingConfig ile AYNI
     sekilde) bilerek pydantic varsayilani DEGIL - her zaman config.yaml'dan
@@ -235,9 +245,29 @@ def test_build_prompt_injection_guard_from_real_config_yaml_builds_evren_guard()
     from src.utils.config_loader import load_config
 
     config = load_config()
-    assert config.guard.provider == "evren"
+    assert config.guard.provider == "groq"
+    assert config.guard.api_key_env == "GROQ_API_KEY"
+    assert config.guard.base_url == "https://api.groq.com/openai/v1"
     guard = build_prompt_injection_guard(config.guard)
     assert isinstance(guard, EvrenPromptInjectionGuard)
+
+
+def test_real_config_keeps_model_layers_on_gemini_and_guard_on_groq() -> None:
+    """Saglayici ayrimi KAZAYLA tek bir saglayiciya geri dusmesin diye kilitlenir.
+
+    VLM/LLM/embedding Gemini'de, guard Groq'ta olmalidir. Ayrica embedding'in
+    Groq'a tasinMAMASI teknik bir zorunluluktur: Groq'un model katalogunda
+    hicbir embedding modeli YOKTUR (yalnizca metin uretimi, Whisper, TTS ve
+    prompt-guard siniflandiricilari sunulur).
+    """
+    from src.utils.config_loader import load_config
+
+    config = load_config()
+    assert config.vlm.active_model == "gemini"
+    assert config.vlm.frames_model == "gemini_frames"
+    assert config.llm.active_model == "gemini"
+    assert config.memory.embedding.provider == "gemini"
+    assert config.guard.provider == "groq"
 
 
 # --- GroqPromptInjectionGuard: ayni davranis sozlesmesi, farkli saglayici ---

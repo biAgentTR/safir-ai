@@ -103,11 +103,25 @@ def build_prompt_injection_guard(guard_config) -> PromptInjectionGuard:
     Raises:
         GuardUnavailableError: `provider` desteklenmiyorsa.
     """
-    if guard_config.provider == "evren":
+    # AKTIF: "gemini". `EvrenPromptInjectionGuard` saf OpenAI-uyumlu bir
+    # `/chat/completions` istemcisidir (saglayiciya OZEL hicbir alan
+    # kullanmaz), bu yuzden Gemini'nin uyumluluk ucuyle de OLDUGU GIBI
+    # calisir - yalnizca taban adres, model adi ve anahtar ortam degiskeni
+    # farklidir. "evren" kaydi SILINMEDI (servis takima kapatildi, ama
+    # saglayici kodu proje kurallari geregi korunur).
+    # AKTIF: "groq". Guard, saglayiciya OZEL hicbir alan kullanmayan saf bir
+    # OpenAI-uyumlu `/chat/completions` istemcisidir; gonderdigi alanlarin
+    # (`response_format={"type":"json_object"}`, `temperature=0.0`) hepsi
+    # Groq tarafindan desteklenir ve Groq'un ACIKCA reddettigi alanlar
+    # (`logprobs`, `logit_bias`, `top_logprobs`, `messages[].name`) HIC
+    # gonderilmez - bu yuzden hicbir kod degisikligi gerekmez, yalnizca
+    # taban adres/model/anahtar degisir.
+    if guard_config.provider in ("groq", "gemini", "evren"):
         if not guard_config.base_url:
             raise GuardUnavailableError(
                 "Prompt injection guard icin 'guard.base_url' config'te tanimli olmalidir "
-                "(provider='evren' icin EVREN taban adresi, orn. 'https://evren-llmapi.ssyz.org.tr/v1')."
+                f"(provider='{guard_config.provider}' icin OpenAI-uyumlu taban adres, orn. "
+                "'https://api.groq.com/openai/v1')."
             )
         return EvrenPromptInjectionGuard(
             model_name=guard_config.model_name,
@@ -118,7 +132,7 @@ def build_prompt_injection_guard(guard_config) -> PromptInjectionGuard:
         )
     raise GuardUnavailableError(
         f"Desteklenmeyen prompt injection guard saglayicisi: '{guard_config.provider}'. "
-        "Yalnizca 'evren' destekleniyor."
+        "Desteklenenler: 'groq' (aktif), 'gemini', 'evren' (devre disi - servis kapatildi)."
     )
 
 

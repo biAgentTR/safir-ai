@@ -36,12 +36,15 @@ firlatilir (bkz. o sinifin dokustringi).
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 class ConfigurationError(Exception):
@@ -362,7 +365,29 @@ class EvrenEmbeddingProvider(EmbeddingProvider):
             return np.zeros((0, self.dimension), dtype="float32")
 
         client = self._get_client()
-        response = client.embeddings.create(model=self._model_name, input=texts)
+        # `dimensions`: config'te BEKLENEN bir boyut verilmisse istege ACIKCA
+        # eklenir. Gemini'nin `gemini-embedding-001` modeli varsayilan olarak
+        # 3072 boyut dondurur; config 768/1536 gibi bir deger istiyorsa bu
+        # parametre GONDERILMEZSE Qdrant koleksiyonunun boyutu ile gelen
+        # vektorun boyutu UYUSMAZ ve her upsert hata verir. Saglayici bu
+        # parametreyi desteklemiyorsa (ör. sabit boyutlu `bge-m3-embed`)
+        # istek parametresiz TEKRAR denenir - eski davranis KORUNUR.
+        kwargs = {"model": self._model_name, "input": texts}
+        if self._configured_dimension:
+            try:
+                response = client.embeddings.create(**kwargs, dimensions=self._configured_dimension)
+            except TypeError:
+                response = client.embeddings.create(**kwargs)
+            except Exception as exc:  # saglayici `dimensions`i reddetti
+                if "dimension" not in str(exc).lower():
+                    raise
+                logger.warning(
+                    "Embedding saglayicisi 'dimensions' parametresini reddetti (%s); parametresiz yeniden deneniyor.",
+                    exc,
+                )
+                response = client.embeddings.create(**kwargs)
+        else:
+            response = client.embeddings.create(**kwargs)
         vectors = np.array([item.embedding for item in response.data], dtype="float32")
         return _l2_normalize(vectors)
 
@@ -423,10 +448,16 @@ def build_embedding_provider(
         ConfigurationError: `provider` desteklenmiyorsa veya `base_url`/`api_key_env` eksikse.
             "local" DAHIL, "evren" DISINDAKI HICBIR deger kabul EDILMEZ.
     """
-    if provider != "evren":
+    # AKTIF: "gemini" (Gemini'nin OpenAI-uyumlu `/v1beta/openai/embeddings` ucu).
+    # "evren" kaydi SILINMEDI ama artik secilmiyor - servis takima kapatildi
+    # (bkz. `configs/config.yaml` -> memory.embedding.provider). Iki saglayici
+    # da AYNI OpenAI-uyumlu istemci uzerinden calistigi icin `EvrenEmbedding
+    # Provider` sinifi HER IKISINE de hizmet eder; fark yalnizca taban adres,
+    # model adi ve vektor boyutudur.
+    if provider not in ("gemini", "evren"):
         raise ConfigurationError(
-            f"Desteklenmeyen embedding saglayicisi: '{provider}'. Su an YALNIZCA 'evren' destekleniyor "
-            "(lokal sentence-transformers embedding kaldirildi)."
+            f"Desteklenmeyen embedding saglayicisi: '{provider}'. Desteklenenler: 'gemini' (aktif), "
+            "'evren' (devre disi - servis kapatildi). Lokal sentence-transformers embedding kaldirildi."
         )
     if not base_url or not api_key_env:
         raise ConfigurationError(

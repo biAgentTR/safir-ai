@@ -1,0 +1,46 @@
+# =============================================================================
+# SAFIR - Gemini (Google Generative AI) tabanli calistirma profili.
+#
+# `requirements.txt` ile AYNI cekirdek bagimliliklari icerir, ancak:
+#   - `vllm` YOKTUR (Linux/GPU paketi; bu profilde model servislemesi
+#     Gemini'nin uzak ucuna gider, yerel GPU GEREKMEZ).
+#   - `sentence-transformers` (dolayisiyla `torch`) YOKTUR: yalnizca
+#     OPSIYONEL lokal Cross-Encoder reranker'i icindir ve o modul
+#     `sentence_transformers`i METOD ICINDE (lazy) import eder
+#     (bkz. src/rag/local_cross_encoder_reranker.py:127) - production
+#     akisinda CAGRILMAZ, bu yuzden kurulmasi gerekmez.
+#
+# Kurulum:
+#   python -m venv .venv && .venv/Scripts/pip install -r requirements-gemini.txt
+# =============================================================================
+
+# --- Cekirdek servis ---
+fastapi>=0.111
+uvicorn[standard]>=0.30
+pydantic>=2.7,<3
+PyYAML>=6.0.1
+httpx>=0.27
+python-dotenv>=1.0.1
+
+# --- Hafif Suzgec Katmani (CPU) ---
+opencv-python-headless>=4.10.0.84
+numpy>=1.26,<3
+
+# --- LLM istemcisi (Gemini'nin OpenAI-uyumlu ucu) ---
+openai>=1.35
+
+# --- Ajan ve Muhakeme Katmani (LangGraph) ---
+langgraph>=0.1.9
+langchain-core>=0.2.28
+langchain-openai>=0.1.17
+
+# --- Hibrit Bellek Katmani (Embedding: Gemini /v1beta/openai/embeddings; Vektor deposu: yerel Qdrant) ---
+qdrant-client>=1.9.0
+
+# --- Rapor Disa Aktarma (PDF) ---
+reportlab>=4.2.2
+
+# --- SAFIR Asistan: kullanici belge yukleme ---
+pypdf>=6.0.0
+python-docx>=1.1.2
+python-multipart>=0.0.9

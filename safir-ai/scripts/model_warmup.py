@@ -125,11 +125,15 @@ def _check_vlm_video(config) -> ModelCheckResult:
     """"vlm" modelini (video-dogrudan, VLM Direct - `EvrenVLM`) kucuk bir video ile isindirir."""
     from src.vlm.factory import get_vlm_client
 
-    role = "vlm.active_model=evren (VLM Direct, video-dogrudan)"
+    # Saglayici adi ARTIK SABIT DEGIL: config'teki `vlm.active_model` okunur.
+    # Onceden burada "evren" SABIT yaziliydi; EVREN kapatilip config Gemini'ye
+    # gecirildikten sonra isinma HER ACILISTA "EVREN_API_KEY tanimli degil"
+    # hatasi veriyordu - config'i degistirmek isinmayi TAKIP ETMIYORDU.
+    active = config.vlm.active_model
+    role = f"vlm.active_model={active} (VLM Direct, video-dogrudan)"
     started = time.perf_counter()
     try:
-        vlm_config = config.vlm.model_copy(update={"active_model": "evren"})
-        vlm = get_vlm_client(vlm_config, use_mock=False)
+        vlm = get_vlm_client(config.vlm, use_mock=False)
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir) / "warmup.mp4"
             _make_tiny_video(tmp_path)
@@ -205,12 +209,27 @@ def warmup_all_models(config) -> WarmupReport:
     """
     report = WarmupReport()
     report.results.append(_check_vlm_video(config))
+    # Model takma adlari config'ten okunur (onceden "evren"/"evren_large"
+    # SABIT yaziliydi - bkz. `_check_vlm_video` icindeki ayni duzeltme notu).
+    agent_alias = config.llm.active_model
     report.results.append(
-        _check_text_model(config, "evren", "llm.active_model=evren (ajan arac-secimi/JSON, guard, evren_frames reconciliation)")
+        _check_text_model(
+            config,
+            agent_alias,
+            f"llm.active_model={agent_alias} (ajan arac-secimi/JSON, guard, kare-tabanli reconciliation)",
+        )
     )
-    report.results.append(
-        _check_text_model(config, "evren_large", "llm.decision_model=evren_large (nihai karar sentezi)")
-    )
+    # `decision_model` opsiyoneldir; tanimsizsa (veya ajan modeliyle AYNIYSA)
+    # ikinci bir isinma cagrisi YAPILMAZ - gereksiz kota harcanmaz.
+    decision_alias = getattr(config.llm, "decision_model", None)
+    if decision_alias and decision_alias != agent_alias:
+        report.results.append(
+            _check_text_model(
+                config,
+                decision_alias,
+                f"llm.decision_model={decision_alias} (nihai karar sentezi)",
+            )
+        )
     report.results.append(_check_embedding_model(config))
     return report
 

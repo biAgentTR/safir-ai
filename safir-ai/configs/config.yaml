@@ -282,9 +282,11 @@ sampler:
 #
 # GELISTIRME/TEST (opsiyonel): GPU'suz ortamda tum pipeline'i denemek icin
 #   app.use_mock_vlm: true + app.use_mock_llm: true  (harici hicbir sey gerekmez)
-# AKTIF (production): TEKNOFEST EVREN yarisma cikarim servisi - video DOGRUDAN
-#   EVREN'in video-analiz ucuna (`model="vlm"`) gonderilir, yerel GPU/vLLM
-#   gerekmez. `EVREN_API_KEY` ortam degiskeni tanimli olmalidir (bkz. .env).
+# AKTIF (production): GOOGLE GEMINI - video DOGRUDAN Gemini'nin native
+#   `:generateContent` ucuna gonderilir, yerel GPU/vLLM gerekmez.
+#   `GEMINI_API_KEY` ortam degiskeni tanimli olmalidir (bkz. .env.example).
+#   Guvenlik katmani (guard) AYRI bir saglayicidadir: GROQ (`GROQ_API_KEY`).
+# DEVRE DISI: TEKNOFEST EVREN - servis takima kapatildi (kod korunuyor).
 # =============================================================================
 vlm:
   # 2026-08-26 (IKI BAGIMSIZ ANALIZ MODU): operator panelindeki "VLM Direct" /
@@ -294,12 +296,16 @@ vlm:
   # yalnizca GORSELDI). Iki mod ARTIK iki AYRI VLM orneğiyle calisir:
   #   - "vlm_direct" -> `active_model` (asagida, video-dogrudan, TEK istekte tum video)
   #   - "low_budget"  -> `frames_model` (asagida, kare-tabanli, en fazla `batch_size` goruntu/istek)
-  active_model: "evren"              # qwen | gemma | evren | evren_frames  (VLMFactory tarafindan okunur) — VLM Direct modu icin
-  frames_model: "evren_frames"       # qwen | gemma | evren | evren_frames  — Dusuk Butceli (kare-tabanli) modu icin; varsayilan: llm-large, <=2 goruntu/istek
-  batch_size: 2                      # Kare-tabanli (dusuk butceli) saglayicilarda TEK istege dahil edilecek azami evidence karesi sayisi.
-                                      # `evren_frames` (asagida) EVREN dokumantasyonu SS 7.5 geregi istek basina EN FAZLA 2 goruntu kabul eder -
-                                      # bu deger 2'nin UZERINE CIKARILMAMALIDIR (EvrenFramesVLM.analyze_evidence aksi halde ACIKCA hata verir).
-                                      # `evren` (video-dogrudan, VLM Direct) bu degerden HICBIR SEKILDE ETKILENMEZ.
+  # 2026-09-18 (EVREN -> GEMINI GECISI): TEKNOFEST EVREN servisi takima
+  # KAPATILDI; VLM/LLM/embedding/guard katmanlarinin tamami Google Gemini'ye
+  # tasindi. EVREN girdileri asagida SILINMEDI (proje kurali: kullanilmayan
+  # saglayicilar kaldirilmaz, devre disi birakilir) - yalnizca ARTIK SECILMIYOR.
+  active_model: "gemini"             # qwen | gemma | gemini | gemini_frames | evren | evren_frames — VLM Direct modu icin
+  frames_model: "gemini_frames"      # ayni kume — Dusuk Butceli (kare-tabanli) modu icin
+  batch_size: 8                      # Kare-tabanli (dusuk butceli) saglayicilarda TEK istege dahil edilecek azami evidence karesi sayisi.
+                                      # EVREN'in istek basina "en fazla 2 goruntu" siniri (dokumantasyon SS 7.5) GEMINI ICIN GECERLI DEGILDIR;
+                                      # Gemini tek istekte cok daha fazla goruntu kabul eder, bu yuzden deger 2'den 8'e cikarildi
+                                      # (daha az istek = daha az gecikme). `gemini` (video-dogrudan) bu degerden ETKILENMEZ.
   models:
     qwen:
       model_name: "Qwen/Qwen3.5-9B"   # native gorsel destekli; 32 GB'de vLLM FP8 ile
@@ -315,7 +321,37 @@ vlm:
       max_new_tokens: 512
       temperature: 0.2
       top_p: 0.9
-    evren:                          # AKTIF: TEKNOFEST EVREN yarisma cikarim servisi (harici API, video-tabanli)
+    gemini:                         # AKTIF (VLM Direct): Google Gemini - video DOGRUDAN native `:generateContent` ucuna gider.
+                                      # NOT: Gemini'nin OpenAI-uyumlu ucu VIDEO KABUL ETMEZ (yalnizca goruntu); bu yuzden
+                                      # `src/vlm/gemini_vlm.py::GeminiVLM` asagidaki `base_url`dan NATIVE koku (scheme://host)
+                                      # turetip `/v1beta/models/<model>:generateContent` adresini kullanir. 12 MB'den buyuk
+                                      # videolar otomatik olarak Files API'ye yuklenir (bkz. GeminiVLM._upload_via_files_api).
+      provider: "gemini"
+      model_name: "gemini-2.5-flash"
+      base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      api_key_env: "GEMINI_API_KEY"
+      max_new_tokens: 8192
+      temperature: 0.0              # video isteklerinde deterministik cikti
+      top_p: 0.9
+      chunk_duration_sec: 60         # Uzun videolarda zamansal ayrinti kaybini onlemek icin 60s'lik ardisik parcalar
+                                      # (EVREN doneminden DEVRALINAN davranis - zaman damgasi kaydirmasi AYNEN calisir).
+      extra_body:                    # `generationConfig` icine birlestirilir (bkz. GeminiVLM._generate)
+        thinkingConfig:
+          thinkingBudget: 0          # KRITIK: gemini-2.5-* modellerinde "dusunme" VARSAYILAN OLARAK ACIKTIR ve
+                                      # tum cikti butcesini gizli akil yurutmeye harcayip `content`i BOS birakabilir
+                                      # (bkz. src/vlm/base_vlm.py::raise_if_empty_content - ayni tuzagin Gemini karsiligi).
+    gemini_frames:                  # AKTIF (Dusuk Butceli / kare-tabanli): Gemini'nin OpenAI-UYUMLU ucu.
+                                      # Goruntu bloklari (`image_url`, base64) desteklendigi icin `BaseVLM`in ortak
+                                      # kare akisi (retry + typed parser + zaman normalizasyonu) OLDUGU GIBI kullanilir.
+      provider: "gemini"
+      model_name: "gemini-2.5-flash"
+      base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      api_key_env: "GEMINI_API_KEY"
+      max_new_tokens: 4096
+      temperature: 0.1
+      extra_body:
+        reasoning_effort: "none"     # OpenAI-uyumlu katmanda "dusunme"yi kapatmanin karsiligi (bkz. yukaridaki thinkingConfig notu)
+    evren:                          # DEVRE DISI (servis takima kapatildi): TEKNOFEST EVREN yarisma cikarim servisi
       provider: "evren"
       model_name: "vlm"             # EVREN'in ayrilmis, hizli video-analiz model takma adi (bkz. dokumantasyon SS 5/7.3)
       base_url: "https://evren-llmapi.ssyz.org.tr/v1"
@@ -331,7 +367,12 @@ vlm:
     evren_frames:                   # DUSUK BUTCELI (kare-tabanli) EVREN yolu - `vlm.frames_model` ile secilir
                                       # (bkz. asagida `SafirPipeline`in kullandigi `VLMConfig.frames_model` alani);
                                       # video-dogrudan `evren` girdisinden BAGIMSIZDIR. Adaptive Frame Sampler'in
-                                      # urettigi evidence kareleri (goruntu), yukaridaki `batch_size` (2) kadarlik
+                                      # DIKKAT (yeniden etkinlestirilirse): `vlm.batch_size` TUM kare-tabanli
+                                      # saglayicilar icin ORTAKTIR ve su an 8'dir; `EvrenFramesVLM` istek basina
+                                      # en fazla 2 goruntu kabul eder ve fazlasinda ACIKCA hata firlatir
+                                      # (src/vlm/evren_vlm.py:567). Bu yola geri donulecekse `batch_size`
+                                      # MUTLAKA 2'ye dusurulmelidir.
+                                      # urettigi evidence kareleri (goruntu), yukaridaki `batch_size` kadarlik
                                       # gruplar halinde bu uc noktaya gonderilir (bkz. src/vlm/evren_vlm.py::
                                       # EvrenFramesVLM - model adi kodda "llm-large" olarak SABITLENMISTIR,
                                       # dokumantasyon SS 7.5 tablosu: "en fazla 2 goruntu" siniri ACIKCA
@@ -353,17 +394,35 @@ memory:
   sqlite:
     db_path: "data/events.db"
   embedding:
-    provider: "evren"                  # EVREN /v1/embeddings (bge-m3-embed) - lokal sentence-transformers KALDIRILDI
-    model_name: "bge-m3-embed"         # dokumantasyon SS 5/10: en yuksek ilk-isabet (R@1) dogrulugu
-    output_dimensionality: 1024
-    base_url: "https://evren-llmapi.ssyz.org.tr/v1"
-    api_key_env: "EVREN_API_KEY"
+    # NEDEN GROQ DEGIL (dogrulandi 2026-09-18, console.groq.com/docs/models):
+    # Groq'un model katalogunda HICBIR embedding modeli YOKTUR - yalnizca
+    # metin uretimi (Llama/GPT-OSS/Qwen), konusma-metin (Whisper), metin-konusma
+    # (Orpheus) ve prompt-guard siniflandiricilari sunulur. `/v1/embeddings`
+    # ucu desteklenmez. Bu yuzden RAG embedding katmani Gemini'de KALIR;
+    # "guard disindaki her seyi Groq'a tasi" TEKNIK OLARAK MUMKUN DEGILDIR.
+    # Alternatif istenirse: tamamen yerel embedding (sentence-transformers)
+    # - ancak torch bagimliligi + indirme maliyeti getirir.
+    provider: "gemini"                 # AKTIF: Gemini'nin OpenAI-uyumlu /v1beta/openai/embeddings ucu
+    model_name: "gemini-embedding-001"
+    output_dimensionality: 1536        # gemini-embedding-001 VARSAYILAN OLARAK 3072 boyut dondurur; bu deger
+                                        # istege `dimensions` parametresi olarak ACIKCA gonderilir (bkz.
+                                        # src/rag/embedding_providers.py::_embed_single_request). Qdrant
+                                        # koleksiyonu da bu boyutla olusturulur - IKISI AYNI OLMAK ZORUNDADIR.
+    base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+    api_key_env: "GEMINI_API_KEY"
     normalize_embeddings: true
-    max_batch_tokens: 7500             # EVREN bge-m3-embed istek basina azami 8192 token kabul eder; guvenlik payli hedef (bkz. src/rag/embedding_providers.py)
+    max_batch_tokens: 2000             # gemini-embedding-001 METIN BASINA en fazla 2048 token kabul eder; guvenlik payli hedef
+                                        # (bkz. src/rag/embedding_providers.py::_build_safe_batches)
   qdrant:
-    url: "https://evren-vektor.ssyz.org.tr"   # takima tahsis edilmis izole Qdrant orneği (dokumantasyon SS 11)
-    api_key_env: "EVREN_QDRANT_KEY"
-    prefix_env: "EVREN_TEAM"                  # takim kodu (orn. "team33") - Qdrant yol on-eki
+    # 2026-09-18: EVREN'in barindirdigi Qdrant orneği de takima KAPATILDI.
+    # `http(s)://` ile BASLAMAYAN bir deger verildiginde istemci YEREL,
+    # DISK-tabanli (gomulu) bir Qdrant baslatir - ayri bir Qdrant sunucusu
+    # KURULMASI GEREKMEZ ve hicbir API anahtari/takim kodu ortam degiskeni
+    # ARANMAZ (bkz. src/rag/embedding_rag_service.py::_build_qdrant_client).
+    # Bu, sistemi ayni zamanda bu katmanda TAMAMEN YEREL/OFFLINE yapar.
+    url: "data/qdrant"
+    api_key_env: "EVREN_QDRANT_KEY"           # yerel (path) modda OKUNMAZ - yalnizca uzak Qdrant icin gecerlidir
+    prefix_env: "EVREN_TEAM"                  # yerel (path) modda OKUNMAZ
     collection_name: "safir_regulations"
     top_k: 5                           # RERANK SONRASI nihai sonuc sayisi
     candidate_k: 20                    # Qdrant'tan cekilecek aday sayisi (rerank ONCESI)
@@ -401,7 +460,7 @@ memory:
 # 05 - Ajan ve Muhakeme Katmani (LangGraph) - GPU / vLLM
 # -----------------------------------------------------------------------------
 llm:
-  active_model: "evren"               # qwen3 | gemma3 | evren — AKTIF: evren
+  active_model: "gemini"              # qwen3 | gemma3 | gemini | gemini_large | evren | evren_large — AKTIF: gemini
   # NOT (EVREN "dusunme" modu): EVREN dokumantasyonu (SS 3.2), akil yurutme
   # (thinking) modunun KAPALI tutulmasini onerir - acildiginda token
   # tuketimi 9-17 kat artarken dogruluk kazanci ihmal edilebilir/negatiftir
@@ -436,7 +495,36 @@ llm:
       vllm_port: 8004
       max_new_tokens: 1024
       temperature: 0.1
-    evren:                           # AKTIF: TEKNOFEST EVREN yarisma cikarim servisi (harici API)
+    gemini:                          # AKTIF: LangGraph ajaninin arac-secimi/JSON-uretimi dongusu.
+                                      # Gemini'nin OpenAI-uyumlu ucu `tools`/`tool_calls` (function calling) ve
+                                      # `response_format={"type":"json_object"}` destekler - `LLMClient.bind_tools`/
+                                      # `invoke_json` HICBIR DEGISIKLIK OLMADAN calisir (bkz. src/vlm/llm_client.py).
+      provider: "gemini"
+      model_name: "gemini-2.5-flash"
+      base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      api_key_env: "GEMINI_API_KEY"
+      max_new_tokens: 4096
+      temperature: 0.1
+      extra_body:
+        reasoning_effort: "none"     # bkz. yukaridaki "dusunme modu" NOTU - Gemini 2.5 ailesinde dusunme
+                                      # VARSAYILAN ACIK'tir ve tum cikti butcesini tuketip `content`i BOS
+                                      # birakabilir (ajan JSON parse edemez -> risk_status=unknown).
+    gemini_large:                    # Model hiyerarsisi: yalnizca NIHAI karar sentezi icin (bkz. `decision_model`);
+                                      # arac-secimi/JSON dongusu HALA `gemini` (flash) kullanir.
+      provider: "gemini"
+      model_name: "gemini-2.5-pro"
+      base_url: "https://generativelanguage.googleapis.com/v1beta/openai"
+      api_key_env: "GEMINI_API_KEY"
+      # DIKKAT: `gemini-2.5-pro`da "dusunme" KAPATILAMAZ (flash'in aksine
+      # `reasoning_effort: "none"` kabul EDILMEZ) ve dusunme tokenlari cikti
+      # butcesinden HARCANIR. Bu yuzden butce bilerek YUKSEK tutulur - aksi
+      # halde model tum butceyi gizli akil yurutmeye harcayip goruen `content`i
+      # BOS birakabilir (bkz. src/vlm/base_vlm.py::raise_if_empty_content).
+      # Bu dugum BOS donerse `decision_model`i "gemini" (flash) yapmak
+      # guvenli geri adimdir - ajan dongusu bundan ETKILENMEZ.
+      max_new_tokens: 16384
+      temperature: 0.1
+    evren:                           # DEVRE DISI (servis takima kapatildi)
       provider: "evren"
       model_name: "llm-fast"         # dokumantasyon SS 6: JSON uretimi/arac cagirma/siniflandirmada llm-large ile olcumlenebilir fark yok
       base_url: "https://evren-llmapi.ssyz.org.tr/v1"
@@ -456,7 +544,7 @@ llm:
       extra_body:                    # ayni SS 3.2 notu llm-large icin de gecerlidir - model buyuklugunden
         chat_template_kwargs:        # BAGIMSIZ bir EVREN-genelinde bulgu (bkz. yukaridaki NOT); bu yuzden
           enable_thinking: false     # burada da acikca kapatilir.
-  decision_model: "evren_large"      # "uzun akil yurutme zincirleri ve otonom karar anlari" icin (SS 6)
+  decision_model: "gemini_large"     # "uzun akil yurutme zincirleri ve otonom karar anlari" icin (SS 6)
                                       # nihai JSON karari BU modelle sentezlenir; `active_model` ile AYNI
                                       # yapilirsa (veya bu satir silinirse) hiyerarsi devre disi kalir.
 
@@ -509,12 +597,22 @@ escalation:
 # yapilmalidir (production).
 guard:
   enabled: true
-  provider: "evren"                  # AKTIF: EVREN'in OpenAI-uyumlu LLM ucu (VLM/LLM/embedding/reranker ile AYNI altyapi)
-  model_name: "llm-fast"             # llm.models.evren.model_name ile AYNI EVREN modeli (bkz. dokumantasyon SS 6: siniflandirma icin llm-fast yeterli)
+  # AKTIF: GROQ. Guard, VLM/LLM'den (Gemini) AYRI bir saglayicida calisir -
+  # bilincli bir izolasyon: Gemini tarafinda bir kota/kesinti yasandiginda
+  # guvenlik katmani da birlikte dusmez. Guard saf OpenAI-uyumlu bir
+  # `/chat/completions` cagrisi yaptigi icin kod degisikligi GEREKMEDI
+  # (bkz. src/security/prompt_injection_guard.py::build_prompt_injection_guard).
+  provider: "groq"
+  model_name: "openai/gpt-oss-20b"   # ~1000 tok/s, 131k baglam, `response_format=json_object` destekli.
+                                      # ALTERNATIF: Groq'ta amaca OZEL bir siniflandirici da vardir
+                                      # (`meta-llama/llama-prompt-guard-2-86m`) ANCAK baglami yalnizca
+                                      # 512 token'dir ve JSON DEGIL skor dondurur - mevcut guard
+                                      # sozlesmesi (JSON {is_injection, confidence}) ile UYUMSUZDUR;
+                                      # kullanilmak istenirse guard kodu yeniden yazilmalidir.
   fail_closed: true                  # true: guard API/parse hatasinda icerik QUARANTINE edilir (production)
   confidence_threshold: 0.80         # is_injection=true VE confidence >= bu deger -> quarantine
-  base_url: "https://evren-llmapi.ssyz.org.tr/v1"
-  api_key_env: "EVREN_API_KEY"
+  base_url: "https://api.groq.com/openai/v1"
+  api_key_env: "GROQ_API_KEY"
 
 # -----------------------------------------------------------------------------
 # API / Servis Katmani

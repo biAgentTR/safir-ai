@@ -9,45 +9,38 @@ Yapılandırılmış Rapor (JSON) + Operatör Paneli**.
 > senaryolar ve mock fonksiyonlar, ölçümleme sonuçları ve ölçekleme ihtiyaçları için
 > bkz. [`../DOKUMANTASYON.md`](../DOKUMANTASYON.md).
 
-## Kurulum (native — Docker GEREKMEZ)
+## Kurulum (GPU GEREKMEZ)
 
-Sistemde bir NVIDIA GPU + sürücü (Blackwell/RTX 5090 için ≥570) varsa yeterlidir;
-ayrı bir CUDA toolkit veya Docker kurulumuna gerek yoktur (`vllm` paketi kendi
-uyumlu torch/CUDA wheel'lerini pip ile getirir).
+Aktif mimaride model servislemesi **Google Gemini** üzerindedir; NVIDIA GPU,
+CUDA toolkit, vLLM veya Docker **gerekmez**. Yerel çalışan tek ağır bileşen
+CPU-only frame sampler'dır.
 
 ```bash
 cd safir-ai
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt            # backend + yerel vLLM istemcisi/servisi (tek kurulum)
-pip install -r requirements-dashboard.txt  # opsiyonel: operatör paneli (Streamlit)
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements-gemini.txt      # Gemini profili (vllm/torch İÇERMEZ)
+pip install -r requirements-dashboard.txt   # opsiyonel: operatör paneli (Streamlit)
 ```
 
 ## Çalıştırma
 
-Modelleri servis eden vLLM süreçlerini (VLM + LLM), ardından API'yi başlatın —
-üçü de aynı `venv` içindeki `vllm`/`python` komutlarıyla, Docker'sız:
-
 ```bash
-# 1) VLM sunucusu (arka planda)
-vllm serve Qwen/Qwen2.5-VL-7B-Instruct --port 8001 --trust-remote-code \
-  --quantization fp8 --dtype bfloat16 --gpu-memory-utilization 0.50 \
-  --max-model-len 8192 --limit-mm-per-prompt image=12 --max-num-seqs 2 &
+# 1) API anahtarı (tek anahtar; VLM + LLM + embedding + guard hepsi bunu kullanır)
+export GEMINI_API_KEY=AIza...        # Windows PowerShell: $env:GEMINI_API_KEY="AIza..."
 
-# 2) LLM sunucusu (arka planda)
-vllm serve Qwen/Qwen2.5-3B-Instruct --port 8003 --trust-remote-code \
-  --dtype bfloat16 --gpu-memory-utilization 0.30 --max-model-len 4096 --max-num-seqs 4 &
+# 2) Mevzuat bilgi tabanını indeksle (tek seferlik; Qdrant yerel/gömülü çalışır)
+python -m src.rag.build_knowledge_index
 
 # 3) Backend (FastAPI)
-python -m src.main            # veya: uvicorn src.main:app --host 0.0.0.0 --port 8000
+python -m uvicorn src.main:app --host 0.0.0.0 --port 8000
 
 # Operatör paneli (Streamlit, opsiyonel)
 streamlit run src/ui/dashboard.py
 ```
 
-`configs/config.yaml` içindeki `vlm.models.qwen` / `llm.models.qwen3` altındaki
-`vllm_host`/`vllm_port` değerleri (varsayılan `127.0.0.1:8001` / `127.0.0.1:8003`)
-yukarıdaki `--port` değerleriyle eşleşmelidir. Ayrıntılı sıfırdan-kurulum adımları
-(sürücü kurulumu, `nohup` ile arka planda çalıştırma, sorun giderme) için bkz.
+Masaüstü arayüzü `/api` isteklerini `http://localhost:8000` adresine proxy'ler
+(`desktop/nuxt.config.ts`), bu yüzden **port 8000 korunmalıdır**. Ayrıntılı
+kurulum, mimari tablosu ve sorun giderme için bkz.
 [`KURULUM.md`](KURULUM.md).
 
 ## Model backend'leri
@@ -56,22 +49,42 @@ Sistem üç backend'i tek soyutlama üzerinden destekler (`configs/config.yaml`)
 
 | Backend | Ne zaman | Nasıl |
 |---|---|---|
-| **EVREN (TEKNOFEST servisi)** | Aktif (varsayılan) | `vlm.active_model: evren`, `llm.active_model: evren` |
+| **Gemini** | **Aktif** — VLM, LLM/ajan, embedding | `vlm.active_model: gemini`, `llm.active_model: gemini` |
+| **Groq** | **Aktif** — prompt-injection guard | `guard.provider: groq` |
 | **vLLM (yerel)** | Yerel GPU ile çalıştırmak istenirse | `vlm.active_model: qwen`, `llm.active_model: qwen3` |
 | **Mock** | GPU/ağ'sız, offline geliştirme | `app.use_mock_vlm: true`, `app.use_mock_llm: true` |
+| **EVREN (TEKNOFEST servisi)** | ~~Aktif~~ — **servis takıma kapatıldı** | kod duruyor, config artık seçmiyor |
 
-### EVREN backend'i (aktif)
+### Aktif kurulum: Gemini (model) + Groq (güvenlik)
 
-Video **doğrudan** EVREN'in video-analiz ucuna (`model: "vlm"`) gönderilir;
-yerel GPU/vLLM gerekmez. Gerekli tek şey API anahtarı (bkz. `.env.example`):
+Model/anlama katmanı Gemini'de, güvenlik katmanı **ayrı bir sağlayıcıda**
+(Groq) çalışır — bir sağlayıcıda kota/kesinti olursa güvenlik katmanı da
+birlikte düşmesin diye bilinçli bir izolasyon.
 
 ```bash
-export EVREN_API_KEY=sk-evren-teamNN-XXXXXXXX
+export GEMINI_API_KEY=AIza...   # VLM (video+kare), LLM/ajan, karar sentezi, embedding
+export GROQ_API_KEY=gsk_...     # prompt-injection guard
 ```
 
-Yerel vLLM sınıfları (`qwen`/`gemma`) hiç değişmeden kalır; EVREN
-`src/vlm/evren_vlm.py` adaptörü ve `VLLMEndpointConfig.provider` alanı
-üzerinden eklenir.
+> Guard `fail_closed: true` çalışır: `GROQ_API_KEY` yoksa içerik quarantine
+> damgası alır (gizlenmez). Kapatmak için `guard.enabled: false`.
+
+> **Embedding neden Groq'ta değil?** Groq'un kataloğunda hiçbir embedding
+> modeli yok (yalnızca metin üretimi, Whisper, TTS, prompt-guard
+> sınıflandırıcıları) — `/v1/embeddings` desteklenmiyor.
+
+Video-doğrudan yol, Gemini'nin **native** `:generateContent` ucunu kullanır —
+çünkü Gemini'nin OpenAI-uyumlu katmanı görüntü kabul eder ama **video kabul
+etmez** (`src/vlm/gemini_vlm.py::GeminiVLM`). 12 MB üstü videolar otomatik
+olarak Files API'ye yüklenir. Kare-tabanlı yol, LLM, embedding ve guard ise
+OpenAI-uyumlu uç üzerinden gider, dolayısıyla mevcut istemci kodu değişmeden
+çalışır.
+
+Vektör deposu artık **yerel/gömülü Qdrant**'tır (`data/qdrant/`) — ayrı bir
+Qdrant sunucusu ve ek ortam değişkeni gerekmez.
+
+Yerel vLLM sınıfları (`qwen`/`gemma`) ve EVREN sınıfları hiç değişmeden kalır;
+sağlayıcı seçimi `VLLMEndpointConfig.provider` alanı üzerinden yapılır.
 
 ## Otomatik Eskalasyon (Human-on-the-Loop)
 

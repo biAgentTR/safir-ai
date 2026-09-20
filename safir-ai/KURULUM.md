@@ -1,251 +1,192 @@
-# SAFİR — Sıfırdan Kurulum Rehberi (Native VM + RTX 5090, Docker'sız)
+# SAFİR — Kurulum ve Çalıştırma Rehberi (Google Gemini)
 
-Bu rehber, **temiz bir Ubuntu 22.04/24.04 sanal makinesinde** (RTX 5090 / Blackwell,
-32 GB VRAM geçirmeli) SAFİR'i **tamamen native (Docker'sız), yerel/offline**
-çalıştırmayı anlatır.
-
-**Deployment modeli:** VM → Python ortamı → `pip install -r requirements.txt` →
-`vllm serve` (2 kez) → `uvicorn` → çalışır. **Docker, container veya Compose
-GEREKMEZ** — `vllm` paketi kendi uyumlu torch/CUDA wheel'lerini pip ile getirir;
-sisteme yalnızca **NVIDIA sürücüsü** yeterlidir.
-
-Mimari:
-
-```
- (aynı GPU, tek makine, tek Python ortamı)
- ┌───────────────────────────────┐        ┌────────────────────┐
- │ vllm serve  :8001  (Qwen2.5-VL-7B, FP8) │◄──HTTP──┤                    │
- │ vllm serve  :8003  (Qwen2.5-3B, BF16)   │◄──HTTP──┤  SAFİR API :8000   │◄── Frontend
- └───────────────────────────────┘        │  (FastAPI, uvicorn) │   (Nuxt :3000 / Streamlit :8501)
-                                           └────────────────────┘
-```
-- `vllm serve`, sistemdeki NVIDIA sürücüsünü doğrudan kullanan bir Python sürecidir (Docker yok).
-- SAFİR API salt bir **HTTP istemcisidir** (`httpx`/`openai`/`langchain-openai` ile); model ağırlığını kendisi yüklemez.
-- **API anahtarı yok**, harici servis yok.
+> **Bu belge 2026-09-18'de gerçek, aktif mimariye göre yeniden yazılmıştır.**
+> Önceki sürüm yerel vLLM + RTX 5090 + Qwen kurulumunu, ondan önceki sürüm ise
+> TEKNOFEST EVREN servisini anlatıyordu. **İkisi de artık geçerli değildir:**
+> EVREN takıma kapatıldı, yerel GPU servislemesi ise bu projede kullanılmıyor.
+> Şu an VLM, LLM/ajan, embedding ve güvenlik katmanlarının **tamamı Google
+> Gemini** üzerinden çalışır. Vektör veritabanı (Qdrant) ise **yerel/gömülü**
+> çalışır — ayrı bir sunucu kurmanız gerekmez.
 
 ---
 
 ## 0. Ön koşullar
-- Ubuntu 22.04 veya 24.04, `sudo` yetkisi, internet erişimi.
-- RTX 5090 makineye geçirilmiş (`lspci | grep -i nvidia` görünmeli).
-- Disk: modeller + cache için **≥ 60 GB boş** (7B-VL ~16 GB, 3B ~6 GB, bge-m3 ~2 GB).
 
-## 1. NVIDIA sürücüsü (Blackwell ≥ 570)
-```bash
-sudo apt update
-sudo ubuntu-drivers install        # en güncel uygun sürücüyü kurar (5090 için ≥570)
-sudo reboot
-# yeniden açılınca:
-nvidia-smi                         # 5090 + sürücü + "CUDA Version: 12.x" görünmeli
-```
-> `ubuntu-drivers` uygun sürüm bulmazsa: `sudo apt install nvidia-driver-570-open` (veya daha güncel).
-> **Not:** Bu, yalnızca sürücüdür — ayrı bir CUDA toolkit kurulumu (nvcc vb.) GEREKMEZ;
-> `pip install vllm` kendi uyumlu CUDA/torch wheel'lerini getirir.
+| Gereksinim | Sürüm / Not |
+|---|---|
+| Python | 3.10 – 3.12 (geliştirme 3.12.10 ile yapıldı) |
+| GPU | **Gerekmez.** Model servislemesi Gemini'de; yerel katman (frame sampler) CPU-only çalışır. |
+| Gemini API anahtarı | https://aistudio.google.com/apikey — VLM, LLM/ajan ve embedding için |
+| Groq API anahtarı | https://console.groq.com/keys — prompt-injection guard için |
+| Node.js | Yalnızca masaüstü arayüzü (Nuxt) için — 18+ |
+| ffmpeg | **Opsiyonel.** Yoksa video parçalama OpenCV ile (daha yavaş) yapılır; sistem yine çalışır. |
 
-## 2. Sistem paketleri
-```bash
-sudo apt install -y git python3.12 python3.12-venv python3.12-dev python3-pip \
-                    ffmpeg libgl1 libglib2.0-0
-```
-> `ffmpeg` + `libgl1` OpenCV'nin video okuması için gerekir. (Python 3.12
-> kullanın — vLLM'in güncel wheel'leri bu sürüme göre test edilmiştir; farklı
-> bir sürüm sisteminizde zaten kuruluysa `python3 --version` ile kontrol edip
-> ona göre uyarlayın.)
+---
 
-## 3. Depoyu klonla
-```bash
-cd ~
-git clone https://github.com/yarengogsu/p3-project.git
-cd p3-project
-git checkout claude/gemini-api-refactor-r1roi4
-```
-
-## 4. Kurulum — 3 fazlı, DOĞRULAMA ZORUNLU
-
-**Neden fazlı?** vLLM'in kendi transitive bağımlılıkları (torch/outlines/openai/
-fastapi) çok geniştir; bunları projeyle aynı anda, tek adımda kurup bir sorun
-çıktığında "proje mi, vLLM mi bozuk" ayrımını yapmak zordur. Bu yüzden ÖNCE
-vLLM'i **projeden tamamen izole**, tek başına doğrularız; SONRA proje
-bağımlılıklarını ekleriz. Bir faz atlanırsa/eski dosya kullanılırsa sorunlar
-sessizce üst üste biner — **her fazın çıktısını gerçekten kontrol edin.**
-
-### Faz 0 — Repo durumunu doğrula (atlamayın)
-```bash
-cd ~/p3-project
-git log -1 --oneline          # en güncel commit'te olmalısınız
-grep -E "^vllm|^outlines|^openai" safir-ai/requirements.txt
-```
-İkinci komut şunu göstermeli (satır başları farklıysa `git pull origin
-claude/gemini-api-refactor-r1roi4` çalıştırıp tekrar kontrol edin):
-```
-vllm>0.7.2
-outlines>=0.1.0
-openai>=1.35
-```
-
-### Faz 1 — vLLM'i İZOLE doğrula (proje kodundan tamamen bağımsız)
-```bash
-mkdir -p ~/vllm-sanity-check && cd ~/vllm-sanity-check
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install vllm
-python -c "import vllm, outlines; print('vllm', vllm.__version__); print('outlines', outlines.__version__)"
-vllm --version
-deactivate
-cd ~ && rm -rf ~/vllm-sanity-check
-```
-Bu adım **sürüm sabitlemeden** (`pip install vllm`, ekstra kısıtlama yok) çalışır;
-VM'nin torch/CUDA/Blackwell ortamıyla doğal olarak uyumlu en güncel vLLM'i
-kurar. `vllm --version` temiz bir sürüm numarası basmalı, traceback OLMAMALI.
-**Bu adım başarısız olursa proje kurulumuna GEÇMEYİN** — sorun VM'nin CUDA/
-sürücü/Python ortamındadır, `requirements.txt`'te değil (bkz. Sorun giderme).
-
-### Faz 2 — Proje ortamı (Faz 1 başarılıysa)
-```bash
-cd ~/p3-project/safir-ai
-rm -rf .venv                  # varsa ONCEKI/kismi kurulumu temizle
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
-```
-Doğrula (Faz 1'dekiyle aynı/yakın bir vLLM sürümü görmelisiniz — asla eski
-`0.5.x` gibi bir şey değil):
-```bash
-pip show vllm outlines pyairports 2>&1 | grep -E "^Name|^Version|not found"
-```
-`pyairports` **hiç görünmemeli** ("Package(s) not found"). `vllm`/`outlines`
-Faz 1'dekiyle uyumlu (modern) sürümlerde olmalı.
-
-> Kurulum uzun sürer (`vllm` büyük bir paket — torch/CUDA wheel'leri indirir).
-> `--no-deps` ile kısmi/manuel kurulum YAPMAYIN (bkz. `requirements.txt`
-> başındaki not) — eski bir dosya kopyasıyla birleşirse vLLM'i sessizce eski
-> bir sürüme düşürüp kırık bağımlılık zincirine geri döner.
-
-## 5. vLLM model sunucularını başlat (aynı ortam, arka planda)
-`.venv` aktifken, **tek terminalde**, arka planda (`&` + `nohup`) başlatılabilir —
-ayrı pencere/terminal şart değildir:
+## 1. Depoyu hazırla
 
 ```bash
-# VLM (Qwen2.5-VL-7B, FP8) — arka planda, log dosyaya
-nohup vllm serve Qwen/Qwen2.5-VL-7B-Instruct --port 8001 --trust-remote-code \
-  --quantization fp8 --dtype bfloat16 --gpu-memory-utilization 0.50 \
-  --max-model-len 8192 --limit-mm-per-prompt image=12 --max-num-seqs 2 \
-  > ~/vlm.log 2>&1 &
-
-sleep 20   # VLM önce yerleşsin (GPU belleğini ölçerken çakışmasın)
-
-# LLM (Qwen2.5-3B, BF16) — arka planda
-nohup vllm serve Qwen/Qwen2.5-3B-Instruct --port 8003 --trust-remote-code \
-  --dtype bfloat16 --gpu-memory-utilization 0.30 --max-model-len 4096 --max-num-seqs 4 \
-  > ~/llm.log 2>&1 &
+git clone <repo-url> safir-ai
+cd safir-ai/safir-ai
 ```
 
-> `--quantization fp8` bayrağı bazı vLLM sürümlerinde adlandırma/parametre
-> değiştirebilir; `vllm serve --help | grep -i quant` ile bu VM'nizde kurulu
-> sürümde geçerli seçenekleri doğrulayın. Sorun çıkarsa bu bayrağı tamamen
-> kaldırıp BF16 ile deneyin (7B ağırlık ~16.6 GB, yine 32 GB'a sığar — bkz.
-> aşağıdaki VRAM tablosu).
+## 2. Sanal ortam + bağımlılıklar
 
-**İlk çalıştırma modelleri indirir** (~22 GB, birkaç dakika–saat). İzle:
-```bash
-tail -f ~/vlm.log     # "Uvicorn running on http://0.0.0.0:8001" görünce hazır
+Gemini profili `requirements-gemini.txt` dosyasındadır. Bu dosya
+`requirements.txt` ile aynı çekirdeği içerir ancak **`vllm`** (Linux/GPU
+paketi) ve **`sentence-transformers`/`torch`** (yalnızca opsiyonel yerel
+cross-encoder için; production akışında çağrılmaz) paketlerini içermez —
+kurulum bu sayede dakikalar yerine saniyeler sürer.
+
+**Windows (PowerShell):**
+```powershell
+python -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -r requirements-gemini.txt
 ```
 
-Kontrol:
+**Linux / macOS:**
 ```bash
-curl http://127.0.0.1:8001/v1/models      # VLM listelenmeli
-curl http://127.0.0.1:8003/v1/models      # LLM listelenmeli
-nvidia-smi                                # iki süreç, toplam ~26 GB VRAM
+python3 -m venv .venv
+./.venv/bin/python -m pip install --upgrade pip
+./.venv/bin/python -m pip install -r requirements-gemini.txt
 ```
 
-## 6. SAFİR API'yi başlat
-```bash
-cd ~/p3-project/safir-ai
-source .venv/bin/activate
-nohup python -m uvicorn src.main:app --host 0.0.0.0 --port 8000 > ~/api.log 2>&1 &
-curl http://127.0.0.1:8000/health         # {"status":"ok","system":"SAFIR"}
-```
-> `configs/config.yaml`'da `vlm.active_model: qwen`, `llm.active_model: qwen3`
-> ve `vllm_host: 127.0.0.1` zaten bu native kuruluma göre ayarlıdır — ekstra
-> config değişikliği gerekmez.
+## 3. API anahtarlarını tanımla
 
-## 7. Arayüz — iki seçenek
+Sistem **iki sağlayıcı** kullanır — model/anlama katmanı **Gemini**, güvenlik
+katmanı **Groq**. Bu bilinçli bir izolasyondur: bir sağlayıcıda kota/kesinti
+olursa diğeri ayakta kalır. Anahtarlar **hiçbir zaman** repoya yazılmaz.
 
-### Seçenek A (en hızlı): Streamlit paneli
-```bash
-cd ~/p3-project/safir-ai
-source .venv/bin/activate
-pip install -r requirements-dashboard.txt
-streamlit run src/ui/dashboard.py --server.address 0.0.0.0 --server.port 8501
+**A) Terminalde (oturumluk):**
+```powershell
+$env:GEMINI_API_KEY = "AIza...."
+$env:GROQ_API_KEY   = "gsk_...."
 ```
-Erişim: dizüstünden SSH tüneli
 ```bash
-ssh -L 8501:localhost:8501 kullanici@VM_IP
+export GEMINI_API_KEY="AIza...."
+export GROQ_API_KEY="gsk_...."
 ```
-sonra tarayıcıda `http://localhost:8501`.
 
-### Seçenek B (modern desktop UI, tarayıcıda): Nuxt
+**B) `.env` dosyasıyla (kalıcı):** `.env.example` dosyasını `.env` olarak
+kopyalayıp iki satırı da doldurun. `.env` `.gitignore` kapsamındadır.
+
+| Anahtar | Hangi katmanlar |
+|---|---|
+| `GEMINI_API_KEY` | VLM (video), VLM (kare), LLM/ajan, karar sentezi, embedding |
+| `GROQ_API_KEY` | Prompt-injection guard |
+
+> **Guard `fail_closed: true` ile çalışır:** `GROQ_API_KEY` tanımsızsa her
+> analizde VLM açıklaması ve kullanıcı istemi **quarantine** damgası alır
+> (içerik gizlenmez, ama görünür şekilde işaretlenir). Geçici olarak kapatmak
+> için `configs/config.yaml → guard.enabled: false`.
+
+> **Embedding neden Groq'ta değil?** Groq'un model kataloğunda **hiçbir
+> embedding modeli yoktur** (yalnızca metin üretimi, Whisper/STT, TTS ve
+> prompt-guard sınıflandırıcıları). `/v1/embeddings` ucu desteklenmez, bu
+> yüzden RAG embedding katmanı Gemini'de kalır.
+
+## 4. Mevzuat bilgi tabanını indeksle (RAG — tek seferlik)
+
+748 parçalık Türkçe İSG mevzuatı külliyatı repoda hazır gelir
+(`data/knowledge_base/chunks/`), ancak vektörlerinin bir kez üretilmesi
+gerekir. Qdrant **yerel/gömülü** çalışır ve `data/qdrant/` altında bir klasör
+oluşturur — kurulacak bir Qdrant sunucusu **yoktur**.
+
 ```bash
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-source ~/.bashrc && nvm install 22
-cd ~/p3-project/desktop
+python -m src.rag.build_knowledge_index
+```
+
+Bu adım Gemini embedding API'sine gerçek istek atar. Atlanırsa sistem
+çalışmaya devam eder, yalnızca raporlardaki **mevzuat atıf bölümü boş kalır**.
+
+## 5. Backend'i başlat
+
+```bash
+python -m uvicorn src.main:app --host 0.0.0.0 --port 8000
+```
+
+Doğrulama:
+```bash
+curl http://localhost:8000/health
+```
+Beklenen: `{"status":"ok","system":"SAFIR"}`
+
+Açılışta bir **model ısınma raporu** loglanır (VLM / ajan / karar modeli /
+embedding). Bu rapor yalnızca gözlemlenebilirlik içindir — bir katman hata
+verse bile uygulama açılmaya devam eder. `Please pass a valid API key`
+görüyorsanız 3. adımdaki anahtar tanımlı değildir.
+
+> **Port 8000 önemlidir:** masaüstü arayüzü `/api` isteklerini
+> `http://localhost:8000` adresine proxy'ler (`desktop/nuxt.config.ts`).
+> Farklı bir port kullanırsanız arayüz backend'i bulamaz.
+
+## 6. Masaüstü arayüzünü başlat
+
+```bash
+cd ../desktop
 npm install
-npm run dev        # http://localhost:3000 (VM üzerinde)
+npm run dev
 ```
-Erişim: dizüstünden SSH tüneli (hem UI hem API portu)
-```bash
-ssh -L 3000:localhost:3000 -L 8000:localhost:8000 kullanici@VM_IP
-```
-sonra tarayıcıda `http://localhost:3000`.
-> Native Tauri penceresi (`npm run tauri:dev`) başsız (headless) sunucuda **açılmaz**
-> (ekran/WebKit ister); VM'de tarayıcı sürümünü kullanın.
+Arayüz `http://localhost:3000` adresinde açılır ve backend'e aynı-köken
+(`/api` proxy) üzerinden bağlanır — CORS ayarı gerekmez.
 
-## 8. Uçtan uca doğrulama
-1. UI'da **New Analysis** → bir video yolu gir (ör. `~/p3-project/safir-ai/data/test.mp4`).
-2. **Analizi Başlat** → Workspace'te 7 aşamanın (Sampling→VLM→Events→Context→Decision→Escalation→Report) canlı aktığını gör.
-3. **Ask SAFİR** panelinden soru sor; **History** sekmesinde kalıcı kayıtları gör.
+## 7. Uçtan uca doğrulama
 
-Hızlı test videosu (elde yoksa):
+1. Bir `.mp4` dosyasını `safir-ai/data/` altına koyun.
+2. Arayüzden **VLM Direct** modunu seçip analizi başlatın.
+3. Canlı iz (SSE) panelinde sırayla şunları görmelisiniz: video parçalama →
+   VLM çağrısı → olay tespiti → kural motoru → RAG → ajan → risk skoru.
+
+Arayüzsüz, yalnızca API ile:
 ```bash
-cd ~/p3-project/safir-ai && source .venv/bin/activate
-python -c "import cv2,numpy as np; from pathlib import Path; Path('data').mkdir(exist_ok=True); w=cv2.VideoWriter('data/test.mp4',cv2.VideoWriter_fourcc(*'mp4v'),25.0,(160,120)); [w.write(cv2.rectangle(np.full((120,160,3),30,np.uint8),(20,20),(140,100),(210,210,210),-1) if 20<=i<40 else np.full((120,160,3),30,np.uint8)) for i in range(60)]; w.release(); print('data/test.mp4 hazir')"
+curl -X POST http://localhost:8000/analyze/jobs -H "Content-Type: application/json" -d "{\"video_source\":\"ornek.mp4\",\"analysis_mode\":\"vlm_direct\"}"
 ```
 
 ---
 
-## VRAM özeti (RTX 5090 32 GB)
-| Bileşen | Ağırlık | vLLM util | ~Ayrılan |
-|---|---|---|---|
-| VLM 7B (FP8) | ~8.3 GB | 0.50 | ~16 GB |
-| LLM 3B (BF16) | ~6.2 GB | 0.30 | ~9.6 GB |
-| **Toplam** | ~14.5 GB | 0.80 | **~26 GB → ~6 GB boş** |
+## Mimari özeti (hangi katman nereye gidiyor)
 
-Multimodal aktivasyon + KV cache için rahat pay bırakır.
+| Katman | Sağlayıcı | Uç nokta |
+|---|---|---|
+| VLM — video (VLM Direct) | Gemini `gemini-2.5-flash` | native `/v1beta/models/...:generateContent` |
+| VLM — kare (Düşük Bütçeli) | Gemini `gemini-2.5-flash` | OpenAI-uyumlu `/v1beta/openai` |
+| LLM / LangGraph ajanı | Gemini `gemini-2.5-flash` | OpenAI-uyumlu `/v1beta/openai` |
+| Nihai karar sentezi | Gemini `gemini-2.5-pro` | OpenAI-uyumlu `/v1beta/openai` |
+| Embedding (RAG) | Gemini `gemini-embedding-001` (1536 boyut) | OpenAI-uyumlu `/v1beta/openai` |
+| Vektör deposu | **Qdrant — yerel/gömülü** | `data/qdrant/` (sunucu yok) |
+| Prompt injection guard | **Groq** `openai/gpt-oss-20b` | OpenAI-uyumlu `https://api.groq.com/openai/v1` |
+| Frame sampler | **Yerel, CPU-only** | — |
+| Kural motoru + risk modeli | **Yerel, deterministik** | — |
 
-## Süreçleri durdurmak
-```bash
-pkill -f "vllm serve"
-pkill -f "uvicorn src.main:app"
-```
+Video neden native uca gidiyor? Gemini'nin OpenAI-uyumlu katmanı **görüntü**
+kabul eder ama **video kabul etmez**; bu yüzden video-doğrudan yol
+`src/vlm/gemini_vlm.py::GeminiVLM` içinde native `:generateContent` uç
+noktasını kullanır. 12 MB'den büyük videolar otomatik olarak Files API'ye
+yüklenir.
+
+---
 
 ## Sorun giderme
-- **`pip install -r requirements.txt` bağımlılık çakışması veriyor** → `vllm`'in
-  kendi (daha yeni) `torch`/`transformers`/`pydantic` gereksinimleri diğer
-  paketlerle çakışabilir. Önce `pip install "vllm>=0.8.5"` tek başına kur, sonra
-  `pip install -r requirements.txt` ile kalanını tamamla (pip zaten kurulu
-  sürümleri koruyacaktır); ya da `pip install -r requirements.txt --no-deps`
-  ardından eksik kalanları tek tek çözün.
-- **vLLM `sm_120` / CUDA hatası** → sürücü ≥570 mi kontrol et (`nvidia-smi`);
-  `pip install -U vllm` ile en güncel sürüme çık.
-- **OOM** → VLM `--gpu-memory-utilization`'ı 0.45'e, `--max-model-len`'i 4096'ya,
-  `--limit-mm-per-prompt image`'ı 6'ya düşür.
-- **Model indirme yavaş** → `pip install hf_transfer` + `export HF_HUB_ENABLE_HF_TRANSFER=1`.
-- **GPU yokken denemek** → `configs/config.yaml`'da `app.use_mock_vlm: true` +
-  `use_mock_llm: true`; vLLM süreçleri gerekmeden tüm pipeline çalışır (cevaplar sahte).
 
-## Docker hakkında
-Proje **Docker kullanmaz**. Kullanılmayan `Dockerfile`, `Dockerfile.dashboard` ve
-`docker-compose.yml` dosyaları repodan kaldırılmıştır; yukarıdaki adımlar tamamen
-bağımsızdır — Docker/container kurmanıza gerek yoktur.
+| Belirti | Neden / Çözüm |
+|---|---|
+| `Please pass a valid API key` | `GEMINI_API_KEY` tanımlı değil veya geçersiz (bkz. adım 3). |
+| Her raporda "quarantine" uyarısı | `GROQ_API_KEY` tanımlı değil — guard `fail_closed` davranıyor (bkz. adım 3). |
+| Groq `400 ... logprobs` | Groq `logprobs`/`logit_bias`/`top_logprobs` kabul etmez. Guard bunları göndermez; bu hatayı görüyorsanız guard dışı bir katman yanlışlıkla Groq'a yönlendirilmiştir. |
+| Raporda mevzuat bölümü boş | 4. adım (indeksleme) çalıştırılmamış. |
+| Arayüz "Arka uca ulaşılamıyor" diyor | Backend 8000 portunda değil (bkz. adım 5 notu). |
+| `ffmpeg/ffprobe PATH'te bulunamadi` | Bilgi amaçlı; parçalama OpenCV'ye düşer, sistem çalışır. |
+| Ajan `risk_status=unknown` veriyor | Model boş içerik döndürmüş olabilir — `config.yaml` içindeki `reasoning_effort: "none"` / `thinkingConfig.thinkingBudget: 0` ayarlarının durduğundan emin olun. |
+| Karar sentezi boş dönüyor | `gemini-2.5-pro` düşünme modu kapatılamaz; `llm.decision_model` değerini `"gemini"` yapmak güvenli geri adımdır. |
+
+## Süreçleri durdurmak
+
+Backend ve arayüz, çalıştıkları terminalde `Ctrl+C` ile durdurulur.
+
+## EVREN'e geri dönmek gerekirse
+
+Sağlayıcı kodu silinmedi (`src/vlm/evren_vlm.py`, `EvrenEmbeddingProvider`,
+`EvrenPromptInjectionGuard`). `configs/config.yaml` içindeki `provider` /
+`active_model` değerlerini `evren` ailesine çevirip `.env.example` içinde
+yorum satırına alınmış `EVREN_*` değişkenlerini doldurmak yeterlidir.

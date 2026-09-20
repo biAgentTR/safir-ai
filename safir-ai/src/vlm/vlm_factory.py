@@ -8,6 +8,7 @@ from typing import Callable, Dict, Type
 from src.utils.config_loader import VLMConfig
 from src.vlm.base_vlm import BaseVLM
 from src.vlm.evren_vlm import EvrenFramesVLM, EvrenVLM
+from src.vlm.gemini_vlm import GeminiFramesVLM, GeminiVLM
 from src.vlm.gemma_vlm import GemmaVLM
 from src.vlm.qwen_vlm import QwenVLM
 
@@ -24,8 +25,15 @@ class VLMFactory:
     _REGISTRY: Dict[str, Type[BaseVLM]] = {
         "qwen": QwenVLM,
         "gemma": GemmaVLM,
-        "evren": EvrenVLM,               # AKTIF (varsayilan): video-dogrudan EVREN (model="vlm")
-        "evren_frames": EvrenFramesVLM,  # dusuk-butceli, kare-tabanli EVREN yolu (model="llm-large", <=2 goruntu/istek)
+        "gemini": GeminiVLM,             # AKTIF (varsayilan): video-dogrudan Gemini (native :generateContent)
+        "gemini_frames": GeminiFramesVLM,  # dusuk-butceli, kare-tabanli Gemini yolu (OpenAI-uyumlu uc)
+        # EVREN (TEKNOFEST yarisma servisi) ARTIK ERISILEBILIR DEGIL - takima
+        # kapatildi. Proje kurallari geregi kullanilmayan saglayicilar SILINMEZ,
+        # yalnizca devre disi birakilir: asagidaki iki kayit kayit defterinde
+        # KALIR (secilirse calisir) ama `configs/config.yaml` artik onlari
+        # SECMEZ (bkz. `vlm.active_model` / `vlm.frames_model` -> "gemini").
+        "evren": EvrenVLM,               # DEVRE DISI: video-dogrudan EVREN (model="vlm")
+        "evren_frames": EvrenFramesVLM,  # DEVRE DISI: kare-tabanli EVREN yolu (model="llm-large", <=2 goruntu/istek)
     }
 
     @classmethod
