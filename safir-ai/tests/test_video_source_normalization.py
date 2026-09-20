@@ -13,9 +13,24 @@ dogrular. Pipeline/VLM/sampler'a hicbir bagimliligi yoktur (saf fonksiyon testi)
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from src.main import normalize_video_source
+
+# `normalize_video_source` bagil girdileri `os.path.join(_DATA_DIR, ad)` ile
+# birlestirir, yani ayrac ISLETIM SISTEMININ kendi ayracidir (Windows'ta "\",
+# POSIX'te "/"). Testler bu degeri "data/test.mp4" olarak SABIT yaziyordu ve
+# bu yuzden Windows'ta basarisiz oluyorlardi - hata URETIM KODUNDA DEGIL,
+# testin platform varsayimindaydi (yerel ayrac dosya sistemine gidecek bir
+# yol icin DOGRU olandir). Beklenen deger artik ayni sekilde uretiliyor.
+DATA_DIR = "data"
+
+
+def in_data_dir(filename: str) -> str:
+    """Testin bekledigi, platforma uygun `data/<ad>` yolunu uretir."""
+    return os.path.join(DATA_DIR, filename)
 
 
 # --------------------------- mutlak yollar: KORUNMALI ---------------------------
@@ -54,21 +69,21 @@ def test_different_absolute_paths_with_same_filename_do_not_collide():
 
 
 def test_bare_filename_still_routes_to_data_dir():
-    assert normalize_video_source("test.mp4") == "data/test.mp4"
+    assert normalize_video_source("test.mp4") == in_data_dir("test.mp4")
 
 
 def test_relative_path_with_subdir_still_reduces_to_basename_in_data_dir():
     """Mevcut (degismemis) davranis: bagil bir alt-yol verilse bile yalnizca
     dosya adi alinip data/ altina yerlestirilir (Docker bind-mount uyumlulugu)."""
-    assert normalize_video_source("videos/test.mp4") == "data/test.mp4"
+    assert normalize_video_source("videos/test.mp4") == in_data_dir("test.mp4")
 
 
 def test_relative_windows_style_path_still_reduces_to_basename_in_data_dir():
-    assert normalize_video_source("videos\\test.mp4") == "data/test.mp4"
+    assert normalize_video_source("videos\\test.mp4") == in_data_dir("test.mp4")
 
 
 def test_whitespace_is_trimmed_for_relative_input():
-    assert normalize_video_source("  test.mp4  ") == "data/test.mp4"
+    assert normalize_video_source("  test.mp4  ") == in_data_dir("test.mp4")
 
 
 # --------------------------- canli yayin: DEGISMEMELI ---------------------------

@@ -195,6 +195,32 @@ class ConversationStore:
         self._connection.commit()
         self._lock = threading.Lock()
 
+    def close(self) -> None:
+        """Alttaki SQLite baglantisini kapatir (birden fazla kez cagrilabilir).
+
+        Store, baglantiyi omru boyunca ACIK tutar; uzun omurlu tek bir
+        uygulama sureci icin bu dogrudur. Ancak OMRU SINIRLI kullanimlarda
+        (testler, gecici bir dizinde acilan bir store) baglantinin acik
+        kalmasi Windows'ta dosyanin SILINEMEMESINE yol acar
+        (`PermissionError: [WinError 32]`) - POSIX'te acik bir dosya
+        silinebildigi icin bu sorun yalnizca Windows'ta gorunur.
+
+        `__enter__`/`__exit__` ile birlikte `with ConversationStore(...) as
+        store:` kullanimi da mumkundur.
+        """
+        connection = getattr(self, "_connection", None)
+        if connection is not None:
+            connection.close()
+            self._connection = None  # type: ignore[assignment]
+
+    def __enter__(self) -> "ConversationStore":
+        """Store'u baglam yoneticisi olarak kullanilabilir kilar."""
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        """Baglam bitiminde baglantiyi kapatir."""
+        self.close()
+
     def create(self, title: Optional[str] = None, job_id: Optional[str] = None) -> ConversationRecord:
         """Yeni bir sohbet kaydi olusturur ve dondurur.
 

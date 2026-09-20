@@ -85,22 +85,61 @@ def test_4_multiple_analysis_ids_includes_current():
 def test_5_multiple_analysis_ids_in_detected_events_controlled_error(caplog):
     """5. Bir cagrinin DetectedEvent listesinde iki farkli analysis ID -> kontrollu hata ve reddetme"""
     from unittest.mock import MagicMock
+    # `object.__new__` BILEREK kullanilir (gercek `__init__` model/RAG
+    # istemcilerini kurmaya calisirdi), ancak bu, `__init__`in kurdugu
+    # alanlarin HICBIRINI olusturmaz. `build_report` bunlardan
+    # `_last_stage_rag_telemetry`i okur (src/main.py) ve alan olmadigi icin
+    # test AttributeError ile dusuyordu - URETIMDE boyle bir sorun YOKTUR,
+    # gercek pipeline'da `__init__` bu alani None olarak kurar.
+    # `object.__new__` BILEREK kullanilir (gercek `__init__` model/RAG
+    # istemcilerini kurmaya calisirdi), ancak `__init__`in kurdugu alanlarin
+    # HICBIRINI olusturmaz. `build_report` asagidaki ALTI alani okur; bunlar
+    # eksik oldugu icin test AttributeError ile dusuyordu. URETIMDE boyle bir
+    # sorun YOKTUR - gercek pipeline'da hepsini `__init__` kurar.
     pipeline = object.__new__(SafirPipeline)
     pipeline._event_builder = MagicMock()
     pipeline._event_history = MagicMock()
+    pipeline._event_store = MagicMock()
+    pipeline._agent = MagicMock()
+    pipeline._rag_service = MagicMock()
+    pipeline._last_stage_rag_telemetry = None
     detected_events = [
         DetectedEvent(event_name="A", description="A", timestamp=5.0, confidence=0.9, source_analysis_id="ID1"),
         DetectedEvent(event_name="B", description="B", timestamp=5.0, confidence=0.9, source_analysis_id="ID2"),
     ]
+    # Mock'larin TIPLERI onemlidir: `build_report` sonunda dogrulanmis bir
+    # `SafirReport` (Pydantic) kurar, yani ciplak `MagicMock` alanlari
+    # ValidationError'a yol acar. Testin ASIL dogruladigi davranis (coklu
+    # analysis ID tespiti + karisik olaylarin dusurulmesi) bu noktadan ONCE
+    # gerceklestigi icin eski hata testin mock kurulumundan geliyordu,
+    # uretim kodundan DEGIL.
+    pipeline._agent.model_name = "test-llm"
+
+    vlm_response = MagicMock()
+    vlm_response.description = "test aciklama"
+    vlm_response.model_name = "test-vlm"
+
+    decision = MagicMock()
+    decision.summary = "test ozet"
+    decision.actions = []
+    decision.risk_level = "dusuk"
+    decision.risk_status = "assessed"
+    decision.recommended_action = "izlemeye devam"
+    decision.onset_timestamp = None
+
+    escalation = MagicMock()
+    escalation.tier.value = "monitor"
+    escalation.alert_id = None
+
     with caplog.at_level(logging.ERROR):
-        pipeline.build_report(
+        report = pipeline.build_report(
             video_source="test.mp4",
             sampler=MagicMock(),
             evidence_frames=[],
-            vlm_response=MagicMock(),
+            vlm_response=vlm_response,
             context=MagicMock(),
-            decision=MagicMock(),
-            escalation=MagicMock(),
+            decision=decision,
+            escalation=escalation,
             temporal_events=[],
             rule_matches=[],
             latest_timestamp=10.0,
@@ -108,6 +147,11 @@ def test_5_multiple_analysis_ids_in_detected_events_controlled_error(caplog):
             analysis_mode="vlm_direct"
         )
     assert "Multiple analysis IDs detected in a single pipeline call" in caplog.text
+    # Kontrollu basarisizligin ASIL sonucu: karisik provenance'li olaylar
+    # DUSURULUR (bkz. src/main.py "Controlled failure: Drop mixed events to
+    # prevent contamination"). Onceden yalnizca log satiri dogrulaniyordu;
+    # olaylarin gercekten dusuruldugu HIC test edilmiyordu.
+    assert report.detected_event_names == []
 
 def test_6_vlm_frames_evidence_match():
     """6. vlm_frames evidence eslesmesi -> calisir"""
