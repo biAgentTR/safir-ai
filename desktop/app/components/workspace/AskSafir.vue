@@ -87,7 +87,7 @@ function useSuggestion(s: string) {
       <span
         v-if="jobId"
         class="ml-auto text-[10px] font-mono text-slate-600"
-        title="Sorular önce doğrudan videoya sorulur (EVREN önbellekleme avantajı)"
+        title="Sorular önce doğrudan videoya sorulur (model tarafı önbellekleme avantajı)"
       >
         job: {{ jobId.slice(0, 8) }}
       </span>

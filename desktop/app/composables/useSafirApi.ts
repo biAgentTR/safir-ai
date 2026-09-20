@@ -42,9 +42,15 @@ export function useSafirApi() {
   // (types/api.ts) grows past a fairly small size — it did so from a routine
   // new field addition, not from anything unusual in that change.
 
-  /** GET /health -> { status, system } */
-  async function health(): Promise<{ status: string; system: string }> {
-    return await $fetch<{ status: string; system: string }>(url('/health'), {
+  /**
+   * GET /health -> { status, system, models }
+   *
+   * `models`: o an AKTIF olan model adlari (bkz. `useActiveModels`). Arayuz
+   * metinlerinin saglayici adini sabit yazmamasi icin eklendi; eski arka uc
+   * surumleri bu alani DONDURMEZ, bu yuzden opsiyoneldir.
+   */
+  async function health(): Promise<{ status: string; system: string; models?: ActiveModels }> {
+    return await $fetch<{ status: string; system: string; models?: ActiveModels }>(url('/health'), {
       signal: AbortSignal.timeout(1500),
     })
   }

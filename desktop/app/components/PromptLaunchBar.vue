@@ -39,16 +39,27 @@ function onKeydown(e: KeyboardEvent) {
 
 <template>
   <section class="relative" aria-label="Yeni analiz başlat">
-    <div class="relative max-w-3xl mx-auto text-center px-4 py-10 sm:py-14">
+    <!-- Dikey nefes: py-10/14 -> py-20/28 (bkz. HomeSection'daki ayni not).
+         Genislik `max-w-3xl` -> `max-w-4xl`: HomeSection'daki hero blogu ile
+         AYNI olcu, boylece iki ana baslik ayni eksende hizalanir (onceden
+         daha dar bir kapsayicidaydi ve buyuk puntoda kaymis duruyordu). -->
+    <div class="relative max-w-4xl mx-auto text-center px-4 py-20 sm:py-28">
       <!-- Title Ambient Glow Aura -->
       <div class="pointer-events-none absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[480px] max-w-[90vw] h-[220px] rounded-full bg-gradient-to-r from-accent/25 via-cyan-500/20 to-teal-400/25 dark:from-accent/20 dark:via-cyan-500/15 dark:to-teal-500/20 blur-[90px] -z-10" />
 
-      <div class="eyebrow !text-accent mb-3 relative z-10">Yapay zekâ destekli operasyonel farkındalık</div>
-      <h1 class="text-3xl sm:text-4xl font-bold tracking-tight text-slate-100 leading-tight relative z-10">
-        Görüntüyü izlemeyin.<br class="hidden sm:block" />
-        Ne olduğunu anlayın.
-      </h1>
-      <p class="mt-3 text-sm sm:text-base text-slate-400 max-w-xl mx-auto relative z-10">
+      <!-- NOT (2026-09-18): burada ONCEDEN sayfanin ana hero basligi
+           ("Görüntüyü izlemeyin. / Ne olduğunu anlayın.") ve ayni eyebrow
+           TEKRAR ediyordu; tek-kaydirmali sayfada `HomeSection` ile birlikte
+           render edildigi icin kullanici ayni slogani arka arkaya IKI KEZ
+           goruyordu. Slogan hero'da (HomeSection) BIRAKILDI; burasi bir
+           kimlik alani degil EYLEM alani oldugu icin baslik kendi isini
+           anlatiyor - alan BOS birakilmadi, ayni dikey ritim korundu.
+           `h1` -> `h2`: sayfada TEK bir `h1` kalir (hero'daki). -->
+      <div class="eyebrow !text-accent mb-3 relative z-10">Yeni analiz</div>
+      <h2 class="text-5xl sm:text-6xl lg:text-7xl font-bold tracking-tight text-slate-100 leading-[1.05] relative z-10">
+        Ne aradığınızı söyleyin.
+      </h2>
+      <p class="mt-5 text-base sm:text-lg text-slate-400 max-w-2xl mx-auto relative z-10">
         Bir video seçin, ne aradığınızı yazın — SAFİR kritik anları, riski ve uygulanabilir operatör aksiyonlarını saniyeler içinde çıkarsın.
       </p>
 

@@ -15,6 +15,10 @@ import { mapVlmDirectEvents } from '~/composables/useVlmDirectEvents'
 import type { VlmStageData, VlmStageEventData, TraceEvent } from '~/types/api'
 
 const store = useAnalysisStore()
+// Aktif model adi arka uctan okunur - metinlerde saglayici adi SABIT YAZILMAZ
+// (bkz. `useActiveModels`). Model bilinmiyorsa `vlmLabel` notr bir metne
+// duser, kullanici BOSLUK gormez.
+const { models, vlmLabel } = useActiveModels()
 const stream = useAnalysisStream()
 const { state: backendHealth } = useBackendHealth()
 const { trigger: newAnalysisTrigger } = useVlmDirectReset()
@@ -188,7 +192,10 @@ watch(vlmProgress, (p) => {
   const id = ++logSeq
   if (p.phase === 'chunk_start') {
     const label = p.total_chunks && p.total_chunks > 1 ? `Parça ${p.chunk_index}/${p.total_chunks}` : 'Video'
-    processingLog.value = [{ id, text: `${label} EVREN'e gönderiliyor…`, tone: 'info' }, ...processingLog.value]
+    processingLog.value = [
+      { id, text: `${label} ${vlmLabel.value} modeline gönderiliyor…`, tone: 'info' },
+      ...processingLog.value,
+    ]
   } else if (p.phase === 'chunk_done') {
     const label = p.total_chunks && p.total_chunks > 1 ? `Parça ${p.chunk_index}/${p.total_chunks}` : 'Video'
     processingLog.value = [
@@ -198,8 +205,8 @@ watch(vlmProgress, (p) => {
     if (p.total_chunks && p.chunk_index === p.total_chunks) {
       chunkingDoneNotice.value =
         p.total_chunks > 1
-          ? `Video ${p.total_chunks} parçaya bölünüp tamamı EVREN'e gönderildi, sonuç işleniyor…`
-          : `Video EVREN'e gönderildi ve işlendi, sonuç hazırlanıyor…`
+          ? `Video ${p.total_chunks} parçaya bölünüp tamamı ${vlmLabel.value} modeline gönderildi, sonuç işleniyor…`
+          : `Video ${vlmLabel.value} modeline gönderildi ve işlendi, sonuç hazırlanıyor…`
       if (chunkingDoneTimer) clearTimeout(chunkingDoneTimer)
       chunkingDoneTimer = setTimeout(() => (chunkingDoneNotice.value = null), 8000)
     }
@@ -283,14 +290,19 @@ async function doExportPdf() {
 </script>
 
 <template>
-  <div id="vlm-direct" class="scroll-mt-16 max-w-7xl mx-auto px-6 py-6">
-    <div class="mb-6 text-center max-w-2xl mx-auto relative">
-      <!-- Title Ambient Glow Aura -->
-      <div class="pointer-events-none absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[360px] max-w-[85vw] h-[140px] rounded-full bg-gradient-to-r from-accent/25 via-cyan-500/20 to-teal-400/25 dark:from-accent/20 dark:via-cyan-500/15 dark:to-teal-500/20 blur-[80px] -z-10" />
-
-      <h2 class="text-2xl sm:text-3xl font-bold tracking-tight text-slate-100 relative z-10">Direct Analiz</h2>
-      <p class="mt-1.5 text-sm sm:text-base text-slate-400 relative z-10">Video doğrudan görsel-dil modeline (EVREN) gönderilerek analiz edilir.</p>
-      <div v-if="statusLabel" class="mt-3 inline-flex items-center gap-2 text-xs bg-surface-2 px-3 py-1 rounded-full border border-edge relative z-10">
+  <!-- Dikey nefes: py-6 -> py-16/20, baslik blogu mb-6 -> mb-10
+       (bkz. HomeSection'daki ayni not). -->
+  <div id="vlm-direct" class="scroll-mt-16 max-w-7xl mx-auto px-6 py-16 sm:py-20">
+    <!-- Bu bolumun BASLIGI ve aciklama satiri KALDIRILDI: sayfadaki iki ana
+         baslik ("Görüntüyü izlemeyin…" ve "Ne aradığınızı söyleyin.")
+         arasinda ucuncu bir metin blogu gorsel hiyerarsiyi boluyordu.
+         Geriye yalnizca DURUM ROZETI kalir ve o da ancak bir durum varken
+         cizilir - aksi halde burada olu bir dikey bosluk olusurdu.
+         Aktif model adi arayuzde kaybolmaz: analiz sirasindaki ilerleme
+         kayitlarinda ve asama kartlarinda (StageCard) gosterilmeye devam
+         eder (bkz. `useActiveModels`). -->
+    <div v-if="statusLabel" class="mb-10 text-center max-w-2xl mx-auto relative">
+      <div class="inline-flex items-center gap-2 text-xs bg-surface-2 px-3 py-1 rounded-full border border-edge relative z-10">
         <span
           class="status-dot"
           :class="store.isRunning ? 'bg-accent animate-pulse' : store.status === 'done' ? 'bg-risk-low' : store.status === 'error' ? 'bg-risk-crit' : 'bg-slate-600'"
@@ -420,7 +432,7 @@ async function doExportPdf() {
           </ul>
           <p v-else class="text-xs text-slate-400 flex items-center gap-2">
             <span class="inline-block w-3 h-3 border-2 border-accent border-t-transparent rounded-full animate-spin shrink-0 motion-reduce:animate-none" />
-            Analiz başlatıldı, video EVREN'e gönderiliyor…
+            Analiz başlatıldı, video {{ vlmLabel }} modeline gönderiliyor…
           </p>
         </div>
 

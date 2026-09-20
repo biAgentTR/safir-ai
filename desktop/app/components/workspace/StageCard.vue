@@ -17,6 +17,9 @@ import type {
 
 const store = useAnalysisStore()
 const { getFrameUrl } = useSafirApi()
+// Asama metinlerinde saglayici adi SABIT YAZILMAZ; aktif model arka uctan
+// okunur ve bilinmiyorsa notr bir metne duser (bkz. `useActiveModels`).
+const { vlmLabel } = useActiveModels()
 const emit = defineEmits<{ (e: 'open-frame', id: string): void }>()
 
 const stage = computed<TraceStage | null>(() => store.selectedStage)
@@ -127,7 +130,7 @@ function ms(v: number | null): string {
     <template v-else>
       <!-- ============ SAMPLER ============ -->
       <div v-if="sampler?.skipped" class="rounded-md border border-edge bg-surface-2/60 px-4 py-3 text-sm text-slate-300">
-        Bu aşama atlandı — aktif VLM (EVREN) videoyu doğrudan analiz ediyor, kare örneklemeye gerek yok.
+        Bu aşama atlandı — aktif VLM ({{ vlmLabel }}) videoyu doğrudan analiz ediyor, kare örneklemeye gerek yok.
       </div>
       <div v-else-if="sampler" class="space-y-5">
         <div class="grid grid-cols-3 sm:grid-cols-6 gap-3">
@@ -180,7 +183,7 @@ function ms(v: number | null): string {
         </div>
         <div v-if="vlmProgress.video_mb" class="text-xs text-slate-500">Yük boyutu (base64): ~{{ vlmProgress.video_mb }} MB</div>
         <p class="text-xs text-slate-600">
-          EVREN video analizi uzun sürebilir (dokümantasyona göre parça başına birkaç dakikaya kadar) — bu adım
+          {{ vlmLabel }} ile video analizi uzun sürebilir (parça başına birkaç dakikaya kadar) — bu adım
           sırasında bağlantı canlı tutulur, sonuç geldiğinde bu panel otomatik güncellenir.
         </p>
       </div>
