@@ -402,7 +402,11 @@ class BaseVLM(ABC):
         raise NotImplementedError
 
     def analyze_evidence_batched(
-        self, evidence_frames: List[EvidenceFrame], prompt: str, batch_size: int = 40
+        self,
+        evidence_frames: List[EvidenceFrame],
+        prompt: str,
+        batch_size: int = 40,
+        on_batch: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> List[VLMResponse]:
         """Evidence karelerini TEK bir dev payload yerine kronolojik, kayipsiz batch'ler halinde analiz eder.
 
@@ -434,8 +438,10 @@ class BaseVLM(ABC):
             return []
 
         step = max(1, batch_size)
+        total_batches = (len(evidence_frames) + step - 1) // step
         responses: List[VLMResponse] = []
         for start in range(0, len(evidence_frames), step):
+            batch_index = start // step
             batch = evidence_frames[start : start + step]
             batch_evidence_ids = [ef.evidence_id for ef in batch]
             try:
@@ -460,6 +466,24 @@ class BaseVLM(ABC):
                     evidence_ids=batch_evidence_ids,
                 )
             responses.append(response)
+            # CANLI YAYIN: batch biter bitmez operatore bildirilir. Bu nokta,
+            # sampler ciktisi ile VLM ciktisinin ZATEN ESLESMIS oldugu tek
+            # yerdir - `evidence_ids` bu batch'teki kanit karelerini, ayni
+            # sozlukteki `description`/`structured_events` ise VLM'in TAM O
+            # KARELER icin urettigini tasir. Onceden ikisi de yalnizca TUM
+            # analiz bittikten SONRA, tek seferde gorunuyordu.
+            if on_batch is not None:
+                on_batch(
+                    {
+                        "batch_index": batch_index,
+                        "total_batches": total_batches,
+                        "evidence_ids": batch_evidence_ids,
+                        "description": response.description,
+                        "structured_events": response.structured_events,
+                        "status": response.status,
+                        "latency_ms": response.latency_ms,
+                    }
+                )
         return responses
 
     def reconcile_events(self, batch_responses: List[VLMResponse], prompt: str) -> VLMResponse:

@@ -1359,7 +1359,7 @@ class SafirPipeline:
         """
         vlm = self._vlm_video if analysis_mode == "vlm_direct" else self._vlm_frames
         if getattr(vlm, "requires_frame_sampling", True):
-            return self._stage_vlm_frames(vlm, evidence_frames, user_prompt, context)
+            return self._stage_vlm_frames(vlm, evidence_frames, user_prompt, context, on_progress)
         return self._stage_vlm_video(vlm, video_source, evidence_frames, user_prompt, on_progress, context)
 
     def _stage_vlm_video(
@@ -1405,6 +1405,7 @@ class SafirPipeline:
         evidence_frames: List[EvidenceFrame],
         user_prompt: str,
         context: Optional[AnalysisContext] = None,
+        on_progress: Optional[VlmProgressCallback] = None,
     ) -> VLMResponse:
         """Dusuk butceli yol: evidence kareleri `vlm.batch_size` buyuklugunde batch'lere bolunup analiz edilir.
 
@@ -1428,8 +1429,21 @@ class SafirPipeline:
                 status="failed",
             )
         try:
+            # CANLI YAYIN (Dusuk Butceli mod): her batch biter bitmez, o
+            # batch'in KANIT KARELERI ve VLM'in TAM O KARELER icin urettigi
+            # metin/olaylar birlikte yayinlanir. Onceden ikisi de yalnizca
+            # TUM analiz bittikten sonra, tek seferde goruluyordu. Ajan/LLM
+            # sentezi SONDA kalir - nihai karar hala tek bir yerden gelir.
+            def _emit_batch(payload: Dict[str, object]) -> None:
+                if on_progress is None:
+                    return
+                on_progress({"phase": "batch_done", **payload})
+
             batch_responses = vlm.analyze_evidence_batched(
-                evidence_frames, user_prompt, batch_size=self._config.vlm.batch_size
+                evidence_frames,
+                user_prompt,
+                batch_size=self._config.vlm.batch_size,
+                on_batch=_emit_batch,
             )
             return vlm.reconcile_events(batch_responses, user_prompt)
         except Exception as exc:  # noqa: BLE001 - beklenmedik hata da degraded rapora tasinir

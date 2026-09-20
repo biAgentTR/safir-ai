@@ -178,8 +178,15 @@ def test_full_job_produces_all_stage_events_without_base64(mock_pipeline, video_
 
     job = main._jobs[job_id]
     assert job.status == "done"
-    stages = [e["stage"] for e in job.trace_events]
-    # Tum gercek stage'ler sirayla uretildi
+    # Bir asama, ilerleme bildirimleri icin BIRDEN FAZLA trace olayi
+    # yayinlayabilir - bu, tasarimin acikca destekledigi bir durumdur
+    # (bkz. `SafirPipeline._on_vlm_progress`: video parcalara bolunurken veya
+    # kare batch'leri islenirken operator ADIM ADIM ilerlemeyi canli gorur).
+    # Bu yuzden ardisik tekrarlar sadelestirilir; test yine de TUM asamalarin
+    # DOGRU SIRAYLA uretildigini dogrular - sistemin gercekten verdigi garanti
+    # budur, "asama basina tam olarak bir olay" degil.
+    raw_stages = [e["stage"] for e in job.trace_events]
+    stages = [s for i, s in enumerate(raw_stages) if i == 0 or s != raw_stages[i - 1]]
     assert stages == STAGE_ORDER
 
     blob = json.dumps(job.trace_events, ensure_ascii=False)
